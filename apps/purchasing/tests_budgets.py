@@ -226,3 +226,50 @@ class BudgetApprovalTests(BudgetTestCase):
         self.budget.delete()
         order = self.order_of("100000", "20", confirm=False)
         self.assertEqual(order.approval_reasons(), [])
+
+
+class AForeignOrderIsWeighedInTheBaseTests(BudgetTestCase):
+    """O293: a budget and the policy's limits are base figures; a euro order is weighed at its own rate, 90."""
+
+    def setUp(self):
+        super().setUp()
+        from apps.core.models import Currency, ExchangeRate
+
+        self.eur = Currency.objects.create(code="EUR", name="Euro")
+        ExchangeRate.objects.create(currency=self.eur, rate=Decimal("90"), valid_from=datetime.date(2026, 1, 1))
+
+    def eur_order(self, quantity, price, confirm=True):
+        order = PurchaseOrder.objects.create(vendor=self.vendor, order_date=datetime.date(2026, 3, 1), currency=self.eur)
+        PurchaseOrderLine.objects.create(order=order, item=self.item, uom=self.uom, quantity=Decimal(quantity),
+                                         unit_price=Decimal(price), expense_account=self.expense)
+        if confirm:
+            order.confirm()
+        return order
+
+    def test_a_euro_order_commits_and_spends_the_budget_in_rupees(self):
+        # 10 x 10 EUR at 90 = 9,000 committed of 10,000; 4 billed: 3,600 spent and 5,400 committed.
+        order = self.eur_order("10", "10")
+        self.assertEqual((self.budget.committed(), self.budget.available()), (Decimal("9000.00"), Decimal("1000.00")))
+        self.receive(order, "4")
+        bill = order.create_bill(self.payable)
+        bill.bill_date = datetime.date(2026, 3, 10)
+        bill.post()
+        self.assertEqual((self.budget.spent(), self.budget.committed()), (Decimal("3600.00"), Decimal("5400.00")))
+        self.assertEqual(self.budget.available(), Decimal("1000.00"))
+        # 2 x 10 EUR more is 1,800 against the 1,000 left: it asks, where 20 EUR would have passed.
+        PurchaseApprovalPolicy.objects.create(code="P", name="Budgets")  # the budget is asked under a policy
+        more = self.eur_order("2", "10", confirm=False)
+        self.assertTrue(any("1800.00 in the base currency" in reason for reason in more.approval_reasons()),
+                        more.approval_reasons())
+
+    def test_a_euro_order_worth_4_5_million_base_asks_the_1_million_limit(self):
+        self.budget.delete()
+        PurchaseApprovalPolicy.objects.create(code="P", name="Limit", max_order_value=Decimal("1000000"),
+                                              max_line_value=Decimal("2000000"))
+        order = self.eur_order("10", "5000", confirm=False)
+        self.assertEqual(order.total_in_base(), Decimal("4500000.00"))
+        reasons = order.approval_reasons()
+        self.assertEqual(len(reasons), 2, reasons)
+        self.assertIn("The order is 4500000.00 in the base currency", reasons[0])
+        with self.assertRaises(ValidationError):
+            order.confirm()

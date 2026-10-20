@@ -27,6 +27,26 @@ from apps.core.models import Company, to_date
 from .models import JournalEntry, JournalLine, PaymentDirection, round_money
 
 
+
+def in_base(amount, currency, on_date, rate=None):
+    """
+    A document's figure in the base currency, at the document's own rate: `rate`, the rate it
+    posted at, once it has one (a bill's exchange_rate); else its currency's rate on the document's
+    own date (an order's order_date). Approval limits, margin floors and budgets are kept in the
+    base currency, and both trading sides weigh a document against them through this: weighed in
+    the document's currency, 10 x 5,000 EUR at 90 (45,00,000 base) passed a 10,00,000 limit, and
+    a euro sale at a 95.6% margin read -300% against its rupee cost (O293).
+    """
+    if rate is None:
+        rate = currency.rate_on(on_date) if currency is not None else Decimal("1")
+    return round_money(amount * rate)
+
+
+def in_the_base(document):
+    """What a figure from in_base() is said in: nothing for a document in the base currency."""
+    currency = getattr(document, "currency", None)
+    return "" if currency is None or currency.is_base else f" in the base currency (the order is in {currency.code})"
+
 def settlement_difference(amount, document_rate, payment_rate, *, document_base=None, payment_base=None):
     """
     The base-currency difference left on the control account.
