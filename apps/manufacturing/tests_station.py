@@ -341,18 +341,23 @@ class StationLockTests(StationTestCase):
         with self.assertRaisesMessage(ValidationError, "locked"):
             self.station.identify(pin, now=now)
 
-    def test_four_wrong_then_right_resets_the_count(self):
+    def test_a_right_pin_between_wrong_ones_does_not_reset_the_count(self):
+        """O274 (audit2_floor F1): it did, and held that deliberately here. Four wrong, the operator's
+        own PIN, four wrong, the PIN again, for twenty rounds: eighty wrong PINs in one ten-minute
+        window and never a lock. Now the fifth wrong one locks it, and the right PIN is refused too."""
         pin = self.operator.issue_pin()
         wrong = "999999" if pin != "999999" else "888888"
         now = timezone.now()
         for _ in range(4):
-            with self.assertRaises(ValidationError):
-                self.station.identify(wrong, now=now)
-        self.station.identify(pin, now=now)
-        for _ in range(4):
-            with self.assertRaises(ValidationError):
+            with self.assertRaisesMessage(ValidationError, "not recognised"):
                 self.station.identify(wrong, now=now)
         self.assertEqual(self.station.identify(pin, now=now), self.operator)
+        with self.assertRaisesMessage(ValidationError, "not recognised"):
+            self.station.identify(wrong, now=now)
+        with self.assertRaisesMessage(ValidationError, "locked"):
+            self.station.identify(pin, now=now)
+        with self.assertRaisesMessage(ValidationError, "locked"):
+            self.station.identify(wrong, now=now)
 
     def test_a_success_and_failures_on_one_clock_reading_still_lock(self):
         """Ordered by time alone, an earlier success could sort after the
