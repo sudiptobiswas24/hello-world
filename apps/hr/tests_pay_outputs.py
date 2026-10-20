@@ -489,7 +489,7 @@ class ALeaverNoLongerSignsInOrDecides(OutputsTestCase):
         person.terminate(today)
         self.assertTrue(User.objects.get(pk=person.user_id).is_active)
         self.assertIsNone(login_ended(person.user, today))
-        self.assertIn("left on", login_ended(person.user, today + datetime.timedelta(days=1)))
+        self.assertIn("has left", login_ended(person.user, today + datetime.timedelta(days=1)))
         # The day has come with nobody switching the login off: a session open then ends, and it signs in no more.
         client = APIClient()
         self.assertTrue(client.login(username=person.user.username, password=password))

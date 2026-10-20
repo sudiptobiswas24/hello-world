@@ -532,7 +532,7 @@ def register_login_end(ask):
         _LOGIN_ENDED.append(ask)
 
 
-def login_ended(user, day=None):
+def login_ended(user, day=None, cached=False):
     """
     Why `user` may neither sign in nor decide on `day` (the plant's today when not given), or None.
 
@@ -542,11 +542,27 @@ def login_ended(user, day=None):
     if user is None or getattr(user, "pk", None) is None:
         return None
     day = to_date(day) if day is not None else timezone.localdate()
-    for ask in _LOGIN_ENDED:
-        said = ask(user, day)
-        if said:
-            return said
-    return None
+    # `cached`: the backend's question, asked on every request of a session, is answered once per
+    # request (held with the request's company, never across requests). A decision asks afresh.
+    held = _COMPANY.get() if cached else None
+    key = ("login_ended", user.pk, day)
+    if held is not None and key in held:
+        return held[key]
+    said = next((said for said in (ask(user, day) for ask in _LOGIN_ENDED) if said), None)
+    if held is not None:
+        held[key] = said
+    return said
+
+
+def check_login_acts(by, day=None):
+    """
+    Refuse a decision by a login whose person has left (login_ended), in their words. The one rule
+    every login-keyed approval asks: orders (ApprovableMixin), requisitions, recipe changes and
+    quality decisions (O300); hr's decisions by an Employee ask hr.check_still_working.
+    """
+    said = login_ended(by, day)
+    if said:
+        raise ValidationError(said)
 
 
 def register_working_day(ask):

@@ -49,6 +49,17 @@ class RequisitionTestCase(PurchasingLifecycleTestCase):
 
 
 class RequisitionLifecycleTests(RequisitionTestCase):
+    def test_somebody_who_has_left_decides_no_requisition(self):
+        """O300: a requisition decided by a login whose person has left is refused, approve and reject both."""
+        from apps.core.tests_roles import a_login_that_has_left
+
+        a_login_that_has_left(self, self.manager)
+        for decide in (lambda r: r.approve(by=self.manager), lambda r: r.reject(by=self.manager, note="No")):
+            requisition = self.requisition()
+            with self.assertRaisesMessage(ValidationError, "has left (leaving date 01-06-2026)"):
+                decide(requisition)
+            self.assertEqual(requisition.status, RequisitionStatus.SUBMITTED)
+
     def test_submitting_numbers_it(self):
         requisition = self.requisition()
         self.assertEqual(requisition.number, "REQ-2026-00001")

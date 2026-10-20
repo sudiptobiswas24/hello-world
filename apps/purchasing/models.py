@@ -39,6 +39,7 @@ from apps.core.approvals import (
     check_not_raised_by,
 )
 from apps.core.models import (
+    check_login_acts,
     BILLED,
     CONFIRMED,
     MOVED,
@@ -779,6 +780,7 @@ class PurchaseRequisition(AuditModel):
     def _decide(self, status, by, note):
         if self.status != RequisitionStatus.SUBMITTED:
             raise ValidationError("Only a submitted requisition can be decided.")
+        check_login_acts(by)  # nobody who has left decides (O300)
         self.status = status
         self.decided_by = by
         self.decided_at = timezone.now()
