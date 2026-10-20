@@ -112,3 +112,47 @@ class APublishedVersionIsPostedByAnotherNameTests(SimpleTestCase):
     def test_one_that_refuses_once_published_is_not(self):
         guard = "        if self.is_published():\n            raise ValidationError('published')\n"
         self.assertEqual(self.audit("    def save(self):\n" + guard + "    def delete(self):\n" + guard), [])
+
+
+class TheChecksReadStructureNotWordsTests(SimpleTestCase):
+    """Review item 5 (P9): each check passed a near-miss that only said the right words."""
+
+    def promise(self, body):
+        text = "class Rebatch:\n    def _take_out(self, lines):\n" + body
+        return [shape for shape, _ in Command().named_draws_past_the_promise(
+            ["manufacturing"], {"manufacturing": {Path("apps/manufacturing/example.py"): text}})]
+
+    def weighed(self, body):
+        return AWeighedRecordIsNotEditedOverTheApiTests.audit(self, body)
+
+    def published(self, body):
+        return APublishedVersionIsPostedByAnotherNameTests.audit(self, body)
+
+    def test_a_promise_near_miss_is_reported(self):
+        missed = ["named draw past the promise"]
+        self.assertEqual(self.promise("        return self.item.cost_of_removing(w, q, lot)\n"), missed)
+        self.assertEqual(self.promise("        # refuse_drawing_what_is_promised later\n"
+                                      "        return self.item.cost_of_removing(w, q, lot=lot)\n"), missed)
+        self.assertEqual(self.promise("        refuse_drawing_what_is_promised(a, w, q)\n"
+                                      "        x = item.cost_of_removing(w, q, lot=a)\n"
+                                      "        return item.cost_of_removing(w, q, lot=b)\n"), missed)
+        self.assertEqual(self.promise("        StockMovement.objects.create(item=i, lot=lot, quantity=-q, "
+                                      "movement_type=MovementType.ISSUE)\n"), missed)
+
+    def test_the_asked_forms_are_not(self):
+        self.assertEqual(self.promise("        refuse_drawing_what_is_promised(lot, w, q)\n"
+                                      "        return self.item.cost_of_removing(w, q, lot)\n"), [])
+        self.assertEqual(self.promise("        StockMovement.objects.create(item=i, lot=out.lot, quantity=-out.quantity, "
+                                      "movement_type=MovementType.RECEIPT)\n"), [])
+
+    def test_a_weighed_near_miss_is_reported(self):
+        both = ["weighed record written over the api"] * 2
+        self.assertEqual(self.weighed("    def save(self):\n        # weighed\n        raise ValueError('x')\n"
+                                      "    def delete(self):\n        x = 'weighed'\n        raise KeyError\n"), both)
+        self.assertEqual(self.weighed("    def save(self):\n        if self.pk:\n            raise ValueError('weighed')\n"
+                                      "    def delete(self):\n        raise KeyError('weighed')\n"), both)
+
+    def test_a_published_near_miss_is_reported(self):
+        self.assertEqual(self.published("    def save(self):\n        # published\n        raise ValueError\n"
+                                        "    def delete(self):\n        raise ValueError('published')\n"),
+                         ["mutable posted document", "deletable posted document"])

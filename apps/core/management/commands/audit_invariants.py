@@ -994,6 +994,7 @@ class Command(BaseCommand):
         "inventory/costing.py:unit_cost_for": "the costing helper itself; its callers ask",
         "inventory/models.py:Item.cost_of_removing": "the costing helper itself; its callers ask",
         "manufacturing/orders.py:MaterialIssueLine.post": "MaterialIssue.post asks it, its run the holder",
+        "sales/models.py:Delivery.post": "its batches come from plan_issue, which asks the promise (O340)",
     }
 
     def named_draws_past_the_promise(self, labels, sources):
@@ -1001,9 +1002,15 @@ class Command(BaseCommand):
         A door that takes a named batch off the shelf and never asks what is
         promised (O276). Only the material issue asked, so tape on a
         backflushed run's creels was re-batched away and the run's roll had
-        nothing to draw. Every function that prices a named batch's removal
-        (cost_of_removing(..., lot=...)) asks refuse_drawing_what_is_promised
-        too, or says above where it is asked instead.
+        nothing to draw.
+
+        Read from the code's structure (review item 5), each removal on its
+        own: a removal is cost_of_removing() given a batch (by keyword or in
+        its place), or a StockMovement created with a batch and a negative
+        quantity; each needs refuse_drawing_what_is_promised() asked of the
+        same batch earlier in the same function. The name in a comment, a
+        second removal of another batch beside an asked one, and a movement
+        written directly were all passed by the words alone.
         """
         findings = []
         for label in labels:
@@ -1014,28 +1021,62 @@ class Command(BaseCommand):
                 tree = ast.parse(text)
                 qualified = self._qualified(tree)
                 functions = [fn for fn in ast.walk(tree) if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))]
-                seen = set()
-                for node in ast.walk(tree):
-                    if not (isinstance(node, ast.Call)
-                            and getattr(node.func, "attr", getattr(node.func, "id", "")) == "cost_of_removing"
-                            and any(word.arg == "lot" for word in node.keywords)):
-                        continue
-                    inner = max((fn for fn in functions if fn.lineno <= node.lineno <= fn.end_lineno),
-                                key=lambda fn: fn.lineno, default=None)
-                    if inner is None or inner in seen:
-                        continue
-                    seen.add(inner)
-                    where = f"{key}:{qualified[inner]}"
+                for fn in functions:
+                    where = f"{key}:{qualified[fn]}"
                     if where in self.PROMISE_ASKED_ELSEWHERE:
                         continue
-                    if "refuse_drawing_what_is_promised" in (ast.get_source_segment(text, inner) or ""):
-                        continue
-                    findings.append((
-                        "named draw past the promise",
-                        f"{where} takes a named batch off without asking refuse_drawing_what_is_promised(): "
-                        "a batch on a backflushed run's creels goes from under it.",
-                    ))
+                    own = [node for node in ast.walk(fn) if isinstance(node, ast.Call)
+                           and min((f for f in functions if f.lineno <= node.lineno <= f.end_lineno),
+                                   key=lambda f: f.end_lineno - f.lineno, default=None) is fn]
+                    asked = [(node.lineno, ast.dump(lot)) for node in own
+                             if self._called(node) == "refuse_drawing_what_is_promised"
+                             and (lot := self._argument(node, "lot", 0)) is not None]
+                    for node in own:
+                        lot = self._batch_removed(node)
+                        if lot is None:
+                            continue
+                        if any(line <= node.lineno and dump == ast.dump(lot) for line, dump in asked):
+                            continue
+                        findings.append((
+                            "named draw past the promise",
+                            f"{where}:{node.lineno} takes {ast.unparse(lot)} off without asking "
+                            "refuse_drawing_what_is_promised() of it first: a batch on a backflushed run's "
+                            "creels goes from under it.",
+                        ))
         return findings
+
+    @staticmethod
+    def _called(node):
+        return getattr(node.func, "attr", getattr(node.func, "id", ""))
+
+    @staticmethod
+    def _argument(node, name, position):
+        for word in node.keywords:
+            if word.arg == name:
+                return word.value
+        return node.args[position] if len(node.args) > position else None
+
+    def _batch_removed(self, node):
+        """The batch expression a call takes off the shelf, or None."""
+        name = self._called(node)
+        if name == "cost_of_removing":
+            # item.cost_of_removing(warehouse, quantity, lot) or cost_of_removing(item, warehouse, quantity, lot)
+            lot = self._argument(node, "lot", 2 if isinstance(node.func, ast.Attribute) else 3)
+        elif name == "create" and "StockMovement" in ast.unparse(node.func):
+            lot = self._argument(node, "lot", 99)
+            quantity = self._argument(node, "quantity", 99)
+            kind = self._argument(node, "movement_type", 99)
+            # Going out: the quantity negated, on a movement that is not an arrival (a reversal that
+            # negates an outbound row's quantity puts stock back).
+            if not (isinstance(quantity, ast.UnaryOp) and isinstance(quantity.op, ast.USub)):
+                return None
+            if kind is not None and any(word in ast.unparse(kind) for word in ("RECEIPT", "TRANSFER_IN")):
+                return None
+        else:
+            return None
+        if lot is None or (isinstance(lot, ast.Constant) and lot.value is None):
+            return None
+        return lot
 
     def per_unit_withdrawal_rates(self, labels, sources):
         """
@@ -1467,8 +1508,7 @@ class Command(BaseCommand):
                 if body is None:
                     continue
                 for method in ("save", "delete"):
-                    guard = self._method_body(body, method)
-                    if not (guard and "weighed" in guard and "raise" in guard):
+                    if not self._raises_when(body, method, "weighed"):
                         findings.append((
                             "weighed record written over the api",
                             f"{label}.{model.__name__} is written by a route of its own and its {method}() "
@@ -1718,9 +1758,38 @@ class Command(BaseCommand):
             if cls is models.Model:
                 break
             found = self._class_body(code, cls.__name__)
+            if word != "posted":
+                # Read from the code's structure (review item 5): the word in a
+                # comment and any raise beside it passed.
+                if found and self._raises_when(found, method, word):
+                    return True
+                continue
             guard = found and self._method_body(found, method)
             if guard and word in guard and "raise" in guard:
                 return True
+        return False
+
+    @staticmethod
+    def _raises_when(class_text, method, word):
+        """
+        Whether `method` of the class holds an `if` whose condition names
+        `word` (self.is_weighed(), self.posted, before.is_published()) and
+        whose body raises. Comments, strings and an unconditioned raise do
+        not count: the question is the code's shape, not its words.
+        """
+        try:
+            tree = ast.parse(class_text)
+        except SyntaxError:
+            return False
+        named = lambda node: (isinstance(node, ast.Name) and word in node.id) or (  # noqa: E731
+            isinstance(node, ast.Attribute) and word in node.attr)
+        for fn in ast.walk(tree):
+            if not (isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) and fn.name == method):
+                continue
+            for node in ast.walk(fn):
+                if (isinstance(node, ast.If) and any(named(part) for part in ast.walk(node.test))
+                        and any(isinstance(inner, ast.Raise) for stmt in node.body for inner in ast.walk(stmt))):
+                    return True
         return False
 
     def unconstrained_numbers(self, labels):
