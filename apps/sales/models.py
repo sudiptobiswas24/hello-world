@@ -746,7 +746,10 @@ class SalesOrder(PlacedWhereTheGoodsGo, Extensible, TaxedDocumentMixin, ChangesW
         # against 1,000, and 380 EUR is 418 USD.
         exposure = committed_in_base(self.customer)
         if self.status != OrderStatus.CONFIRMED:
-            exposure += round_money(self.total() * (self.currency.rate_on() if self.currency_id else Decimal("1")))
+            # At the order's own date, through in_base as the policy is (O334), not at today's rate.
+            # With no rate that day it is not weighed here; approval_reasons names the gap and
+            # confirming refuses it.
+            exposure += self.total_in_base() or Decimal("0")
         return (exposure, limit) if exposure > limit else None
 
     def refuse_going_over_the_credit_limit(self):
