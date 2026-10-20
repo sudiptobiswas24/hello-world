@@ -657,6 +657,7 @@ NOT_PAY_INPUTS = {
     "hr.Applicant": "not yet an employee; no run pays them",
     "hr.Department": "names its manager; the run reads a department's cost centre as it posts, not a pay figure",
     "hr.Employee": "the person: an edit of the row waits on the lock the run holds on it",
+    "hr.LeaverLoginSwitch": "whether the leaving switched a login off; no run reads it",
 }
 
 
