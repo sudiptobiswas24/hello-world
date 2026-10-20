@@ -338,6 +338,9 @@ def weigh_roll(station, operator, machine, gross_kg, core_type, metres, supervis
                reason="", at=None, source="scale", typed_reason="", typed_note="",
                registration_mm=None, delta_e=None, design_code=""):
     """A laminated or printed roll off the machine, weighed and numbered."""
+    from .station import check_core_in_use
+
+    check_core_in_use(core_type)
     from .conversion import bag_specification_for
     from .machines import Machine
     from .station import LineKind, check_supervisor

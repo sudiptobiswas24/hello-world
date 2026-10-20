@@ -126,10 +126,10 @@ def counted_specification_for(item, on_date):
 
 def bag_code(machine, shift, shift_date, kind="BG"):
     """BG-260601-D-C1-02: day, shift, machine, and the bundle's number on it; LN for liners."""
-    prefix = f"{kind}-{shift_date:%y%m%d}-{shift.code}-{machine.code.replace('-', '')}-"
-    taken = BagCount.objects.filter(machine=machine, shift=shift,
-                                    shift_date=shift_date).count()
-    return f"{prefix}{taken + 1:02d}"
+    from .shifts import batch_code
+
+    # The one rule for a batch's name (review item 6): it was built here by hand as well.
+    return batch_code(kind, machine, shift, shift_date)
 
 
 def _check_supervisor(station, supervisor, operator, shift_date, what):

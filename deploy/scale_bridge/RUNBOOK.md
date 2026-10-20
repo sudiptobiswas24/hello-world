@@ -20,8 +20,12 @@ The bridge signs in with an API key, never a password (L12, apps/core/api_keys.p
 
 1. As an administrator, open the API's own page `https://<erp>/api/core/integrations/` (no screen yet) and post `{"name": "Scale SC-1"}`. The ERP makes its login,
    `integration-scale-sc-1`, with no password: nobody signs in as it.
-2. In the admin, as an administrator, give that login one permission of its own and nothing else:
-   *manufacturing | scale reading | Can add scale reading*. It can post readings and do nothing else.
+2. In the admin, as an administrator, put that login in the **Scale bridge** role and nothing else
+   (`setup_roles` makes it; it holds only *manufacturing | scale reading | Can add scale reading*).
+   It can post readings and do nothing else. A login that may weigh at a station (the tablet, a
+   supervisor, a superuser) is refused even with the right: a reading is the scale's, never a person's.
+   Upgrading: migration manufacturing 0086 takes the right off the Station and Production Supervisor
+   roles. A bridge login that held it only through one of them stops posting; put it in Scale bridge.
    A login holding a right that needs a second factor (payments, pay, logins) is refused with a key.
 3. Post to `/api/core/integrations/<id>/issue_key/` `{"label": ...}` for a key, labelled with the station PC (`Station PC loom shed`). It is shown
    once: write it into a file on the station PC readable only by the bridge's account
