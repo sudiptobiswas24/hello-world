@@ -521,6 +521,14 @@ def run(kind, text, *, commit=False, user=None, **options):
     report.rows = len(rows)
     options = {**options, "by": user}  # who brings it in: links a login only as they may (employees)
     with transaction.atomic(), stamped_by(user):
+        if kind in OPENING:
+            # One opening import at a time, held from before once_only() asks to the commit: two at
+            # once (the double click once_only names) each read "not yet in" and both committed, the
+            # bank 5,00,000 from a 2,50,000 file (review of O280, O313). The company row is the one
+            # every opening kind shares.
+            from apps.core.models import Company, lock_rows
+
+            lock_rows(Company.get())
         if kind in PER_ROW:
             for number, row in rows:
                 try:
