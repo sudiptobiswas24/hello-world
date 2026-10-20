@@ -215,8 +215,13 @@ class Rebatch(AuditModel):
         """Each line's sacks off the shelf at what removing them takes off it; the total."""
         from apps.inventory.models import MovementType, StockMovement
 
+        from apps.inventory.tracking import refuse_drawing_what_is_promised
+
         value = ZERO
         for line in lines:
+            # Tape on a backflushed run's creels is that run's (O276): re-batched away, the
+            # run's roll had nothing to draw. Asked by every door that takes a batch off by name.
+            refuse_drawing_what_is_promised(line.lot, self.warehouse, line.quantity, action="be re-batched")
             cost = self.item.cost_of_removing(self.warehouse, line.quantity, lot=line.lot)
             value += cost
             movement = StockMovement.objects.create(

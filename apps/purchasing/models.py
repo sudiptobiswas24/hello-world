@@ -5326,6 +5326,9 @@ class BillLine(PostedLineMixin, TaxedLineMixin, AuditModel):
         item, uom = self.order_line.item, self.order_line.uom
         quantity = item.to_stock_quantity(Decimal("1"), uom)
         lock_positions([(item, place)])
+        from apps.inventory.tracking import refuse_drawing_what_is_promised
+
+        refuse_drawing_what_is_promised(receipt_line.lot, place, quantity, action="be capitalised")  # O276
         value = round_money(cost_of_removing(item, place, quantity, lot=receipt_line.lot))
         movement = StockMovement.objects.create(
             item=item, warehouse=place, movement_type=MovementType.ISSUE, uom=item.uom,
@@ -7028,6 +7031,13 @@ class GoodsReceipt(AuditModel):
             if not is_return and line.landed_warehouse_id != landed.pk:
                 line.landed_warehouse = landed
             item = line.order_line.item
+            if is_return and item.track_inventory:
+                from apps.inventory.tracking import refuse_drawing_what_is_promised
+
+                # Not sent back while a backflushed run's creels hold it (O276).
+                refuse_drawing_what_is_promised(
+                    line.lot, landed, item.to_stock_quantity(line.quantity_received, line.order_line.uom),
+                    action="go back to the vendor")
             if is_return and item.track_inventory and item.costing_method != "standard":
                 # What leaving takes off the shelf, asked before the
                 # movement is written, as every outbound path asks. The
@@ -7705,6 +7715,9 @@ class GoodsReceipt(AuditModel):
                 # What the replay will take off, exactly: the rule every
                 # outbound path follows (inventory/costing.py), asked of each
                 # batch as the one before it is written.
+                from apps.inventory.tracking import refuse_drawing_what_is_promised
+
+                refuse_drawing_what_is_promised(lot, warehouse, part, action="be consumed")  # O276
                 taking = component.item.cost_of_removing(warehouse, part, lot=lot)
                 # Eight places: a return puts the components back at this rate,
                 # and four lost 0.001 on thirty frames worth 100.

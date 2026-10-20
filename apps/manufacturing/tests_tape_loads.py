@@ -367,3 +367,56 @@ class ATapeLoadKeepsItsPlacesTests(TapeLoadTestCase):
         load.refresh_from_db()
         self.assertEqual((load.kg, self.doffs["D-1"].on_hand_at(self.plant)),
                          (Decimal("48.980"), Decimal("51.0200")))
+
+
+class PromisedTapeStaysForItsRunTests(TapeLoadTestCase):
+    """O276 (audit2_floor F2): 100 kg of D-1 on L-17's warp creel of a backflushed run. Only the material issue
+    asked the promise guard: re-batched into N-1 (60) and N-2 (40), the run's roll had nothing to draw. Every
+    door that takes a named batch off asks it now."""
+
+    def setUp(self):
+        super().setUp()
+        from .orders import WorkOrder
+        from .tape_loads import CreelSide
+
+        WorkOrder.objects.filter(pk=self.run.pk).update(backflush=True)
+        self.load("D-1", "100", CreelSide.WARP, 9)
+        self.d1 = self.doffs["D-1"]
+
+    def test_it_is_not_rebatched_away(self):
+        from django.core.exceptions import ValidationError
+
+        from .rebatch import rebatch
+
+        a = Lot.objects.create(item=self.tape, code="N-1")
+        b = Lot.objects.create(item=self.tape, code="N-2")
+        with self.assertRaisesMessage(ValidationError, "cannot be re-batched"):
+            rebatch(self.tape, self.plant, [(self.d1, "100")], [(a, "60"), (b, "40")], "test")
+        self.assertEqual(self.d1.on_hand_at(self.plant), Decimal("100"))
+
+    def test_it_is_not_moved_to_another_shelf(self):
+        from django.core.exceptions import ValidationError
+        from django.utils import timezone
+
+        from apps.inventory.models import Warehouse
+        from apps.inventory.transfers import move_stock
+
+        store = Warehouse.objects.create(code="ST", name="Store")
+        with self.assertRaisesMessage(ValidationError, "cannot be moved"):
+            move_stock(self.tape, self.plant, store, Decimal("40"), "T-1", timezone.now(), "", lot=self.d1)
+
+    def test_it_is_not_written_off(self):
+        from django.core.exceptions import ValidationError
+
+        from apps.accounting.models import Account
+        from apps.inventory.adjustments import (AdjustmentDirection, AdjustmentReason, StockAdjustment,
+                                                StockAdjustmentLine)
+
+        reason = AdjustmentReason.objects.create(code="SHRINK", name="Shrinkage",
+                                                 account=Account.objects.order_by("pk").first(),
+                                                 direction=AdjustmentDirection.DECREASE)
+        adjustment = StockAdjustment.objects.create(adjustment_date=TODAY, warehouse=self.plant, reason=reason)
+        StockAdjustmentLine.objects.create(adjustment=adjustment, item=self.tape, uom=self.tape.uom,
+                                           lot=self.d1, quantity=Decimal("-10"))
+        with self.assertRaisesMessage(ValidationError, "cannot be written off"):
+            adjustment.post()

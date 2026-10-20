@@ -481,6 +481,10 @@ class StockAdjustmentLine(AuditModel):
             # A total, kept as it is. A four-place rate multiplied back up
             # wrote 1,000 of 3,000 worth 10,000 off the books at 3,333.30
             # while the shelf gave up 3,333.33; the rate is for reading.
+            from .tracking import refuse_drawing_what_is_promised
+
+            # What a backflushed run's creels hold is not written off from under it (O276).
+            refuse_drawing_what_is_promised(self.lot, adjustment.warehouse, -quantity, action="be written off")
             taking = item.cost_of_removing(adjustment.warehouse, -quantity, lot=self.lot)
             rate = (taking / -quantity).quantize(Decimal("0.0001"))
             # Given a cost of its own, a write-down booked that while the
@@ -595,6 +599,10 @@ class StockAdjustmentLine(AuditModel):
             # Not the average: what the replay is actually going to take
             # off when this reversing movement is written. It should take
             # off what this line put on, so the residue is the difference.
+            from .tracking import refuse_drawing_what_is_promised
+
+            if -quantity > 0:  # taking back what it put on: not from under a run's creels (O276)
+                refuse_drawing_what_is_promised(self.lot, adjustment.warehouse, -quantity, action="be taken back")
             going = self.item.cost_of_removing(
                 adjustment.warehouse, -quantity, lot=self.lot
             )
