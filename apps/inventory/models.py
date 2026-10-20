@@ -842,6 +842,14 @@ class StockMovement(AuditModel):
                 f"{self.value} is not."
             )
         self.value = to_paisa(self.value)
+        # Money moves with the goods (O327): stock that leaves takes value off the shelf, stock that arrives
+        # brings it. A writer that booked a return the wrong way round was otherwise taken as a fact.
+        if (self.quantity < 0 < self.value) or (self.value < 0 < self.quantity):
+            way = "leaves" if self.quantity < 0 else "arrives"
+            raise ValidationError(
+                f"Stock that {way} moves its money the same way; {self.quantity} of {self.item} "
+                f"cannot move {self.value}."
+            )
         if self.quantity == 0:
             if self.value_adjustment is not None and to_paisa(self.value_adjustment) != self.value:
                 raise ValidationError(

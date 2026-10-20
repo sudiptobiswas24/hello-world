@@ -146,3 +146,28 @@ class EveryMethodSumsTheMoneyTests(MoneyTestCase):
         self.receive(item, "2", "30.00", lot=second)
         self.assertEqual(self.take(item, "1", lot=first), D("10.01"))
         self.assertEqual(self.reads_as_a_full_replay(item), (D("3"), D("40.00")))
+
+
+class AMovementsMoneyHasTheSignOfItsQuantity(AdjustmentTestCase):
+    """O327 (audit2_stores R3): an outbound +10.00 and an inbound -10.00 are refused, not taken as a fact."""
+
+    def movement(self, movement_type, quantity, value):
+        return StockMovement.objects.create(item=self.item, warehouse=self.warehouse, movement_type=movement_type,
+                                            uom=self.item.uom, quantity=D(quantity), value=D(value),
+                                            occurred_at=timezone.now())
+
+    def test_an_outbound_movement_cannot_add_money(self):
+        self.stock("2", "10")
+        with self.assertRaises(ValidationError):
+            self.movement("issue", "-1", "10.00")
+        self.assertEqual(self.item.valuation_at(self.warehouse), (D("2"), D("20.00")))
+
+    def test_an_inbound_movement_cannot_take_money(self):
+        with self.assertRaises(ValidationError):
+            self.movement("receipt", "1", "-10.00")
+
+    def test_nothing_either_way_and_the_right_way_are_taken(self):
+        self.stock("2", "10")
+        self.movement("issue", "-1", "-10.00")
+        self.movement("receipt", "1", "0.00")
+        self.assertEqual(self.item.valuation_at(self.warehouse), (D("2"), D("10.00")))
