@@ -180,13 +180,3 @@ class FifoThreeLayers(AdjustmentTestCase):
         second = self.adjust("-6", reason=self.shrink, item=item)
         self.assertEqual(item.valuation_at(self.warehouse), (D("3"), shelf0 - D("19.53") - D("119.65")))
         self.assertEqual(-first.lines.get().posted_value, D("19.53"), "worked by hand for layers booked 10.01, 33.33, 383.34")
-
-
-class AWriteUpAtTheAverageIsATotalNotARateMultipliedBack(AdjustmentTestCase):
-    """9,000 worth 30,000.00 average 3.33333333: 3,000 found with no cost given are worth 10,000.00, not 9,999.90."""
-
-    def test_it(self):
-        self.stock("9000", "3.333333333333")
-        self.assertEqual(self.item.valuation_at(self.warehouse)[1], D("30000.00"))
-        up = self.adjust("3000", reason=self.found)
-        self.assertEqual(up.lines.get().posted_value, D("10000.00"))

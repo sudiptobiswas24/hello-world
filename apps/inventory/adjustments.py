@@ -523,14 +523,20 @@ class StockAdjustmentLine(AuditModel):
             self.posted_value = -taking
         else:
             if self.unit_cost is None:
-                self.unit_cost = item.average_cost_at(adjustment.warehouse).quantize(
-                    Decimal("0.0001"))
-                if quantity > 0 and not self.unit_cost:
+                # At the shelf's average, as a total: what is held, shared over what is found, rounded once.
+                # The four-place 3.3333 multiplied back up booked 3,000 found at 9,999.90 where the shelf's
+                # 9,000 worth 30,000.00 says 10,000.00 (O328).
+                held, worth = item._replay_valuation(adjustment.warehouse)
+                if quantity > 0 and (held <= 0 or worth <= 0):
                     raise ValidationError(
                         f"There is no {item} at {adjustment.warehouse} to take a cost from. "
                         "Give the line an explicit unit cost (Cost each, on the adjustment's line)."
                     )
-            self.posted_value = to_paisa(quantity * self.unit_cost)
+                self.posted_value = to_paisa(worth * quantity / held) if held > 0 else Decimal("0")
+                # The rate is for reading, at the places the line keeps.
+                self.unit_cost = (worth / held).quantize(Decimal("0.0001")) if held > 0 else Decimal("0")
+            else:
+                self.posted_value = to_paisa(quantity * self.unit_cost)
         on_hand = item.on_hand_at(adjustment.warehouse)
         if quantity < 0 and -quantity > on_hand and not adjustment.warehouse.allow_negative_stock:
             raise ValidationError(

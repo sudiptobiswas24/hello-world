@@ -240,3 +240,19 @@ class EverySpellingIsSeenWhereItIsWritten(AdjustmentTestCase):
         StockMovement.objects.create(quantity=D("-1"), **{"item": self.item, "warehouse": self.warehouse,
                                                           "movement_type": "issue", "uom": self.item.uom,
                                                           "occurred_at": timezone.now()})
+
+
+class AWriteUpAtTheAverageIsATotalNotARateMultipliedBack(AdjustmentTestCase):
+    """
+    O328 (audit2_stores R4): 9,000 worth 30,000.00 average 3.33333333; 3,000 found with no cost given are worth
+    10,000.00, the shelf's share, not 9,999.90, the four-place rate multiplied back up.
+    """
+
+    def test_it(self):
+        self.stock("9000", "3.333333333333")
+        self.assertEqual(self.item.valuation_at(self.warehouse)[1], D("30000.00"))
+        up = self.adjust("3000", reason=self.found)
+        self.assertEqual(up.lines.get().posted_value, D("10000.00"))
+        self.assertEqual(self.item.valuation_at(self.warehouse)[1], D("40000.00"))
+        self.assertEqual(self.balance(self.inventory), D("10000.00"))
+        self.assertEqual(self.item.average_cost_at(self.warehouse), D("3.33333333"))
