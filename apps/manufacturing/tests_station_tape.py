@@ -248,3 +248,23 @@ class TapeApiTests(StationApiTestCase):
             "machine": "E-1", "gross_kg": "60.0", "bobbins": 8, "core": "BOB",
             "denier": OFF}, format="json")
         self.assertEqual(response.status_code, 400)
+
+
+class ARetiredCoreIsNotTakenTests(TapeApiTests):
+    """O278 (audit2_floor F11): the loom exit asked is_active; the tape line looked the code up bare, so a doff
+    was netted against a retired bobbin's tare (201)."""
+
+    test_doffed_and_withdrawn_at_the_station = None
+    test_the_station_is_told_a_doff_is_held_for_the_quality_manager = None
+
+    def test_a_doff_on_a_retired_bobbin_is_refused(self):
+        from .station import CoreType
+        from .station_tape import TapeDoff
+
+        CoreType.objects.filter(code="BOB").update(is_active=False)
+        self.client.post(self.base + "sign-in/", {"pin": self.pin}, format="json")
+        answer = self.client.post(self.base + "tape/", {
+            "machine": "E-1", "gross_kg": "60.0", "bobbins": 8, "core": "BOB", "denier": ON}, format="json")
+        self.assertEqual(answer.status_code, 400, answer.content)
+        self.assertIn("no longer in use", answer.json()[0])
+        self.assertFalse(TapeDoff.objects.exists())
