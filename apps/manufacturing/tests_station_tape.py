@@ -250,6 +250,23 @@ class TapeApiTests(StationApiTestCase):
         self.assertEqual(response.status_code, 400)
 
 
+class BobbinsAreCountedWholeTests(TapeTestCase):
+    """O279 (audit2_floor F6): at a net-frame bridged tape station, "eight" bobbins was a 500 (int() ran
+    inside the tare before the check) and 2.7 was cut to 2 without a word."""
+
+    def test_a_count_that_is_not_whole_is_refused_before_the_scale_is_asked(self):
+        from .station import LoomStation
+        from .station_scale import ScaleReading
+
+        LoomStation.objects.filter(pk=self.tx.pk).update(scale_code="SC-9", scale_bridged=True)
+        self.tx.refresh_from_db()
+        ScaleReading.objects.create(scale_code="SC-9", net_kg=Decimal("56"), stable=True, read_at=NOON)
+        for bobbins in ("eight", None, 2.7, "2.7", True):
+            with self.subTest(bobbins=bobbins), self.assertRaisesMessage(ValidationError, "whole bobbins"):
+                record_tape(self.tx, self.operator, self.e1, None, bobbins, self.bobbin, ON, at=NOON)
+        self.assertIsNone(ScaleReading.objects.get().used_by())
+
+
 class ARetiredCoreIsNotTakenTests(TapeApiTests):
     """O278 (audit2_floor F11): the loom exit asked is_active; the tape line looked the code up bare, so a doff
     was netted against a retired bobbin's tare (201)."""
