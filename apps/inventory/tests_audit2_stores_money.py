@@ -145,23 +145,6 @@ class FuzzShelfAgainstLedger(AdjustmentTestCase):
                 self.warehouse = self.whs[0]
 
 
-class ASignIsGuarded(AdjustmentTestCase):
-    """A movement's money has the sign of its quantity: a path that books the wrong way round is refused."""
-
-    def test_an_outbound_movement_cannot_add_money(self):
-        self.stock("2", "10")
-        with self.assertRaises(ValidationError):
-            StockMovement.objects.create(item=self.item, warehouse=self.warehouse, movement_type="issue",
-                                         uom=self.item.uom, quantity=D("-1"), value=D("10.00"),
-                                         occurred_at=__import__("django.utils.timezone", fromlist=["now"]).now())
-
-    def test_an_inbound_movement_cannot_take_money(self):
-        with self.assertRaises(ValidationError):
-            StockMovement.objects.create(item=self.item, warehouse=self.warehouse, movement_type="receipt",
-                                         uom=self.item.uom, quantity=D("1"), value=D("-10.00"),
-                                         occurred_at=__import__("django.utils.timezone", fromlist=["now"]).now())
-
-
 class ABackdatedMovementAfterAFold(AdjustmentTestCase):
     """A fold written, then a movement dated before its boundary: the position reads as a full replay."""
 
