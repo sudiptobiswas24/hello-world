@@ -297,8 +297,12 @@ class FabricRoll(AuditModel):
     )
 
     def is_weighed(self):
-        """Booked against an entry or weighed at a station: a measurement on record, not a draft."""
-        return self.entry_id is not None or self.weighed_at is not None
+        """
+        A roll with a weight is weighed (review item 4): booked, weighed at a
+        station, or typed in by hand with no booking at all. A hand roll was
+        patched to any length and deleted because only the first two counted.
+        """
+        return self.net_weight_kg is not None
 
     def save(self, *args, **kwargs):
         # On save rather than only in clean(), because rolls are

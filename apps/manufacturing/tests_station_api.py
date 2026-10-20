@@ -253,3 +253,29 @@ class AWeighedRollStandsAsWeighedTests(StationApiTestCase):
         self.assertEqual(answer.status_code, 400, answer.content)
         self.assertTrue(FabricRoll.objects.filter(pk=roll.pk).exists())
         self.assertEqual(roll.lot.on_hand_at(), Decimal("104.4"))
+
+
+class AHandRollIsWeighedTooTests(StationApiTestCase):
+    """Review item 4 (P2): a roll POSTed with no entry was never "weighed": the supervisor patched its 500 m to
+    9,999 (200) and deleted it (204)."""
+
+    def test_a_roll_typed_in_by_hand_keeps_its_measures_and_stands(self):
+        from django.contrib.auth.models import Group
+        from django.core.management import call_command
+
+        from .rolls import FabricRoll
+
+        call_command("setup_roles", verbosity=0)
+        user = User.objects.create_user("sup")
+        user.groups.add(Group.objects.get(name="Production Supervisor"))
+        client = APIClient()
+        client.force_authenticate(user)
+        lot = Lot.objects.create(item=self.spec.fabric_item, code="FR-HAND-1")
+        made = client.post("/api/manufacturing/fabric-rolls/", {
+            "lot": lot.pk, "specification": self.spec.pk, "width_mm": "600", "length_m": "500",
+            "net_weight_kg": "52.2", "core_weight_kg": "2.4", "is_tubular": True}, format="json")
+        self.assertEqual(made.status_code, 201, made.content)
+        url = f"/api/manufacturing/fabric-rolls/{made.json()['id']}/"
+        self.assertEqual(client.patch(url, {"length_m": "9999"}, format="json").status_code, 400)
+        self.assertEqual(client.delete(url).status_code, 400)
+        self.assertEqual(FabricRoll.objects.get(lot=lot).length_m, Decimal("500"))

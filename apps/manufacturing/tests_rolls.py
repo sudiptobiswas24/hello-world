@@ -62,14 +62,14 @@ class RollTestCase(RunTestCase):
         )
 
     def roll(self, code="R-1", length="1000", weight="104.400",
-             width="600", tubular=True, spec=None, entry=None, stock=None):
+             width="600", tubular=True, spec=None, entry=None, stock=None, core="0"):
         lot = Lot.objects.create(item=self.fabric, code=code)
         if stock is not None:
             self.stock(self.fabric, stock, "95", lot=lot)
         return FabricRoll.objects.create(
             lot=lot, width_mm=Decimal(width), length_m=Decimal(length),
             net_weight_kg=Decimal(weight), is_tubular=tubular,
-            specification=spec, entry=entry,
+            specification=spec, entry=entry, core_weight_kg=Decimal(core),
         )
 
 
@@ -125,9 +125,8 @@ class WhatARollWeighsTests(RollTestCase):
         self.assertEqual(roll.kilos_for(Decimal("500")), Decimal("52.200"))
 
     def test_a_core_is_not_fabric(self):
-        roll = self.roll()
-        roll.core_weight_kg = Decimal("2.500")
-        roll.save()
+        # Weighed with its core, not edited onto it afterwards: a roll's measures are fixed once it has a weight.
+        roll = self.roll(core="2.500")
         self.assertEqual(roll.gross_weight_kg(), Decimal("106.900"))
         # The grammage still reads off the net weight.
         self.assertEqual(roll.implied_gsm(), Decimal("87.0000"))
