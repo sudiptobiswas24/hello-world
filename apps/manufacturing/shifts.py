@@ -187,6 +187,16 @@ CORRECTABLE = ("work_centre_id", "machine_id", "shift_date", "shift_id", "reason
                "work_order_id")
 
 
+def label_safe(text):
+    """
+    `text` as a batch code may carry it onto a Code 128 label (set B is
+    printable ASCII; review item 10): letters and digits as they are, anything
+    else escaped as _XX_ in hex, so "S 1" and "Schicht\u00fc" print and no two
+    codes escape to one. The separator "-" is escaped too.
+    """
+    return "".join(c if c.isascii() and c.isalnum() else f"_{ord(c):X}_" for c in text)
+
+
 def batch_code(prefix, machine, shift, shift_date, taken=None):
     """
     FR-261007-D-L17-07: what a batch made on a machine in a shift is called
@@ -204,8 +214,8 @@ def batch_code(prefix, machine, shift, shift_date, taken=None):
         from apps.inventory.models import Lot
 
         taken = lambda stem: Lot.objects.filter(code__startswith=stem).values_list("code", flat=True)  # noqa: E731
-    line = machine.code.replace("-", "").upper()
-    stem = f"{prefix}-{shift_date:%y%m%d}-{shift.code}-{line}-"
+    line = label_safe(machine.code.replace("-", "").upper())
+    stem = f"{prefix}-{shift_date:%y%m%d}-{label_safe(shift.code)}-{line}-"
     used = [int(code[len(stem):]) for code in taken(stem) if code[len(stem):].isdigit()]
     return f"{stem}{max(used, default=0) + 1:02d}"
 

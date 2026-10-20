@@ -436,3 +436,24 @@ class AWeighedRollStandsVoidedOrNotTests(StationTestCase):
         Lot.objects.filter(code="FR-260601-D-L17-02").update(code="FR-260601-D-L17-05")
         third = self.weigh(when=at(TODAY, 11, 30))
         self.assertEqual((first.lot.code, third.lot.code), ("FR-260601-D-L17-01", "FR-260601-D-L17-06"))
+
+
+class OneRuleForABatchsNameTests(StationTestCase):
+    """Review items 6, 8 and 10: bag_code built the shape by hand; a shift code went raw onto a Code 128 label
+    (set B is printable ASCII); a retired core was refused only by the station's views."""
+
+    def test_bags_shift_codes_and_retired_cores(self):
+        from . import barcode
+        from .conversion import bag_code
+        from .shifts import Shift, batch_code
+
+        self.assertEqual(bag_code(self.l17, self.day, TODAY), batch_code("BG", self.l17, self.day, TODAY))
+        Shift.objects.filter(pk=self.day.pk).update(code="Früh 1")
+        self.day.refresh_from_db()
+        code = batch_code("FR", self.l17, self.day, TODAY)
+        self.assertEqual(code, "FR-260601-Fr_FC_h_20_1-L17-01")
+        barcode.values(code)  # printable on the label
+        self.core.is_active = False
+        self.core.save()
+        with self.assertRaisesMessage(ValidationError, "no longer in use"):
+            self.weigh()

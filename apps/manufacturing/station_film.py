@@ -91,6 +91,9 @@ def film_code(machine, shift, shift_date):
 def record_film(station, operator, machine, gross_kg, core_type, metres, micron_readings,
                 supervisor=None, reason="", at=None, instrument=None, source="scale",
                 typed_reason="", typed_note=""):
+    from .station import check_core_in_use
+
+    check_core_in_use(core_type)
     from .liners import FilmSpecification
     from .machines import Machine
     from .station import LineKind, run_on
