@@ -457,3 +457,15 @@ class OneRuleForABatchsNameTests(StationTestCase):
         self.core.save()
         with self.assertRaisesMessage(ValidationError, "no longer in use"):
             self.weigh()
+
+
+class MachinesThatReadAlikeTests(StationTestCase):
+    """O339: L-17 and L17 both read L17 in a batch code, so their rolls of one shift would share a code."""
+
+    def test_a_machine_whose_code_reads_as_another_is_refused(self):
+        from .machines import Machine
+
+        for code in ("L17", "l-17", "L1-7"):
+            with self.subTest(code=code), self.assertRaisesMessage(ValidationError, "reads as L17"):
+                Machine.objects.create(work_centre=self.centre, code=code)
+        Machine.objects.create(work_centre=self.centre, code="L-18")

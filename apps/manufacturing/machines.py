@@ -180,9 +180,25 @@ class Machine(Extensible, AuditModel):
         # `clean()` is not called for you, and machines are created in
         # code by every fixture and import that sets a plant up.
         self._check_working_days()
+        self._check_batch_codes_stay_apart()
         if self.pk:
             self._check_still_takes_its_work()
         super().save(*args, **kwargs)
+
+    def _check_batch_codes_stay_apart(self):
+        """
+        A batch code carries the machine's code without its separators and in
+        capitals (O339): L-17 and L17 both read L17, so their rolls of one
+        shift collided on the batch's unique code. Two machines whose codes
+        read alike there are refused.
+        """
+        from .shifts import machine_part
+
+        mine = machine_part(self.code)
+        for pk, code in Machine.objects.exclude(pk=self.pk).values_list("pk", "code").order_by("pk"):
+            if machine_part(code) == mine:
+                raise ValidationError({"code": f"{self.code} reads as {mine} in a batch code, as {code} does; "
+                                               "their batches would share one name. Choose another code."})
 
     def _check_still_takes_its_work(self):
         """

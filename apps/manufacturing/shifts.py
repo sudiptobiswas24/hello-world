@@ -197,6 +197,11 @@ def label_safe(text):
     return "".join(c if c.isascii() and c.isalnum() else f"_{ord(c):X}_" for c in text)
 
 
+def machine_part(code):
+    """How a machine's code reads inside a batch code: L-17 is L17 (and so is L17, which Machine.save refuses)."""
+    return label_safe(code.replace("-", "").upper())
+
+
 def batch_code(prefix, machine, shift, shift_date, taken=None):
     """
     FR-261007-D-L17-07: what a batch made on a machine in a shift is called
@@ -214,7 +219,7 @@ def batch_code(prefix, machine, shift, shift_date, taken=None):
         from apps.inventory.models import Lot
 
         taken = lambda stem: Lot.objects.filter(code__startswith=stem).values_list("code", flat=True)  # noqa: E731
-    line = label_safe(machine.code.replace("-", "").upper())
+    line = machine_part(machine.code)
     stem = f"{prefix}-{shift_date:%y%m%d}-{label_safe(shift.code)}-{line}-"
     used = [int(code[len(stem):]) for code in taken(stem) if code[len(stem):].isdigit()]
     return f"{stem}{max(used, default=0) + 1:02d}"
