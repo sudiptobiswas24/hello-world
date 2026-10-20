@@ -2366,3 +2366,48 @@ class BlanketCallOffRaceTests(RaceCase):
         outcomes = race((PurchaseOrderLine, PurchaseOrder), raise_it, release_more)
         self.assertEqual(sum(outcome == "done" for outcome in outcomes), 1, outcomes)
         self.assertLessEqual(BlanketOrderLine.objects.get(pk=agreed.pk).quantity_released(), Decimal("100"))
+
+
+@tag("race")
+@unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
+class OpeningImportRaceTests(RaceCase):
+    """Review of O280, O313: the same opening file brought in twice at once comes in once."""
+
+    BALANCES = "account,debit,credit\n1010,250000,\n3900,,250000\n"
+    STOCK = "sku,warehouse,quantity,unit_cost\nWDG-1,WH1,1000,3.50\n"
+
+    def setUp(self):
+        from apps.imports.tests import ImportTestCase
+
+        made = fixture(self, ImportTestCase)
+        self.opening, self.balance = made.opening, made.balance
+
+    @staticmethod
+    def bring(kind, text, **options):
+        from apps.imports.importer import run
+        from apps.imports.tests import GO_LIVE
+
+        def call():
+            report = run(kind, text, commit=True, date=GO_LIVE, **options)
+            if not report.committed:
+                raise ValueError(report.errors)
+        return call
+
+    def test_two_opening_balance_files_at_once_post_the_bank_once(self):
+        from apps.accounting.models import Account, BooksOpening, JournalEntry
+        from apps.imports.tests import GO_LIVE
+
+        BooksOpening.objects.create(opened_on=GO_LIVE, opening_account=self.opening)
+        self.once(race(JournalEntry, *[self.bring("opening_balances", self.BALANCES)] * 2))
+        self.assertEqual(self.balance(Account.objects.get(code="1010")), Decimal("250000"))
+
+    def test_two_opening_stock_files_at_once_bring_the_stock_in_once(self):
+        from django.db.models import Sum
+
+        from apps.inventory.adjustments import AdjustmentReason, StockAdjustment
+        from apps.inventory.models import StockMovement
+
+        AdjustmentReason.objects.create(code="OPENING", name="Opening stock", account=self.opening)
+        self.once(race(StockAdjustment, *[self.bring("opening_stock", self.STOCK, reason="OPENING")] * 2))
+        on_hand = StockMovement.objects.filter(item__sku="WDG-1").aggregate(t=Sum("quantity"))["t"]
+        self.assertEqual(on_hand, Decimal("1500"))

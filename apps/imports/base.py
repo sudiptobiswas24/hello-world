@@ -102,6 +102,8 @@ def once_only(what, standing, undo, column=""):
     """
     The opening position comes in once: refuse a second run of what an earlier one brought in.
 
+    The caller holds the opening imports' shared lock (importer.run takes the company row for
+    every kind in importer.OPENING), so two runs at once ask it one after the other.
     Every opening kind asks this before it writes anything, with `standing` the records an earlier
     run made of the same thing that still stand (posted and not reversed). A double click on Import,
     or a re-run after a failed cutover step, otherwise counts the position twice. A record that has
