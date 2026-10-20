@@ -93,6 +93,7 @@ class Command(BaseCommand):
         findings += self.unserialised_state_changes(labels, sources)
         findings += self.untested_corrections(all_code, all_tests)
         findings += self.mutable_posted_documents(labels, sources)
+        findings += self.weighed_records_written_over_the_api(labels, sources)
         # The same, widened to lines a route of their own writes (shared rule B).
         findings += self.lines_not_answering_to_their_document(labels, sources)
         findings += self.pay_inputs_not_holding_their_employee(labels, sources)
@@ -1392,6 +1393,35 @@ class Command(BaseCommand):
         findings += [("stale exemption", f"{key} refuses deletion now; take it off DELETABLE_REPORTED.")
                      for key in sorted(set(self.DELETABLE_REPORTED) - reported)
                      if key.split(".")[0] in labels]
+        return findings
+
+    def weighed_records_written_over_the_api(self, labels, sources, written=None):
+        """
+        A record of something weighed is a measurement, posted in all but
+        name: piece pay, the trace and the variance stand on it (O272). A
+        supervisor edited a weighed roll's metres and deleted the roll over
+        the API, its kilogrammes left on the shelf. Any model with a
+        weighed_at that a route of its own writes refuses both, saying
+        weighed, in save() and delete().
+        """
+        written = self._written_by_own_route() if written is None else written
+        findings = []
+        for label in labels:
+            code = non_test_text(sources[label])
+            for model in django_apps.get_app_config(label).get_models():
+                if model not in written or "weighed_at" not in {f.name for f in model._meta.fields}:
+                    continue
+                body = self._class_body(code, model.__name__)
+                if body is None:
+                    continue
+                for method in ("save", "delete"):
+                    guard = self._method_body(body, method)
+                    if not (guard and "weighed" in guard and "raise" in guard):
+                        findings.append((
+                            "weighed record written over the api",
+                            f"{label}.{model.__name__} is written by a route of its own and its {method}() "
+                            "does not refuse once weighed.",
+                        ))
         return findings
 
     @staticmethod

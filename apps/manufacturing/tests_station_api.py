@@ -214,3 +214,42 @@ class StationApiTests(StationApiTestCase):
         later = at(TODAY, 10, 42) + datetime.timedelta(hours=12, minutes=1)
         with patch("apps.manufacturing.station_views.timezone.now", return_value=later):
             self.assertIsNone(self.client.get(self.base).json()["operator"])
+
+
+class AWeighedRollStandsAsWeighedTests(StationApiTestCase):
+    """O272 (audit2_floor F4): FR-260601-D-L17-01, 104.4 kg net, declared 1,006 m at +0.60 %. The supervisor
+    PATCHed 2,000 m (200) and DELETEd the roll (success) while its 104.4 kg stayed on the shelf."""
+
+    def supervisor_api(self):
+        from django.contrib.auth.models import Group
+        from django.core.management import call_command
+
+        call_command("setup_roles", verbosity=0)
+        user = User.objects.create_user("sup")
+        user.groups.add(Group.objects.get(name="Production Supervisor"))
+        client = APIClient()
+        client.force_authenticate(user)
+        return client
+
+    def test_its_metres_machine_and_width_are_not_edited(self):
+        roll = self.weigh(declared="1006")
+        client = self.supervisor_api()
+        url = f"/api/manufacturing/fabric-rolls/{roll.pk}/"
+        for field, value in (("length_m", "2000"), ("width_mm", "500"), ("machine", self.l20.pk)):
+            with self.subTest(field=field):
+                answer = client.patch(url, {field: value}, format="json")
+                self.assertEqual(answer.status_code, 400, answer.content)
+                self.assertIn(field, answer.json())
+        roll.refresh_from_db()
+        self.assertEqual((roll.length_m, roll.width_mm, roll.machine_id, roll.metres_variance_percent),
+                         (Decimal("1006"), Decimal("600"), self.l17.pk, Decimal("0.60")))
+        self.assertEqual(client.patch(url, {"notes": "edge fray"}, format="json").status_code, 200)
+
+    def test_it_is_not_deleted_while_its_booking_and_stock_stand(self):
+        from .rolls import FabricRoll
+
+        roll = self.weigh()
+        answer = self.supervisor_api().delete(f"/api/manufacturing/fabric-rolls/{roll.pk}/")
+        self.assertEqual(answer.status_code, 400, answer.content)
+        self.assertTrue(FabricRoll.objects.filter(pk=roll.pk).exists())
+        self.assertEqual(roll.lot.on_hand_at(), Decimal("104.4"))
