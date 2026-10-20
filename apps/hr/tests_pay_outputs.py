@@ -19,6 +19,7 @@ from decimal import Decimal
 from django.contrib.auth.models import Group, User
 from django.core.exceptions import ValidationError
 from django.core.management import call_command
+from django.utils import timezone
 from rest_framework.test import APIClient
 
 from apps.accounting.models import Account, AccountType, Payment, PaymentDirection
@@ -26,7 +27,7 @@ from apps.accounting.models import Account, AccountType, Payment, PaymentDirecti
 from .advances import SalaryAdvance
 from .bank_file import SalaryTransferFile
 from .pay_details import EmployeePayDetails
-from .models import EmploymentStatus
+from .models import Employee, EmploymentStatus
 from .payroll import ComponentBasis, ComponentKind, PayComponent, PayslipLine
 from .tests_payroll import PayrollTestCase
 
@@ -418,3 +419,74 @@ class AdvancesTests(OutputsTestCase):
                                       format="json").status_code, 403)
         voided = controller.post(f"/api/hr/salary-advances/{number}/void/", {"on_date": "2026-07-01"}, format="json")
         self.assertEqual((voided.status_code, voided.json()["voided"]), (200, True))
+
+
+class ALeaverNoLongerSignsInOrDecides(OutputsTestCase):
+    """O300: a leaver's login is off from the day after the leaving date, and nobody who has left decides."""
+
+    def leaver_with_a_login(self, code="E1", password="a-long-pass-phrase-41"):
+        person = self.employee(code)
+        self.as_role("Stores Manager", person)
+        person.user.set_password(password)
+        person.user.save()
+        return person, password
+
+    def test_a_leavers_login_stops_signing_in_on_the_day_they_go(self):
+        # E1, a Stores Manager's login, left on 30 September 2026; on 20 October the login is off.
+        person, password = self.leaver_with_a_login()
+        person.terminate(datetime.date(2026, 9, 30))
+        user = User.objects.get(pk=person.user_id)
+        self.assertFalse(user.is_active)
+        self.assertFalse(APIClient().login(username=user.username, password=password))
+
+    def test_a_leaving_date_withdrawn_switches_the_login_on_again(self):
+        person, password = self.leaver_with_a_login()
+        person.terminate(datetime.date(2026, 9, 30))
+        person.termination_date, person.employment_status = None, EmploymentStatus.ACTIVE
+        person.save()
+        self.assertTrue(User.objects.get(pk=person.user_id).is_active)
+        self.assertTrue(APIClient().login(username=person.user.username, password=password))
+
+    def test_a_login_another_reason_switched_off_stays_off_when_the_date_is_withdrawn(self):
+        person, _ = self.leaver_with_a_login()
+        person.user.is_active = False
+        person.user.save()
+        person.terminate(timezone.localdate() + datetime.timedelta(days=10))
+        person.termination_date, person.employment_status = None, EmploymentStatus.ACTIVE
+        person.save()
+        self.assertFalse(User.objects.get(pk=person.user_id).is_active)
+
+    def test_a_leaving_date_to_come_keeps_the_login_until_it_and_ends_it_the_day_after(self):
+        from apps.core.models import login_ended
+
+        today = timezone.localdate()
+        person, password = self.leaver_with_a_login()
+        person.terminate(today)
+        self.assertTrue(User.objects.get(pk=person.user_id).is_active)
+        self.assertIsNone(login_ended(person.user, today))
+        self.assertIn("left on", login_ended(person.user, today + datetime.timedelta(days=1)))
+        # The day has come with nobody switching the login off: a session open then ends, and it signs in no more.
+        client = APIClient()
+        self.assertTrue(client.login(username=person.user.username, password=password))
+        self.assertEqual(client.get("/api/inventory/items/").status_code, 200)
+        Employee.objects.filter(pk=person.pk).update(termination_date=today - datetime.timedelta(days=1))
+        self.assertIn(client.get("/api/inventory/items/").status_code, (401, 403))
+        self.assertFalse(APIClient().login(username=person.user.username, password=password))
+
+    def test_a_manager_who_has_left_decides_no_leave_hours_or_claims(self):
+        from .expenses import ExpenseClaim
+        from .models import LeaveRequest
+        from .timesheets import Timesheet
+
+        boss, report = self.employee("E2"), self.employee("E1")
+        report.manager = boss
+        report.save()
+        leave = LeaveRequest.objects.create(employee=report, leave_type="vacation",
+                                            start_date=datetime.date(2026, 11, 2), end_date=datetime.date(2026, 11, 3))
+        boss.terminate(datetime.date(2026, 6, 1))
+        with self.assertRaisesMessage(ValidationError, "is not working here on"):
+            leave.approve(by=boss)
+        with self.assertRaisesMessage(ValidationError, "is not working here on"):
+            ExpenseClaim(employee=report, purpose="Taxi")._check_decider(boss, as_hr=False)
+        with self.assertRaisesMessage(ValidationError, "is not working here on"):
+            Timesheet(employee=report).check_approver(boss)

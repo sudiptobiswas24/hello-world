@@ -99,6 +99,22 @@ class DiscountLimitTests(ApprovalTestCase):
         order.approve(by=self.approver)
         self.assertIn("discounted 40", order.approval_note)
 
+    def test_somebody_who_has_left_approves_nothing(self):
+        """O300: the controller left on 1 June; in October their login decides no order's breach."""
+        from apps.core.models import Party, PartyRole, PartyRoleAssignment
+        from apps.hr.models import Employee
+
+        party = Party.objects.create(code="P-CTRL", name="Controller")
+        PartyRoleAssignment.objects.create(party=party, role=PartyRole.EMPLOYEE)
+        person = Employee.objects.create(party=party, employee_number="E-CTRL", hire_date=datetime.date(2020, 1, 1),
+                                         user=self.approver)
+        Employee.objects.filter(pk=person.pk).update(termination_date=datetime.date(2026, 6, 1),
+                                                     employment_status="terminated")
+        order = self.draft(discount="40")
+        with self.assertRaisesMessage(ValidationError, "left on 01-06-2026"):
+            order.approve(by=self.approver)
+        self.assertIsNone(order.approved_at)
+
     def test_approving_a_compliant_order_is_refused(self):
         """Approving everything by reflex would make the record meaningless."""
         order = self.draft(discount="5")

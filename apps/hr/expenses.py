@@ -123,6 +123,9 @@ class ExpenseClaim(AuditModel):
         self._move(["number", "status"])
 
     def _check_decider(self, by, as_hr):
+        from .models import check_still_working
+
+        check_still_working(by)
         if by is not None and by.pk == self.employee_id:
             raise ValidationError("Nobody decides their own claim.")
         if not as_hr and (by is None or self.employee.manager_id != by.pk and self.employee_id not in by.reports()):

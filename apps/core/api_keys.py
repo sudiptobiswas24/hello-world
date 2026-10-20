@@ -32,7 +32,7 @@ from rest_framework.authentication import BaseAuthentication, get_authorization_
 from rest_framework.exceptions import AuthenticationFailed
 from rest_framework.exceptions import ValidationError as DRFValidationError
 
-from .models import AuditModel
+from .models import AuditModel, login_ended
 
 KEYWORD = "Api-Key"
 LONGEST = datetime.timedelta(days=366)
@@ -226,6 +226,9 @@ class ApiKeyAuthentication(BaseAuthentication):
         user = key.integration.user
         if not user.is_active:
             refuse(f"{key.integration} is switched off.", key)
+        ended = login_ended(user)
+        if ended:
+            refuse(f"{key.integration}: {ended}", key)
         if required(user):
             refuse(f"{key.integration} holds a right that needs a second factor, which a key alone does not give. "
                    "An integration holds only what it needs.", key)

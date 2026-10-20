@@ -176,6 +176,9 @@ class Timesheet(AuditModel):
     def check_approver(self, by):
         if by is None:
             raise ValidationError("Somebody has to decide this; say who.")
+        from .models import check_still_working
+
+        check_still_working(by)
         if by.pk == self.employee_id:
             raise ValidationError(f"{self.employee} cannot approve their own hours.")
 
