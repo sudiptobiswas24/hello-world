@@ -6709,9 +6709,15 @@ def _consumed_note(receipt, line):
     return f"Consumed by subcontractor for {receipt.number}, line {line.pk}"
 
 
-def _last_arrival_rate(item, warehouse):
-    """What `item` last came onto `warehouse` at: its arrival's money over its quantity, eight places."""
-    arrival = item.movements.filter(warehouse=warehouse, quantity__gt=0).order_by("-occurred_at", "-id").first()
+def _last_arrival_rate(item, warehouse, before=None):
+    """
+    What `item` last came onto `warehouse` at: its arrival's money over its quantity, eight places. `before`, a
+    movement, asks as it stood then, so a return's own put-back does not become the next one's rate.
+    """
+    arrivals = item.movements.filter(warehouse=warehouse, quantity__gt=0)
+    if before is not None:
+        arrivals = arrivals.filter(id__lt=before.pk)
+    arrival = arrivals.order_by("-occurred_at", "-id").first()
     if arrival is None:
         return Decimal("0")
     return (arrival.value / arrival.quantity).quantize(Decimal("0.00000001"))
@@ -7641,6 +7647,7 @@ class GoodsReceipt(AuditModel):
         left = (original.quantity_received - sum((back.quantity_received for back in earlier), Decimal("0"))
                 if original is not None else line.quantity_received)
         restored = Decimal("0")
+        legacy = None
         for component in line.order_line.components.select_related("item"):
             if not component.item.track_inventory:
                 continue
@@ -7680,16 +7687,25 @@ class GoodsReceipt(AuditModel):
                          _share_put_back(movement, put_back, quantity))
                         for movement, quantity in zip(taken, _apportion(remaining, total))]
             else:
-                # A receipt from before consumption was recorded this way: at what the components
-                # last came in at there, its money rounded once (O253, O269). Not the average where
-                # it stands: with the shelf kept to the paisa, the one frame left of 3,001 averages
-                # 8.12, and 3,000 put back at that came home 10.35 short of the 24,370.35 that went.
+                # A receipt from before consumption was recorded this way (O253). What went in is
+                # still on record: the assembly's own receipt movement, less the vendor's charge
+                # (O325). Put back at the last arrival rate instead, frames that arrived at 5 then 8
+                # came home at 8 and booked 2,999 of price variance nobody paid.
                 quantity = round_money(component.quantity_per * line.quantity_received)
-                cost = _last_arrival_rate(component.item, warehouse) or _average_with_its_places(
-                    component.item, warehouse) or (
-                    _average_with_its_places(component.item, None)
-                ) or (component.item.standard_cost or Decimal("0"))
-                rows = [(None, None, quantity, cost, round_money(quantity * cost))]
+                if legacy is None:
+                    legacy = self._legacy_consumption(line, original, warehouse, left)
+                if component.pk in legacy:
+                    money = legacy[component.pk]
+                    cost = (money / quantity).quantize(Decimal("0.00000001")) if quantity else Decimal("0")
+                else:
+                    # Nothing to read it from (a standard-costed assembly shelves the standard, not
+                    # what went in): what the component last came in at there, rounded once.
+                    cost = _last_arrival_rate(component.item, warehouse) or _average_with_its_places(
+                        component.item, warehouse) or (
+                        _average_with_its_places(component.item, None)
+                    ) or (component.item.standard_cost or Decimal("0"))
+                    money = round_money(quantity * cost)
+                rows = [(None, None, quantity, cost, money)]
             for lot, storage_bin, quantity, cost, money in rows:
                 if quantity <= 0:
                     continue
@@ -7704,6 +7720,51 @@ class GoodsReceipt(AuditModel):
                 )
                 restored += money
         return restored
+
+    def _legacy_consumption(self, line, original, warehouse, left):
+        """
+        {component pk: money this return line puts back} for the components whose consumption the original
+        receipt did not record (O325). What they took together is the assembly's receipt movement less the
+        vendor's charge, less what the recorded components took; shared between them by what they last came
+        in at (their need at the last arrival rate), total first, the last taking the rest; and of each
+        share, this return's part of what is still out, so the last return puts back exactly what is left.
+        Empty when the receipt cannot say (no original line, or a standard-costed assembly, which shelves
+        the standard and not what went in).
+        """
+        movement = getattr(original, "stock_movement", None)
+        if movement is None or original.order_line.item.costing_method == "standard":
+            return {}
+        charge = round_money(original.quantity_received * original.accrued_unit_cost)
+        pool = movement.value - charge
+        legacy, weights = [], []
+        for component in original.order_line.components.select_related("item"):
+            if not component.item.track_inventory:
+                continue
+            recorded = StockMovement.objects.filter(
+                item=component.item, warehouse=warehouse, movement_type=MovementType.ISSUE,
+                reference=self.reverses.number, notes=_consumed_note(self.reverses, original))
+            if recorded.exists():
+                pool += sum((m.value for m in recorded), Decimal("0"))
+                continue
+            need = component.quantity_per * original.quantity_received
+            legacy.append(component)
+            weights.append(need * _last_arrival_rate(component.item, warehouse, before=movement))
+        if not legacy or pool <= 0 or sum(weights, Decimal("0")) <= 0:
+            return {}
+        base, shares, given, running = sum(weights, Decimal("0")), {}, Decimal("0"), Decimal("0")
+        for index, (component, weight) in enumerate(zip(legacy, weights)):
+            running += weight
+            through = pool if index == len(legacy) - 1 else round_money(pool * running / base)
+            shares[component.pk] = through - given
+            given = through
+        whole = original.quantity_received
+        back_before = whole - left
+
+        def part(share, quantity):
+            return share if quantity >= whole else round_money(share * quantity / whole)
+
+        return {pk: part(share, back_before + line.quantity_received) - part(share, back_before)
+                for pk, share in shares.items()}
 
     def _sent_on_the_order(self, item, warehouse):
         """

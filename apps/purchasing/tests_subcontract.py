@@ -1144,3 +1144,53 @@ class AReturnFromBeforeConsumptionWasRecordedFootsTests(SubcontractTestCase):
         # Rounded, the 0.15 the frames came back short of was booked as a price variance nobody paid.
         self.assertEqual((self.stock_value() - stock_before, self.balance(self.inventory) - ledger_before,
                           self.balance(variance)), (Decimal("-15000"), Decimal("-15000"), Decimal("0")))
+
+
+class AReturnFromBeforeConsumptionWasRecordedPutsBackWhatWentInTests(SubcontractTestCase):
+    """
+    O325 (audit2_stores R1): with no consumption recorded, what went in is read from the assembly's own receipt
+    movement less the vendor's charge, shared by the components' last arrival money. Frames at the
+    subcontractor 1,000 at 5 then 2,001 at 8, motors 6,000 at 12, 3,000 assemblies at 5 service: the frames
+    consumed 21,001.00, the motors 72,000.00, the assembly shelved at 108,001.00. Put back at the last arrival
+    rate, the frames came home at 8 and booked a price variance of 2,999 nobody paid. Now 93,001.00 comes back,
+    frames 23,250.25 (24,000 of 96,000 weight), motors 69,750.75; in parts, 1,000 then 2,000 assemblies, the
+    frames 7,750.08 then 15,500.17. Figures: /home/user/work/calc_fix_stores2/o325.py.
+    """
+
+    def stock_value(self):
+        return sum(item.valuation_at(warehouse)[1] for item in (self.frame, self.motor, self.assembly)
+                   for warehouse in (self.warehouse, self.subcontractor))
+
+    def setUp(self):
+        super().setUp()
+        from apps.accounting.models import Account, AccountType
+
+        self.variance = Account.objects.create(code="5900", name="Price variance", account_type=AccountType.EXPENSE)
+        Company.objects.update(purchase_price_variance_account=self.variance)
+        self.stock(self.frame, "1000", "5", warehouse=self.subcontractor)
+        self.stock(self.frame, "2001", "8", warehouse=self.subcontractor)
+        self.stock(self.motor, "6000", "12", warehouse=self.subcontractor)
+        self.receipt = self.receive(self.subcontract_order("3000", service="5"), "3000")
+        self.assertEqual(self.receipt.lines.get().stock_movement.value, Decimal("108001.00"))
+        StockMovement.objects.filter(notes__startswith="Consumed by subcontractor").update(notes="Consumed")
+
+    def put_back(self, item, receipt):
+        return sum((m.value for m in StockMovement.objects.filter(item=item, reference=receipt.number,
+                                                                    warehouse=self.subcontractor)), Decimal("0"))
+
+    def test_the_whole_return_puts_back_what_went_in(self):
+        stock_before, ledger_before = self.stock_value(), self.balance(self.inventory)
+        back = self.receipt.create_return(debit_bills=False)
+        self.assertEqual((self.stock_value() - stock_before, self.balance(self.inventory) - ledger_before,
+                          self.balance(self.variance)), (Decimal("-15000"), Decimal("-15000"), Decimal("0")))
+        self.assertEqual((self.put_back(self.frame, back), self.put_back(self.motor, back)),
+                         (Decimal("23250.25"), Decimal("69750.75")))
+
+    def test_in_parts_the_last_puts_back_what_is_left(self):
+        line = self.receipt.lines.get()
+        first = self.receipt.create_return(quantities={line: Decimal("1000")}, debit_bills=False)
+        second = self.receipt.create_return(quantities={line: Decimal("2000")}, debit_bills=False)
+        self.assertEqual((self.put_back(self.frame, first), self.put_back(self.frame, second)),
+                         (Decimal("7750.08"), Decimal("15500.17")))
+        self.assertEqual(self.put_back(self.motor, first) + self.put_back(self.motor, second), Decimal("69750.75"))
+        self.assertEqual(self.balance(self.variance), Decimal("0"))
