@@ -95,3 +95,20 @@ class ANamedDrawAsksThePromiseTests(SimpleTestCase):
     def test_one_that_asks_is_not(self):
         self.assertEqual(self.audit("        refuse_drawing_what_is_promised(lot, w, q)\n"
                                     "        return self.item.cost_of_removing(w, q, lot=lot)\n"), [])
+
+
+class APublishedVersionIsPostedByAnotherNameTests(SimpleTestCase):
+    """O277: a cost version's published_at is its posted flag; the audit asks its save() and delete() too."""
+
+    def audit(self, body):
+        text = "class CostVersion(AuditModel):\n" + body
+        found = Command().mutable_posted_documents(
+            ["manufacturing"], {"manufacturing": {Path("apps/manufacturing/example.py"): text}})
+        return [shape for shape, detail in found if "CostVersion " in detail]
+
+    def test_a_version_with_no_guards_is_reported(self):
+        self.assertEqual(self.audit("    notes = 1\n"), ["mutable posted document", "deletable posted document"])
+
+    def test_one_that_refuses_once_published_is_not(self):
+        guard = "        if self.is_published():\n            raise ValidationError('published')\n"
+        self.assertEqual(self.audit("    def save(self):\n" + guard + "    def delete(self):\n" + guard), [])
