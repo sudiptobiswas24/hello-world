@@ -898,8 +898,20 @@ class StationReportViewSet(viewsets.GenericViewSet):
 
 
 class CanPostScaleReadings(BasePermission):
+    """
+    The scale's bridge, and only it (O271). A login that may weigh at a
+    station (the tablet, a supervisor, a superuser) is refused even when it
+    holds add_scalereading: a reading it posted is what it then confirms as
+    "scale", a typed weight with no supervisor's PIN and no reason.
+    """
+
+    message = ("Scale readings are posted by the scale's bridge with its own key, not by a login that "
+               "weighs at a station. A weight typed by hand needs a supervisor's PIN and a reason.")
+
     def has_permission(self, request, view):
-        return request.user.has_perm("manufacturing.add_scalereading")
+        user = request.user
+        return user.has_perm("manufacturing.add_scalereading") and not user.has_perm(
+            "manufacturing.weigh_at_station")
 
 
 class ScaleReadingViewSet(viewsets.GenericViewSet):
