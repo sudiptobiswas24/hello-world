@@ -333,8 +333,9 @@ def roll_code(machine, shift, shift_date):
     count = FabricRoll.objects.filter(
         machine=machine, shift=shift, shift_date=shift_date
     ).count()
-    loom = machine.code.replace("-", "").upper()
-    return f"FR-{shift_date:%y%m%d}-{shift.code[:1].upper()}-{loom}-{count + 1:02d}"
+    from .shifts import batch_code
+
+    return batch_code("FR", machine, shift, shift_date, count)
 
 
 # -- weighing a roll ----------------------------------------------------

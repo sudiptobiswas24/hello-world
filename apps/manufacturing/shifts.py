@@ -187,6 +187,18 @@ CORRECTABLE = ("work_centre_id", "machine_id", "shift_date", "shift_id", "reason
                "work_order_id")
 
 
+def batch_code(prefix, machine, shift, shift_date, count):
+    """
+    FR-261007-D-L17-07: what a batch made on a machine in a shift is called
+    (rolls, doffs, film and process rolls). The shift's whole code as kept, not its
+    first letter (O273): the running number is per shift, so shifts S1 and
+    S2 named S both made FR-...-S-L17-01, the batch's unique code refused
+    the second, and nothing more could be weighed that day.
+    """
+    line = machine.code.replace("-", "").upper()
+    return f"{prefix}-{shift_date:%y%m%d}-{shift.code}-{line}-{count + 1:02d}"
+
+
 def _differs(now, was):
     """A value set and the one stored: 90 and 90.00 minutes are the same minutes."""
     if isinstance(was, Decimal) and now is not None:
