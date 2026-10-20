@@ -381,3 +381,31 @@ class RollCodeTests(StationTestCase):
     def test_the_code_reads_day_shift_loom_and_count(self):
         self.assertEqual(roll_code(self.l20, self.night, datetime.date(2026, 10, 6)),
                          "FR-261006-N-L20-01")
+
+
+class ShiftsThatShareALetterTests(StationTestCase):
+    """O273 (audit2_floor F8): shifts S1 (08:00) and S2 (20:00). Each shift's first roll on L-17 was
+    FR-260601-S-L17-01, the batch's unique code refused the second (a 500), and nothing more was weighed."""
+
+    def test_the_first_roll_of_each_shift_is_weighed_under_its_whole_shift_code(self):
+        from .shifts import Shift
+
+        Shift.objects.filter(pk=self.day.pk).update(code="S1")
+        Shift.objects.filter(pk=self.night.pk).update(code="S2")
+        first = self.weigh(when=at(TODAY, 10, 42))
+        second = self.weigh(when=at(TODAY, 21, 0))
+        self.assertEqual((first.lot.code, second.lot.code), ("FR-260601-S1-L17-01", "FR-260601-S2-L17-01"))
+
+    def test_every_batch_kind_takes_its_code_from_the_one_rule(self):
+        from .process_rolls import PREFIX
+        from .shifts import batch_code
+        from .station import roll_code
+        from .station_film import film_code
+        from .station_tape import doff_code
+
+        self.day.code = "S1"
+        day = TODAY
+        self.assertEqual([make(self.l17, self.day, day) for make in (roll_code, doff_code, film_code)],
+                         ["FR-260601-S1-L17-01", "TP-260601-S1-L17-01", "LF-260601-S1-L17-01"])
+        self.assertTrue(all(batch_code(prefix, self.l17, self.day, day, 0) == f"{prefix}-260601-S1-L17-01"
+                            for prefix in PREFIX.values()))
