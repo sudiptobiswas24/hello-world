@@ -392,8 +392,9 @@ def weigh_roll(station, operator, machine, gross_kg, core_type, metres, supervis
         values["reason"] = reason[:255]
     count = ProcessRoll.objects.filter(machine=machine, shift=shift,
                                        shift_date=shift_date).count()
-    code = (f"{PREFIX[kind]}-{shift_date:%y%m%d}-{shift.code[:1].upper()}-"
-            f"{machine.code.replace('-', '').upper()}-{count + 1:02d}")
+    from .shifts import batch_code
+
+    code = batch_code(PREFIX[kind], machine, shift, shift_date, count)
     roll = ProcessRoll.objects.create(
         code=code, kind=kind, mount=mount, station=station, machine=machine,
         core_type=core_type, gross_kg=gross, scale_reading=reading,
