@@ -212,6 +212,27 @@ class AFailedBackupKeepsTheOlderOnesTests(SimpleTestCase):
         self.assertTrue(self.old.exists())
         self.assertEqual(list(self.backups.glob("erp_*.media.sha256")), [])
 
+    def test_a_failed_night_leaves_none_of_its_half_written_files(self):
+        # Review of O314, item 5: a failed dump, archive or check left its .partial files until a later success.
+        for case in ("dump", "archive", "check"):
+            with self.subTest(case):
+                for leftover in self.backups.glob("*.partial"):
+                    shutil.rmtree(leftover) if leftover.is_dir() else leftover.unlink()
+                if case == "dump":
+                    self.stub("pg_dump", 'for a; do case $a in --file=*) f=${a#--file=};; esac; done; echo x > "$f"; exit 1\n')
+                else:
+                    self.stub("pg_dump", 'for a; do case $a in --file=*) f=${a#--file=};; esac; done; echo dump > "$f"\n')
+                if case == "archive":
+                    real_tar = shutil.which("tar")
+                    self.stub("tar", f'case "$*" in *-czf*) {real_tar} "$@"; exit 2;; esac\nexec {real_tar} "$@"\n')
+                if case == "check":
+                    (self.bin / "tar").unlink(missing_ok=True)
+                    self.stub_hashing("cat > /dev/null; echo '00  -'; exit 0")
+                status, said = self.backup("now")
+                self.assertEqual(status, 1, said)
+                self.assertEqual(sorted(path.name for path in self.backups.glob("*.partial")), [], said)
+                self.assertTrue(self.old.exists())
+
     def test_a_backup_that_succeeds_still_retires_the_older_ones(self):
         _, said = self.backup()
         self.assertIn("backup written", said)
