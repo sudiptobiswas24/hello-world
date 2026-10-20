@@ -352,6 +352,14 @@ class BillOfMaterials(AuditModel):
                 "Change that; this BOM is rebuilt from it."
             )
         self._check_window()
+        if self.pk is not None and not self._state.adding:
+            # Turned into or out of rework once its lines stand (O275): asked
+            # here, where the answer is known; a new bill has no lines yet, so
+            # its release asks instead.
+            was = type(self).objects.filter(pk=self.pk).values_list("is_rework", flat=True).first()
+            # A phantom is never rework: the bill's constraint answers that one.
+            if was is not None and was != self.is_rework and not self.is_phantom:
+                self.check_rework()
         if self.is_phantom and self.pk and self.byproducts.exists():
             raise ValidationError(
                 f"{self} throws off by-products, and a phantom is made inside "
@@ -442,7 +450,24 @@ class BomComponent(AuditModel):
                 "a loop the explosion cuts without saying so — mark the bill "
                 "of materials as rework if that is what this is."
             )
+        if self.pk is not None and self.item_id != self.bom.item_id:
+            was = type(self).objects.filter(pk=self.pk).values_list("item_id", flat=True).first()
+            if was == self.bom.item_id:
+                self._check_rework_keeps_its_batch()
         super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        if self.item_id == self.bom.item_id:
+            self._check_rework_keeps_its_batch()
+        return super().delete(*args, **kwargs)
+
+    def _check_rework_keeps_its_batch(self):
+        """The last line that eats the failed batch does not leave a rework bill (O275, check_rework)."""
+        if self.bom.is_rework and not self.bom.components.filter(
+                item_id=self.bom.item_id).exclude(pk=self.pk).exists():
+            raise ValidationError(
+                f"{self.bom} is a rework recipe and this is its line for {self.bom.item}. Without it the "
+                "recipe makes good stock out of nothing and leaves the failed batch on the shelf.")
 
 
 class BomByproduct(AuditModel):
