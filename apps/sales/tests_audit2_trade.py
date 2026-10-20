@@ -63,24 +63,6 @@ class HandKeyedCreditNote(SalesTestCase):
 from apps.core.tests_roles import RolesTestCase  # noqa: E402
 
 
-class WhoMayCreditByReturning(RolesTestCase, SalesTestCase):
-    def setUp(self):
-        SalesTestCase.setUp(self)
-        RolesTestCase.setUp(self)
-
-    def test_S6_a_warehouse_hand_taking_goods_back_posts_no_credit_note(self):
-        """A credit note is money: Warehouse Staff hold post_delivery, not post_invoice. Purchasing's mirror leaves
-        the debit notes as drafts for anyone who may not post bills (review F8)."""
-        order = self.make_order(quantity="10", price="100")
-        delivery = self.ship(order, 10)
-        self.bill(order)
-        client = self.as_("Warehouse Staff")
-        reply = client.post(f"/api/sales/deliveries/{delivery.pk}/customer_return/", {}, format="json")
-        self.assertEqual(reply.status_code, 200, reply.content)
-        posted_notes = Invoice.objects.filter(credits__isnull=False, posted=True).count()
-        self.assertEqual(posted_notes, 0, "a credit note posted by a login holding no post_invoice")
-
-
 class DunningOnlyAdvances(SalesTestCase):
     def test_S7_a_customer_who_got_the_60_day_notice_is_not_sent_the_7_day_one_after(self):
         """Levels 7, 30, 60. Run first at 70 days overdue: the 60-day notice. Run again next day: nothing

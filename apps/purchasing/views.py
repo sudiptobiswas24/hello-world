@@ -7,7 +7,7 @@ from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.permissions import IsAuthenticated
 
 from apps.accounting.defaults import chosen_or_default
-from apps.core.api import flag, money_amount, quantities_by_line, record_or_404
+from apps.core.api import flag, money_amount, posts_its_notes, quantities_by_line, record_or_404
 from apps.inventory.models import Warehouse
 from apps.core.models import to_date
 from apps.core.permissions import ActionPermission, RequiredPermission
@@ -524,7 +524,7 @@ class GoodsReceiptViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         # Its debit notes post only for whoever may post bills; anyone else's wait as drafts (review F8).
         returned = receipt.reject(quantities=quantities, note=str(request.data["note"]),
                                   debit_bills=flag(request.data, "debit_bills", True),
-                                  post_notes=request.user.has_perm("purchasing.post_bill"))
+                                  post_notes=posts_its_notes(request.user, Bill))
         return Response({"return": returned.pk, "number": returned.number}, status=201)
 
     @action(detail=True, methods=["post"])
@@ -556,7 +556,7 @@ class GoodsReceiptViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         try:
             # Its debit notes post only for whoever may post bills; anyone else's wait as drafts (review F8).
             return_receipt = receipt.create_return(quantities=quantities, debit_bills=debit,
-                                                   post_notes=request.user.has_perm("purchasing.post_bill"),
+                                                   post_notes=posts_its_notes(request.user, Bill),
                                                    on_date=request.data.get("date") or None)
         except DjangoValidationError as exc:
             raise DRFValidationError(exc.messages)
