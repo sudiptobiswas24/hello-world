@@ -1327,6 +1327,10 @@ class WorkOrder(AuditModel):
                 f"This run names {self.rework_of} as the batch to put right, "
                 f"but {self.bom} is not a rework recipe."
             )
+        # The recipe's half (O275): a rework bill with no line for the failed
+        # batch drew none of it and booked good stock from the polymer alone.
+        # Asked here because its lines are added after it is saved.
+        self.bom.check_rework()
         if self.rework_of_id is None:
             return
         if self.rework_of.item_id != self.item_id:

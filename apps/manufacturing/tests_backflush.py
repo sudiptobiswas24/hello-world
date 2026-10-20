@@ -449,3 +449,43 @@ class DrawingTheFailedBatchTests(ReworkTestCase):
             order.components.get(item=self.virgin).quantity_issued(),
             Decimal("19.2"), places=4,
         )
+
+
+class AReworkRecipeEatsItsBatchTests(ReworkTestCase):
+    """O275 (audit2_floor F9): check_rework was called by nothing. A rework recipe for tape with only 4 kg of
+    virgin polymer per 100 kg released a 480 kg run that drew none of T-BAD and booked 480 kg of good tape
+    from 19.2 kg of polymer, the failed 500 kg left on the shelf at its value."""
+
+    def no_line_for_the_batch(self):
+        empty = BillOfMaterials.objects.create(
+            item=self.tape, name="Bad rework", version=3, quantity_produced=Decimal("100"),
+            uom=self.kg, is_default=False, is_rework=True)
+        BomComponent.objects.create(bom=empty, item=self.virgin, quantity=Decimal("4"), uom=self.kg,
+                                    line_number=1)
+        return empty
+
+    def test_a_run_on_it_is_not_released(self):
+        lot = self.failed_lot()
+        order = WorkOrder.objects.create(item=self.tape, bom=self.no_line_for_the_batch(),
+                                         quantity_ordered=Decimal("480"), uom=self.kg,
+                                         warehouse=self.plant, rework_of=lot)
+        with self.assertRaisesMessage(ValidationError, "has no line for"):
+            order.release(TODAY)
+        self.assertEqual(lot.on_hand_at(), Decimal("500"))
+
+    def test_its_line_for_the_batch_is_not_deleted_or_changed_away(self):
+        line = self.rework_bom.components.get(item=self.tape)
+        with self.assertRaisesMessage(ValidationError, "this is its line for"):
+            line.delete()
+        line.item = self.virgin
+        with self.assertRaisesMessage(ValidationError, "this is its line for"):
+            line.save()
+        self.assertTrue(self.rework_bom.components.filter(item=self.tape).exists())
+
+    def test_an_ordinary_bill_is_not_turned_into_rework_without_it(self):
+        bill = self.no_line_for_the_batch()
+        BillOfMaterials.objects.filter(pk=bill.pk).update(is_rework=False)
+        bill.refresh_from_db()
+        bill.is_rework = True
+        with self.assertRaisesMessage(ValidationError, "has no line for"):
+            bill.save()
