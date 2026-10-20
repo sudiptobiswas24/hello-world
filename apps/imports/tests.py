@@ -473,3 +473,64 @@ class GoLiveCheckTests(ImportTestCase):
         ready, said = self.check()
         self.assertFalse(ready)
         self.assertIn("FAIL  Trial balance", said)
+
+
+class TheOpeningPositionComesInOnceTests(ImportTestCase):
+    """O280, O313: every opening kind refuses a second run of what it brought in, before it writes."""
+
+    BALANCES = "account,debit,credit\n1010,250000,\n3900,,250000\n"
+    STOCK = "sku,warehouse,quantity,unit_cost\nWDG-1,WH1,1000,3.50\n"
+
+    def on_hand(self):
+        from apps.inventory.models import StockMovement
+
+        return StockMovement.objects.filter(item__sku="WDG-1").aggregate(t=Sum("quantity"))["t"]
+
+    def test_the_same_opening_balances_brought_in_twice_are_refused_the_second_time(self):
+        from apps.accounting.models import BooksOpening, JournalEntry
+
+        bank = Account.objects.get(code="1010")
+        BooksOpening.objects.create(opened_on=GO_LIVE, opening_account=self.opening)
+        first = run("opening_balances", self.BALANCES, commit=True, date=GO_LIVE)
+        self.assertTrue(first.committed, first.errors)
+        entries = JournalEntry.objects.count()
+        second = run("opening_balances", self.BALANCES, commit=True, date=GO_LIVE)
+        self.assertFalse(second.committed)
+        self.assertIn("already came in", second.errors[0][2])
+        self.assertEqual((self.balance(bank), JournalEntry.objects.count()), (250000, entries))
+        # The reverse path: the first entry reversed, a corrected file comes in.
+        JournalEntry.objects.get(reference="Opening balances").reverse_by_hand(memo="wrong file")
+        self.assertEqual(self.balance(bank), 0)
+        third = run("opening_balances", self.BALANCES, commit=True, date=GO_LIVE)
+        self.assertTrue(third.committed, third.errors)
+        self.assertEqual(self.balance(bank), 250000)
+
+    def test_opening_stock_file_run_twice_does_not_double_the_stock(self):
+        from apps.inventory.adjustments import StockAdjustment
+
+        AdjustmentReason.objects.create(code="OPENING", name="Opening stock", account=self.opening)
+        first = run("opening_stock", self.STOCK, commit=True, date=GO_LIVE, reason="OPENING")
+        self.assertEqual(first.errors, [])
+        self.assertEqual((self.on_hand(), self.balance(self.opening)), (1500, Decimal("-3500.00")))
+        # Under another reason posting to the same account it is still the same opening stock.
+        AdjustmentReason.objects.create(code="OPEN2", name="Opening stock again", account=self.opening)
+        for reason in ("OPENING", "OPEN2"):
+            second = run("opening_stock", self.STOCK, commit=True, date=GO_LIVE, reason=reason)
+            self.assertEqual((second.committed, [e[1] for e in second.errors]), (False, ["sku"]))
+        self.assertEqual((self.on_hand(), self.balance(self.opening)), (1500, Decimal("-3500.00")))
+        # The reverse path: the adjustment voided, the figure comes in again.
+        StockAdjustment.objects.get(reason__code="OPENING").void(memo="wrong count")
+        self.assertEqual(self.on_hand(), 500)
+        third = run("opening_stock", self.STOCK, commit=True, date=GO_LIVE, reason="OPENING")
+        self.assertEqual((third.committed, third.errors), (True, []))
+        self.assertEqual(self.on_hand(), 1500)
+
+    def test_an_opening_kind_that_does_not_ask_once_only_is_reported(self):
+        from apps.core.management.commands.audit_invariants import Command
+
+        def _opening_loans(rows, report, options):
+            return None
+
+        found = Command().opening_kinds_brought_in_twice({"opening_loans": _opening_loans})
+        self.assertEqual([shape for shape, _ in found], ["opening kind brought in twice"])
+        self.assertEqual(Command().opening_kinds_brought_in_twice(), [])
