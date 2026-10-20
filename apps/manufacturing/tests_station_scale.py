@@ -245,3 +245,81 @@ class BridgeApiTests(StationApiTestCase):
         LoomStation.objects.filter(pk=self.station.pk).update(scale_bridged=False)
         self.sign_in()
         self.assertEqual(self.client.get(self.base + "scale/").json(), {"bridged": False})
+
+
+class OnlyTheBridgePostsReadingsTests(StationApiTestCase):
+    """O271 (audit2_floor F3): the tablet's own login posting 106.8 kg to SC-1 and then confirming the roll
+    as "scale" is a typed weight with no supervisor's PIN. Only the Scale bridge role posts."""
+
+    def as_role(self, role):
+        from django.contrib.auth.models import Group
+        from django.core.management import call_command
+
+        call_command("setup_roles", verbosity=0)
+        user = User.objects.create_user(role.replace(" ", "-").lower())
+        user.groups.add(Group.objects.get(name=role))
+        client = APIClient()
+        client.force_authenticate(user)
+        return client
+
+    def post(self, client):
+        return client.post("/api/manufacturing/scale-readings/",
+                           {"scale": "SC-1", "gross_kg": "106.8", "stable": True}, format="json")
+
+    def test_the_tablet_login_cannot_post_a_scale_reading(self):
+        LoomStation.objects.filter(pk=self.station.pk).update(scale_code="SC-1", scale_bridged=True)
+        self.assertEqual(self.post(self.as_role("Station")).status_code, 403)
+        self.assertEqual(ScaleReading.objects.count(), 0)
+
+    def test_nor_the_supervisor(self):
+        self.assertEqual(self.post(self.as_role("Production Supervisor")).status_code, 403)
+
+    def test_a_weighing_login_given_the_right_by_hand_is_still_refused(self):
+        self.device.user_permissions.add(Permission.objects.get(codename="add_scalereading"))
+        self.assertEqual(self.post(self.client).status_code, 403)
+
+    def test_the_scale_bridge_role_posts(self):
+        self.assertEqual(self.post(self.as_role("Scale bridge")).status_code, 201)
+
+
+from django.db import connection  # noqa: E402
+from django.db.migrations.executor import MigrationExecutor  # noqa: E402
+from django.test import TransactionTestCase, tag  # noqa: E402
+
+
+@tag("migration")
+class ScaleReadingRightMovesToTheBridgeMigrationTests(TransactionTestCase):
+    """manufacturing 0086 over a database whose Station and supervisor roles hold add_scalereading."""
+
+    BEFORE = [("manufacturing", "0085_scale_reading_net_and_key")]
+    AFTER = [("manufacturing", "0086_scale_readings_are_the_bridges")]
+
+    def holders(self, apps):
+        Group = apps.get_model("auth", "Group")
+        return sorted(Group.objects.filter(permissions__codename="add_scalereading").values_list("name", flat=True))
+
+    def test_the_right_leaves_the_tablet_and_the_supervisor_and_comes_back_on_reverse(self):
+        executor = MigrationExecutor(connection)
+        executor.migrate(self.BEFORE)
+        old = MigrationExecutor(connection).loader.project_state(self.BEFORE).apps
+        ContentType = old.get_model("contenttypes", "ContentType")
+        Permission_ = old.get_model("auth", "Permission")
+        Group = old.get_model("auth", "Group")
+        kind, _ = ContentType.objects.get_or_create(app_label="manufacturing", model="scalereading")
+        add, _ = Permission_.objects.get_or_create(content_type=kind, codename="add_scalereading",
+                                                   defaults={"name": "Can add scale reading"})
+        view, _ = Permission_.objects.get_or_create(content_type=kind, codename="view_scalereading",
+                                                    defaults={"name": "Can view scale reading"})
+        for name in ("Station", "Production Supervisor"):
+            Group.objects.create(name=name).permissions.add(add, view)
+        executor = MigrationExecutor(connection)
+        executor.migrate(self.AFTER)
+        new = executor.loader.project_state(self.AFTER).apps
+        self.assertEqual(self.holders(new), ["Scale bridge"])
+        self.assertEqual(new.get_model("auth", "Group").objects.filter(
+            permissions__codename="view_scalereading").count(), 2, "the right to read stays")
+        executor = MigrationExecutor(connection)
+        executor.migrate(self.BEFORE)
+        self.assertEqual(self.holders(old), ["Production Supervisor", "Station"])
+        executor = MigrationExecutor(connection)
+        executor.migrate(executor.loader.graph.leaf_nodes())

@@ -396,7 +396,9 @@ ROLES = {
               "processroll", "rollmount", "loomwaste", "machineclock", "crewassignment",
               "meterreading", "spareissue", "toolusage"),
         *crud("manufacturing", "maintenancejob", actions=("add", "change", "view")),
-        *crud("manufacturing", "scalereading", actions=("add", "view")),
+        # Readings are the scale's to post (the "Scale bridge" role), never a person's (O271):
+        # a reading posted by hand is a typed weight without the PIN and the reason.
+        *view("manufacturing", "scalereading"),
         *crud("manufacturing", "taperunsetting", actions=("add", "view")),
         # The shift register is the supervisor's to mark.
         *crud("hr", "attendanceday", actions=("add", "change", "view")),
@@ -428,7 +430,9 @@ ROLES = {
     "Station": [
         "manufacturing.weigh_at_station",
         "manufacturing.view_loomstation",
-        *crud("manufacturing", "scalereading", actions=("add", "view")),
+        # Not add_scalereading (O271): the tablet posting the reading it then weighs from is
+        # a typed weight with no supervisor's PIN. The bridge posts, with its own key.
+        *view("manufacturing", "scalereading"),
     ],
     # Whoever keeps how things are made: the recipes, the routes, the
     # machines and their rates, the reasons the floor chooses from. What a
@@ -660,6 +664,11 @@ for _role in ("Controller", "AR Manager", "AP Manager", "Stores Manager", "Quali
 # for its own role and may confirm them. Which one, the proposal decides.
 for _role in ROLES:
     ROLES[_role] = [*ROLES[_role], "core.view_roleproposal", "core.confirm_roleproposal"]
+
+# A scale's bridge (deploy/scale_bridge): the Integration login its API key
+# signs in as. It posts what the scale reads and nothing else, so it is
+# added after the rights every person's role is given above (O271).
+ROLES["Scale bridge"] = ["manufacturing.add_scalereading"]
 
 
 # Who signs in with a second factor (apps/core/second_factor.py): whoever
