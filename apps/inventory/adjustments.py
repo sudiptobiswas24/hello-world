@@ -536,6 +536,13 @@ class StockAdjustmentLine(AuditModel):
                 # The rate is for reading, at the places the line keeps.
                 self.unit_cost = (worth / held).quantize(Decimal("0.0001")) if held > 0 else Decimal("0")
             else:
+                # A standard shelf reads quantity x standard: stock found at another cost would put that cost
+                # on it (O323). As a write-down leaves at what the shelf holds, a write-up comes at the standard.
+                standard = item.standard_cost or Decimal("0")
+                if quantity > 0 and item.costing_method == "standard" and self.unit_cost != standard:
+                    raise ValidationError(
+                        f"{item} is costed at standard, so {quantity} {item.uom} found are worth its standard, "
+                        f"{standard} each, not {self.unit_cost}. Leave the cost blank.")
                 self.posted_value = to_paisa(quantity * self.unit_cost)
         on_hand = item.on_hand_at(adjustment.warehouse)
         if quantity < 0 and -quantity > on_hand and not adjustment.warehouse.allow_negative_stock:

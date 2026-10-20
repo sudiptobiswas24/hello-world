@@ -256,3 +256,17 @@ class AWriteUpAtTheAverageIsATotalNotARateMultipliedBack(AdjustmentTestCase):
         self.assertEqual(self.item.valuation_at(self.warehouse)[1], D("40000.00"))
         self.assertEqual(self.balance(self.inventory), D("10000.00"))
         self.assertEqual(self.item.average_cost_at(self.warehouse), D("3.33333333"))
+
+
+class AWriteUpOfAStandardItemComesAtTheStandardTests(AdjustmentTestCase):
+    """O323: standard 10.005, 4 held; 2 found at 12 are refused, 2 found with no cost come at 20.01."""
+
+    def test_it(self):
+        item = Item.objects.create(sku="STD", name="Standard", uom=self.each, costing_method=CostingMethod.STANDARD,
+                                   standard_cost=D("10.005"))
+        self.stock("4", "10.005", item=item)
+        with self.assertRaises(ValidationError):
+            self.adjust("2", reason=self.found, cost="12", item=item)
+        up = self.adjust("2", reason=self.found, item=item)
+        self.assertEqual(up.lines.get().posted_value, D("20.01"))
+        self.assertEqual(item.valuation_at(self.warehouse)[1], D("60.03"))
