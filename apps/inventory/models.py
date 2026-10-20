@@ -461,11 +461,14 @@ class Item(Extensible, AuditModel):
         return unit_cost_for(self, warehouse, quantity, lot=lot)
 
     def average_cost_at(self, warehouse, before_id=None):
-        """Weighted average unit cost, optionally as it stood before a movement."""
+        """
+        Weighted average unit cost, optionally as it stood before a movement, at the eight places a movement's
+        rate keeps (O328). A rate for reading and pricing: money is the total's share, not this times a quantity.
+        """
         quantity, value = self._replay_valuation(warehouse, before_id)
         if quantity <= 0:
             return Decimal("0")
-        return (value / quantity).quantize(Decimal("0.0001"))
+        return (value / quantity).quantize(Decimal("0.00000001"))
 
     def reserved_at(self, warehouse):
         """How much here is already promised to a document."""
