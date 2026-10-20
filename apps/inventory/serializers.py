@@ -3,6 +3,7 @@ from decimal import Decimal
 from django.db.models import Sum
 from rest_framework import serializers
 
+from .adjustments import offset_account_refusal
 from .models import (
     AdjustmentReason,
     Item,
@@ -187,6 +188,23 @@ class AdjustmentReasonSerializer(serializers.ModelSerializer):
     class Meta:
         model = AdjustmentReason
         fields = ["id", "code", "name", "account", "account_label", "direction", "is_active"]
+
+    def validate_account(self, account):
+        """
+        Where an adjustment's other side books is the accountant's to say: a Stores Manager who could point a
+        reason at the payables credited them 50.00 with no vendor (O324). The type rule is the model's.
+        """
+        refusal = offset_account_refusal(account)
+        if refusal:
+            raise serializers.ValidationError(refusal)
+        if getattr(self.instance, "account_id", None) == account.pk:
+            return account
+        request = self.context.get("request")
+        if request is None or not request.user.has_perm("accounting.post_journalentry"):
+            raise serializers.ValidationError(
+                "Which account a stock adjustment reason books to is set by someone who may post journal "
+                "entries, not by whoever keeps the stock.")
+        return account
 
     def get_account_label(self, reason):
         return f"{reason.account.code} · {reason.account.name}" if reason.account_id else ""

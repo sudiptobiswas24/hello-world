@@ -26,7 +26,7 @@ from django.db import models, transaction
 from django.db.models import Q, Sum
 from django.utils import timezone
 
-from apps.accounting.models import JournalEntry, JournalLine, round_money
+from apps.accounting.models import AccountType, JournalEntry, JournalLine, round_money
 from apps.core.models import AuditModel, DocumentSequence, correction_date, serialised, to_date
 
 from .locking import lock_position, lock_positions
@@ -91,6 +91,21 @@ class AdjustmentDirection(models.TextChoices):
     BOTH = "both", "Either"
 
 
+# The other side of a stock adjustment is a gain, a loss or opening equity. A control or money account (payables,
+# receivables, a bank, inventory itself) on a reason let a stores clerk credit the payables with no vendor (O324):
+# the journal API refuses that, so the reason must too.
+OFFSET_TYPES = (AccountType.INCOME, AccountType.EXPENSE, AccountType.EQUITY)
+
+
+def offset_account_refusal(account):
+    """Why `account` cannot take an adjustment's other side, or "" when it can."""
+    if account.account_type in OFFSET_TYPES:
+        return ""
+    return (f"{account.code} is an {account.get_account_type_display().lower()} account. A stock adjustment's "
+            "other side is a gain, a loss or opening equity: an income, expense or equity account, never a "
+            "control or money account.")
+
+
 class AdjustmentReason(AuditModel):
     """
     Why stock was written up or down, and where the other side lands.
@@ -121,6 +136,15 @@ class AdjustmentReason(AuditModel):
 
     def __str__(self):
         return f"{self.code} - {self.name}"
+
+    def check_account(self):
+        refusal = offset_account_refusal(self.account)
+        if refusal:
+            raise ValidationError({"account": refusal})
+
+    def save(self, *args, **kwargs):
+        self.check_account()
+        super().save(*args, **kwargs)
 
     def permits(self, quantity):
         if quantity > 0:
@@ -203,6 +227,9 @@ class StockAdjustment(AuditModel):
         lines = list(self.lines.select_related("item", "uom"))
         if not lines:
             raise ValidationError("Cannot post an adjustment with no lines.")
+        # A reason saved before the rule, or whose account has since become a control account, is asked again
+        # when it would book (O324). A void of an adjustment already posted on one is still allowed.
+        self.reason.check_account()
 
         # Before anything reads the shelf: a write-off checks what is
         # there and then takes it, and two of them can both find enough.
