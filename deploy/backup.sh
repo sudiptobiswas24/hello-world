@@ -26,8 +26,15 @@ MEDIA_DIR="${MEDIA_DIR:-/media}"
 # than leaning on `set -e`: the loop calls dump as `dump || ...`, and a shell ignores `set -e` in a
 # function called that way, so a failed pg_dump went on to print "backup written" and the retention
 # lines deleted every older backup with no new one made (O314).
+#
+# A failed night takes its own half-written files with it: kept, a disk-full failure added more
+# every night until a later success swept them.
 failed() {
     echo "$(date '+%F %T') BACKUP FAILED: $*; older backups kept" >&2
+    if [ -n "${stamp:-}" ]; then
+        rm -rf -- "${target}.partial" "${media}.partial" "${manifest}.partial" "${manifest}.unsorted.partial" \
+            "${check}"
+    fi
     return 1
 }
 
