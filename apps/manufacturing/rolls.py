@@ -283,13 +283,56 @@ class FabricRoll(AuditModel):
     def clean(self):
         self._check_against_entry()
 
+    # What the weighing measured and decided, and who did it (O272). The
+    # weaver's piece pay reads length_m, the trace reads machine, and the
+    # metres variance was worked from these at the scale: changed later,
+    # pay follows the edit while the variance still says what it said.
+    # A wrong roll is corrected by voiding its booking and weighing again.
+    FIXED_ONCE_WEIGHED = (
+        "lot", "specification", "entry", "width_mm", "length_m", "net_weight_kg", "core_weight_kg",
+        "is_tubular", "machine", "station", "weighed_by", "weighed_at", "woven_by", "shift",
+        "shift_date", "core_type", "weight_source", "approved_by", "override_reason", "scale_reading",
+        "override_note", "metres_from_weight", "metres_variance_percent", "metres_tolerance_percent",
+        "is_metres_exception",
+    )
+
+    def is_weighed(self):
+        """Booked against an entry or weighed at a station: a measurement on record, not a draft."""
+        return self.entry_id is not None or self.weighed_at is not None
+
     def save(self, *args, **kwargs):
         # On save rather than only in clean(), because rolls are
         # written by shop-floor code and Django never calls full_clean
         # for you — the lesson `GoodsReceiptLine` taught this codebase
         # by checking a quantity that nothing validated.
+        if not self._state.adding and self.pk is not None:
+            before = type(self).objects.filter(pk=self.pk).first()
+            if before is not None and before.is_weighed():
+                changed = [name for name in self.FIXED_ONCE_WEIGHED
+                           if getattr(before, self._meta.get_field(name).attname)
+                           != getattr(self, self._meta.get_field(name).attname)]
+                if changed:
+                    raise ValidationError({name: (
+                        f"{before.lot} was weighed; its {self._meta.get_field(name).verbose_name} is what "
+                        "the weighing recorded. A wrong roll is corrected by voiding its booking and "
+                        "weighing it again, not by an edit.") for name in changed})
         self._check_against_entry()
         super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        """A weighed roll is not deleted while its booking or its stock stands (O272)."""
+        if self.is_weighed():
+            entry = self.entry
+            if entry is not None and entry.posted and not entry.is_voided():
+                raise ValidationError(
+                    f"{self.lot} was weighed and booked by {entry}, which is posted. Void the booking; "
+                    "the roll stays as the record of what was weighed.")
+            standing = self.lot.on_hand_at()
+            if standing != 0:
+                raise ValidationError(
+                    f"{self.lot} was weighed and {format(standing.normalize(), 'f')} kg of it stand on the "
+                    "shelf. A roll deleted leaves its stock with no roll, no weaver and no trace.")
+        return super().delete(*args, **kwargs)
 
     def _check_against_entry(self):
         """
