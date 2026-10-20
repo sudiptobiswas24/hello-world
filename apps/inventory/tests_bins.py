@@ -421,3 +421,32 @@ class CountingEachPlaceOnceTests(BinTestCase):
                                format="json")
         self.assertEqual(response.status_code, 400, response.content[:300])
         self.assertIn("is on this sheet already", str(response.json()))
+
+
+class ANewStandardInABinnedWarehouseTests(BinTestCase):
+    """
+    O321: a value-only movement moves money and no goods, so it names no bin. Refused in a binned warehouse,
+    a new standard for an item held there could not be set: standard 10, 5 held in A-01, set to 11, the shelf
+    and the books both move 5.00.
+    """
+
+    def test_set_standard_cost_revalues_stock_held_in_bins(self):
+        from .models import set_standard_cost
+
+        item = Item.objects.create(sku="STD", name="Standard", uom=self.each, costing_method="standard",
+                                   standard_cost=Decimal("10"))
+        self.north.requires_bins = True
+        self.north.save()
+        self.put(self.a1, "5", "10", item=item)
+        set_standard_cost(item, "11", reason=self.reason)
+        self.assertEqual(item.valuation_at(self.north), (Decimal("5"), Decimal("55.00")))
+        revaluation = StockMovement.objects.get(item=item, quantity=0)
+        self.assertEqual((revaluation.bin, revaluation.value), (None, Decimal("5.00")))
+
+    def test_goods_still_say_where(self):
+        self.north.requires_bins = True
+        self.north.save()
+        with self.assertRaises(ValidationError):
+            StockMovement.objects.create(item=self.item, warehouse=self.north, movement_type=MovementType.RECEIPT,
+                                         uom=self.each, quantity=Decimal("1"), unit_cost=Decimal("5"),
+                                         occurred_at=timezone.now())

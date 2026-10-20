@@ -956,7 +956,10 @@ class StockMovement(AuditModel):
                         f"Only {format(Decimal(held).normalize(), 'f')} of {self.item} in "
                         f"{self.bin}; cannot move {format(wanted.normalize(), 'f')}."
                     )
-        elif self.warehouse.requires_bins:
+        elif self.warehouse.requires_bins and self.quantity != 0:
+            # A value-only movement (a revaluation, a new standard) moves money and no goods, so it is in no
+            # bin: refused here, publishing a standard for an item held in a binned warehouse was refused
+            # (O321).
             raise ValidationError(
                 f"{self.warehouse} is binned; this movement must say where in it "
                 "the stock is."
