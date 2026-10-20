@@ -406,3 +406,63 @@ class ThroughTheDoorTests(CostingTestCase):
         again = client.post(url, {"on_date": str(TODAY)})
         self.assertEqual(again.status_code, 400)
         self.assertIn("already published", str(again.data))
+
+
+class APublishedVersionStandsTests(CostingTestCase):
+    """O277 (audit2_floor F7): V1 published, revaluing stock at its standards. A row of V1 was then changed
+    from 100 to 999, or V1 deleted, and against_actual and explain read the changed figure while the
+    revaluation entry lost its link."""
+
+    def published(self):
+        version = self.version()
+        version.publish(on_date=TODAY)
+        return version
+
+    def api(self):
+        from django.contrib.auth.models import Permission, User
+        from rest_framework.test import APIClient
+
+        user = User.objects.create_user("costs")
+        user.user_permissions.add(*Permission.objects.filter(
+            content_type__app_label="manufacturing",
+            codename__in=["view_costversion", "change_costversion", "delete_costversion", "add_standardcost",
+                          "view_standardcost", "change_standardcost", "delete_standardcost"]))
+        client = APIClient()
+        client.force_authenticate(user)
+        return client
+
+    def test_its_standards_are_not_changed_added_or_deleted(self):
+        version = self.published()
+        row = version.costs.get(item=self.virgin)
+        row.material = Decimal("999")
+        with self.assertRaisesMessage(ValidationError, "not changed"):
+            row.save()
+        with self.assertRaisesMessage(ValidationError, "not deleted"):
+            version.costs.get(item=self.virgin).delete()
+        with self.assertRaisesMessage(ValidationError, "not changed"):
+            StandardCost.objects.create(version=version, item=self.tape, material=Decimal("5"))
+        self.assertEqual(version.costs.get(item=self.virgin).total, Decimal("100"))
+
+    def test_it_is_not_deleted_or_redated(self):
+        version = self.published()
+        with self.assertRaisesMessage(ValidationError, "is not deleted"):
+            version.delete()
+        version.effective_from = TODAY + datetime.timedelta(days=1)
+        with self.assertRaisesMessage(ValidationError, "what it posted stands"):
+            version.save()
+        version.refresh_from_db()
+        version.notes = "kept for the auditors"
+        version.save()
+
+    def test_nor_over_the_api(self):
+        version = self.published()
+        row = version.costs.get(item=self.virgin)
+        client = self.api()
+        answers = [
+            client.patch(f"/api/manufacturing/standard-costs/{row.pk}/", {"material": "999"}, format="json"),
+            client.delete(f"/api/manufacturing/standard-costs/{row.pk}/"),
+            client.patch(f"/api/manufacturing/cost-versions/{version.pk}/", {"name": "Other"}, format="json"),
+            client.delete(f"/api/manufacturing/cost-versions/{version.pk}/"),
+        ]
+        self.assertEqual([answer.status_code for answer in answers], [400, 400, 400, 400])
+        self.assertEqual(CostVersion.objects.get(pk=version.pk).costs.get(item=self.virgin).total, Decimal("100"))

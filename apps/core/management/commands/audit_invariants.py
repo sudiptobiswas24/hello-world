@@ -1452,7 +1452,10 @@ class Command(BaseCommand):
                 # Posted is a flag on some documents and a status on others
                 # (a pay run, a remittance). Either can be deleted; the
                 # edit guard is asked of the flag, which is all it reads.
-                flagged = "posted" in {f.name for f in model._meta.get_fields()}
+                names = {f.name for f in model._meta.get_fields()}
+                # Published is posted by another name (O277): a cost version's revaluation.
+                word = "published" if "published_at" in names else "posted"
+                flagged = "posted" in names or "published_at" in names
                 status = next((f for f in model._meta.fields if f.name == "status"), None)
                 if not flagged and not (status is not None and "posted" in dict(status.choices or ())):
                     continue
@@ -1466,7 +1469,7 @@ class Command(BaseCommand):
                 ):
                     if method == "save" and not flagged:
                         continue
-                    if self._guards_posted(model, code, method):
+                    if self._guards_posted(model, code, method, word):
                         continue
                     if method == "delete" and key in self.DELETABLE_REPORTED:
                         reported.add(key)
@@ -1744,7 +1747,7 @@ class Command(BaseCommand):
                         ))
         return findings
 
-    def _guards_posted(self, model, code, method):
+    def _guards_posted(self, model, code, method, word="posted"):
         # The guard may be inherited from an abstract base in the same
         # app; a document is guarded if any class it is built from
         # carries one. Each still has to say posted and raise.
@@ -1753,7 +1756,7 @@ class Command(BaseCommand):
                 break
             found = self._class_body(code, cls.__name__)
             guard = found and self._method_body(found, method)
-            if guard and "posted" in guard and "raise" in guard:
+            if guard and word in guard and "raise" in guard:
                 return True
         return False
 
