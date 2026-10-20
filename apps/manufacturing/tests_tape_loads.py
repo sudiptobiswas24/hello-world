@@ -420,3 +420,18 @@ class PromisedTapeStaysForItsRunTests(TapeLoadTestCase):
                                            lot=self.d1, quantity=Decimal("-10"))
         with self.assertRaisesMessage(ValidationError, "cannot be written off"):
             adjustment.post()
+
+
+class APlanForAPromisedBatchIsRefusedTests(PromisedTapeStaysForItsRunTests):
+    """O340: plan_issue and pick_list did not ask the creel promise for a batch named by hand; the guard
+    refused only at the door, later than the plan. D-1, 100 kg, all on L-17's warp creel."""
+
+    test_it_is_not_rebatched_away = test_it_is_not_moved_to_another_shelf = test_it_is_not_written_off = None
+
+    def test_a_plan_naming_it_is_refused(self):
+        from django.core.exceptions import ValidationError
+
+        from apps.inventory.picking import plan_issue
+
+        with self.assertRaisesMessage(ValidationError, "cannot be planned to go"):
+            plan_issue(self.tape, self.plant, Decimal("10"), lot=self.d1)
