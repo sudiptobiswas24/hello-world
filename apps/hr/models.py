@@ -407,7 +407,51 @@ class Employee(Extensible, AuditModel):
         self.clean()
         self._check_nothing_dangling()
         self._check_not_paid_on()
+        before = Employee.objects.filter(pk=self.pk).values_list("termination_date", flat=True).first() \
+            if self.pk else None
         super().save(*args, **kwargs)
+        self._switch_login(before)
+
+    def has_left_by(self, day):
+        """Gone by `day`: a leaving date before it. The leaving day itself is still worked (is_employed_on)."""
+        return self.termination_date is not None and to_date(day) > to_date(self.termination_date)
+
+    def _switch_login(self, left_before):
+        """
+        A leaver's login is switched off once their leaving date has passed, and on again when the
+        leaving date is withdrawn or moved past today (O300). A leaving date still to come leaves it
+        on: from the day after it, login_ended (registered in apps.py) refuses the login whatever its
+        switch says, at sign-in, on every request and at every approval.
+        """
+        if not self.user_id:
+            return
+        today = timezone.localdate()
+        gone = self.has_left_by(today)
+        was_gone = left_before is not None and to_date(today) > to_date(left_before)
+        if gone != was_gone and self.user.is_active == gone:
+            self.user.is_active = not gone
+            self.user.save(update_fields=["is_active"])
+
+
+def leaver_login(user, day):
+    """core.models.login_ended's question for hr: the login of somebody who has left by `day`."""
+    person = Employee.objects.filter(user=user).select_related("party").first()
+    if person is not None and person.has_left_by(day):
+        return (f"{person} left on {person.termination_date:%d-%m-%Y}; their login no longer signs in "
+                "or decides for the plant.")
+    return None
+
+
+def check_still_working(by, on_date=None):
+    """
+    Every decision a person takes for the plant (leave, hours, claims) is taken by someone working
+    here on its day: employed and active, as the floor's sign-offs already ask (O300). A manager who
+    left on 1 June does not approve a report's leave in October.
+    """
+    day = to_date(on_date) if on_date is not None else timezone.localdate()
+    if by is not None and not by.is_working_on(day):
+        raise ValidationError(f"{by} is not working here on {day:%d-%m-%Y} "
+                              f"({by.get_employment_status_display().lower()}); somebody who is decides.")
 
 
 class LeavePolicy(AuditModel):
@@ -792,6 +836,7 @@ class LeaveRequest(AuditModel):
         """
         if by is None:
             raise ValidationError("Somebody has to decide this; say who.")
+        check_still_working(by)
         if by.pk == self.employee_id:
             raise ValidationError(
                 f"{self.employee} cannot decide their own leave."

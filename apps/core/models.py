@@ -519,6 +519,36 @@ _WORKING_DAY = []
 WORKING_WEEKDAYS = frozenset({1, 2, 3, 4, 5})  # ISO weekdays: hr's DEFAULT_WORKING_DAYS, "12345"
 
 
+_LOGIN_ENDED = []
+
+
+def register_login_end(ask):
+    """
+    ask(user, day) -> why that login no longer acts for anybody on `day`, or None. hr registers a
+    leaver's: the login of someone whose leaving date has passed (O300). core imports no module, so
+    whoever knows when a login's person has gone says so here.
+    """
+    if ask not in _LOGIN_ENDED:
+        _LOGIN_ENDED.append(ask)
+
+
+def login_ended(user, day=None):
+    """
+    Why `user` may neither sign in nor decide on `day` (the plant's today when not given), or None.
+
+    Asked at sign-in and on every request after it (core.auth's backend), by an integration's key, and
+    by every approval: a login stays the person's only while they work here.
+    """
+    if user is None or getattr(user, "pk", None) is None:
+        return None
+    day = to_date(day) if day is not None else timezone.localdate()
+    for ask in _LOGIN_ENDED:
+        said = ask(user, day)
+        if said:
+            return said
+    return None
+
+
 def register_working_day(ask):
     """
     ask(day) -> False for a day the plant does not work (a holiday), True for one its own
