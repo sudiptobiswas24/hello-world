@@ -2411,3 +2411,32 @@ class OpeningImportRaceTests(RaceCase):
         self.once(race(StockAdjustment, *[self.bring("opening_stock", self.STOCK, reason="OPENING")] * 2))
         on_hand = StockMovement.objects.filter(item__sku="WDG-1").aggregate(t=Sum("quantity"))["t"]
         self.assertEqual(on_hand, Decimal("1500"))
+
+
+@tag("race")
+@unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
+class AMoveTakesItsOwnPositionsRaceTests(RaceCase):
+    """Review item 7: move_stock said its caller held the positions and nothing checked. A caller that did not
+    let a creel load of D-1 (100 kg) and a move of the same 100 kg to the store both through."""
+
+    def test_a_load_and_an_unlocked_move_of_one_doff(self):
+        from django.utils import timezone
+
+        from apps.inventory.models import StockMovement, Warehouse
+        from apps.inventory.transfers import move_stock
+        from apps.manufacturing.orders import WorkOrder
+        from apps.manufacturing.tape_loads import CreelSide, TapeLoad, load_tape
+        from apps.manufacturing.tests_orders import TODAY
+        from apps.manufacturing.tests_station import at
+        from apps.manufacturing.tests_tape_loads import TapeLoadTestCase
+
+        made = fixture(self, TapeLoadTestCase)
+        WorkOrder.objects.filter(pk=made.run.pk).update(backflush=True)
+        store = Warehouse.objects.create(code="ST", name="Store")
+        d1 = made.doffs["D-1"]
+        outcomes = race(
+            (TapeLoad, StockMovement),
+            lambda: load_tape(made.station, made.operator, made.l17, "D-1", "100", CreelSide.WARP,
+                              at=at(TODAY, 9)),
+            lambda: move_stock(made.tape, made.plant, store, Decimal("100"), "T-1", timezone.now(), "", lot=d1))
+        self.once(outcomes)

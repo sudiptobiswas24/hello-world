@@ -44,8 +44,22 @@ def move_stock(item, source, destination, quantity, reference, occurred_at, note
     the batch decides; the arriving leg puts back that total, the money
     each leg moves (O269). Priced per unit and multiplied back up, three
     cases cleared at three eaches' rate turned 960 into 840; the rate is
-    for reading. The caller holds both positions.
+    for reading.
+
+    It takes both positions itself, in lock_positions' order, before it
+    reads anything (review item 7): the docstring said the caller held them
+    and nothing checked, and a caller that did not let a creel load and this
+    move of the same doff both through. Taken again by a caller that holds
+    them already, a row lock costs nothing.
     """
+    with transaction.atomic():
+        lock_positions([(item, source), (item, destination)])
+        return _move_stock(item, source, destination, quantity, reference, occurred_at, notes,
+                           lot=lot, from_bin=from_bin, to_bin=to_bin)
+
+
+def _move_stock(item, source, destination, quantity, reference, occurred_at, notes,
+                lot=None, from_bin=None, to_bin=None):
     from .tracking import refuse_drawing_what_is_promised
 
     # A batch promised to a backflushed run's creels stays where the run draws it (O276).
@@ -434,6 +448,9 @@ class StockTransferLine(AuditModel):
         if not item.track_inventory:
             raise ValidationError(f"{item} is not stocked, so there is nothing to move.")
 
+        # Held before the shelf is read, not only inside move_stock (review item 7): the posting paths
+        # that call this hold them already, and a second take of a row lock is free.
+        lock_positions([(item, source), (item, destination)])
         from_bin, to_bin = self._bins_for(transfer, source, destination)
         on_hand = (
             from_bin.on_hand(item) if from_bin is not None
