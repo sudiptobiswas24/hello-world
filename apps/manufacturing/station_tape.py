@@ -27,7 +27,7 @@ Withdrawn with a supervisor's PIN: the output reversed, its inspection
 voided (or, still open, removed).
 """
 
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from django.core.exceptions import ValidationError
 from django.db import models, transaction
@@ -87,6 +87,19 @@ class TapeDoff(AuditModel):
         return self.lot.code
 
 
+def whole_bobbins(value):
+    """A count of bobbins as a whole number, or a refusal: never cut down without a word."""
+    if isinstance(value, bool):
+        raise ValidationError("Count the bobbins in whole bobbins.")
+    try:
+        count = Decimal(str(value).strip())
+    except (InvalidOperation, ValueError):
+        raise ValidationError("Count the bobbins in whole bobbins.")
+    if not count.is_finite() or count != count.to_integral_value():
+        raise ValidationError("Count the bobbins in whole bobbins.")
+    return int(count)
+
+
 def doff_code(machine, shift, shift_date):
     """TP-261007-D-EXT1-03: day, shift, line, and the doff's number on it."""
     count = TapeDoff.objects.filter(machine=machine, shift=shift, shift_date=shift_date).count()
@@ -110,13 +123,12 @@ def record_tape(station, operator, machine, gross_kg, bobbins, core_type, denier
         raise ValidationError(f"{station} is not a tape line's station.")
     machine = Machine.objects.select_for_update().get(pk=machine.pk)
     shift, shift_date = _context(station, operator, machine, at)
+    # Counted before the scale is asked (O279): the net frame's tare ran
+    # int(bobbins) first, so "eight" was a 500 and 2.7 became 2 unsaid.
+    bobbins = whole_bobbins(bobbins)
     gross, reading = weigh_gross(station, operator, supervisor, gross_kg, source, at,
                                  typed_reason, typed_note,
-                                 tare_kg=lambda: core_type.tare_kg * int(bobbins))
-    try:
-        bobbins = int(bobbins)
-    except (TypeError, ValueError):
-        raise ValidationError("Count the bobbins in whole bobbins.")
+                                 tare_kg=lambda: core_type.tare_kg * bobbins)
     if bobbins <= 0:
         raise ValidationError("A doff is at least one bobbin.")
     net = gross - core_type.tare_kg * bobbins
