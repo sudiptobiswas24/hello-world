@@ -83,8 +83,10 @@ from apps.accounting.mixins import (
 
 from apps.accounting.settlement import (
     allocated_on,
+    base_or_none,
     in_base,
     in_the_base,
+    no_rate,
     amount_overdue,
     installment_schedule,
     oldest_overdue,
@@ -769,8 +771,17 @@ class SalesOrder(PlacedWhereTheGoodsGo, Extensible, TaxedDocumentMixin, ChangesW
                 "total": self.total_in_base(), "margin": self.margin_percent()}
 
     def total_in_base(self):
-        """The order's total in the base currency, at its own date's rate, as the policy's limits are (O293)."""
-        return in_base(self.total(), self.currency, self.order_date)
+        """
+        The order's total in the base currency, at its own date's rate, as the policy's limits are (O293);
+        None where no rate stands that day (confirming it is refused; approval_reasons names the gap).
+        """
+        return base_or_none(self.total(), self.currency, self.order_date)
+
+    def unweighed(self):
+        """Why the policy cannot weigh this order in the base currency, or None."""
+        if self.currency_id and not self.currency.is_base and self.total_in_base() is None:
+            return no_rate(self.currency, self.order_date) + f": {self} is not weighed against the policy"
+        return None
 
     def cost_total(self):
         """
@@ -806,8 +817,8 @@ class SalesOrder(PlacedWhereTheGoodsGo, Extensible, TaxedDocumentMixin, ChangesW
         """Gross margin over the costed lines, or None if nothing is costed."""
         # Revenue in the base currency, as the cost is: a euro's revenue against a rupee cost read
         # a 95.6% margin as -300% (O293).
-        revenue = in_base(self.costed_revenue(), self.currency, self.order_date)
-        if revenue <= 0:
+        revenue = base_or_none(self.costed_revenue(), self.currency, self.order_date)
+        if revenue is None or revenue <= 0:
             return None
         return round_money((revenue - self.cost_total()) / revenue * Decimal("100"))
 
@@ -827,7 +838,8 @@ class SalesOrder(PlacedWhereTheGoodsGo, Extensible, TaxedDocumentMixin, ChangesW
             reasons.append(
                 f"{self.customer} would be {exposure} against a credit limit of {limit}."
             )
-        return reasons + self.policy_reasons()
+        gap = self.unweighed()
+        return reasons + self.policy_reasons() + ([gap] if gap else [])
 
     def policy_reasons(self):
         """
@@ -850,7 +862,7 @@ class SalesOrder(PlacedWhereTheGoodsGo, Extensible, TaxedDocumentMixin, ChangesW
                                      f"'{line.label()}' is discounted {line.discount_percent}%, above the "
                                      f"{policy.max_discount_percent}% limit."))
         total = self.total_in_base()
-        if policy.max_order_value is not None and total > policy.max_order_value:
+        if policy.max_order_value is not None and total is not None and total > policy.max_order_value:
             breaches.append((("total",), total, False,
                              f"The order is {total}{in_the_base(self)}, above the {policy.max_order_value} limit."))
         if policy.min_margin_percent is not None:
@@ -957,6 +969,8 @@ class SalesOrder(PlacedWhereTheGoodsGo, Extensible, TaxedDocumentMixin, ChangesW
             raise ValidationError("A cancelled order cannot be confirmed.")
         if not self.lines.exists():
             raise ValidationError("Cannot confirm an order with no lines.")
+        # Weighed in the base currency at its own date's rate, or not confirmed (review of O293).
+        in_base(self.total(), self.currency, self.order_date)
         if self.is_job_work and not self.supplied_items.exists():
             raise ValidationError(
                 f"{self} is job work and names nothing the customer supplies. List "

@@ -18,6 +18,7 @@ from apps.core.models import Company, Party, PartyRole, PartyRoleAssignment
 
 from .models import (
     Budget,
+    OrderStatus,
     PurchaseApprovalPolicy,
     PurchaseOrder,
     PurchaseOrderLine,
@@ -273,3 +274,34 @@ class AForeignOrderIsWeighedInTheBaseTests(BudgetTestCase):
         self.assertIn("The order is 4500000.00 in the base currency", reasons[0])
         with self.assertRaises(ValidationError):
             order.confirm()
+
+    def gbp_order(self):
+        # Pounds with a rate only from 1 April: an order of 1 March has no base figure.
+        from apps.core.models import Currency, ExchangeRate
+
+        gbp = Currency.objects.create(code="GBP", name="Pound")
+        ExchangeRate.objects.create(currency=gbp, rate=Decimal("105"), valid_from=datetime.date(2026, 4, 1))
+        order = PurchaseOrder.objects.create(vendor=self.vendor, order_date=datetime.date(2026, 3, 1), currency=gbp)
+        PurchaseOrderLine.objects.create(order=order, item=self.item, uom=self.uom, quantity=Decimal("10"),
+                                         unit_price=Decimal("10"), expense_account=self.expense)
+        return order
+
+    def test_an_order_with_no_rate_on_its_date_is_refused_at_confirmation_in_words(self):
+        order = self.gbp_order()
+        with self.assertRaisesMessage(ValidationError, "No exchange rate for GBP on 01-03-2026"):
+            order.confirm()
+        self.assertEqual(PurchaseOrder.objects.get(pk=order.pk).status, OrderStatus.DRAFT)
+
+    def test_one_order_with_no_rate_leaves_every_other_read_working_and_is_named(self):
+        # Review of O293: one confirmed foreign order dated before its currency's first rate made every budget
+        # read and every other order's approval_reasons raise. It is left out, and said.
+        stuck = self.gbp_order()
+        PurchaseOrder.objects.filter(pk=stuck.pk).update(status=OrderStatus.CONFIRMED)
+        self.order_of("10", "100")
+        PurchaseApprovalPolicy.objects.create(code="P", name="Budgets")
+        self.assertEqual((self.budget.committed(), self.budget.available()), (Decimal("1000.00"), Decimal("9000.00")))
+        (gap,) = self.budget.unweighed()
+        self.assertIn("No exchange rate for GBP on 01-03-2026", gap)
+        other = self.order_of("2", "100", confirm=False)
+        self.assertEqual(other.approval_reasons(), [])
+        self.assertIn("No exchange rate for GBP", " ".join(PurchaseOrder.objects.get(pk=stuck.pk).approval_reasons()))

@@ -77,8 +77,10 @@ from apps.inventory.models import (
 )
 from apps.accounting.settlement import (
     allocated_on,
+    base_or_none,
     in_base,
     in_the_base,
+    no_rate,
     amount_overdue,
     installment_schedule,
     oldest_overdue,
@@ -1522,8 +1524,30 @@ class Budget(AuditModel):
             if unbilled <= 0:
                 continue
             share = unbilled / line.quantity if line.quantity else Decimal("0")
-            total += line.order.in_base(line.net_amount() * share)
+            value = line.order.in_base(line.net_amount() * share)
+            if value is not None:  # an order with no rate on its date is named by unweighed(), not counted
+                total += value
         return total
+
+    def unweighed(self):
+        """
+        The confirmed orders committed() leaves out, each in words: a foreign order with no exchange
+        rate on its date has no base figure, and one such order must not make every budget read fail
+        (review of O293). Said wherever the budget's figures are shown or weighed.
+        """
+        lines = PurchaseOrderLine.objects.filter(
+            order__status=OrderStatus.CONFIRMED,
+            order__order_date__gte=self.start_date,
+            order__order_date__lte=self.end_date,
+        ).select_related("order", "order__currency", "item").order_by("order_id", "pk")
+        said = {}
+        for line in lines:
+            if line.order_id in said or self._account_for(line) != self.account:
+                continue
+            gap = line.order.unweighed()
+            if gap:
+                said[line.order_id] = gap
+        return list(said.values())
 
     def requested(self):
         """Approved requisitions not yet ordered — asked for, not yet agreed."""
@@ -1918,6 +1942,9 @@ class PurchaseOrder(Extensible, TaxedDocumentMixin, ChangesWithinItsApproval, Ap
         if PurchaseApprovalPolicy.active() is None:
             return reasons
         reasons += [words for _path, _value, _low, words in self.policy_breaches()]
+        gap = self.unweighed()
+        if gap:
+            reasons.append(gap)
         for line in self.lines.all():
             account = line.expense_account or (
                 line.charge.expense_account if line.is_charge() else None
@@ -1926,10 +1953,11 @@ class PurchaseOrder(Extensible, TaxedDocumentMixin, ChangesWithinItsApproval, Ap
             if budget is None:
                 continue
             value = self.in_base(line.net_amount())  # a budget is a base figure (O293)
-            if value > budget.available():
+            if value is not None and value > budget.available():
                 reasons.append(
                     f"'{line.label()}' is {value}{in_the_base(self)} against {budget.available()} "
                     f"left on budget {budget.code}."
+                    + "".join(f" It leaves out {words}." for words in budget.unweighed())
                 )
         return reasons
 
@@ -1940,8 +1968,17 @@ class PurchaseOrder(Extensible, TaxedDocumentMixin, ChangesWithinItsApproval, Ap
                 "prices": {line.pk: net_unit_price(line) for line in lines}}
 
     def in_base(self, amount):
-        """A figure of this order in the base currency, at its own date's rate, as limits and budgets are (O293)."""
-        return in_base(amount, self.currency, self.order_date)
+        """
+        A figure of this order in the base currency, at its own date's rate, as limits and budgets are
+        (O293); None where no rate stands that day (confirming it is refused; readers name the gap).
+        """
+        return base_or_none(amount, self.currency, self.order_date)
+
+    def unweighed(self):
+        """Why the policy and budgets cannot weigh this order in the base currency, or None."""
+        if self.currency_id and not self.currency.is_base and self.total_in_base() is None:
+            return no_rate(self.currency, self.order_date) + f": {self} is not weighed against the policy or budgets"
+        return None
 
     def total_in_base(self):
         return self.in_base(self.total())
@@ -1957,14 +1994,14 @@ class PurchaseOrder(Extensible, TaxedDocumentMixin, ChangesWithinItsApproval, Ap
             return []
         breaches = []
         total = self.total_in_base()
-        if policy.max_order_value is not None and total > policy.max_order_value:
+        if policy.max_order_value is not None and total is not None and total > policy.max_order_value:
             breaches.append((("total",), total, False,
                              f"The order is {total}{in_the_base(self)}, above the {policy.max_order_value} limit."))
         lines = list(self.lines.all())
         if policy.max_line_value is not None:
             for line in lines:
                 value = self.in_base(line.total())
-                if value > policy.max_line_value:
+                if value is not None and value > policy.max_line_value:
                     breaches.append((("lines", line.pk), value, False,
                                      f"'{line.label()}' is {value}{in_the_base(self)}, above the "
                                      f"{policy.max_line_value} line limit."))
@@ -2001,7 +2038,7 @@ class PurchaseOrder(Extensible, TaxedDocumentMixin, ChangesWithinItsApproval, Ap
         policy = PurchaseApprovalPolicy.active()
         if policy is None or not policy.tiers.exists():
             return
-        total = self.total_in_base()  # the tiers' limits are base figures (O293)
+        total = in_base(self.total(), self.currency, self.order_date)  # the tiers' limits are base figures (O293)
         groups = policy.authorised_groups(total)
         if by is None:
             raise ValidationError(
@@ -2036,6 +2073,8 @@ class PurchaseOrder(Extensible, TaxedDocumentMixin, ChangesWithinItsApproval, Ap
             raise ValidationError("A cancelled order cannot be confirmed.")
         if not self.lines.exists():
             raise ValidationError("Cannot confirm an order with no lines.")
+        # Weighed in the base currency at its own date's rate, or not confirmed (review of O293).
+        in_base(self.total(), self.currency, self.order_date)
         if PurchaseApprovalPolicy.active() is not None:
             # What is left on a budget weighs every confirmed order on it: two
             # confirmed at once each found it all there.

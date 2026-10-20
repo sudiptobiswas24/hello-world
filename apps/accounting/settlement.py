@@ -38,8 +38,36 @@ def in_base(amount, currency, on_date, rate=None):
     a euro sale at a 95.6% margin read -300% against its rupee cost (O293).
     """
     if rate is None:
-        rate = currency.rate_on(on_date) if currency is not None else Decimal("1")
+        rate = rate_or_none(currency, on_date)
+        if rate is None:
+            raise ValidationError(no_rate(currency, on_date) + ": add one effective on or before that day to "
+                                  "weigh this document in the base currency.")
     return round_money(amount * rate)
+
+
+def rate_or_none(currency, on_date):
+    """The currency's rate on `on_date` (1 for none or the base), or None where no rate stands that day."""
+    if currency is None:
+        return Decimal("1")
+    try:
+        return currency.rate_on(on_date)
+    except ValidationError:
+        return None
+
+
+def no_rate(currency, on_date):
+    """The gap, in words: the currency and the day with no rate."""
+    return f"No exchange rate for {currency.code} on {to_date(on_date):%d-%m-%Y}"
+
+
+def base_or_none(amount, currency, on_date, rate=None):
+    """
+    in_base() for a reader: None where the document's currency has no rate on its date, so one
+    document without a rate does not make a budget or another order unreadable. The reader says the
+    gap where it shows the figure (review of O293). Confirming such a document is refused by in_base().
+    """
+    rate = rate if rate is not None else rate_or_none(currency, on_date)
+    return None if rate is None else round_money(amount * rate)
 
 
 def in_the_base(document):
