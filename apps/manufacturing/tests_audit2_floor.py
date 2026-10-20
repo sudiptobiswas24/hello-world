@@ -31,7 +31,10 @@ class F1LockoutTests(TapeLoadTestCase):
                     self.station.identify(wrong, now=now)
                 except ValidationError as exc:
                     refused += 1 if "locked" not in str(exc) else 0
-            self.station.identify(pin, now=now)
+            try:
+                self.station.identify(pin, now=now)
+            except ValidationError:
+                pass  # locked: the right PIN waits out the lock too
         self.assertLess(refused, 10, f"{refused} wrong PINs tried inside one ten-minute window, no lock")
 
 

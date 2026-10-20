@@ -128,20 +128,15 @@ class LoomStation(AuditModel):
         A six-digit PIN is a million guesses; a station that lets
         anyone try them at keypad speed is not a login. Counted per
         station because that is where the guessing happens.
+
+        Every wrong PIN in the window counts, whatever succeeded between
+        them (O274). A success reset the count, so anyone with a PIN of
+        their own could guess four, sign in, and guess four more: eighty
+        wrong PINs in ten minutes and never a lock.
         """
         now = now or timezone.now()
-        # Newest first, and by insertion where two share a clock
-        # reading: otherwise an earlier success can sort ahead of the
-        # failures after it and quietly reset the count.
-        recent = list(
-            self.attempts.filter(at__gte=now - LOCK_WINDOW).order_by("-at", "-id")
-        )
-        failures = []
-        for attempt in recent:
-            if attempt.succeeded:
-                break
-            failures.append(attempt)
-        return len(failures) >= LOCK_AFTER
+        failures = self.attempts.filter(at__gte=now - LOCK_WINDOW, succeeded=False).count()
+        return failures >= LOCK_AFTER
 
     def identify(self, pin, now=None):
         """The person a PIN belongs to, counting the attempt either way."""
