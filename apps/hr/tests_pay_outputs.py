@@ -498,6 +498,20 @@ class ALeaverNoLongerSignsInOrDecides(OutputsTestCase):
         self.assertIn(client.get("/api/inventory/items/").status_code, (401, 403))
         self.assertFalse(APIClient().login(username=person.user.username, password=password))
 
+    def test_a_manager_on_leave_still_decides_their_reports_leave(self):
+        # O332: employed that day is enough; On Leave is still on the roll.
+        from .models import LeaveRequest, LeaveStatus
+
+        boss, report = self.employee("E2"), self.employee("E1")
+        report.manager = boss
+        report.save()
+        boss.employment_status = EmploymentStatus.ON_LEAVE
+        boss.save()
+        leave = LeaveRequest.objects.create(employee=report, leave_type="vacation",
+                                            start_date=datetime.date(2026, 11, 2), end_date=datetime.date(2026, 11, 3))
+        leave.approve(by=boss)
+        self.assertEqual(LeaveRequest.objects.get(pk=leave.pk).status, LeaveStatus.APPROVED)
+
     def test_a_manager_who_has_left_decides_no_leave_hours_or_claims(self):
         from .expenses import ExpenseClaim
         from .models import LeaveRequest
@@ -509,9 +523,9 @@ class ALeaverNoLongerSignsInOrDecides(OutputsTestCase):
         leave = LeaveRequest.objects.create(employee=report, leave_type="vacation",
                                             start_date=datetime.date(2026, 11, 2), end_date=datetime.date(2026, 11, 3))
         boss.terminate(datetime.date(2026, 6, 1))
-        with self.assertRaisesMessage(ValidationError, "is not working here on"):
+        with self.assertRaisesMessage(ValidationError, "has left (leaving date 01-06-2026)"):
             leave.approve(by=boss)
-        with self.assertRaisesMessage(ValidationError, "is not working here on"):
+        with self.assertRaisesMessage(ValidationError, "has left (leaving date 01-06-2026)"):
             ExpenseClaim(employee=report, purpose="Taxi")._check_decider(boss, as_hr=False)
-        with self.assertRaisesMessage(ValidationError, "is not working here on"):
+        with self.assertRaisesMessage(ValidationError, "has left (leaving date 01-06-2026)"):
             Timesheet(employee=report).check_approver(boss)
