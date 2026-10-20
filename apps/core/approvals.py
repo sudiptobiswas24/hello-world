@@ -30,7 +30,7 @@ from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils import timezone
 
-from .models import login_ended, serialised
+from .models import check_login_acts, serialised
 
 
 def authors(document, *parts):
@@ -149,9 +149,7 @@ class ApprovableMixin(models.Model):
         """
         if not self.can_be_approved():
             raise ValidationError("This document cannot be approved in its current state.")
-        ended = login_ended(by)
-        if ended:
-            raise ValidationError(ended)
+        check_login_acts(by)
         self.check_approver(by)
         check_not_raised_by(by, self.raised_by(), self)
         if self.approved_at:

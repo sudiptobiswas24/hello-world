@@ -111,7 +111,7 @@ class DiscountLimitTests(ApprovalTestCase):
         Employee.objects.filter(pk=person.pk).update(termination_date=datetime.date(2026, 6, 1),
                                                      employment_status="terminated")
         order = self.draft(discount="40")
-        with self.assertRaisesMessage(ValidationError, "left on 01-06-2026"):
+        with self.assertRaisesMessage(ValidationError, "has left (leaving date 01-06-2026)"):
             order.approve(by=self.approver)
         self.assertIsNone(order.approved_at)
 
