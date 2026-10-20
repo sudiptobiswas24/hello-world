@@ -489,3 +489,55 @@ class AReworkRecipeEatsItsBatchTests(ReworkTestCase):
         bill.is_rework = True
         with self.assertRaisesMessage(ValidationError, "has no line for"):
             bill.save()
+
+
+class AReworkBillKeepsItsBatchThroughEveryDoorTests(ReworkTestCase):
+    """O275 review (P5): PATCH bom-components {"bom": other} moved the only eating line off a rework bill (200);
+    PATCH boms {"item": virgin} turned a rework bill onto an item it eats nothing of (200); a released run's
+    bill edited afterwards was not asked again."""
+
+    def engineer(self):
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        call_command("setup_roles", verbosity=0)
+        user = User.objects.create_user("pe")
+        user.groups.add(Group.objects.get(name="Process Engineer"))
+        client = APIClient()
+        client.force_authenticate(user)
+        return client
+
+    def test_the_eating_line_is_not_moved_to_another_bill(self):
+        other = BillOfMaterials.objects.create(item=self.tape, name="Other", version=9,
+                                               quantity_produced=Decimal("100"), uom=self.kg, is_default=False,
+                                               is_rework=True)
+        BomComponent.objects.create(bom=other, item=self.tape, quantity=Decimal("98"), uom=self.kg, line_number=1)
+        line = self.rework_bom.components.get(item=self.tape)
+        answer = self.engineer().patch(f"/api/manufacturing/bom-components/{line.pk}/", {"bom": other.pk},
+                                       format="json")
+        self.assertEqual(answer.status_code, 400, answer.content)
+        self.assertTrue(self.rework_bom.eats_itself())
+
+    def test_a_rework_bill_is_not_moved_onto_another_item(self):
+        other = BillOfMaterials.objects.create(item=self.tape, name="Other", version=9,
+                                               quantity_produced=Decimal("100"), uom=self.kg, is_default=False,
+                                               is_rework=True)
+        BomComponent.objects.create(bom=other, item=self.tape, quantity=Decimal("98"), uom=self.kg, line_number=1)
+        answer = self.engineer().patch(f"/api/manufacturing/boms/{other.pk}/", {"item": self.virgin.pk},
+                                       format="json")
+        self.assertEqual(answer.status_code, 400, answer.content)
+        other.refresh_from_db()
+        self.assertEqual(other.item_id, self.tape.pk)
+
+    def test_a_released_runs_bill_is_asked_again_when_output_is_booked(self):
+        from .orders import ProductionEntry
+
+        lot = self.failed_lot()
+        order = self.rework_order(lot)
+        order.release(TODAY)
+        BomComponent.objects.filter(bom=self.rework_bom, item=self.tape).delete()  # past the line's own guard
+        entry = ProductionEntry.objects.create(work_order=order, entry_date=TODAY, warehouse=self.plant,
+                                               quantity_produced=Decimal("480"), uom=self.kg)
+        with self.assertRaisesMessage(ValidationError, "has no line for"):
+            entry.post()
