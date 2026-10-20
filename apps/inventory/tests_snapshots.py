@@ -279,8 +279,13 @@ class AFoldIsThrownAwayWhenItStopsBeingTrueTests(SnapshotTestCase):
         self.move(item, "100", "4")
         self.move(item, "100", "8")
         fold_position(item, self.north)
+        # A costing method no longer changes over stock (O330); an item changed before the rule still finds its
+        # fold of no use.
         item.costing_method = CostingMethod.FIFO
-        item.save()
+        with self.assertRaises(ValidationError):
+            item.save()
+        type(item).objects.filter(pk=item.pk).update(costing_method=CostingMethod.FIFO)
+        item.refresh_from_db()
         self.assertEqual(replay(item, self.north), self.unfolded(item, self.north))
 
     def test_a_fold_for_one_warehouse_is_no_use_to_another(self):

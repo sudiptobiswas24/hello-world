@@ -85,7 +85,13 @@ class StoresRoles(RolesTestCase):
     def test_an_items_costing_method_cannot_change_under_stock(self):
         client = self.as_("Stores Manager")
         response = client.patch(f"/api/inventory/items/{self.item.pk}/", {"costing_method": "fifo"}, format="json")
-        self.assertGreaterEqual(response.status_code, 400, f"changed costing under 10 kg: {response.status_code}")
+        self.assertEqual(response.status_code, 400, f"changed costing under 10 kg: {response.status_code}")
+        self.item.refresh_from_db()
+        self.assertEqual(self.item.costing_method, "average")
+        # Before anything has moved, it is still the item's to choose.
+        fresh = Item.objects.create(sku="F", name="Fresh", uom=self.kg)
+        response = client.patch(f"/api/inventory/items/{fresh.pk}/", {"costing_method": "fifo"}, format="json")
+        self.assertEqual(response.status_code, 200, response.content)
 
     def test_warehouse_staff_do_not_read_what_stock_is_worth(self):
         for role in ("Warehouse Staff", "Quality Inspector"):
