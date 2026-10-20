@@ -367,12 +367,13 @@ class Item(Extensible, AuditModel):
     # How its stock is counted and valued. Every movement already posted
     # was counted in this unit and valued by this method; changed after,
     # on-hand and value are replayed under rules they never happened by.
-    # The costing method and tracking belong here and are not here yet
-    # (docs/RISKS.md, L5): fixtures under standard costing, valuation
-    # folds and lot trace switch them over stock already held, and are
-    # reworked first, or a step that switches them revalues the stock or
-    # puts it into an opening batch.
-    COUNTED_AS = (("uom_id", "unit"), ("track_inventory", "whether stock is kept"))
+    # The costing method too (O330): each movement keeps the money it moved, and a switch over stock held would
+    # read that money under rules it was not booked by (to standard, a shelf that is not quantity x standard with
+    # no variance posted). Tracking belongs here and is not here yet (docs/RISKS.md, L5): lot trace switches it
+    # over stock already held, and is reworked first, or a step that switches it puts the stock into an opening
+    # batch.
+    COUNTED_AS = (("uom_id", "unit"), ("track_inventory", "whether stock is kept"),
+                  ("costing_method", "costing method"))
 
     def _check_counting_frozen(self):
         if not self.pk:

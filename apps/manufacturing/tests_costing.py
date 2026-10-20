@@ -21,6 +21,19 @@ from .orders import ManufacturingSettings
 from .tests_orders import TODAY, RunTestCase
 
 
+def at_standard(item, standard):
+    """
+    The item as if costed at `standard` from the start. The fixture stocked it at exactly that figure, so its shelf
+    is the one a standard item holds; a costing method no longer changes over stock (O330), so the state is
+    written, not saved.
+    """
+    from apps.inventory.models import Item
+
+    Item.objects.filter(pk=item.pk).update(costing_method=CostingMethod.STANDARD, standard_cost=standard)
+    item.refresh_from_db()
+    return item
+
+
 class CostingTestCase(RunTestCase):
     def setUp(self):
         super().setUp()
@@ -171,10 +184,7 @@ class RollingItUpTests(CostingTestCase):
 
 class PublishingIsARevaluationTests(CostingTestCase):
     def standard_item(self):
-        self.virgin.costing_method = CostingMethod.STANDARD
-        self.virgin.standard_cost = Decimal("100")
-        self.virgin.save()
-        return self.virgin
+        return at_standard(self.virgin, Decimal("100"))
 
     def test_a_standard_change_posts_the_difference(self):
         """
@@ -264,8 +274,7 @@ class PublishingIsARevaluationTests(CostingTestCase):
         # the fixture leaves polymer with none, and from nothing to a
         # hundred and ten is the whole shelf, not the difference.
         self.standard_item()
-        self.regrind.costing_method = CostingMethod.STANDARD
-        self.regrind.save()
+        at_standard(self.regrind, self.regrind.standard_cost)
         version = self.version(prices={self.virgin: "110", self.regrind: "70"})
         entry = version.publish(on_date=TODAY)
         self.assertTrue(entry.posted)
