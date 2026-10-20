@@ -231,6 +231,38 @@ class BomByproductInline(ComputedInlineMixin, admin.TabularInline):
     autocomplete_fields = ("item",)
 
 
+class FixedOnceAdminMixin:
+    """
+    Read-only once `is_fixed(obj)` (O272, O277 review): the model refuses an
+    edit or a delete of a weighed roll or a published version, and the admin
+    let one be tried and answered a 500. Now the page offers nothing it would
+    refuse; `still_editable` names what the model still takes. A bulk delete
+    goes through each record's delete() and says in words what it refused.
+    """
+
+    still_editable = ()
+
+    def is_fixed(self, obj):
+        raise NotImplementedError
+
+    def get_readonly_fields(self, request, obj=None):
+        if obj is not None and self.is_fixed(obj):
+            return [field.name for field in obj._meta.fields if field.name not in self.still_editable]
+        return super().get_readonly_fields(request, obj)
+
+    def has_delete_permission(self, request, obj=None):
+        if obj is not None and self.is_fixed(obj):
+            return False
+        return super().has_delete_permission(request, obj)
+
+    def delete_queryset(self, request, queryset):
+        for obj in queryset:
+            try:
+                obj.delete()
+            except ValidationError as error:
+                messages.error(request, " ".join(error.messages))
+
+
 class StandardCostInline(admin.TabularInline):
     model = StandardCost
     extra = 0
@@ -239,9 +271,22 @@ class StandardCostInline(admin.TabularInline):
     readonly_fields = ("total", "is_rolled")
     raw_id_fields = ("item",)
 
+    # A published version's standards are what its revaluation posted (O277).
+    def _published(self, obj):
+        return obj is not None and obj.is_published()
+
+    def has_add_permission(self, request, obj=None):
+        return not self._published(obj) and super().has_add_permission(request, obj)
+
+    def has_change_permission(self, request, obj=None):
+        return not self._published(obj) and super().has_change_permission(request, obj)
+
+    def has_delete_permission(self, request, obj=None):
+        return not self._published(obj) and super().has_delete_permission(request, obj)
+
 
 @admin.register(CostVersion)
-class CostVersionAdmin(AuditableAdminMixin, admin.ModelAdmin):
+class CostVersionAdmin(FixedOnceAdminMixin, AuditableAdminMixin, admin.ModelAdmin):
     """
     A named set of standard costs.
 
@@ -253,7 +298,11 @@ class CostVersionAdmin(AuditableAdminMixin, admin.ModelAdmin):
 
     list_display = ("code", "name", "effective_from", "shown_items",
                     "published_on", "revaluation_entry")
+    still_editable = ("notes",)
     inlines = [StandardCostInline]
+
+    def is_fixed(self, obj):
+        return obj.is_published()
     readonly_fields = ("published_at", "published_on", "published_by",
                        "revaluation_entry")
     actions = ["action_roll_up", "action_publish"]
@@ -399,7 +448,7 @@ class ToolAdmin(AuditableAdminMixin, admin.ModelAdmin):
 
 
 @admin.register(FabricRoll)
-class FabricRollAdmin(AuditableAdminMixin, admin.ModelAdmin):
+class FabricRollAdmin(FixedOnceAdminMixin, AuditableAdminMixin, admin.ModelAdmin):
     """
     Rolls, with the grammage the scale and the loom counter imply.
 
@@ -414,6 +463,10 @@ class FabricRollAdmin(AuditableAdminMixin, admin.ModelAdmin):
     list_filter = ("is_tubular", "specification")
     search_fields = ("lot__code", "lot__item__sku")
     raw_id_fields = ("lot", "entry")
+    still_editable = ("notes",)
+
+    def is_fixed(self, obj):
+        return obj.is_weighed()
 
     @admin.display(description="Implied GSM")
     def shown_gsm(self, obj):

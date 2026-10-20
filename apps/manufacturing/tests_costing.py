@@ -466,3 +466,30 @@ class APublishedVersionStandsTests(CostingTestCase):
         ]
         self.assertEqual([answer.status_code for answer in answers], [400, 400, 400, 400])
         self.assertEqual(CostVersion.objects.get(pk=version.pk).costs.get(item=self.virgin).total, Decimal("100"))
+
+
+class TheAdminKeepsAPublishedVersionTests(CostingTestCase):
+    """Review item 3 (P7): deleting a published version in the admin answered 500, and the change form was
+    editable though the admin's docstring said read-only once published."""
+
+    def test_its_page_is_read_only_and_it_is_not_deleted(self):
+        from django.contrib.auth.models import User
+        from django.test import Client
+
+        from apps.core.tests_second_factor import staff_session
+
+        version = self.version()
+        version.publish(on_date=TODAY)
+        browser = Client()
+        staff_session(browser, User.objects.create_superuser("root", "r@x.y", "p"))
+        page = f"/admin/manufacturing/costversion/{version.pk}/"
+        form = browser.get(page + "change/")
+        self.assertEqual(form.status_code, 200)
+        self.assertNotIn('name="costs-0-material"', form.content.decode())
+        browser.post(page + "change/", {"name": "Other", "notes": "kept"})
+        version.refresh_from_db()
+        self.assertEqual(version.name, "Version V1")
+        self.assertEqual(browser.post(page + "delete/", {"post": "yes"}).status_code, 403)
+        browser.post("/admin/manufacturing/costversion/", {"action": "delete_selected",
+                                                           "_selected_action": [version.pk], "post": "yes"})
+        self.assertTrue(CostVersion.objects.filter(pk=version.pk).exists())
