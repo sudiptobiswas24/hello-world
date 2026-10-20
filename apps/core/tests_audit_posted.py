@@ -58,3 +58,23 @@ class APostedDocumentIsNotDeletedTests(SimpleTestCase):
                     "            raise ValidationError('posted')\n"
                 )}})
         self.assertEqual([shape for shape, detail in found if "StockCount" in detail], ["stale exemption"])
+
+
+class AWeighedRecordIsNotEditedOverTheApiTests(SimpleTestCase):
+    """O272: a weighed record a route writes refuses edits and deletion once weighed."""
+
+    def audit(self, body):
+        from apps.manufacturing.rolls import FabricRoll
+
+        text = "class FabricRoll(AuditModel):\n" + body
+        return [shape for shape, detail in Command().weighed_records_written_over_the_api(
+            ["manufacturing"], {"manufacturing": {Path("apps/manufacturing/example.py"): text}},
+            written={FabricRoll}) if "FabricRoll " in detail]
+
+    def test_a_roll_with_no_guards_is_reported_twice(self):
+        self.assertEqual(self.audit("    notes = 1\n"), ["weighed record written over the api"] * 2)
+
+    def test_both_guards_are_not(self):
+        guard = ("        if self.is_weighed():\n"
+                 "            raise ValidationError('weighed')\n")
+        self.assertEqual(self.audit("    def save(self):\n" + guard + "    def delete(self):\n" + guard), [])
