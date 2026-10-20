@@ -138,10 +138,10 @@ class P3Shifts(StationTestCase):
         for code in ("S1", "S2", "A1", "A2"):
             Shift.objects.bulk_create([Shift(code=code, name=code, starts_at=datetime.time(1), hours=Decimal("1"))])
         s1, s2 = Shift.objects.get(code="S1"), Shift.objects.get(code="S2")
-        print("P3", batch_code("FR", self.l17, s1, TODAY, 0), batch_code("FR", self.l17, s2, TODAY, 0))
+        print("P3", batch_code("FR", self.l17, s1, TODAY), batch_code("FR", self.l17, s2, TODAY))
         Shift.objects.bulk_create([Shift(code="NIGHTSHIFT-LONGX", name="n", starts_at=datetime.time(2), hours=Decimal("1"))]); long_shift = Shift.objects.get(code="NIGHTSHIFT-LONGX")
         m = self.l17
-        print("P3 length", len(batch_code("FR", m, long_shift, TODAY, 0)))
+        print("P3 length", len(batch_code("FR", m, long_shift, TODAY)))
         from apps.inventory.models import Lot
         print("P3 Lot.code max", Lot._meta.get_field("code").max_length, "Shift.code max", Shift._meta.get_field("code").max_length)
 

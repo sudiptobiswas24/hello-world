@@ -187,16 +187,27 @@ CORRECTABLE = ("work_centre_id", "machine_id", "shift_date", "shift_id", "reason
                "work_order_id")
 
 
-def batch_code(prefix, machine, shift, shift_date, count):
+def batch_code(prefix, machine, shift, shift_date, taken=None):
     """
     FR-261007-D-L17-07: what a batch made on a machine in a shift is called
     (rolls, doffs, film and process rolls). The shift's whole code as kept, not its
     first letter (O273): the running number is per shift, so shifts S1 and
     S2 named S both made FR-...-S-L17-01, the batch's unique code refused
     the second, and nothing more could be weighed that day.
+
+    Numbered one past the highest number already used under this stem
+    (`taken(stem)` gives the codes; batches by default), not the count
+    plus one: a count shrinks when a record goes, and the next weighing
+    rebuilt a code still standing and was refused for the rest of the shift.
     """
+    if taken is None:
+        from apps.inventory.models import Lot
+
+        taken = lambda stem: Lot.objects.filter(code__startswith=stem).values_list("code", flat=True)  # noqa: E731
     line = machine.code.replace("-", "").upper()
-    return f"{prefix}-{shift_date:%y%m%d}-{shift.code}-{line}-{count + 1:02d}"
+    stem = f"{prefix}-{shift_date:%y%m%d}-{shift.code}-{line}-"
+    used = [int(code[len(stem):]) for code in taken(stem) if code[len(stem):].isdigit()]
+    return f"{stem}{max(used, default=0) + 1:02d}"
 
 
 def _differs(now, was):

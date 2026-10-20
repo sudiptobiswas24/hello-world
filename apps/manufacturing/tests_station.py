@@ -412,5 +412,27 @@ class ShiftsThatShareALetterTests(StationTestCase):
         day = TODAY
         self.assertEqual([make(self.l17, self.day, day) for make in (roll_code, doff_code, film_code)],
                          ["FR-260601-S1-L17-01", "TP-260601-S1-L17-01", "LF-260601-S1-L17-01"])
-        self.assertTrue(all(batch_code(prefix, self.l17, self.day, day, 0) == f"{prefix}-260601-S1-L17-01"
+        self.assertTrue(all(batch_code(prefix, self.l17, self.day, day, lambda stem: []) == f"{prefix}-260601-S1-L17-01"
                             for prefix in PREFIX.values()))
+
+
+class AWeighedRollStandsVoidedOrNotTests(StationTestCase):
+    """O338 (decided: a voided record stands) and the review's P3: roll 01 of two deleted once its booking was
+    voided, the next weighing built ...-02 again (IntegrityError, a 500 for the rest of the shift) and the
+    deleted roll's scale reading was free to weigh another."""
+
+    def test_a_roll_whose_booking_is_voided_is_not_deleted(self):
+        roll = self.weigh()
+        roll.entry.void(TODAY, "weighed on the wrong loom")
+        with self.assertRaisesMessage(ValidationError, "voided or not"):
+            roll.delete()
+        self.assertTrue(type(roll).objects.filter(pk=roll.pk).exists())
+
+    def test_the_next_code_is_one_past_the_highest_used(self):
+        from apps.inventory.models import Lot
+
+        first = self.weigh(when=at(TODAY, 10, 42))
+        self.weigh(when=at(TODAY, 11, 0))
+        Lot.objects.filter(code="FR-260601-D-L17-02").update(code="FR-260601-D-L17-05")
+        third = self.weigh(when=at(TODAY, 11, 30))
+        self.assertEqual((first.lot.code, third.lot.code), ("FR-260601-D-L17-01", "FR-260601-D-L17-06"))

@@ -82,10 +82,9 @@ class FilmRoll(AuditModel):
 
 def film_code(machine, shift, shift_date):
     """LF-261007-D-BF1-03: day, shift, line, and the roll's number on it."""
-    count = FilmRoll.objects.filter(machine=machine, shift=shift, shift_date=shift_date).count()
     from .shifts import batch_code
 
-    return batch_code("LF", machine, shift, shift_date, count)
+    return batch_code("LF", machine, shift, shift_date)
 
 
 @transaction.atomic
