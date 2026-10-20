@@ -92,6 +92,30 @@ class CostVersion(AuditModel):
     def is_published(self):
         return self.published_at is not None
 
+    # Once published a version is the record of what the revaluation posted
+    # (O277): its standards are what against_actual and explain read, and
+    # its entry points nowhere if it goes. A new set of prices is a new version.
+    FIXED_ONCE_PUBLISHED = ("code", "name", "effective_from", "published_at", "published_on", "published_by",
+                            "revaluation_entry")
+
+    def save(self, *args, **kwargs):
+        if not self._state.adding and self.pk is not None:
+            before = type(self).objects.filter(pk=self.pk).first()
+            if before is not None and before.is_published():
+                changed = [name for name in self.FIXED_ONCE_PUBLISHED
+                           if getattr(before, self._meta.get_field(name).attname)
+                           != getattr(self, self._meta.get_field(name).attname)]
+                if changed:
+                    raise ValidationError({name: f"{before} was published on {before.published_on}; what it "
+                                                 "posted stands. Make a new version." for name in changed})
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        if self.is_published():
+            raise ValidationError(f"{self} was published on {self.published_on} and posted its revaluation; "
+                                  "it is not deleted. Make a new version.")
+        return super().delete(*args, **kwargs)
+
     def cost_of(self, item):
         """This version's total unit cost for an item, or None."""
         row = self.costs.filter(item=item).first()
@@ -408,12 +432,29 @@ class StandardCost(AuditModel):
     def __str__(self):
         return f"{self.item.sku} at {self.total} ({self.version.code})"
 
+    def _refuse_once_published(self, doing):
+        version = CostVersion.objects.filter(pk=self.version_id).first()
+        if version is not None and version.is_published():
+            raise ValidationError(f"{version} was published on {version.published_on}; its standards are what "
+                                  f"its revaluation posted and are not {doing} (O277). Make a new version.")
+
     def save(self, *args, **kwargs):
+        # Asked of the version as stored, and of the one it was in: a row
+        # moved out of a published version leaves that version changed too.
+        self._refuse_once_published("changed")
+        if self.pk is not None:
+            was = type(self).objects.filter(pk=self.pk).values_list("version_id", flat=True).first()
+            if was is not None and was != self.version_id:
+                type(self)(version_id=was)._refuse_once_published("moved")
         if not self.is_rolled:
             # An entered cost is a single figure for something bought;
             # the split belongs to things that are made.
             self.total = self.material + self.conversion - self.byproduct_credit
         super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        self._refuse_once_published("deleted")
+        return super().delete(*args, **kwargs)
 
     def share_of(self, element):
         """What fraction of the total one element is, as a percentage."""
