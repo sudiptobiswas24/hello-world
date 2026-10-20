@@ -68,6 +68,13 @@ def plan_issue(item, warehouse, quantity, lot=None, storage_bin=None,
         said = lot_held(item, chosen[0][0], warehouse)
         if said and not (holds_let_through and holds_let_through(item, chosen[0][0])):
             raise ValidationError(said)
+        if tracked:
+            from .tracking import refuse_drawing_what_is_promised
+
+            # A batch named by hand past what allocate leaves out (O340): tape on a
+            # backflushed run's creels is that run's, asked when the plan is made,
+            # not only at the door that draws it.
+            refuse_drawing_what_is_promised(lot, warehouse, quantity, action="be planned to go")
 
     plan = []
     for chosen_lot, chosen_quantity in chosen:
