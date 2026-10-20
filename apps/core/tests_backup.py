@@ -130,3 +130,67 @@ class ABackupRestoresItsAttachmentsTests(SimpleTestCase):
         self.assertEqual(restored.returncode, 0, restored.stderr)
         for path in self.psql(self.url, "SELECT path FROM attached ORDER BY id").splitlines():
             self.assertTrue((self.media / path).exists(), f"{path} is recorded and has no file")
+
+
+class AFailedBackupKeepsTheOlderOnesTests(SimpleTestCase):
+    """
+    O314: the nightly loop called `dump || echo BACKUP FAILED`, which turns `set -e` off inside dump,
+    so a failed pg_dump printed "backup written" and retention deleted every older backup. Run as it
+    is, with pg_dump, tar and sleep stubbed: no database is needed to see what a failure does.
+    """
+
+    def setUp(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, True)
+        self.bin, self.backups, media = root / "bin", root / "backups", root / "media"
+        for folder in (self.bin, self.backups, media):
+            folder.mkdir()
+        (media / "a.txt").write_text("x")
+        self.stub("pg_dump", 'for a; do case $a in --file=*) f=${a#--file=};; esac; done; echo dump > "$f"\n')
+        # The loop sleeps twice: once before tonight's backup, and is stopped at the second.
+        self.stub("sleep", 'n=$(cat "$COUNT" 2>/dev/null || echo 0); n=$((n+1)); echo $n > "$COUNT"\n'
+                           '[ "$n" -ge 2 ] && kill -9 $PPID\nexit 0\n')
+        self.old = self.backups / "erp_2026-09-01_0200.dump"
+        self.old.write_text("old")
+        os.utime(self.old, (1, 1))
+        self.env = os.environ | {"PATH": f"{self.bin}:{os.environ['PATH']}", "BACKUP_DIR": str(self.backups),
+                                 "MEDIA_DIR": str(media), "DATABASE_URL": "x", "COUNT": str(root / "count")}
+
+    def stub(self, name, body):
+        (self.bin / name).write_text("#!/bin/sh\n" + body)
+        (self.bin / name).chmod(0o755)
+
+    def backup(self, *args):
+        done = subprocess.run(["sh", str(DEPLOY / "backup.sh"), *args], env=self.env, capture_output=True,
+                              text=True, timeout=60)
+        return done.returncode, done.stdout + done.stderr
+
+    def test_a_failed_dump_is_reported_failed_and_deletes_no_older_backup(self):
+        self.stub("pg_dump", "echo 'pg_dump: connection refused' >&2\nexit 1\n")
+        _, said = self.backup()
+        self.assertIn("BACKUP FAILED: pg_dump exited 1; older backups kept", said)
+        self.assertNotIn("backup written", said)
+        self.assertTrue(self.old.exists(), "retention deleted the old backup although tonight's dump failed")
+        self.assertEqual(list(self.backups.glob("erp_*.dump")), [self.old])
+
+    def test_an_archive_that_fails_keeps_the_older_backups_and_leaves_no_dump_looking_complete(self):
+        real_tar = shutil.which("tar")
+        self.stub("tar", f'case "$*" in *-czf*) echo "tar: No space left on device" >&2; exit 2;; esac\n'
+                         f'exec {real_tar} "$@"\n')
+        _, said = self.backup()
+        self.assertIn("BACKUP FAILED: archiving the attachments exited 2", said)
+        self.assertNotIn("backup written", said)
+        self.assertEqual(list(self.backups.glob("erp_*.dump")), [self.old])
+
+    def test_a_backup_now_that_fails_exits_failed(self):
+        self.stub("pg_dump", "exit 1\n")
+        status, said = self.backup("now")
+        self.assertEqual(status, 1, said)
+        self.assertIn("BACKUP FAILED", said)
+        self.assertTrue(self.old.exists())
+
+    def test_a_backup_that_succeeds_still_retires_the_older_ones(self):
+        _, said = self.backup()
+        self.assertIn("backup written", said)
+        self.assertFalse(self.old.exists())
+        self.assertEqual(len(list(self.backups.glob("erp_*.dump"))), 1)
