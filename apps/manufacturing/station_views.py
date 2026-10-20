@@ -218,9 +218,7 @@ class LoomStationViewSet(viewsets.GenericViewSet):
         loom = station.machines.filter(code=data.get("loom")).first()
         if loom is None:
             raise DRFValidationError([f"{station} does not weigh for {data.get('loom')}."])
-        core = CoreType.objects.filter(code=data.get("core"), is_active=True).first()
-        if core is None:
-            raise DRFValidationError([f"No core type {data.get('core')}."])
+        core = _core_in_use(data)
         source = data.get("source", "scale")
         supervisor = None
         if source == "manual":
@@ -513,7 +511,7 @@ class LoomStationViewSet(viewsets.GenericViewSet):
         station = self.get_object()
         operator = self._require_operator(request, station)
         data = request.data
-        core = get_object_or_404(CoreType, code=data.get("core"))
+        core = _core_in_use(data)
         supervisor = (_run(station.identify, data["supervisor_pin"])
                       if data.get("supervisor_pin") else None)
         roll = _run(weigh_roll, station, operator, self._machine(station, data.get("machine")),
@@ -640,7 +638,7 @@ class LoomStationViewSet(viewsets.GenericViewSet):
         station = self.get_object()
         operator = self._require_operator(request, station)
         data = request.data
-        core = get_object_or_404(CoreType, code=data.get("core"))
+        core = _core_in_use(data)
         supervisor = (_run(station.identify, data["supervisor_pin"])
                       if data.get("supervisor_pin") else None)
         doff = _run(record_tape, station, operator, self._machine(station, data.get("machine")),
@@ -690,7 +688,7 @@ class LoomStationViewSet(viewsets.GenericViewSet):
         station = self.get_object()
         operator = self._require_operator(request, station)
         data = request.data
-        core = get_object_or_404(CoreType, code=data.get("core"))
+        core = _core_in_use(data)
         supervisor = (_run(station.identify, data["supervisor_pin"])
                       if data.get("supervisor_pin") else None)
         roll = _run(record_film, station, operator, self._machine(station, data.get("machine")),
@@ -895,6 +893,20 @@ class StationReportViewSet(viewsets.GenericViewSet):
         return Response({key: [row | {"mean_deviation_percent":
                                       _exact(row["mean_deviation_percent"])} for row in rows]
                          for key, rows in found.items()})
+
+
+def _core_in_use(data):
+    """
+    The core or bobbin named, if it is still in use (O278). The loom exit
+    asked is_active and the tape line, film line and roll-off did not, so a
+    doff was netted against a retired bobbin's out-of-date tare.
+    """
+    core = CoreType.objects.filter(code=data.get("core"), is_active=True).first()
+    if core is None:
+        retired = CoreType.objects.filter(code=data.get("core")).exists()
+        raise DRFValidationError([f"Core type {data.get('core')} is no longer in use; weigh on one that is."
+                                  if retired else f"No core type {data.get('core')}."])
+    return core
 
 
 class CanPostScaleReadings(BasePermission):
