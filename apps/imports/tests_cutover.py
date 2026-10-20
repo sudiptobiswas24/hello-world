@@ -221,3 +221,7 @@ class PayAndPricesTests(ImportTestCase):
                           price.lead_time_days, price.valid_from, price.is_preferred),
                          (self.vendor, Decimal("91.25"), self.usd, Decimal("1000.0000"), "PP-H110MA", 7,
                           datetime.date(2026, 4, 1), True))
+        # Review of O280, item 7: the same file again makes no second agreement.
+        again = run("vendor_prices", vendors, commit=True)
+        self.assertEqual(([(row, column) for row, column, _ in again.errors], VendorPrice.objects.count()),
+                         ([(2, "sku")], 1))
