@@ -94,6 +94,8 @@ class BudgetViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         return Response({
             "amount": budget.amount, "spent": spent, "committed": committed,
             "requested": requested, "available": budget.amount - spent - committed - requested,
+            # What committed leaves out, in words: an order with no exchange rate on its date (O293).
+            "not_counted": budget.unweighed(),
         })
 
 
