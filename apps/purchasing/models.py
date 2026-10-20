@@ -7107,7 +7107,13 @@ class GoodsReceipt(AuditModel):
             # value has merely moved from one item to another inside the
             # same inventory account, so posting it again would double it.
             valued.append((line.order_line.item, charged))
-            shelf[line.order_line.item] = shelf.get(line.order_line.item, Decimal("0")) + abs(money)
+            # Under the standard the inventory account moves by what the shelf moved over the whole line: the
+            # assembly in at the standard, its components' money off the subcontract shelf (O322). Booked at
+            # the standard alone, components 100, standard 110 and charge 5 moved the shelf +10 and the books
+            # +110, with 100 of variance nobody earned; now the books move +10 and the variance is the 5 by
+            # which 105 of actual cost falls short of the standard.
+            through = component_money if item.costing_method == "standard" else Decimal("0")
+            shelf[line.order_line.item] = shelf.get(line.order_line.item, Decimal("0")) + abs(money) - through
             # An item costed at standard books the standard and throws the
             # difference to variance, which needs the quantity in stocking
             # units — the value alone cannot say how many arrived.

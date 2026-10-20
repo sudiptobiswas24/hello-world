@@ -1194,3 +1194,45 @@ class AReturnFromBeforeConsumptionWasRecordedPutsBackWhatWentInTests(Subcontract
                          (Decimal("7750.08"), Decimal("15500.17")))
         self.assertEqual(self.put_back(self.motor, first) + self.put_back(self.motor, second), Decimal("69750.75"))
         self.assertEqual(self.balance(self.variance), Decimal("0"))
+
+
+class AStandardCostedAssemblyBooksWhatItsShelfMovedTests(SubcontractTestCase):
+    """
+    O322: a standard-costed assembly shelves the standard while its components' money leaves the subcontract
+    shelf. Frames 10 at 4 and motors 20 at 3 at the subcontractor (100.00), 10 assemblies at 0.50 service (5.00):
+    105.00 of actual cost. At a standard of 11 the shelf moves +10.00 (110.00 in, 100.00 out) and so must the
+    inventory account; the accrual takes 5.00 and the variance is the 5.00 gain. At 9, the shelf moves -10.00,
+    and the variance is a 15.00 loss. A whole return puts every account back.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from apps.accounting.models import Account, AccountType
+
+        self.ppv = Account.objects.create(code="5900", name="Price variance", account_type=AccountType.EXPENSE)
+        Company.objects.update(purchase_price_variance_account=self.ppv)
+        self.stock(self.frame, "10", "4", warehouse=self.subcontractor)
+        self.stock(self.motor, "20", "3", warehouse=self.subcontractor)
+
+    def figures(self):
+        shelf = sum(item.valuation_at(warehouse)[1] for item in (self.frame, self.motor, self.assembly)
+                    for warehouse in (self.warehouse, self.subcontractor))
+        return (shelf, self.balance(self.inventory), self.balance(self.grni), self.balance(self.ppv))
+
+    def check(self, standard, moved, variance):
+        self.assembly.costing_method = "standard"
+        self.assembly.standard_cost = Decimal(standard)
+        self.assembly.save()
+        before = self.figures()
+        receipt = self.receive(self.subcontract_order("10", service="0.5"), "10")
+        after = self.figures()
+        self.assertEqual(tuple(a - b for a, b in zip(after, before)),
+                         (Decimal(moved), Decimal(moved), Decimal("-5.00"), Decimal(variance)))
+        receipt.create_return(debit_bills=False)
+        self.assertEqual(tuple(a - b for a, b in zip(self.figures(), before)), (0, 0, 0, 0))
+
+    def test_a_standard_above_the_actual_cost(self):
+        self.check("11", "10.00", "-5.00")
+
+    def test_a_standard_below_the_actual_cost(self):
+        self.check("9", "-10.00", "15.00")
