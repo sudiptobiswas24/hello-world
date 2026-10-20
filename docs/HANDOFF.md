@@ -130,8 +130,44 @@ built.
    the existing modules' depth and a robust ERP for a woven sacks plant").**
    This replaces the reach plan's order. Breadth waits; what a sack plant
    does every day, done right in the modules it already has, comes first.
-   - **g22, next: robust. The register to zero, then proof on a month.**
-     In flight from 16 October. Briefs in docs/handoff/, two agents at a time:
+   - **g22 is pushed (1963c16, 20 October), all six lanes green on one
+     tip:** SQLite 7356; PostgreSQL 7356; Asia/Kolkata 7356; migration-tagged
+     33; vitest 45. 153 commits. It holds:
+     - 68 register rows closed (O11 to O256 as the commit subjects name
+       them, O216 and O217 by the sign-in round); what each fix left is a
+       row of its own (O257 to O270);
+     - L12: two-factor sign-in, session time-outs (the idle clock a signed
+       cookie, so no ordinary request writes the session), API keys;
+     - the plant month (apps/e2e/tests_plant_month.py, 46 tests: buying,
+       the floor, quality, job work, selling, scrap with TCS, payroll, the
+       close), through the API as the people who do each step. Its
+       findings, each fixed with its test: a return locked a drawn advance
+       or prepayment after the stock (sales and purchasing, one rule); a
+       count-in at a given cost; three stores screens that could add no
+       line, and a check of all 58 adders; one left open as O269;
+     - what the gate found: a money account held under a test's own
+       transaction (315 PostgreSQL failures), and a former employee's
+       write-off past money already paid back (a race test, O270 left).
+     - Lessons for the next gate:
+       - A restart can wipe /tmp: the scratchpad, every worktree, the lane
+         logs, .venv and node_modules went on 20 October. Keep the gated
+         tree and the logs under /home/user (work/, gate-logs/); the
+         snapshot branches restored the tree to the commit.
+       - A new container: build .venv from the gated tree's own
+         requirements.txt, then `pip install playwright` (it is in no
+         requirements file); recreate PostgreSQL's role
+         (`CREATE ROLE erp LOGIN PASSWORD 'erp' CREATEDB`) if the cluster is
+         new; add `.venv` and `frontend/node_modules` to .git/info/exclude
+         when they are links, or the tree reads dirty.
+       - The mig lane outgrew its 6900 s cap (20 of 33 by then, alone). It
+         was run as `manage.py test apps --tag migration --parallel 4`,
+         detached and uncapped: 4884 s, OK. Change lane.sh's mig to that
+         (parallel 4, run detached) before the next gate.
+       - A bisect's good end is run first: the sweep's base was red too,
+         and the verdict named an innocent commit.
+       - A documentation-only commit inside a gated push carries
+         `Gate: {GATE}` too; finalize.py refuses anything else.
+     The plan and briefs that ran: docs/handoff/g22_*.md, two agents at a time:
      1. fix_purch (g22_purch.md) and fix_money (g22_money.md): books first.
      2. fix_stores (g22_stores.md) and fix_core (g22_core.md).
      3. fix_sec3 (g22_sec.md, L12 with O216 and O217).
