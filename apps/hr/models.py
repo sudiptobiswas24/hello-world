@@ -428,9 +428,46 @@ class Employee(Extensible, AuditModel):
         today = timezone.localdate()
         gone = self.has_left_by(today)
         was_gone = left_before is not None and to_date(today) > to_date(left_before)
-        if gone != was_gone and self.user.is_active == gone:
-            self.user.is_active = not gone
+        if gone and not was_gone and self.user.is_active:
+            self.user.is_active = False
             self.user.save(update_fields=["is_active"])
+            # Kept as a fact, who and when: only a login the leaving switched off is switched on again.
+            # Read off the login's state instead, one an administrator had switched off before the
+            # leaving date was set came back on when it was withdrawn (review of O300).
+            LeaverLoginSwitch.objects.create(user=self.user, employee=self, switched_off_by=self.updated_by)
+        elif was_gone and not gone:
+            switch = LeaverLoginSwitch.objects.filter(user=self.user, switched_on_at__isnull=True).order_by("-pk").first()
+            if switch is not None:
+                switch.switched_on_at, switch.switched_on_by = timezone.now(), self.updated_by
+                switch.save(update_fields=["switched_on_at", "switched_on_by"])
+                if not self.user.is_active:
+                    self.user.is_active = True
+                    self.user.save(update_fields=["is_active"])
+
+
+class LeaverLoginSwitch(models.Model):
+    """
+    The leaving switched this login off: who and when, and, once the leaving date was withdrawn or
+    moved past today, who switched it on again and when (O300). Written by Employee.save only; the
+    one thing it decides is whether a withdrawn leaving date may switch the login back on.
+    """
+
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="leaver_switches",
+                             editable=False)
+    employee = models.ForeignKey("hr.Employee", on_delete=models.CASCADE, related_name="login_switches",
+                                 editable=False)
+    switched_off_at = models.DateTimeField(default=timezone.now, editable=False)
+    switched_off_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+                                        related_name="+", editable=False)
+    switched_on_at = models.DateTimeField(null=True, blank=True, editable=False)
+    switched_on_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+                                       related_name="+", editable=False)
+
+    class Meta:
+        ordering = ["-switched_off_at", "-id"]
+
+    def __str__(self):
+        return f"{self.user} switched off for {self.employee} on {self.switched_off_at:%d-%m-%Y}"
 
 
 def leaver_login(user, day):
