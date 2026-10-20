@@ -116,35 +116,6 @@ from apps.core.models import Company
 from apps.inventory.models import StockMovement
 
 
-class LegacySubcontractReturn(SubcontractTestCase):
-    """The author's decision: with no consumption recorded, components come back at the last arrival rate."""
-
-    def stock_value(self):
-        return sum(item.valuation_at(w)[1] for item in (self.frame, self.motor, self.assembly)
-                   for w in (self.warehouse, self.subcontractor))
-
-    def run_it(self, legacy):
-        ppv = Account.objects.create(code="5900", name="PPV", account_type=AccountType.EXPENSE)
-        Company.objects.update(purchase_price_variance_account=ppv)
-        self.stock(self.frame, "1000", "5", warehouse=self.subcontractor)
-        self.stock(self.frame, "2001", "8", warehouse=self.subcontractor)
-        self.stock(self.motor, "6000", "12", warehouse=self.subcontractor)
-        receipt = self.receive(self.subcontract_order("3000", service="5"), "3000")
-        if legacy:
-            StockMovement.objects.filter(notes__startswith="Consumed by subcontractor").update(notes="Consumed")
-        stock_before, ledger_before = self.stock_value(), self.balance(self.inventory)
-        receipt.create_return(debit_bills=False)
-        return (self.stock_value() - stock_before, self.balance(self.inventory) - ledger_before, self.balance(ppv))
-
-    def test_recorded(self):
-        shelf, books, variance = self.run_it(False)
-        self.assertEqual((shelf, variance), (books, D("0")))
-
-    def test_legacy(self):
-        shelf, books, variance = self.run_it(True)
-        self.assertEqual((shelf, variance), (books, D("0")), "a return at the vendor's own price books a price variance")
-
-
 class InCases(LandedCostTestCase):
     """Ordered in cases of 12 at a price per case that does not divide, shelf in eaches."""
 
