@@ -63,9 +63,10 @@ def month(period):
     try:
         year, number = (int(part) for part in period.split("-"))
         last = calendar.monthrange(year, number)[1]
-    except (ValueError, AttributeError):
-        raise ValidationError(f"{period!r} is not a period; give it as YYYY-MM.")
-    return datetime.date(year, number, 1), datetime.date(year, number, last)
+        # Built inside the question too: 99999-01 and 0000-01 are months to calendar, not to a date (O291).
+        return datetime.date(year, number, 1), datetime.date(year, number, last)
+    except (ValueError, AttributeError, OverflowError):
+        raise ValidationError(f"{period!r} is not a period; give it as YYYY-MM.") from None
 
 
 def _money():

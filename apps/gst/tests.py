@@ -156,7 +156,7 @@ class MonthTests(TestCase):
                          (datetime.date(2026, 2, 1), datetime.date(2026, 2, 28)))
 
     def test_not_a_month(self):
-        for bad in ["2026", "2026-13", "Sept", None]:
+        for bad in ["2026", "2026-13", "Sept", None, "99999-01", "0000-01", "0000-00", "2026-9-1"]:
             with self.subTest(period=bad), self.assertRaises(ValidationError):
                 month(bad)
 
@@ -785,3 +785,20 @@ class Table13CountsWhatThisSystemIssuedTests(GstReturnTestCase):
         rows = gstr1(*month("2026-09"))["documents"]
         self.assertEqual([(row["kind"], row["total"]) for row in rows if row["kind"] in ("invoices", "credit_notes")],
                          [("invoices", 1), ("credit_notes", 1)])
+
+
+class ABadPeriodIsAnswered400Tests(GstReturnTestCase):
+    """O291: a period no date can hold is a bad request, not a server error, asked as the GST Officer."""
+
+    def test_the_returns_answer_a_year_past_9999_with_400(self):
+        from django.contrib.auth.models import Group
+        from django.core.management import call_command
+
+        call_command("setup_roles", verbosity=0)
+        officer = User.objects.create_user("officer")
+        officer.groups.add(Group.objects.get(name="GST Officer"))
+        client = APIClient(raise_request_exception=False)
+        client.force_authenticate(officer)
+        urls = ["/api/gst/gstr1/?period=99999-01", "/api/gst/gstr3b/?period=0000-01",
+                "/api/gst/gstr1/json/?period=99999-12", "/api/gst/gstr2b/match/?period=99999-01"]
+        self.assertEqual({url: client.get(url).status_code for url in urls}, {url: 400 for url in urls})
