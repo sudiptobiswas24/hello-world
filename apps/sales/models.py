@@ -3955,14 +3955,15 @@ def outstanding_in_base(customer):
     return owed - refunds - on_account
 
 
-def committed_in_base(customer, on_date=None):
+def committed_in_base(customer):
     """
     committed_balance in the base currency, as the credit limit is: what is
     owed as booked (outstanding_in_base), and what confirmed orders have
-    still to bill at the rate of the day, less deposits not yet drawn as
-    each was booked.
+    still to bill, each at its own date's rate through in_base as the order
+    being weighed is (O342, after O334), less deposits not yet drawn as
+    each was booked. Read at today's rate, one exposure figure was built
+    from two kinds of rate.
     """
-    on_date = on_date or timezone.localdate()
     uninvoiced = Decimal("0")
     orders = SalesOrder.objects.filter(
         customer=customer, status=OrderStatus.CONFIRMED
@@ -3970,13 +3971,12 @@ def committed_in_base(customer, on_date=None):
         "taxes", models.Prefetch("invoice_lines",
                                  queryset=InvoiceLine.objects.select_related("invoice")))))
     for order in orders:
-        rate = order.currency.rate_on(on_date) if order.currency_id else Decimal("1")
         for line in order.lines.all():
             remaining = line.quantity_uninvoiced()
             if remaining <= 0:
                 continue
             share = remaining / line.quantity if line.quantity else Decimal("0")
-            uninvoiced += round_money(round_money(line.total() * share) * rate)
+            uninvoiced += in_base(round_money(line.total() * share), order.currency, order.order_date)
     deposits = Invoice.objects.filter(
         customer=customer, posted=True, is_down_payment=True
     ).prefetch_related(*INVOICE_FIGURES)

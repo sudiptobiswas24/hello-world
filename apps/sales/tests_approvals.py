@@ -506,6 +506,25 @@ class AForeignOrderIsWeighedInTheBaseTests(ApprovalTestCase):
         with self.assertRaisesMessage(ValidationError, "No exchange rate for GBP on 01-03-2026"):
             order.confirm()
 
+    def test_every_confirmed_order_is_weighed_at_its_own_date(self):
+        # O342: 10 x 10 EUR confirmed on 1 March at 90 is 9,000; April's 120 would read it 12,000.
+        # A second order of 1 x 5 EUR on 2 April at 120 is 600: 9,600 against 10,000, not 12,600.
+        from apps.core.models import ExchangeRate
+        from .models import CustomerProfile, SalesOrder, committed_in_base
+
+        CustomerProfile.objects.update_or_create(party=self.customer, defaults={"credit_limit": Decimal("10000")})
+        first = self.eur_order("10", "10")
+        first.confirm()
+        ExchangeRate.objects.create(currency=first.currency, rate=Decimal("120"), valid_from=datetime.date(2026, 4, 1))
+        self.assertEqual(committed_in_base(self.customer), Decimal("9000.00"))
+        second = SalesOrder.objects.create(customer=self.customer, order_date=datetime.date(2026, 4, 2),
+                                           currency=first.currency)
+        SalesOrderLine.objects.create(order=second, item=self.item, uom=self.uom, quantity=Decimal("1"),
+                                      unit_price=Decimal("5"), revenue_account=self.revenue)
+        self.assertIsNone(second.credit_limit_breach())
+        second.confirm()
+        self.assertEqual(committed_in_base(self.customer), Decimal("9600.00"))
+
     def test_the_credit_limit_weighs_the_order_at_its_own_date(self):
         # O334: 10 x 10 EUR on 1 March at 90 is 9,000 against a 10,000 limit; at April's 120 it would read 12,000.
         from apps.core.models import ExchangeRate
