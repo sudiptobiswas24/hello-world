@@ -377,6 +377,17 @@ class RecurringInvoiceTests(LifecycleTestCase):
         )
         return schedule
 
+    def test_an_invoice_is_not_taken_for_a_day_that_has_not_come(self):
+        # O284, the hole copied from the journal schedules: on_date 400 days ahead, or before the start.
+        schedule = self.make_schedule(auto_post=True)
+        with self.assertRaisesMessage(ValidationError, "that day has not come"):
+            schedule.generate_one(on_date=timezone.localdate() + datetime.timedelta(days=400))
+        with self.assertRaisesMessage(ValidationError, "the schedule starts on 2026-01-15"):
+            schedule.generate_one(on_date=datetime.date(2026, 1, 10))
+        self.assertFalse(Invoice.objects.filter(reference="SUB-1").exists())
+        schedule.refresh_from_db()
+        self.assertEqual(schedule.next_run_date, datetime.date(2026, 1, 15))
+
     def test_the_first_run_is_the_start_date(self):
         schedule = self.make_schedule()
         self.assertEqual(schedule.next_run_date, datetime.date(2026, 1, 15))

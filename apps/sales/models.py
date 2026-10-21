@@ -22,7 +22,7 @@ from apps.core.approvals import (
     ApprovableMixin, ApprovalStatus, ChangesWithinItsApproval, asks_its_policy_when_taxes_change, authors,
 )
 from apps.core.history import EventKind, record
-from apps.core.recurrence import RecurrenceInterval, add_interval, still_to_take
+from apps.core.recurrence import RecurrenceInterval, add_interval, run_date, still_to_take
 from apps.core.models import (
     BILLED,
     CONFIRMED,
@@ -6165,7 +6165,8 @@ class RecurringInvoice(AuditModel):
         if self.has_finished():
             raise ValidationError("This schedule has reached its end date.")
 
-        invoice_date = to_date(on_date) or self.next_run_date
+        # The rule the journal schedules ask (O284), shared: never before the start, never ahead.
+        invoice_date = run_date(self, on_date)
         invoice = Invoice.objects.create(
             customer=self.customer, invoice_date=invoice_date,
             receivable_account=self.receivable_account, currency=self.currency,

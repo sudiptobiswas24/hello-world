@@ -57,3 +57,18 @@ def still_to_take(schedule, due_by=None, expected=None):
     if expected is not None and schedule.next_run_date != to_date(expected):
         raise ValidationError(f"That one is taken already: the next is due on {schedule.next_run_date}.")
     return due_by is None or schedule.is_due(due_by)
+
+
+def run_date(schedule, on_date=None):
+    """
+    The day a schedule's run is taken on (O284), for every schedule (journals, invoices): `on_date`, or
+    its next run; never before the schedule starts, never a day still to come. Not even the start
+    itself while it is to come, as correction_date would allow a correction: a schedule takes what
+    has happened, and a rent accrual or an invoice for next year has not.
+    """
+    from apps.core.models import correction_date, day_that_has_come, to_date
+
+    refused = f"{schedule.code} is not taken on"
+    day = correction_date(to_date(on_date) or schedule.next_run_date, schedule.start_date, refused,
+                          "the schedule starts")
+    return day_that_has_come(day, refused)

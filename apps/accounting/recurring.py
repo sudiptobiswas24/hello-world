@@ -20,8 +20,8 @@ from django.db import models
 from django.db.models import Q
 from django.utils import timezone
 
-from apps.core.models import AuditModel, correction_date, day_that_has_come, serialised, to_date
-from apps.core.recurrence import RecurrenceInterval, add_interval, still_to_take
+from apps.core.models import AuditModel, serialised, to_date
+from apps.core.recurrence import RecurrenceInterval, add_interval, run_date, still_to_take
 
 ZERO = Decimal("0")
 
@@ -89,12 +89,7 @@ class RecurringJournal(AuditModel):
             raise ValidationError(f"The schedule's lines do not balance: debits {debit} and credits {credit}.")
         if self.has_finished():
             raise ValidationError("This schedule has reached its end date.")
-        # Dated by the shared rule (O284): never before the schedule starts, never a day still to come.
-        # Not even the start itself while it is to come, as correction_date would allow a correction:
-        # a schedule takes what has happened, and a rent accrual for next year has not.
-        refused = f"{self.code} is not taken on"
-        day = correction_date(to_date(on_date) or self.next_run_date, self.start_date, refused, "the schedule starts")
-        day = day_that_has_come(day, refused)
+        day = run_date(self, on_date)  # O284: the shared rule for every schedule
         entry = JournalEntry.objects.create(
             date=day, reference=self.code, memo=self.memo, recurring_journal=self)
         for line in lines:
