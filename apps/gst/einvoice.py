@@ -63,7 +63,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from apps.accounting.models import round_money
-from apps.core.models import AuditModel, lock_rows, serialised, to_date
+from apps.core.models import AuditModel, lock_rows, moment_that_has_come, serialised, to_date
 
 from . import particulars as p
 
@@ -160,6 +160,7 @@ class EInvoice(AuditModel):
                 f"The acknowledgement must be dated on or after the invoice, "
                 f"{self.invoice.invoice_date}."
             )
+        moment_that_has_come(ack_date, "the portal answers with when it acknowledged the invoice")
         _check_qr(signed_qr, irn, self.payload)
         self.irn, self.ack_number, self.ack_date = irn, ack_number, ack_date
         self.signed_qr = signed_qr.strip()
@@ -246,9 +247,7 @@ class EInvoice(AuditModel):
             raise ValidationError(
                 f"The request was built at {timezone.localtime(self.cancel_requested_at):%d %b %Y %H:%M}; the portal "
                 "cannot have cancelled the IRN before it was asked to. Give the CancelDate it returned.")
-        if cancelled_at > timezone.now():
-            raise ValidationError(f"{timezone.localtime(cancelled_at):%d %b %Y %H:%M} has not come; the portal "
-                                  "answers with when it cancelled the IRN.")
+        moment_that_has_come(cancelled_at, "the portal answers with when it cancelled the IRN")
         lock_rows(self.invoice)
         self._refuse_cancelling(cancelled_at)
         invoice = self.invoice

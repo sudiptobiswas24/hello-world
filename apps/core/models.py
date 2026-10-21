@@ -358,6 +358,19 @@ def day_that_has_come(day, refused):
     return day
 
 
+def moment_that_has_come(moment, refused):
+    """
+    `moment`, refused when it is still to come: what another system answers with (the e-invoice
+    portal's acknowledgement, an e-way bill's generation, a cancellation) is when it acted, and an
+    answer from next week is no answer. A future acknowledgement made the IRN uncancellable until
+    then, and a future e-way bill cancellable "within 24 hours" for good (O289). `refused` begins the
+    refusal, "the portal answers with when it acted".
+    """
+    if moment > timezone.now():
+        raise ValidationError(f"{timezone.localtime(moment):%d %b %Y %H:%M} has not come; {refused}.")
+    return moment
+
+
 def correction_date(on_date, original, refused, since):
     """
     The day a correction is dated: `on_date`, or the plant's today.
