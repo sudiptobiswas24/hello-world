@@ -422,8 +422,13 @@ def reconcile(period):
             result["matched"].append(row)
         else:
             result["differs"].append(row)
-        if line.statement.period == period:
+        # Matched is what may be claimed: a line the portal marks ITC not available is not, as `filed`
+        # already says (O288). The bill stays paired with it; the note says why it adds nothing.
+        if line.statement.period == period and line.itc_available:
             totals["matched"] += sign * _money(figures)
+        elif line.statement.period == period:
+            result["notes"].append(f"{document.number} is in the 2B, but the portal marks its credit not available: "
+                                   "it is not counted as matched.")
     for line in sorted(waiting.values(), key=lambda row: (row.statement.period, row.supplier_gstin, row.number)):
         result["not_booked"].append({"bill": None, "line": _line_row(line)})
         totals["not_booked"] += (-1 if line.kind == "credit_note" else 1) * line.itc()
