@@ -180,17 +180,25 @@ class SalesOrderViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.Mod
         try:
             order.confirm()
         except DjangoValidationError as exc:
+            if not order.sees_its_cost(request.user) and order.approval_status() == "pending":
+                # The refusal names the reasons; the margin's figure is cost (O299).
+                raise DRFValidationError(["This order needs approval before it can be confirmed: "
+                                          + " ".join(order.reasons_told_to(request.user))])
             raise DRFValidationError(exc.messages)
         return Response(self.get_serializer(order).data)
 
     @action(detail=True, methods=["get"])
     def approval(self, request, pk=None):
-        """What, if anything, is holding this order up."""
+        """
+        What, if anything, is holding this order up. The margin is cost: only someone who may approve
+        orders is told it, as a figure or inside a reason; a rep reads that the margin is under the
+        floor, not by how much (O299).
+        """
         order = self.get_object()
         return Response({
             "status": order.approval_status(),
-            "reasons": order.approval_reasons(),
-            "margin_percent": order.margin_percent(),
+            "reasons": order.reasons_told_to(request.user),
+            "margin_percent": order.margin_percent() if order.sees_its_cost(request.user) else None,
             "approved_by": str(order.approved_by) if order.approved_by_id else None,
             "approved_at": order.approved_at,
         })

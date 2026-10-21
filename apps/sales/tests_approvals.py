@@ -516,3 +516,50 @@ class AForeignOrderIsWeighedInTheBaseTests(ApprovalTestCase):
         ExchangeRate.objects.create(currency=order.currency, rate=Decimal("120"), valid_from=datetime.date(2026, 4, 1))
         self.assertIsNone(order.credit_limit_breach())
         self.assertEqual(order.total_in_base(), Decimal("9000.00"))
+
+
+from apps.core.tests_roles import RolesTestCase  # noqa: E402
+
+
+class ARepIsNotToldTheMarginTests(RolesTestCase, ApprovalTestCase):
+    """O299: the margin is cost; the approval panel and a refused confirm tell it only to someone who may approve."""
+
+    def setUp(self):
+        ApprovalTestCase.setUp(self)
+        RolesTestCase.setUp(self)
+        from .models import ApprovalPolicy
+
+        ApprovalPolicy.objects.create(code="P", name="Floor", min_margin_percent=Decimal("20"))
+        # 10 at 1 against a cost of 4 a unit: (10 - 40) / 10 = -300.00%.
+        self.order = self.draft(quantity="10", price="1")
+
+    def client_as(self, role):
+        from django.contrib.auth.models import Group
+        from rest_framework.test import APIClient
+
+        from .tests_base import carries_every_customer
+
+        user = get_user_model().objects.create_user(role.replace(" ", "_").lower())
+        user.groups.add(Group.objects.get(name=role))
+        carries_every_customer(user)
+        client = APIClient()
+        client.force_authenticate(user)
+        return client
+
+    def test_a_rep_reads_that_it_is_under_the_floor_not_by_how_much(self):
+        rep = self.client_as("Sales Rep")
+        reply = rep.get(f"/api/sales/sales-orders/{self.order.pk}/approval/")
+        self.assertEqual(reply.status_code, 200, reply.content)
+        self.assertIsNone(reply.json()["margin_percent"])
+        self.assertEqual(reply.json()["reasons"], ["The gross margin is below the 20.00% floor."])
+        refused = rep.post(f"/api/sales/sales-orders/{self.order.pk}/confirm/", {}, format="json")
+        self.assertEqual(refused.status_code, 400)
+        self.assertNotIn("-300", refused.content.decode())
+        self.assertIn("below the 20.00% floor", refused.content.decode())
+
+    def test_the_approver_is_told_the_figure(self):
+        approver = self.client_as("AR Manager")
+        reply = approver.get(f"/api/sales/sales-orders/{self.order.pk}/approval/")
+        self.assertEqual(reply.status_code, 200, reply.content)
+        self.assertEqual(reply.json()["margin_percent"], "-300.00")
+        self.assertEqual(reply.json()["reasons"], ["Gross margin is -300.00%, below the 20.00% floor."])
