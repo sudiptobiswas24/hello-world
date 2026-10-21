@@ -95,7 +95,27 @@ def sees_stock_value(request):
     return request is None or request.user.has_perm("inventory.view_stock_value")
 
 
-class StockMovementSerializer(serializers.ModelSerializer):
+class HidesStockMoney:
+    """
+    The one rule for what stock is worth over the API (O331): a serializer that carries it names those fields in
+    `stock_money`, and they are left out for whoever lacks inventory.view_stock_value, nested lines included (a
+    nested serializer reads its root's request). Warehouse Staff read money through the adjustments until every
+    such serializer asked this, not only the stock ledger's.
+    """
+
+    stock_money = ()
+
+    def to_representation(self, instance):
+        row = super().to_representation(instance)
+        if self.stock_money and not sees_stock_value(self.context.get("request")):
+            for field in self.stock_money:
+                row.pop(field, None)
+        return row
+
+
+class StockMovementSerializer(HidesStockMoney, serializers.ModelSerializer):
+    stock_money = MOVEMENT_MONEY
+
     # Named, so the stock ledger reads without a call per row.
     item_sku = serializers.CharField(source="item.sku", read_only=True)
     item_name = serializers.CharField(source="item.name", read_only=True)
@@ -114,13 +134,6 @@ class StockMovementSerializer(serializers.ModelSerializer):
         # when it is written; document_quantity is what the paperwork
         # said, and is not something a caller sets.
         read_only_fields = ["document_quantity"]
-
-    def to_representation(self, movement):
-        row = super().to_representation(movement)
-        if not sees_stock_value(self.context.get("request")):
-            for field in MOVEMENT_MONEY:
-                row.pop(field, None)
-        return row
 
 
 # -- the documents -----------------------------------------------------
@@ -227,7 +240,8 @@ class AdjustmentReasonSerializer(serializers.ModelSerializer):
         return f"{reason.account.code} · {reason.account.name}" if reason.account_id else ""
 
 
-class StockAdjustmentLineSerializer(serializers.ModelSerializer):
+class StockAdjustmentLineSerializer(HidesStockMoney, serializers.ModelSerializer):
+    stock_money = ("revaluation", "unit_cost")
     item_label = serializers.SerializerMethodField()
     lot_code = serializers.CharField(source="lot.code", read_only=True, default="")
 
@@ -248,7 +262,8 @@ class StockAdjustmentLineSerializer(serializers.ModelSerializer):
         extra_kwargs = {"uom": {"required": False}}
 
 
-class StockAdjustmentSerializer(serializers.ModelSerializer):
+class StockAdjustmentSerializer(HidesStockMoney, serializers.ModelSerializer):
+    stock_money = ("total_value",)
     lines = StockAdjustmentLineSerializer(many=True, read_only=True)
     warehouse_name = serializers.CharField(source="warehouse.name", read_only=True, default="")
     reason_name = serializers.CharField(source="reason.name", read_only=True, default="")
