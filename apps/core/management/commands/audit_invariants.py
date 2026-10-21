@@ -2154,8 +2154,6 @@ class Command(BaseCommand):
     # correction_date(), with why. Each is a step another fix owns; the list
     # only shrinks, as a step moved onto the rule makes its line stale.
     DATED_ELSEWHERE = {
-        "accounting.RecurringJournal.generate_one": "a schedule's run, posted forward on its own day; it "
-                                                    "corrects nothing",
         "sales.RecurringInvoice.generate_one": "a schedule's run, posted forward on its own day; it corrects "
                                                "nothing",
         "accounting.RealisedOnItsOwnDay.release_exchange_difference":
