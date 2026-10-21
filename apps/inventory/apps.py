@@ -9,6 +9,7 @@ class InventoryConfig(AppConfig):
     def ready(self):
         from apps.core.models import register_company_check
 
-        from .valuation import refuse_moving_the_default_stock_account
+        from .valuation import refuse_a_default_stock_account_that_is_not_one, refuse_moving_the_default_stock_account
 
         register_company_check(refuse_moving_the_default_stock_account)
+        register_company_check(refuse_a_default_stock_account_that_is_not_one)
