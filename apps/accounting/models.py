@@ -393,7 +393,11 @@ class JournalEntry(AuditModel):
         return debit > 0 and debit == self.total_credit()
 
     @serialised("posted")
-    def post(self):
+    def post(self, opening_balance=False):
+        """
+        `opening_balance`: the entry is an open invoice or bill brought in from the old system, which
+        keeps the date it was issued on, before the books opened (O281). Nothing else is dated then.
+        """
         if self.posted:
             raise ValidationError("This journal entry is already posted.")
         # The one chokepoint every module posts through, so the period
@@ -401,6 +405,13 @@ class JournalEntry(AuditModel):
         # would be six guards, and the seventh would be forgotten. What
         # posts no entry asks the same rule itself (refuse_closed).
         AccountingPeriod.refuse_closed(self.date, f"an entry is not posted on {to_date(self.date)}")
+        # The opening balances stand at the day the books opened; an entry dated before it would move a
+        # position the opening import fixed, in books that had not opened (O281).
+        books = BooksOpening.get()
+        if books is not None and not opening_balance and to_date(self.date) < books.opened_on:
+            raise ValidationError(
+                f"The books opened on {books.opened_on}; an entry is not posted on {to_date(self.date)}, before "
+                "them. Only an open invoice or bill brought in from the old system keeps an earlier date.")
         if not self.is_balanced():
             raise ValidationError(
                 f"Cannot post an unbalanced entry (debit={self.total_debit()}, "

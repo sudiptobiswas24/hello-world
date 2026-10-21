@@ -2890,7 +2890,7 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
             entry.post()
         else:
             entry = self._build_journal_entry(self.exchange_rate)
-            entry.post()
+            entry.post(opening_balance=self.is_opening_balance)
 
         self.record_taxes()
         from .documents import issued_particulars
