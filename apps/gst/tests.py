@@ -703,3 +703,34 @@ class SwitchedOffSettingsTests(GstReturnTestCase):
         self.freight.save()
         with self.assertRaisesMessage(ValidationError, "Charge FRT is switched off"):
             self.sell(self.buyer(), "1000", freight="200")
+
+
+class TheB2clLimitIsKeptAtPostingTests(GstReturnTestCase):
+    """O287: whether an invoice is reported as a large one is decided when it posts, not when the month is compiled."""
+
+    def test_a_month_recompiled_after_the_b2cl_limit_changes_reports_the_same_invoices(self):
+        retail = self.party("KA-UNREG", gst_state="29", gst_registration="unregistered")
+        invoice = self.sell(retail, "150000", taxes=[self.igst])
+        self.assertEqual(invoice.b2cl_limit, D("100000.00"))
+        before = gstr1(*month("2026-09"))
+        self.assertEqual(len(before["b2cl"]), 1)
+        self.settings.b2cl_limit = D("250000")
+        self.settings.save()
+        after = gstr1(*month("2026-09"))
+        self.assertEqual((len(after["b2cl"]), after["b2cs"]), (len(before["b2cl"]), before["b2cs"]))
+
+    def test_an_invoice_posted_after_the_change_goes_by_the_new_limit(self):
+        retail = self.party("KA-UNREG", gst_state="29", gst_registration="unregistered")
+        self.settings.b2cl_limit = D("250000")
+        self.settings.save()
+        self.sell(retail, "150000", taxes=[self.igst])
+        self.assertEqual(gstr1(*month("2026-09"))["b2cl"], [])
+
+    def test_a_credit_note_follows_its_invoice_under_the_limit_it_posted_at(self):
+        retail = self.party("KA-UNREG", gst_state="29", gst_registration="unregistered")
+        invoice = self.sell(retail, "150000", taxes=[self.igst])
+        self.settings.b2cl_limit = D("250000")
+        self.settings.save()
+        note = invoice.create_credit_note()
+        Invoice.objects.filter(pk=note.pk).update(invoice_date=DAY)
+        self.assertEqual(len(gstr1(*month("2026-09"))["cdnur"]), 1)
