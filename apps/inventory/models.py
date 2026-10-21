@@ -672,9 +672,18 @@ def _writer_of(frame):
     return ""
 
 
+# The repository's own code: a writer is a test only by where it sits in here, not by any directory above the
+# installation (a plant installed under a folder named tests turned the O326 guard off; the review).
+REPOSITORY = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
 def is_test_source(path):
-    name = os.path.basename(path)
-    return name.startswith("tests") or name.startswith("test_") or f"{os.sep}tests{os.sep}" in path
+    path = os.path.abspath(path)
+    if not path.startswith(REPOSITORY + os.sep):
+        return False
+    parts = os.path.relpath(path, REPOSITORY).split(os.sep)
+    name = parts[-1]
+    return name.startswith("tests") or name.startswith("test_") or "tests" in parts[:-1]
 
 
 def refuse_a_guess_from_application_code(movement):

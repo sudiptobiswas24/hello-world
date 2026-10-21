@@ -276,3 +276,55 @@ class ATemplatesCostingMethodIsFrozenUnderItsVariantsStock(StoresFixture):
         self.assertEqual(template.costing_method, "average")
         self.assertEqual(stores.patch(f"/api/inventory/item-templates/{empty.pk}/", {"costing_method": "fifo"},
                                       format="json").status_code, 200)
+
+
+class TheReviewsSmallerPoints(StoresFixture):
+    """The review of fix_stores2, item 7 (8, 9, 10 in its report)."""
+
+    def test_the_admin_says_a_control_account_beside_the_field(self):
+        from django.contrib import admin
+
+        from django.contrib.auth.models import User
+        from django.test import RequestFactory
+
+        request = RequestFactory().get("/")
+        request.user = User.objects.create_superuser("admin")
+        form_class = admin.site._registry[AdjustmentReason].get_form(request)
+        form = form_class(data={"code": "PAY", "name": "found", "account": self.payable.pk, "direction": "both",
+                                "is_active": True})
+        self.assertFalse(form.is_valid())
+        self.assertIn("account", form.errors)
+
+    def test_a_legacy_reason_on_a_control_account_can_be_renamed_and_still_books_nothing(self):
+        reason = AdjustmentReason.objects.create(code="OLD", name="old", account=self.cogs)
+        AdjustmentReason.objects.filter(pk=reason.pk).update(account=self.payable)
+        stores = self.as_("Stores Manager")
+        response = stores.patch(f"/api/inventory/adjustment-reasons/{reason.pk}/", {"name": "Retired",
+                                                                                   "is_active": False},
+                                format="json")
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(stores.patch(f"/api/inventory/adjustment-reasons/{reason.pk}/",
+                                      {"account": self.inventory.pk}, format="json").status_code, 400)
+
+    def test_an_empty_standard_shelf_is_found_at_its_standard(self):
+        from .adjustments import StockAdjustment as Adjustment
+
+        item = Item.objects.create(sku="STD", name="s", uom=self.kg, costing_method="standard",
+                                   standard_cost=D("10.005"))
+        income = Account.objects.create(code="4100", name="Found", account_type=AccountType.INCOME)
+        reason = AdjustmentReason.objects.create(code="F", name="found", account=income)
+        adjustment = Adjustment.objects.create(adjustment_date=datetime.date(2026, 3, 1), warehouse=self.store,
+                                               reason=reason)
+        StockAdjustmentLine.objects.create(adjustment=adjustment, item=item, uom=self.kg, quantity=D("2"))
+        adjustment.post()
+        self.assertEqual(item.valuation_at(self.store), (D("2"), D("20.01")))
+
+    def test_a_test_is_one_by_where_it_sits_in_the_repository(self):
+        from . import models as inventory_models
+        from .models import is_test_source
+
+        here = inventory_models.__file__
+        self.assertTrue(is_test_source(__file__))
+        self.assertFalse(is_test_source(here))
+        self.assertFalse(is_test_source("/srv/tests/erp/apps/inventory/models.py"))
+        self.assertFalse(is_test_source("/opt/tests/plant/apps/inventory/adjustments.py"))

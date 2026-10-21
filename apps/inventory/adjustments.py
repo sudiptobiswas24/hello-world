@@ -101,7 +101,8 @@ def offset_account_refusal(account):
     """Why `account` cannot take an adjustment's other side, or "" when it can."""
     if account.account_type in OFFSET_TYPES:
         return ""
-    return (f"{account.code} is an {account.get_account_type_display().lower()} account. A stock adjustment's "
+    kind = account.get_account_type_display().lower()
+    return (f"{account.code} is {'an' if kind[0] in 'aeiou' else 'a'} {kind} account. A stock adjustment's "
             "other side is a gain, a loss or opening equity: an income, expense or equity account, never a "
             "control or money account.")
 
@@ -142,8 +143,19 @@ class AdjustmentReason(AuditModel):
         if refusal:
             raise ValidationError({"account": refusal})
 
+    def clean(self):
+        # The admin's form asks here, so a control account is a field error there, not a 500 (the review).
+        super().clean()
+        if self.account_id:
+            self.check_account()
+
     def save(self, *args, **kwargs):
-        self.check_account()
+        # Asked when the account is chosen or changed: a reason left on a control account from before the rule
+        # can still be renamed or retired, and posting asks again, so it books nothing (the review).
+        before = type(self).objects.filter(pk=self.pk).values_list("account_id", flat=True).first() \
+            if self.pk else None
+        if before is None or before != self.account_id:
+            self.check_account()
         super().save(*args, **kwargs)
 
     def permits(self, quantity):
@@ -535,7 +547,15 @@ class StockAdjustmentLine(AuditModel):
             self.unit_cost = rate
             self.posted_value = -taking
         else:
-            if self.unit_cost is None:
+            standard_item = item.costing_method == "standard"
+            if self.unit_cost is None and standard_item and quantity > 0:
+                # A standard item is found at its standard, an empty shelf too: one answer, not "give a cost"
+                # here and "leave it blank" there (the review of O323).
+                self.unit_cost = item.standard_cost or Decimal("0")
+                if not self.unit_cost:
+                    raise ValidationError(f"{item} is costed at standard and has none; set its standard first.")
+                self.posted_value = to_paisa(quantity * self.unit_cost)
+            elif self.unit_cost is None:
                 # At the shelf's average, as a total: what is held, shared over what is found, rounded once.
                 # The four-place 3.3333 multiplied back up booked 3,000 found at 9,999.90 where the shelf's
                 # 9,000 worth 30,000.00 says 10,000.00 (O328).
@@ -555,7 +575,7 @@ class StockAdjustmentLine(AuditModel):
                 if quantity > 0 and item.costing_method == "standard" and self.unit_cost != standard:
                     raise ValidationError(
                         f"{item} is costed at standard, so {quantity} {item.uom} found are worth its standard, "
-                        f"{standard} each, not {self.unit_cost}. Leave the cost blank.")
+                        f"{standard} each, not {self.unit_cost}. Leave the cost blank, or give {standard}.")
                 self.posted_value = to_paisa(quantity * self.unit_cost)
         on_hand = item.on_hand_at(adjustment.warehouse)
         if quantity < 0 and -quantity > on_hand and not adjustment.warehouse.allow_negative_stock:
