@@ -12,7 +12,7 @@ from apps.accounting.models import Account, AccountType, JournalLine
 from apps.core.models import Company, Currency, UnitOfMeasure
 from apps.core.tests_roles import RolesTestCase
 
-from .adjustments import AdjustmentReason
+from .adjustments import AdjustmentReason, StockAdjustment, StockAdjustmentLine
 from .models import Item, MovementType, StockMovement, Warehouse
 
 D = Decimal
@@ -125,3 +125,77 @@ class StoresRoles(RolesTestCase):
         self.assertEqual((on_hand["total_value"], on_hand["rows"][0]["value"]), ("50.00", "50.00"))
         self.assertEqual(client.get("/api/inventory/stock-reports/reconciliation/").status_code, 200)
 
+
+
+class TheFloorReadsNoStockMoneyAnywhere(RolesTestCase):
+    """
+    O331 with the review: every stock endpoint the floor can read, on the demo plant with an adjustment carrying a
+    write-up and a revaluation, answers without a money field for Warehouse Staff and Quality Inspectors; the
+    Stores Manager still reads them. Crawls each list and the detail of its first row.
+    """
+
+    MONEY = {"unit_cost", "value", "value_adjustment", "total_value", "revaluation", "posted_value"}
+    ROOTS = ("/api/inventory/",)
+
+    def keys(self, data):
+        found = set()
+        if isinstance(data, dict):
+            for key, inner in data.items():
+                found.add(key)
+                found |= self.keys(inner)
+        elif isinstance(data, list):
+            for inner in data[:5]:
+                found |= self.keys(inner)
+        return found
+
+    def crawl(self, client):
+        lists = []
+        root = client.get(self.ROOTS[0]).json()
+        lists += [url.replace("http://testserver", "") for url in root.values() if isinstance(url, str)]
+        lists += list(self.ROOTS[1:])
+        seen, read = set(), 0
+        for url in lists:
+            response = client.get(url)
+            if response.status_code != 200:
+                continue
+            read += 1
+            data = response.json()
+            rows = data if isinstance(data, list) else data.get("results", data) if isinstance(data, dict) else data
+            seen |= {(url, key) for key in self.keys(rows) & self.MONEY}
+            if isinstance(rows, list) and rows and isinstance(rows[0], dict) and "id" in rows[0]:
+                detail = client.get(f"{url.rstrip('/')}/{rows[0]['id']}/")
+                if detail.status_code == 200:
+                    seen |= {(url + "{id}", key) for key in self.keys(detail.json()) & self.MONEY}
+        return seen, read
+
+    def test_it(self):
+        from io import StringIO
+
+        from apps.web.tests_load_demo import load
+
+        load(password="Trial-2026", stdout=StringIO(), stderr=StringIO())
+        call_command_roles()
+        held = StockMovement.objects.filter(item__costing_method="average", warehouse__requires_bins=False,
+                                            quantity__gt=0).select_related("item", "warehouse").first()
+        item, warehouse = held.item, held.warehouse
+        income = Account.objects.filter(account_type=AccountType.INCOME).first()
+        reason = AdjustmentReason.objects.create(code="CRAWL", name="found", account=income)
+        adjustment = StockAdjustment.objects.create(adjustment_date=timezone.localdate(), warehouse=warehouse,
+                                                    reason=reason)
+        StockAdjustmentLine.objects.create(adjustment=adjustment, item=item, uom=item.uom, quantity=D("2"),
+                                           unit_cost=D("9"))
+        StockAdjustmentLine.objects.create(adjustment=adjustment, item=item, uom=item.uom, quantity=D("0"),
+                                           revaluation=D("7"))
+        adjustment.post()
+        for role in ("Warehouse Staff", "Quality Inspector"):
+            seen, read = self.crawl(self.as_(role))
+            self.assertGreater(read, 5, role)
+            self.assertEqual(sorted(seen), [], role)
+        seen, _ = self.crawl(self.as_("Stores Manager"))
+        self.assertIn(("/api/inventory/stock-adjustments/", "total_value"), seen)
+
+
+def call_command_roles():
+    from django.core.management import call_command
+
+    call_command("setup_roles", verbosity=0)
