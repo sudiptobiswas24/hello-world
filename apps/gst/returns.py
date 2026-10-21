@@ -509,6 +509,10 @@ def _documents_issued(start, end):
     from apps.manufacturing.jobwork import JobWorkChallan
 
     numbered = Invoice.objects.filter(posted=True, invoice_date__gte=start, invoice_date__lte=end).exclude(number="")
+    # The old system's open invoices take a number here but were issued there, and a plain credit of
+    # one is no supply: as _invoices leaves them out of every table, table 13 does not count them (O286).
+    numbered = numbered.exclude(is_opening_balance=True).exclude(
+        credits__is_opening_balance=True, corrects_old_supply=False)
     # (number, when withdrawn): an invoice is withdrawn only by its IRN's cancellation, which
     # withdraws the note the books reverse it by as well; any other correction is a credit note.
     kinds = (

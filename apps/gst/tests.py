@@ -757,3 +757,31 @@ class NotesAreFiledAsTheirInvoiceTests(GstReturnTestCase):
     def test_a_note_to_a_regular_buyer_stays_r(self):
         buyer = self.party("MH", gstin=gstin("27AAACB1234K1Z"), gst_state="27", gst_registration="regular")
         self.assertEqual(self.note_types(buyer), ["R"])
+
+
+class Table13CountsWhatThisSystemIssuedTests(GstReturnTestCase):
+    """O286: the old system's open invoices and their plain credits are not documents issued here."""
+
+    def test_table_13_leaves_out_the_old_systems_invoices_and_their_plain_credits(self):
+        buyer = self.party("B2B", gstin=gstin("27AAACB1234K1Z"), gst_state="27", gst_registration="regular")
+        old = Invoice.objects.create(customer=buyer, invoice_date=datetime.date(2026, 10, 2), reference="OLD/1",
+                                     receivable_account=self.ar, currency=self.inr, is_opening_balance=True)
+        InvoiceLine.objects.create(invoice=old, description="Opening balance: OLD/1", quantity=D("1"),
+                                   unit_price=D("1000"), revenue_account=self.revenue)
+        old.post()
+        self.sell(buyer, "1000", day=datetime.date(2026, 10, 3))
+        self.sell(buyer, "1000", day=datetime.date(2026, 10, 4))
+        old.create_credit_note(memo="Settled in the old system")
+        Invoice.objects.filter(credits=old).update(invoice_date=datetime.date(2026, 10, 5))
+        rows = gstr1(*month("2026-10"))["documents"]
+        self.assertEqual([(row["kind"], row["total"]) for row in rows if row["kind"] in ("invoices", "credit_notes")],
+                         [("invoices", 2)])
+
+    def test_a_credit_of_the_real_invoice_is_still_counted(self):
+        buyer = self.party("B2B", gstin=gstin("27AAACB1234K1Z"), gst_state="27", gst_registration="regular")
+        invoice = self.sell(buyer, "1000")
+        note = invoice.create_credit_note()
+        Invoice.objects.filter(pk=note.pk).update(invoice_date=DAY)
+        rows = gstr1(*month("2026-09"))["documents"]
+        self.assertEqual([(row["kind"], row["total"]) for row in rows if row["kind"] in ("invoices", "credit_notes")],
+                         [("invoices", 1), ("credit_notes", 1)])
