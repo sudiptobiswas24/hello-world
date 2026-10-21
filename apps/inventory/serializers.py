@@ -56,7 +56,33 @@ class ItemUnitSerializer(serializers.ModelSerializer):
         fields = ["id", "item", "uom", "factor", "uom_code"]
 
 
+def validate_stock_account(serializer, account):
+    """
+    Where an item's stock is valued is the accountant's to say (the review of O324): the type rule is
+    stock_account_refusal's, and choosing or changing the account needs accounting.post_journalentry, as a
+    reason's account does. Blank (the company's default) stays the keeper's to choose.
+    """
+    from .valuation import stock_account_refusal
+
+    refusal = stock_account_refusal(account)
+    if refusal:
+        raise serializers.ValidationError(refusal)
+    if getattr(serializer.instance, "inventory_account_id", None) == getattr(account, "pk", None):
+        return account
+    if account is None and serializer.instance is None:
+        return account
+    request = serializer.context.get("request")
+    if request is None or not request.user.has_perm("accounting.post_journalentry"):
+        raise serializers.ValidationError(
+            "Which account holds an item's stock value is set by someone who may post journal entries, not by "
+            "whoever keeps the item.")
+    return account
+
+
 class ItemSerializer(ExtensibleSerializerMixin, serializers.ModelSerializer):
+    def validate_inventory_account(self, account):
+        return validate_stock_account(self, account)
+
     def validate_tcs_section(self, section):
         """
         Whether its sales collect TCS is the accountant's to say: cleared by whoever keeps the item, every
@@ -408,6 +434,9 @@ class ItemAttributeSerializer(serializers.ModelSerializer):
 
 class ItemTemplateSerializer(serializers.ModelSerializer):
     variant_count = serializers.SerializerMethodField()
+
+    def validate_inventory_account(self, account):
+        return validate_stock_account(self, account)
 
     class Meta:
         model = ItemTemplate

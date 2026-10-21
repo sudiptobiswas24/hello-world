@@ -18,7 +18,7 @@ from .models import Item, MovementType, StockMovement, Warehouse
 D = Decimal
 
 
-class StoresRoles(RolesTestCase):
+class StoresFixture(RolesTestCase):
     def setUp(self):
         super().setUp()
         usd = Currency.objects.create(code="USD", name="USD", is_base=True)
@@ -35,6 +35,8 @@ class StoresRoles(RolesTestCase):
         StockMovement.objects.create(item=self.item, warehouse=self.store, movement_type=MovementType.RECEIPT,
                                      uom=self.kg, quantity=D("10"), unit_cost=D("5"), occurred_at=timezone.now())
 
+
+class StoresRoles(StoresFixture):
     def test_a_stores_manager_cannot_point_a_reason_at_the_payables_or_the_bank(self):
         client = self.as_("Stores Manager")
         for account in (self.bank, self.payable, self.inventory, self.cogs):
@@ -199,3 +201,57 @@ def call_command_roles():
     from django.core.management import call_command
 
     call_command("setup_roles", verbosity=0)
+
+
+class AnInventoryAccountIsAStockAccount(StoresFixture):
+    """
+    The review of O324, its mirror: a Stores Manager pointed a new item's inventory account at the payables (200)
+    and posted a write-up of 4 at 12.50 through it, debiting payables 50.00 with no vendor. An inventory account
+    is an asset account kept for stock, wherever one is set; choosing one needs the accounting permission.
+    """
+
+    def test_a_stores_manager_cannot_point_an_item_at_the_payables(self):
+        from .adjustments import StockAdjustment as Adjustment
+
+        fresh = Item.objects.create(sku="F", name="Fresh", uom=self.kg)
+        stores = self.as_("Stores Manager")
+        for account in (self.payable, self.bank, self.cogs, self.inventory):
+            response = stores.patch(f"/api/inventory/items/{fresh.pk}/", {"inventory_account": account.pk},
+                                    format="json")
+            self.assertEqual(response.status_code, 400, f"{account.name}: {response.status_code}")
+        fresh.refresh_from_db()
+        self.assertIsNone(fresh.inventory_account)
+        reason = AdjustmentReason.objects.create(code="SH", name="s", account=self.cogs)
+        adjustment = Adjustment.objects.create(adjustment_date=datetime.date(2026, 3, 1), warehouse=self.store,
+                                               reason=reason)
+        StockAdjustmentLine.objects.create(adjustment=adjustment, item=fresh, uom=self.kg, quantity=D("4"),
+                                           unit_cost=D("12.5"))
+        # One set before the rule is refused where it is used.
+        Item.objects.filter(pk=fresh.pk).update(inventory_account=self.payable)
+        self.assertEqual(stores.post(f"/api/inventory/stock-adjustments/{adjustment.pk}/post/").status_code, 400)
+        self.assertFalse(JournalLine.objects.filter(account=self.payable).exists())
+
+    def test_the_controller_chooses_an_asset_account_kept_for_stock(self):
+        fresh = Item.objects.create(sku="F", name="Fresh", uom=self.kg)
+        controller = self.as_("Controller", "Stores Manager")
+        self.assertEqual(controller.patch(f"/api/inventory/items/{fresh.pk}/", {"inventory_account": self.payable.pk},
+                                          format="json").status_code, 400)
+        stock = Account.objects.create(code="1210", name="Stock, spares", account_type=AccountType.ASSET)
+        self.assertEqual(controller.patch(f"/api/inventory/items/{fresh.pk}/", {"inventory_account": stock.pk},
+                                          format="json").status_code, 200)
+
+    def test_a_template_and_the_company_default_too(self):
+        from apps.core.models import Company as TheCompany
+
+        from .variants import ItemTemplate
+
+        with self.assertRaises(ValidationError):
+            ItemTemplate.objects.create(code="T", name="T", uom=self.kg, inventory_account=self.payable)
+        stores = self.as_("Stores Manager")
+        template = ItemTemplate.objects.create(code="T2", name="T2", uom=self.kg)
+        self.assertEqual(stores.patch(f"/api/inventory/item-templates/{template.pk}/",
+                                      {"inventory_account": self.inventory.pk}, format="json").status_code, 400)
+        company = TheCompany.get()
+        company.default_inventory_account = self.payable
+        with self.assertRaises(ValidationError):
+            company.save()
