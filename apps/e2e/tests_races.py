@@ -2440,3 +2440,23 @@ class AMoveTakesItsOwnPositionsRaceTests(RaceCase):
                               at=at(TODAY, 9)),
             lambda: move_stock(made.tape, made.plant, store, Decimal("100"), "T-1", timezone.now(), "", lot=d1))
         self.once(outcomes)
+
+
+@tag("race")
+@unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
+class TwoDunningRunsAtOnceRaceTests(RaceCase):
+    """O296 (probe R1): the scheduled run and a click at once send the level once, and neither run fails."""
+
+    def test_two_dunning_runs_at_once_send_each_level_once_and_neither_fails(self):
+        from apps.sales.models import DunningLevel, DunningNotice, run_dunning
+
+        sales = fixture(self, sales_fixture.SalesTestCase)
+        DunningLevel.objects.create(name="First", days_overdue=7)
+        order = sales.make_order("10", "100")
+        sales.ship(order, 10)
+        invoice = sales.bill(order, on=datetime.date(2026, 3, 1))
+        day = invoice.due_date + datetime.timedelta(days=10)
+        outcomes = race(DunningNotice, lambda: run_dunning(as_of=day, send=False),
+                        lambda: run_dunning(as_of=day, send=False))
+        self.assertEqual(outcomes, ["done", "done"])
+        self.assertEqual(DunningNotice.objects.filter(invoice=invoice).count(), 1)

@@ -5324,6 +5324,11 @@ def run_dunning(as_of=None, send=True):
     send the 7-day one. Nor afterwards: a reminder only goes up. Asked for
     the highest level not yet sent, the runs after a 60-day notice sent the
     30-day and then the 7-day (O295).
+
+    Each invoice is held while its notice is decided and written, and what
+    it has been sent is read again under the hold: two runs at once (the
+    scheduled one and a click) both read none, and the second ended the
+    whole run on the one-notice-a-level constraint (O296).
     """
     as_of = to_date(as_of) or timezone.localdate()
     levels = list(DunningLevel.objects.filter(is_active=True).order_by("-days_overdue"))
@@ -5341,8 +5346,7 @@ def run_dunning(as_of=None, send=True):
         days = invoice.days_overdue(as_of)
         if days <= 0 or invoice.amount_due() <= 0:
             continue
-        due_level = _dunning_level_due(invoice.dunning_notices.all(), levels, days)
-        if due_level is None:
+        if _dunning_level_due(invoice.dunning_notices.all(), levels, days) is None:
             continue
 
         recipient = invoice.recipient_email()
@@ -5356,6 +5360,11 @@ def run_dunning(as_of=None, send=True):
         # reminder the mail server refused would count the level as done,
         # and the customer would never be chased at it.
         with transaction.atomic():
+            lock_rows(invoice, refresh=False)
+            due_level = _dunning_level_due(
+                DunningNotice.objects.filter(invoice=invoice).select_related("level"), levels, days)
+            if due_level is None:
+                continue
             notice = DunningNotice.objects.create(
                 invoice=invoice, level=due_level, days_overdue=days,
                 # What is actually late, not the whole balance. On a 50/50
