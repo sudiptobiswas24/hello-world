@@ -315,20 +315,43 @@ def register_close_check(ask):
         CLOSE_CHECKS.append(ask)
 
 
+# The steps that take something back, by the name every one of them goes by: a void, a reversal, a
+# cancellation, an undo. Decided (O283): a correction is always possible, so a switched-off account or
+# cost centre refuses new postings only. Seventy-odd void paths build their entries in their own way,
+# most without `reverses`; asking which step the posting is made from covers each one, and the next.
+CORRECTING_STEPS = re.compile(r"^_*(void|revers|cancel|undo)")
+
+
+def in_a_correction():
+    """True when a step that takes something back (CORRECTING_STEPS) is on the way to this posting."""
+    import sys
+
+    frame = sys._getframe(1)
+    while frame is not None:
+        if CORRECTING_STEPS.match(frame.f_code.co_name):
+            return True
+        frame = frame.f_back
+    return False
+
+
 def refuse_switched_off(lines):
     """
     An account or cost centre switched off takes nothing new (O283): its flag was read by the money
     pickers and nothing else, so a retired revenue account still took every invoice. What takes back an
-    earlier posting (a reversal, a credit or debit note) is not new, and is not asked.
+    earlier posting (a reversal, a credit or debit note, any void) is not new, and is not asked.
     """
-    for line in lines:
-        if not line.account.is_active:
-            raise ValidationError(
-                f"{line.account} is switched off; it takes nothing new. Post to the account that replaced "
-                "it, or switch it on again.")
-        if line.cost_centre_id and not line.cost_centre.is_active:
-            raise ValidationError({"cost_centre": [
-                f"{line.cost_centre} is switched off; it takes no new line. Switch it on again to use it."]})
+    lines = list(lines)
+    off = [line for line in lines
+           if not line.account.is_active or (line.cost_centre_id and not line.cost_centre.is_active)]
+    if not off or in_a_correction():
+        return
+    line = off[0]
+    if not line.account.is_active:
+        raise ValidationError(
+            f"{line.account} is switched off; it takes nothing new. Post to the account that replaced "
+            "it, or switch it on again.")
+    raise ValidationError({"cost_centre": [
+        f"{line.cost_centre} is switched off; it takes no new line. Switch it on again to use it."]})
 
 
 class JournalEntry(AuditModel):
