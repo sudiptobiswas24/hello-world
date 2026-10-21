@@ -223,7 +223,9 @@ class StaleRead(Doors):
             return real(*a, **k)
         adjustments.lock_positions = rival
         try:
-            StockAdjustment.objects.get(pk=adj.pk).post()
+            # Read again after the lock (f827f1a), 3 is no longer the standard: the write-up is refused.
+            with self.assertRaises(ValidationError):
+                StockAdjustment.objects.get(pk=adj.pk).post()
         finally:
             adjustments.lock_positions = real
         worth = std.valuation_at(self.store)
