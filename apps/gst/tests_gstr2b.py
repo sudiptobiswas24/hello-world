@@ -421,3 +421,23 @@ class SuppliersCreditNoteTests(GstReturnTestCase):
         # One debit note answers one credit note of a supplier, refused in words (O190).
         with self.assertRaisesMessage(ValidationError, f"{first} already answers KA - KA's credit note CN-9"):
             self.bill.create_debit_note(quantities={line: D("0.1")}, supplier_note_number="CN-9")
+
+
+class CreditNotAvailableIsNotMatchedTests(GstReturnTestCase):
+    """O288: a bill paired with a 2B line the portal marks ITC not available adds nothing to what is matched."""
+
+    def reconciled(self, itcavl):
+        ka = self.party("KA", role=PartyRole.VENDOR, gstin=KA, gst_state="29")
+        self.buy(ka, "10000", taxes=[self.igst], reference="INV/27/0012")
+        line = inv("INV-27-12", "10-09-2026", "10000", igst="1800", itcavl=itcavl, rsn="Supplier has not filed GSTR-3B")
+        keep("2026-09", portal_json(b2b=[{"ctin": KA, "trdnm": "KA Mills", "inv": [line]}]))
+        return reconcile("2026-09")
+
+    def test_credit_the_portal_marks_not_available_is_not_counted_as_matched(self):
+        report = self.reconciled("N")
+        self.assertEqual((report["totals"]["matched"], report["totals"]["filed"], len(report["matched"])),
+                         (D("0"), D("0"), 1))
+        self.assertTrue(any("credit not available" in note for note in report["notes"]), report["notes"])
+
+    def test_credit_available_is_matched(self):
+        self.assertEqual(self.reconciled("Y")["totals"]["matched"], D("1800.00"))
