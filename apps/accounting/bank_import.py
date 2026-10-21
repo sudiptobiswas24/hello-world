@@ -20,6 +20,7 @@ from django.db.models import Sum
 
 from apps.core import csvrows
 from apps.core.csvrows import RowError
+from apps.core.models import lock_rows
 
 from .models import BankStatementLine, round_money
 
@@ -108,26 +109,30 @@ def import_lines(statement, text, *, commit=False):
     difference (closing less opening less every line: zero when the
     statement is whole), committed}.
     """
-    if statement.closed:
-        raise ValidationError("This statement is closed. Reopen it to import into it.")
-    read, errors = read_rows(statement, text)
-    report = {"rows": len(read) + len(errors), "added": 0, "already_there": 0, "errors": errors,
-              "lines_total": None, "difference": None, "committed": False}
-    if errors:
-        return report
-    # Each line already on the statement explains at most one row of the file.
-    standing = {}
-    for line in statement.lines.all():
-        standing.setdefault((line.date, line.reference, line.description, line.amount), []).append(line.pk)
-    new = []
-    for row in read:
-        key = (row["date"], row["reference"], row["description"], row["amount"])
-        if standing.get(key):
-            standing[key].pop()
-            report["already_there"] += 1
-        else:
-            new.append(row)
+    # The statement is held from the read of what stands on it to the last line added (O290): two
+    # imports of one file at once both read no lines, and both added every row, 4 where 2 were sent.
+    # Held, then re-read, so the second import sees the first one's lines, and a close made meanwhile.
     with transaction.atomic():
+        lock_rows(statement)
+        if statement.closed:
+            raise ValidationError("This statement is closed. Reopen it to import into it.")
+        read, errors = read_rows(statement, text)
+        report = {"rows": len(read) + len(errors), "added": 0, "already_there": 0, "errors": errors,
+                  "lines_total": None, "difference": None, "committed": False}
+        if errors:
+            return report
+        # Each line already on the statement explains at most one row of the file.
+        standing = {}
+        for line in statement.lines.all():
+            standing.setdefault((line.date, line.reference, line.description, line.amount), []).append(line.pk)
+        new = []
+        for row in read:
+            key = (row["date"], row["reference"], row["description"], row["amount"])
+            if standing.get(key):
+                standing[key].pop()
+                report["already_there"] += 1
+            else:
+                new.append(row)
         for row in new:
             BankStatementLine.objects.create(statement=statement, **row)
         total = statement.lines.aggregate(total=Sum("amount"))["total"] or Decimal("0")
