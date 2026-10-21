@@ -255,3 +255,24 @@ class AnInventoryAccountIsAStockAccount(StoresFixture):
         company.default_inventory_account = self.payable
         with self.assertRaises(ValidationError):
             company.save()
+
+
+class ATemplatesCostingMethodIsFrozenUnderItsVariantsStock(StoresFixture):
+    """The review of O330: PATCH an item template to FIFO while a variant holds 10 kg: refused, not 200."""
+
+    def test_it(self):
+        from .variants import ItemTemplate
+
+        template = ItemTemplate.objects.create(code="TT", name="T", uom=self.kg)
+        empty = ItemTemplate.objects.create(code="TE", name="E", uom=self.kg)
+        variant = Item.objects.create(sku="TT-1", name="T one", uom=self.kg, template=template)
+        StockMovement.objects.create(item=variant, warehouse=self.store, movement_type=MovementType.RECEIPT,
+                                     uom=self.kg, quantity=D("10"), unit_cost=D("5"), occurred_at=timezone.now())
+        stores = self.as_("Stores Manager")
+        response = stores.patch(f"/api/inventory/item-templates/{template.pk}/", {"costing_method": "fifo"},
+                                format="json")
+        self.assertEqual(response.status_code, 400, response.content)
+        template.refresh_from_db()
+        self.assertEqual(template.costing_method, "average")
+        self.assertEqual(stores.patch(f"/api/inventory/item-templates/{empty.pk}/", {"costing_method": "fifo"},
+                                      format="json").status_code, 200)
