@@ -48,7 +48,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from apps.accounting.gst import STATES
-from apps.core.models import AuditModel, serialised, to_date
+from apps.core.models import AuditModel, moment_that_has_come, serialised, to_date
 
 from . import particulars as p
 
@@ -166,6 +166,7 @@ class EwayBill(AuditModel):
                 f"An e-way bill cannot be generated before {self.document().number}, dated "
                 f"{_document_date(self.document())}."
             )
+        moment_that_has_come(generated_at, "the portal answers with when it generated the e-way bill")
         if valid_until is not None and valid_until <= generated_at:
             raise ValidationError("It cannot expire before it was generated.")
         self.number, self.generated_at, self.valid_until = number, generated_at, valid_until

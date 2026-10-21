@@ -832,3 +832,34 @@ class TaxPathsTheReviewDidNotDriveTests(EInvoiceTestCase):
         self.assertEqual((record.cancelled_at, invoice.credit_notes.count()), (None, 0))
         september.reopen()
         self.assertEqual(record.record_cancellation(timezone.now()).total(), D("17700.00"))
+
+
+class PortalAnswerFromTomorrowTests(EInvoiceTestCase):
+    """O289: the portal answers with when it acted; an answer from a time still to come is no answer."""
+
+    def setUp(self):
+        super().setUp()
+        from django.utils import timezone
+
+        self.later = timezone.now() + datetime.timedelta(days=5)
+
+    def test_an_e_way_bill_generated_next_week_is_refused(self):
+        from .ewaybill import prepare
+
+        bill = prepare(self.sell(self.ka, "100000"), vehicle_number="MH12AB1234")
+        with self.assertRaisesMessage(ValidationError, "has not come; the portal answers"):
+            bill.record("123456789012", self.later, None)
+        bill.refresh_from_db()
+        self.assertEqual(bill.number, "")
+
+    def test_an_irn_acknowledged_next_week_is_refused(self):
+        from .einvoice import prepare
+
+        invoice = self.sell(self.ka, "1000")
+        record = prepare(invoice)
+        with self.assertRaisesMessage(ValidationError, "has not come; the portal answers"):
+            record.record(IRN, "112610000000001", self.later, signed_qr(
+                Irn=IRN, DocNo=invoice.number, SellerGstin=self.settings.gstin,
+                BuyerGstin=record.payload["BuyerDtls"]["Gstin"], TotInvVal=record.payload["ValDtls"]["TotInvVal"]))
+        record.refresh_from_db()
+        self.assertEqual(record.irn, "")
