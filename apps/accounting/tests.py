@@ -272,3 +272,45 @@ class SwitchedOffTakesNothingNewTests(MoneyBooks):
         entry.post()
         CostCentre.objects.filter(pk=centre.pk).update(is_active=False)
         self.assertTrue(entry.create_reversal(entry_date=datetime.date(2026, 9, 2)).posted)
+
+
+class EveryVoidTakesBackWhatASwitchedOffAccountHolds(MoneyBooks):
+    """O283, decided: a correction is always possible; the refusal stands for new postings only."""
+
+    def setUp(self):
+        super().setUp()
+        from .analytic import CostCentre
+
+        self.centre = CostCentre.objects.create(code="CC1", name="Old line")
+
+    def taking_back(self, day):
+        # As a void that builds its own entry does (most set no `reverses`): Bank debit, Rent credit.
+        entry = JournalEntry.objects.create(date=day, memo="Void of rent")
+        JournalLine.objects.create(entry=entry, account=self.bank, debit=D("100"))
+        JournalLine.objects.create(entry=entry, account=self.rent, credit=D("100"), cost_centre=self.centre)
+        entry.post()
+        return entry
+
+    def switch_off(self):
+        from .analytic import CostCentre
+
+        Account.objects.filter(pk=self.rent.pk).update(is_active=False)
+        CostCentre.objects.filter(pk=self.centre.pk).update(is_active=False)
+
+    def test_a_void_that_builds_its_own_entry_posts_to_a_switched_off_account_and_centre(self):
+        self.entry(datetime.date(2026, 9, 1))
+        self.switch_off()
+
+        def void():
+            return self.taking_back(datetime.date(2026, 9, 2))
+
+        self.assertTrue(void().posted)
+
+    def test_the_same_entry_made_as_new_business_is_refused(self):
+        self.switch_off()
+
+        def book_a_refund():
+            return self.taking_back(datetime.date(2026, 9, 2))
+
+        with self.assertRaises(ValidationError):
+            book_a_refund()
