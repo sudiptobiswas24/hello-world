@@ -267,7 +267,10 @@ def _section(document, settings, value=None):
         return "exp"
     if document.registered:
         return "b2b"
-    if document.inter and (document.value if value is None else value) > settings.b2cl_limit:
+    # The limit the invoice posted under (O287), kept on it; read live only for one posted before it was kept.
+    limit = getattr(document.source, "b2cl_limit", None)
+    if document.inter and (document.value if value is None else value) > (settings.b2cl_limit if limit is None
+                                                                            else limit):
         return "b2cl"
     return "b2cs"
 

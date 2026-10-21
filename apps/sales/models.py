@@ -1975,6 +1975,13 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
         help_text="A credit note with its own GST on an invoice the old system issued: "
                   "reported in this system's returns against the old number.",
     )
+    b2cl_limit = models.DecimalField(
+        max_digits=18, decimal_places=2, null=True, blank=True, editable=False,
+        help_text="The B2CL limit (GstSettings) as it stood when the invoice posted: whether GSTR-1 "
+                  "reports it invoice by invoice is decided then, so a month compiled again after the "
+                  "limit moves reports the same invoices (O287). Blank: posted without GST, or before "
+                  "it was kept.",
+    )
     old_invoice_value = models.DecimalField(
         max_digits=18, decimal_places=2, null=True, blank=True, editable=False,
         help_text="On such a note, what the old invoice was for in all: no more is "
@@ -2899,6 +2906,11 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
         from .tcs import collect
 
         self.tcs_amount = collect(self)
+        # Kept at the event, as the party's registration is (O287): which GSTR-1 table it goes in.
+        from apps.accounting.gst import GstSettings
+
+        gst = GstSettings.active()
+        self.b2cl_limit = gst.b2cl_limit if gst is not None else None
         self.journal_entry = entry
         self.posted = True
         self.posted_at = timezone.now()
@@ -2907,7 +2919,7 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
             update_fields=[
                 "number", "invoice_date", "due_date", "exchange_rate", "journal_entry",
                 "posted", "posted_at", "taxes_recorded", "party_gstin", "party_registration",
-                "place_of_supply", "issued_as", "tcs_amount", "posted_total", "updated_at",
+                "place_of_supply", "issued_as", "tcs_amount", "b2cl_limit", "posted_total", "updated_at",
             ]
         )
 
