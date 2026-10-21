@@ -21,8 +21,44 @@ from decimal import Decimal
 
 from django.core.exceptions import ValidationError
 
-from apps.accounting.models import JournalEntry, JournalLine, round_money
+from apps.accounting.models import AccountType, JournalEntry, JournalLine, round_money
 from apps.core.models import Company
+
+
+def stock_account_refusal(account):
+    """
+    Why `account` cannot hold stock's value, or "" when it can (the review of O324). An inventory account is an
+    asset account kept for stock: not a bank or cash account, and none of the company's other accounts (the
+    receivables control, a prepayment, a deposit). A Stores Manager who pointed an item at the payables posted an
+    adjustment through it and debited them 50.00 with no vendor. One rule, asked wherever an inventory account is
+    set (an item, an item template, the company default) and again where one is used.
+    """
+    if account is None:
+        return ""
+    if account.account_type != AccountType.ASSET or account.holds_money:
+        kind = "money" if account.holds_money else account.get_account_type_display().lower()
+        return (f"{account.code} is a {kind} account. Stock's value is held in an asset account kept for "
+                "stock, never a control or money account.")
+    company = Company.objects.order_by("pk").first()
+    if company is not None:
+        for field in type(company)._meta.get_fields():
+            if (getattr(field, "related_model", None) is type(account) and field.concrete
+                    and field.name != "default_inventory_account"
+                    and getattr(company, f"{field.name}_id") == account.pk):
+                return (f"{account.code} is the company's {field.verbose_name}. Stock's value is held in an "
+                        "asset account kept for stock, never a control or money account.")
+    return ""
+
+
+def check_stock_account(account, field="inventory_account"):
+    refusal = stock_account_refusal(account)
+    if refusal:
+        raise ValidationError({field: refusal})
+
+
+def refuse_a_default_stock_account_that_is_not_one(company):
+    """A company check: the default inventory account is an asset account kept for stock (review of O324)."""
+    check_stock_account(company.default_inventory_account, "default_inventory_account")
 
 
 def inventory_account_for(item):
@@ -32,6 +68,8 @@ def inventory_account_for(item):
             f"{item} has no inventory account and the company has no default; "
             "stock cannot be valued."
         )
+    # Asked again where it is used: one set before the rule, or retyped since, books nothing.
+    check_stock_account(account)
     return account
 
 

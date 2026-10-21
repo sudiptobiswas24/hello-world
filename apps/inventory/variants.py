@@ -78,6 +78,13 @@ class ItemTemplate(AuditModel):
     """
 
     code = models.CharField(max_length=64, unique=True)
+
+    def save(self, *args, **kwargs):
+        from .valuation import check_stock_account
+
+        check_stock_account(self.inventory_account)
+        super().save(*args, **kwargs)
+
     name = models.CharField(max_length=255)
     description = models.TextField(blank=True)
     uom = models.ForeignKey(UnitOfMeasure, on_delete=models.PROTECT, related_name="+")
