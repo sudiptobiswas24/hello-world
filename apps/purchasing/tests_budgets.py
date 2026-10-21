@@ -305,3 +305,43 @@ class AForeignOrderIsWeighedInTheBaseTests(BudgetTestCase):
         other = self.order_of("2", "100", confirm=False)
         self.assertEqual(other.approval_reasons(), [])
         self.assertIn("No exchange rate for GBP", " ".join(PurchaseOrder.objects.get(pk=stuck.pk).approval_reasons()))
+
+
+from django.test import TransactionTestCase, tag  # noqa: E402
+
+
+@tag("migration")
+class ApprovedFiguresPutInTheBaseMigrationTests(TransactionTestCase):
+    """O337: an approval kept before O293 in the order's currency is put in the base at the order's rate."""
+
+    before = [("purchasing", "0080_allocation_keeps_its_base")]
+    after = [("purchasing", "0081_approved_figures_in_base")]
+
+    def test_a_euro_order_is_put_in_the_base_and_the_others_are_left(self):
+        from django.db import connection
+        from django.db.migrations.executor import MigrationExecutor
+        from django.utils import timezone
+
+        from apps.core.models import Currency, ExchangeRate
+        from .models import PurchaseOrder
+
+        executor = MigrationExecutor(connection)
+        executor.migrate(self.before)
+        try:
+            inr = Currency.objects.create(code="INR", name="Rupee", is_base=True)
+            eur = Currency.objects.create(code="EUR", name="Euro")
+            ExchangeRate.objects.create(currency=eur, rate=Decimal("90"), valid_from=datetime.date(2026, 1, 1))
+            vendor = Party.objects.create(code="V-MIG", name="Reliance Polymers")
+            PartyRoleAssignment.objects.create(party=vendor, role=PartyRole.VENDOR)
+            kept = {"total": "50000.00", "lines": {"7": "50000.00"}, "prices": {"7": "5000.00"}}
+            eur_order = PurchaseOrder.objects.create(vendor=vendor, order_date=datetime.date(2026, 3, 1), currency=eur)
+            inr_order = PurchaseOrder.objects.create(vendor=vendor, order_date=datetime.date(2026, 3, 1), currency=inr)
+            PurchaseOrder.objects.update(approved_at=timezone.now(), approved_figures=kept)
+            MigrationExecutor(connection).migrate(self.after)
+            # 50,000 EUR at 90, total and line; the price a unit stays in euros, as policy_figures() keeps it.
+            self.assertEqual(PurchaseOrder.objects.get(pk=eur_order.pk).approved_figures,
+                             {"total": "4500000.00", "lines": {"7": "4500000.00"}, "prices": {"7": "5000.00"}})
+            self.assertEqual(PurchaseOrder.objects.get(pk=inr_order.pk).approved_figures, kept)
+        finally:
+            executor = MigrationExecutor(connection)
+            executor.migrate(executor.loader.graph.leaf_nodes())

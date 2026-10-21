@@ -582,3 +582,48 @@ class ARepIsNotToldTheMarginTests(RolesTestCase, ApprovalTestCase):
         self.assertEqual(reply.status_code, 200, reply.content)
         self.assertEqual(reply.json()["margin_percent"], "-300.00")
         self.assertEqual(reply.json()["reasons"], ["Gross margin is -300.00%, below the 20.00% floor."])
+
+
+from django.test import TransactionTestCase, tag  # noqa: E402
+
+
+@tag("migration")
+class ApprovedFiguresPutInTheBaseMigrationTests(TransactionTestCase):
+    """O337: an approval kept before O293 in the order's currency is put in the base at the order's rate."""
+
+    before = [("sales", "0077_one_opportunity_an_order")]
+    after = [("sales", "0078_approved_figures_in_base")]
+
+    def test_a_euro_order_is_put_in_the_base_and_the_others_are_left(self):
+        from django.db import connection
+        from django.db.migrations.executor import MigrationExecutor
+        from django.utils import timezone
+
+        from apps.core.models import Currency, ExchangeRate, Party, PartyRole, PartyRoleAssignment
+        from .models import SalesOrder
+
+        executor = MigrationExecutor(connection)
+        executor.migrate(self.before)
+        try:
+            inr = Currency.objects.create(code="INR", name="Rupee", is_base=True)
+            eur = Currency.objects.create(code="EUR", name="Euro")
+            gbp = Currency.objects.create(code="GBP", name="Pound")
+            ExchangeRate.objects.create(currency=eur, rate=Decimal("90"), valid_from=datetime.date(2026, 1, 1))
+            ExchangeRate.objects.create(currency=gbp, rate=Decimal("105"), valid_from=datetime.date(2026, 4, 1))
+            customer = Party.objects.create(code="C-MIG", name="Bengal Cement")
+            PartyRoleAssignment.objects.create(party=customer, role=PartyRole.CUSTOMER)
+            kept = {"discounts": {"1": "5.00"}, "total": "50000.00", "margin": "-300.00"}
+            orders = {}
+            for name, currency in (("eur", eur), ("inr", inr), ("gbp", gbp)):
+                orders[name] = SalesOrder.objects.create(customer=customer, order_date=datetime.date(2026, 3, 1),
+                                                         currency=currency)
+            SalesOrder.objects.update(approved_at=timezone.now(), approved_figures=kept)
+            MigrationExecutor(connection).migrate(self.after)
+            figures = {name: SalesOrder.objects.get(pk=order.pk).approved_figures for name, order in orders.items()}
+            # 50,000 EUR at 90; the margin 100 - (100 + 300) / 90 = 95.56 (calc_fix_trade2/o337.py).
+            self.assertEqual(figures["eur"], {"discounts": {"1": "5.00"}, "total": "4500000.00", "margin": "95.56"})
+            self.assertEqual(figures["inr"], kept)
+            self.assertEqual(figures["gbp"], kept)   # no rate on 1 March: left as it is
+        finally:
+            executor = MigrationExecutor(connection)
+            executor.migrate(executor.loader.graph.leaf_nodes())
