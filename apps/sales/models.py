@@ -851,6 +851,27 @@ class SalesOrder(PlacedWhereTheGoodsGo, Extensible, TaxedDocumentMixin, ChangesW
         gap = self.unweighed()
         return reasons + self.policy_reasons() + ([gap] if gap else [])
 
+    @staticmethod
+    def sees_its_cost(user):
+        """Whether `user` is told an order's margin: cost, so the approver's, not the rep's (O299)."""
+        return user.has_perm("sales.approve_order")
+
+    def reasons_told_to(self, user):
+        """
+        approval_reasons() as `user` is told them. The margin is cost: a Sales Rep read it as a
+        figure from the approval panel and could work the cost out. Anyone who may not approve
+        orders reads that the margin is under the floor, not by how much (O299).
+        """
+        reasons = self.approval_reasons()
+        if self.sees_its_cost(user):
+            return reasons
+        margin = {words for path, _, _, words in self.policy_breaches() if path == ("margin",)}
+        if not margin:
+            return reasons
+        floor = ApprovalPolicy.active().min_margin_percent
+        return [f"The gross margin is below the {floor}% floor." if reason in margin else reason
+                for reason in reasons]
+
     def policy_reasons(self):
         """
         What the approval policy finds in the order itself: discounts, value,
