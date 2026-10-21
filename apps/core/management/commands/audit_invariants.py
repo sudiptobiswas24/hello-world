@@ -1996,8 +1996,6 @@ class Command(BaseCommand):
     # correction_date(), with why. Each is a step another fix owns; the list
     # only shrinks, as a step moved onto the rule makes its line stale.
     DATED_ELSEWHERE = {
-        "sales.RecurringInvoice.generate_one": "a schedule's run, posted forward on its own day; it corrects "
-                                               "nothing",
         "accounting.RealisedOnItsOwnDay.release_exchange_difference":
             "dated on the payment's void, which Payment.void asked of both refusals, or on the day the "
             "difference was realised when that came later: a void is never refused for it",
@@ -2057,7 +2055,8 @@ class Command(BaseCommand):
                         code = self._code(fn)
                         reverses = self.REVERSES.search(code)
                         if "on_date" not in {arg.arg for arg in fn.args.args + fn.args.kwonlyargs} \
-                                or not (reverses or self.POSTS.search(code)) or "correction_date(" in code:
+                                or not (reverses or self.POSTS.search(code)) or "correction_date(" in code \
+                                or "run_date(" in code:  # a schedule's run asks the rule through run_date()
                             continue
                         key = f"{label}.{cls.name}.{fn.name}"
                         if key in self.DATED_ELSEWHERE:
