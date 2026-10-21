@@ -250,11 +250,11 @@ class AdjustmentReasonSerializer(serializers.ModelSerializer):
         Where an adjustment's other side books is the accountant's to say: a Stores Manager who could point a
         reason at the payables credited them 50.00 with no vendor (O324). The type rule is the model's.
         """
+        if getattr(self.instance, "account_id", None) == account.pk:
+            return account  # unchanged: a legacy reason can be renamed; posting asks the type again
         refusal = offset_account_refusal(account)
         if refusal:
             raise serializers.ValidationError(refusal)
-        if getattr(self.instance, "account_id", None) == account.pk:
-            return account
         request = self.context.get("request")
         if request is None or not request.user.has_perm("accounting.post_journalentry"):
             raise serializers.ValidationError(
