@@ -275,6 +275,16 @@ def _section(document, settings, value=None):
     return "b2cs"
 
 
+def _b2b_type(document):
+    """A B2B invoice's type, regular or to an SEZ with or without payment; a note's is its invoice's."""
+    if document.registration != "sez":
+        return "regular"
+    return "sez_with_payment" if document.igst() else "sez_without_payment"
+
+
+INVOICE_TYPES = {"regular": "R", "sez_with_payment": "SEWP", "sez_without_payment": "SEWOP"}
+
+
 def _items(document):
     """The taxed lines of a document, one row per rate."""
     by_rate = defaultdict(_money)
@@ -338,11 +348,7 @@ def gstr1(start, end):
         elif not document.is_note:
             entry = _head(document) | {"items": _items(document)}
             if section == "b2b":
-                entry |= {
-                    "gstin": document.gstin,
-                    "type": (("sez_with_payment" if document.igst() else "sez_without_payment")
-                             if document.registration == "sez" else "regular"),
-                }
+                entry |= {"gstin": document.gstin, "type": _b2b_type(document)}
             elif section == "exp":
                 entry["type"] = "with_payment" if document.igst() else "without_payment"
             result[section].append(entry)
@@ -355,7 +361,8 @@ def gstr1(start, end):
                 "note_type": "D" if document.is_debit else "C",
             }
             if section == "b2b":
-                result["cdnr"].append(entry | {"gstin": document.gstin})
+                # Filed as the invoice it corrects was (O285): a note on an SEZ invoice is an SEZ note.
+                result["cdnr"].append(entry | {"gstin": document.gstin, "type": _b2b_type(invoice)})
             else:
                 kind = "b2cl" if section == "b2cl" else (
                     "exp_with_payment" if invoice.igst() else "exp_without_payment"
@@ -642,8 +649,7 @@ def gstr1_json(result):
             "inum": entry["number"], "idt": _gstn_date(entry["date"]),
             "val": float(entry["value"]), "pos": entry["place_of_supply"],
             "rchrg": "N",
-            "inv_typ": {"regular": "R", "sez_with_payment": "SEWP",
-                        "sez_without_payment": "SEWOP"}[entry["type"]],
+            "inv_typ": INVOICE_TYPES[entry["type"]],
             "itms": _gstn_items(entry["items"]),
         })
     b2cl = defaultdict(list)
@@ -665,7 +671,7 @@ def gstr1_json(result):
         cdnr[entry["gstin"]].append({
             "ntty": entry["note_type"], "nt_num": entry["number"], "nt_dt": _gstn_date(entry["date"]),
             "val": float(entry["value"]), "pos": entry["place_of_supply"],
-            "rchrg": "N", "inv_typ": "R", "itms": _gstn_items(entry["items"]),
+            "rchrg": "N", "inv_typ": INVOICE_TYPES[entry["type"]], "itms": _gstn_items(entry["items"]),
         })
     return {
         "gstin": result["gstin"],

@@ -734,3 +734,26 @@ class TheB2clLimitIsKeptAtPostingTests(GstReturnTestCase):
         note = invoice.create_credit_note()
         Invoice.objects.filter(pk=note.pk).update(invoice_date=DAY)
         self.assertEqual(len(gstr1(*month("2026-09"))["cdnur"]), 1)
+
+
+class NotesAreFiledAsTheirInvoiceTests(GstReturnTestCase):
+    """O285: a CDNR note carries its invoice's type; a note on an SEZ invoice is not a regular one."""
+
+    def note_types(self, buyer, taxes=None):
+        invoice = self.sell(buyer, "5000", taxes=taxes)
+        note = invoice.create_credit_note()
+        Invoice.objects.filter(pk=note.pk).update(invoice_date=DAY)
+        [group] = gstr1_json(gstr1(*month("2026-09")))["cdnr"]
+        return [row["inv_typ"] for row in group["nt"]]
+
+    def test_a_credit_note_to_an_sez_unit_without_payment_is_filed_sewop(self):
+        sez = self.party("SEZ", gstin=gstin("24AABCS3333C1Z"), gst_registration="sez", fiscal_position=self.lut)
+        self.assertEqual(self.note_types(sez), ["SEWOP"])
+
+    def test_a_credit_note_to_an_sez_unit_with_payment_is_filed_sewp(self):
+        sez = self.party("SEZ", gstin=gstin("24AABCS3333C1Z"), gst_registration="sez")
+        self.assertEqual(self.note_types(sez, taxes=[self.igst]), ["SEWP"])
+
+    def test_a_note_to_a_regular_buyer_stays_r(self):
+        buyer = self.party("MH", gstin=gstin("27AAACB1234K1Z"), gst_state="27", gst_registration="regular")
+        self.assertEqual(self.note_types(buyer), ["R"])
