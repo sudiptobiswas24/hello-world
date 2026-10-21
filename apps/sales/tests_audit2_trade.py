@@ -52,29 +52,6 @@ class DunningOnlyAdvances(SalesTestCase):
         self.assertEqual(sent, [60], f"levels sent in order: {sent}")
 
 
-class CommissionOnCollectedExcludesTax(SalesTestCase):
-    def test_S8_commission_on_collected_cash_is_on_the_net_sale_as_the_invoiced_basis_is(self):
-        """Invoice 10 x 100 + 20% VAT = 1,200, paid in full. 5% of the net sale 1,000 is 50.00 on either basis;
-        the collected basis counts the payment, tax included: 60.00."""
-        from apps.accounting.models import Tax, TaxGroup
-        from .models import CommissionBasis, CommissionPlan, SalesRep, commission_report
-
-        group = TaxGroup.objects.create(code="VAT", name="VAT")
-        vat_account = Account.objects.create(code="2100", name="VAT Payable", account_type=AccountType.LIABILITY)
-        vat = Tax.objects.create(code="VAT20", name="VAT 20%", rate=Decimal("20"), group=group,
-                                 collected_account=vat_account, paid_account=vat_account)
-        plan = CommissionPlan.objects.create(code="P", name="5% collected", percent=Decimal("5"),
-                                             basis=CommissionBasis.PAID)
-        SalesRep.objects.create(party=self.rep, plan=plan)
-        order = self.make_order("10", "100", rep=self.rep)
-        for line in order.lines.all():
-            line.taxes.set([vat])
-        invoice = self.bill(order)
-        self.assertEqual(invoice.total(), Decimal("1200.00"))
-        self.allocate(self.receipt("1200"), invoice, "1200")
-        self.assertEqual(commission_report()[0]["commission"], Decimal("50.00"))
-
-
 class ApprovalPolicyIsInTheBaseCurrency(SalesTestCase):
     """The policy's figures and the item's cost are rupees (the base); a euro order is weighed in euros."""
 

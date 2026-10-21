@@ -5985,7 +5985,7 @@ def commission_report(date_from=None, date_to=None):
     Commission earned per rep over a period.
 
     Each rep is measured on their own plan's basis: invoiced reps on the
-    net value of what they billed, collected reps on money actually
+    net value of what they billed, collected reps on the net sale's share of the money
     received against those invoices. Credit notes reduce both.
 
     In the base currency, at the rate each invoice was booked at (O76):
@@ -6073,7 +6073,14 @@ def commission_report(date_from=None, date_to=None):
                              for allocation in standing_allocations(invoice)]
                 collected += collected_up_front(invoice)
                 in_it = sum((amount for day, amount in collected if in_period(day)), Decimal("0"))
-                basis_amount += sign * in_it * (invoice.exchange_rate or Decimal("1"))
+                # The net sale's share of the money, as the invoiced basis counts subtotal(): the
+                # money pays the tax too, and 1,000 + 20% paid in full at 5% paid 60.00 for 50.00
+                # (O294). Total first, divided last.
+                whole = invoice.total()
+                if not whole:
+                    continue
+                basis_amount += sign * in_it * invoice.subtotal() * (invoice.exchange_rate or Decimal("1")) / whole
+
 
         basis_amount = round_money(basis_amount)
         if not basis_amount:

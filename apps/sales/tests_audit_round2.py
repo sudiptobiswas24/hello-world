@@ -404,3 +404,37 @@ class TheDunningMailAsksForWhatIsLateTests(SalesTestCase):
         body = mail.outbox[0].body
         self.assertTrue("500.00" in body and "01 Mar 2026" in body,
                         f"notice records 500.00 overdue since 01 Mar 2026; the mail says: {body!r}")
+
+
+class CommissionOnCollectedCashLeavesTheTaxOutTests(SalesTestCase):
+    """O294 (probe S8)."""
+
+    def collected_at_five_percent(self, paid):
+        """Invoice 10 x 100 + 20% VAT = 1,200, and `paid` of it. 5% of the net sale 1,000 is 50.00 on either
+        basis; counting the payment, tax included, the collected basis paid 60.00."""
+        from apps.accounting.models import Tax, TaxGroup
+        from .models import CommissionBasis, CommissionPlan, SalesRep, commission_report
+
+        group = TaxGroup.objects.create(code="VAT", name="VAT")
+        vat_account = Account.objects.create(code="2100", name="VAT Payable", account_type=AccountType.LIABILITY)
+        vat = Tax.objects.create(code="VAT20", name="VAT 20%", rate=Decimal("20"), group=group,
+                                 collected_account=vat_account, paid_account=vat_account)
+        plan = CommissionPlan.objects.create(code="P", name="5% collected", percent=Decimal("5"),
+                                             basis=CommissionBasis.PAID)
+        SalesRep.objects.create(party=self.rep, plan=plan)
+        order = self.make_order("10", "100", rep=self.rep)
+        for line in order.lines.all():
+            line.taxes.set([vat])
+        invoice = self.bill(order)
+        self.assertEqual(invoice.total(), Decimal("1200.00"))
+        self.allocate(self.receipt(paid), invoice, paid)
+        return commission_report()[0]
+
+    def test_paid_in_full_it_pays_on_the_net_sale(self):
+        row = self.collected_at_five_percent("1200")
+        self.assertEqual((row["basis_amount"], row["commission"]), (Decimal("1000.00"), Decimal("50.00")))
+
+    def test_paid_in_part_it_pays_on_the_net_share_of_the_money(self):
+        # 600 of 1,200 paid: 500 of the net sale, 25.00.
+        row = self.collected_at_five_percent("600")
+        self.assertEqual((row["basis_amount"], row["commission"]), (Decimal("500.00"), Decimal("25.00")))
