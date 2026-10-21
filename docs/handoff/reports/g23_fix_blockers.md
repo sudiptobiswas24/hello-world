@@ -125,3 +125,56 @@ agents' probes are left where they are, still failing.
 
 - No race fix was in these rows, so no race() test was added; the existing races were run on PostgreSQL.
 - The Kolkata time-zone lane and the full PostgreSQL suite were not run (not in the brief's list).
+
+---
+
+# Second round: the review (/home/user/work/reports/review_blockers.md), O332 and O334
+
+The review probes (634e900, from ff7bf05) were cherry-picked first. Eleven commits since, one per item:
+
+| commit | item | what |
+|---|---|---|
+| d2ca4c7 | 1, O314 | no pipe in the manifest step: each hash's status is asked, sort is a step of its own; the set is unpacked and `sha256sum --check --strict` against the manifest before any rename; retention only after |
+| 5221838 | 5, O314 | failed() removes the night's .partial files and its check directory |
+| 5989ebe | 2, O280/O313 | importer.run() takes the company row (lock_rows) for every kind in importer.OPENING before any handler or once_only() asks; race() on PostgreSQL for balances and stock |
+| 9f51484 | 7, O280 | vendor_prices: once_only() on vendor, item, currency, break and start |
+| 0c210b3 | 3, O300 | hr.LeaverLoginSwitch (migration hr 0029) keeps who switched the login off and when, and who switched it back on; a withdrawn date switches on only a login with an open switch |
+| ddf8db2 | O332 | check_still_working: being employed that day is enough (a manager On Leave decides); a leaver is told "has left (leaving date dd-mm-yyyy)" |
+| 2bdcd63 | 6, O300 | core.models.check_login_acts(by), the one rule for login-keyed decisions: ApprovableMixin.approve, PurchaseRequisition._decide, BomChangeOrder.apply/reject, Inspection.decide; login_ended(cached=True) answers the backend once per request |
+| e4bb25e | 4, O293 | in_base() refuses in words ("No exchange rate for GBP on 01-03-2026"), and both confirm() methods ask it; readers use base_or_none(); Budget.committed() leaves such an order out, and Budget.unweighed() names it (figures `not_counted`, the budget reason, the order's approval_reasons) |
+| 8fc08f4 | O334 | credit_limit_breach adds total_in_base() (the order's date) instead of today's rate |
+| 8135dad | O300 | hr.LeaverLoginSwitch listed in NOT_PAY_INPUTS (audit_invariants "pay input unclassified") |
+
+Failures without each fix (the test reverted to the code before it):
+- d2ca4c7: `AssertionError: 0 != 1 : ... backup written: .../erp_..._2024.dump (4.0K) ...` (both new tests)
+- 5221838: `Lists differ: ['erp_2026-10-20_2024.dump.partial'] != []` (the dump case; the archive case also left `.media.tar.gz.partial`)
+- 5989ebe (PostgreSQL, without the lock): `Lists differ: [True, True] != [False, True]`, balances and stock alike
+- 9f51484: `Tuples differ: ([], 2) != ([(2, 'sku')], 1)`
+- 0c210b3: `AssertionError: True is not false` (admin-disabled login back on after the date was withdrawn)
+- ddf8db2: the On Leave manager's approval raised; the old wording `'... is not working here on 20-10-2026 (terminated) ...'`
+- 2bdcd63: `ValidationError not raised` (requisition, change); `200 != 400` (quality decide)
+- e4bb25e: `ValidationError not raised` (confirm); an ERROR from `No exchange rate for GBP effective on 2026-03-01.` (budget read); `'No exchange rate for GBP on 01-03-2026' not found in ''` (sales)
+- 8fc08f4: `(Decimal('12000.00'), Decimal('10000.00')) is not None`
+
+Worked figures: /home/user/work/calc_fix_blockers/o293_gap.py (10,000 budget; a base order of 10 x 100 commits 1,000.00; 9,000.00 left). For O334, 10 x 10 EUR at 90 is 9,000 against a 10,000 limit, and 12,000 at April's 120.
+
+A worker restart interrupted the round after ddf8db2. Work resumed from the uncommitted edits of item 6, which were intact; nothing was started over.
+
+## Second round: questions and defects seen
+
+- Q7 (owner): committed_in_base still converts other confirmed orders at the day's rate, while this order's own share now uses its date (O334 as decided). One exposure figure built from two kinds of rate.
+- Q8 (owner): the opening imports serialise on the company row, so an opening file waits behind any other opening file, and behind any code holding that row.
+- Q9 (owner): `login_ended(cached=True)` holds the answer for one request. A request that sets a leaving date and then signs the same login in again sees the old answer until the next request. Decisions never use the cache.
+- D5 (scope): deploy/backup.sh's check runs `cd "$check"` with the manifest path built from BACKUP_DIR, so BACKUP_DIR must be absolute (it is /backups in the compose file).
+- D6 (cost): the nightly check unpacks the whole attachments archive beside the backups once more, so the disk needs room for a second copy of the media while it runs.
+
+## Second round: runs (tip 8135dad)
+
+- Lane: imports, hr, sales, purchasing, accounting, core, web (browser tests, after `npm run build`), plus manufacturing and quality, which item 6 touched. fastsettings, --parallel 1. Result: 5,983 tests in 7,347 s, failures=34, errors=1, skipped=8.
+  - All 34 failures are other rows' audit probes: accounting 6, core followup 1, core paper 1, hr people 15, purchasing trade 5, sales trade 6.
+  - The one error is the review's print-only probe `tests_review_blockers.Probes.test_order_dated_before_first_rate_breaks_budget_reads`. Its setup confirms a EUR order dated before EUR's first rate, and item 4 now refuses that confirm: "No exchange rate for EUR on 01-12-2025". That is the fix working; the scenario can no longer be built.
+  - Output: /home/user/work/calc_fix_blockers/final2.txt
+- `--tag migration` for hr (migration 0029): 1 test OK.
+- Races on PostgreSQL (database fix_blockers, test databases dropped first): 102 tests OK, including the two new OpeningImportRaceTests. Output: /home/user/work/calc_fix_blockers/races2.txt
+- audit_invariants: the first run reported "pay input unclassified: hr.LeaverLoginSwitch". After 8135dad: "No invariant findings."
+- makemigrations --check: no changes.
