@@ -294,3 +294,52 @@ class CostCentreOnTheBillTests(PurchasingLifecycleTestCase):
             (self.expense.pk, Decimal("100.00"), Decimal("0.00"), loom.pk),
             (self.expense.pk, Decimal("10.00"), Decimal("0.00"), None),
         ])
+
+
+class AReturnWaitingAsADraftHoldsItsBillLineTests(PurchasingLifecycleTestCase):
+    """O335, O336: a return's debit notes waiting as drafts count against the bill lines they take."""
+
+    def two_bills_for_one_receipt(self):
+        # 10 at 5 received at once; bill A for 5 (25.00), bill B for the other 5 (25.00).
+        order = self.make_order(quantity="10", price="5")
+        receipt = self.receive(order, 10)
+        a = order.create_bill(self.payable, bill_date=datetime.date(2026, 1, 10))
+        line = a.lines.get()
+        line.quantity = Decimal("5")
+        line.save()
+        a.post()
+        b = order.create_bill(self.payable, bill_date=datetime.date(2026, 1, 11))
+        b.post()
+        return receipt, a, b
+
+    def test_two_returns_by_a_store_hand_draft_one_note_on_each_bill(self):
+        receipt, a, b = self.two_bills_for_one_receipt()
+        for _ in range(2):
+            receipt.create_return(quantities={receipt.lines.get(): Decimal("5")}, post_notes=False)
+        drafts = Bill.objects.filter(debits__isnull=False, posted=False).order_by("debits_id")
+        self.assertEqual([(note.debits_id, note.total()) for note in drafts],
+                         [(a.pk, Decimal("25.00")), (b.pk, Decimal("25.00"))])
+        for note in drafts:
+            note.post()
+        self.assertEqual((a.amount_due(), b.amount_due()), (Decimal("0.00"), Decimal("0.00")))
+
+    def test_ap_debits_by_hand_only_what_the_draft_leaves(self):
+        receipt, a, b = self.two_bills_for_one_receipt()
+        receipt.create_return(quantities={receipt.lines.get(): Decimal("5")}, post_notes=False)
+        line = a.lines.get()
+        self.assertEqual(line.quantity_debitable(), Decimal("0"))
+        with self.assertRaises(ValidationError):
+            a.create_debit_note(quantities={line: Decimal("5")})
+        with self.assertRaises(ValidationError):
+            a.create_debit_note()
+
+    def test_a_return_takes_the_next_bill_while_a_draft_waits_on_the_first(self):
+        # AP drafts a note on A for its 5; a store hand then sends 5 back: its draft takes B, not A again.
+        receipt, a, b = self.two_bills_for_one_receipt()
+        waiting = a.create_debit_note(quantities={a.lines.get(): Decimal("5")}, post=False)
+        receipt.create_return(quantities={receipt.lines.get(): Decimal("5")}, post_notes=False)
+        (note,) = Bill.objects.filter(debits__isnull=False, posted=False).exclude(pk=waiting.pk)
+        self.assertEqual((note.debits_id, note.total()), (b.pk, Decimal("25.00")))
+        waiting.post()
+        note.post()
+        self.assertEqual((a.amount_due(), b.amount_due()), (Decimal("0.00"), Decimal("0.00")))

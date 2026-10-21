@@ -917,4 +917,8 @@ class ADebitLineIsHeldToItsShareOfTheLineTests(ADebitLineDebitsOnlyItsNotesBillT
                                 quantity=Decimal("1"), unit_price=line.unit_price * 10, expense_account=self.expense)
         with self.assertRaisesMessage(ValidationError, "(1 of 10 left:"):
             Bill.objects.get(pk=note.pk).post()
+        # Nothing given back; the refused draft, while it waits, holds its one (O336).
+        self.assertEqual(bill.lines.get().quantity_debited(), Decimal("0"))
+        self.assertEqual(bill.lines.get().quantity_debitable(), Decimal("9"))
+        note.delete()
         self.assertEqual(bill.lines.get().quantity_debitable(), Decimal("10"))

@@ -320,6 +320,9 @@ class AReturnAfterAClaimGivesBackWhatIsLeftTests(_SalesTestCase):  # O185
         note = self.typed_note(invoice, invoice.lines.get(), "1", "1000")
         said = _refused(note.post)
         self.assertIn("1 of 10 left: 100.00); this note gives back 1000.00", said)
+        # The refused draft holds its one while it waits (O336); deleted, the ten credit in full.
+        self.assertEqual(invoice.lines.get().quantity_creditable(), Decimal("9"))
+        note.delete()
         _Invoice.objects.get(pk=invoice.pk).create_credit_note()
         self.assertEqual(self.balance(self.ar), Decimal("0"))
 
