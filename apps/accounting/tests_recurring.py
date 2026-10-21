@@ -207,3 +207,45 @@ class ApiTests(RecurringTestCase):
         schedule.save()
         self.assertEqual(client.post(f"/api/accounting/recurring-journals/{schedule.pk}/generate/", {},
                                      format="json").status_code, 200)
+
+
+class DatedByTheRuleTests(RecurringTestCase):
+    """O284: a schedule takes a day that has come and not one before it started."""
+
+    def test_a_schedule_is_not_taken_for_a_day_that_has_not_come(self):
+        from django.core.exceptions import ValidationError
+        from django.utils import timezone
+
+        schedule = self.schedule(auto_post=True)
+        ahead = timezone.localdate() + datetime.timedelta(days=400)
+        with self.assertRaisesMessage(ValidationError, "that day has not come"):
+            schedule.generate_one(on_date=ahead)
+        self.assertFalse(JournalEntry.objects.exists())
+
+    def test_nor_for_a_day_before_it_starts(self):
+        from django.core.exceptions import ValidationError
+
+        with self.assertRaisesMessage(ValidationError, "the schedule starts on 2026-01-31"):
+            self.schedule().generate_one(on_date=datetime.date(2026, 1, 15))
+
+    def test_a_schedule_starting_next_month_is_not_taken_yet(self):
+        from django.core.exceptions import ValidationError
+        from django.utils import timezone
+
+        start = timezone.localdate() + datetime.timedelta(days=20)
+        schedule = RecurringJournal.objects.create(code="LATER", memo="x", start_date=start)
+        RecurringJournalLine.objects.create(schedule=schedule, account=self.rent, debit=Decimal("5"))
+        RecurringJournalLine.objects.create(schedule=schedule, account=self.accrued, credit=Decimal("5"))
+        with self.assertRaises(ValidationError):
+            schedule.generate_one()
+
+    def test_the_api_answers_a_day_ahead_with_400(self):
+        from django.utils import timezone
+
+        schedule = self.schedule()
+        ahead = (timezone.localdate() + datetime.timedelta(days=400)).isoformat()
+        answer = self.as_("Bookkeeper").post(f"/api/accounting/recurring-journals/{schedule.pk}/generate/",
+                                             {"on_date": ahead}, format="json")
+        self.assertEqual(answer.status_code, 400, answer.content)
+        schedule.refresh_from_db()
+        self.assertEqual(schedule.next_run_date, datetime.date(2026, 1, 31))
