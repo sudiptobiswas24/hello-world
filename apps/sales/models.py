@@ -5301,13 +5301,29 @@ class DunningNotice(AuditModel):
         return f"{self.level.name} for {self.invoice}"
 
 
+def _dunning_level_due(sent, levels, days):
+    """
+    The highest active level `days` overdue has reached, if it is above every
+    level already sent (`sent`, the invoice's notices); else None. `levels`
+    run highest first.
+    """
+    sent = list(sent)
+    reached = next((level for level in levels if days >= level.days_overdue), None)
+    if reached is None or any(notice.level_id == reached.pk or notice.level.days_overdue >= reached.days_overdue
+                              for notice in sent):
+        return None
+    return reached
+
+
 def run_dunning(as_of=None, send=True):
     """
     Walk overdue invoices and raise the reminders that are now due.
 
     An invoice gets each level at most once, and only the highest level it
     has reached — jumping from nothing to the 60-day notice shouldn't also
-    send the 7-day one.
+    send the 7-day one. Nor afterwards: a reminder only goes up. Asked for
+    the highest level not yet sent, the runs after a 60-day notice sent the
+    30-day and then the 7-day (O295).
     """
     as_of = to_date(as_of) or timezone.localdate()
     levels = list(DunningLevel.objects.filter(is_active=True).order_by("-days_overdue"))
@@ -5319,17 +5335,13 @@ def run_dunning(as_of=None, send=True):
     invoices = (
         not_paid_in_full(Invoice.objects.filter(posted=True, credits__isnull=True))
         .select_related("customer", "currency", "payment_terms")
-        .prefetch_related(*INVOICE_FIGURES, "dunning_notices")
+        .prefetch_related(*INVOICE_FIGURES, "dunning_notices__level")
     )
     for invoice in invoices:
         days = invoice.days_overdue(as_of)
         if days <= 0 or invoice.amount_due() <= 0:
             continue
-        already_sent = {notice.level_id for notice in invoice.dunning_notices.all()}
-        due_level = next(
-            (level for level in levels if days >= level.days_overdue and level.pk not in already_sent),
-            None,
-        )
+        due_level = _dunning_level_due(invoice.dunning_notices.all(), levels, days)
         if due_level is None:
             continue
 
@@ -6080,7 +6092,6 @@ def commission_report(date_from=None, date_to=None):
                 if not whole:
                     continue
                 basis_amount += sign * in_it * invoice.subtotal() * (invoice.exchange_rate or Decimal("1")) / whole
-
 
         basis_amount = round_money(basis_amount)
         if not basis_amount:

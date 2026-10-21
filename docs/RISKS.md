@@ -289,7 +289,6 @@ missing), **minor**.
 | O289 | gst | EwayBill.record and EInvoice.record take a time five days ahead (seen 2026-10-20, audit2_money M7-M8; docs/handoff/reports/g23_audit2_money.md) | rule | minor |
 | O290 | accounting | Two bank-statement imports committed at once leave 4 lines where 2 were sent (PostgreSQL race()) (seen 2026-10-20, audit2_money M9; docs/handoff/reports/g23_audit2_money.md) | race | open |
 | O291 | gst | /api/gst/gstr1/?period=99999-01 answers 500, not 400 (seen 2026-10-20, audit2_money M11; docs/handoff/reports/g23_audit2_money.md) | crash | minor |
-| O295 | sales | run_dunning sends the highest level not yet sent: after the 60-day notice, later runs send the 30-day and then the 7-day (seen 2026-10-20, audit2_trade T2; docs/handoff/reports/g23_audit2_trade.md) | rule | open |
 | O296 | sales | Two dunning runs at once end the second with a unique-constraint 500 (PostgreSQL race()) (seen 2026-10-20, audit2_trade T5; docs/handoff/reports/g23_audit2_trade.md) | race | minor |
 | O297 | purchasing | Bill.create_debit_note with no date dates the note today even when the bill is dated later; sales credit notes ask correction_date (seen 2026-10-20, audit2_trade T6; docs/handoff/reports/g23_audit2_trade.md) | rule | minor |
 | O299 | sales | GET sales-orders/approval returns margin_percent to a Sales Rep, so cost can be worked out (not probed) (seen 2026-10-20, audit2_trade T8; docs/handoff/reports/g23_audit2_trade.md) | security | minor |

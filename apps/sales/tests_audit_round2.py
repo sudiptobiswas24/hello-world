@@ -438,3 +438,38 @@ class CommissionOnCollectedCashLeavesTheTaxOutTests(SalesTestCase):
         # 600 of 1,200 paid: 500 of the net sale, 25.00.
         row = self.collected_at_five_percent("600")
         self.assertEqual((row["basis_amount"], row["commission"]), (Decimal("500.00"), Decimal("25.00")))
+
+
+class ADunningReminderOnlyGoesUpTests(SalesTestCase):
+    """O295 (probe S7)."""
+
+    def test_after_the_60_day_notice_neither_the_30_nor_the_7_day_one_follows(self):
+        """Levels 7, 30, 60. Run first at 70 days overdue: the 60-day notice. Run again next day: nothing
+        (or a higher level), never the 30-day and then the 7-day reminder after the final notice."""
+        from django.core import mail
+        from .models import DunningLevel, DunningNotice, run_dunning
+
+        for name, days in (("First", 7), ("Second", 30), ("Final", 60)):
+            DunningLevel.objects.create(name=name, days_overdue=days)
+        order = self.make_order(quantity="10", price="100")
+        self.ship(order, 10)
+        invoice = self.bill(order, on=datetime.date(2026, 3, 1))   # net 30: due 31 March
+        first_day = invoice.due_date + datetime.timedelta(days=70)
+        run_dunning(as_of=first_day)
+        run_dunning(as_of=first_day + datetime.timedelta(days=1))
+        run_dunning(as_of=first_day + datetime.timedelta(days=2))
+        sent = list(DunningNotice.objects.filter(invoice=invoice).order_by("id").values_list("level__days_overdue", flat=True))
+        self.assertEqual(sent, [60], f"levels sent in order: {sent}")
+
+    def test_each_level_goes_out_in_turn_as_the_invoice_ages(self):
+        from .models import DunningLevel, DunningNotice, run_dunning
+
+        for name, days in (("First", 7), ("Second", 30), ("Final", 60)):
+            DunningLevel.objects.create(name=name, days_overdue=days)
+        order = self.make_order(quantity="10", price="100")
+        self.ship(order, 10)
+        invoice = self.bill(order, on=datetime.date(2026, 3, 1))
+        for days in (10, 11, 35, 36, 65, 66):
+            run_dunning(as_of=invoice.due_date + datetime.timedelta(days=days), send=False)
+        sent = list(DunningNotice.objects.filter(invoice=invoice).order_by("id").values_list("level__days_overdue", flat=True))
+        self.assertEqual(sent, [7, 30, 60])

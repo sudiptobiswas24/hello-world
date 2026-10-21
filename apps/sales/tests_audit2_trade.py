@@ -32,26 +32,6 @@ class WhoMayCreditByReturning(RolesTestCase, SalesTestCase):
         self.assertEqual(posted_notes, 0, "a credit note posted by a login holding no post_invoice")
 
 
-class DunningOnlyAdvances(SalesTestCase):
-    def test_S7_a_customer_who_got_the_60_day_notice_is_not_sent_the_7_day_one_after(self):
-        """Levels 7, 30, 60. Run first at 70 days overdue: the 60-day notice. Run again next day: nothing
-        (or a higher level), never the 30-day and then the 7-day reminder after the final notice."""
-        from django.core import mail
-        from .models import DunningLevel, DunningNotice, run_dunning
-
-        for name, days in (("First", 7), ("Second", 30), ("Final", 60)):
-            DunningLevel.objects.create(name=name, days_overdue=days)
-        order = self.make_order(quantity="10", price="100")
-        self.ship(order, 10)
-        invoice = self.bill(order, on=datetime.date(2026, 3, 1))   # net 30: due 31 March
-        first_day = invoice.due_date + datetime.timedelta(days=70)
-        run_dunning(as_of=first_day)
-        run_dunning(as_of=first_day + datetime.timedelta(days=1))
-        run_dunning(as_of=first_day + datetime.timedelta(days=2))
-        sent = list(DunningNotice.objects.filter(invoice=invoice).order_by("id").values_list("level__days_overdue", flat=True))
-        self.assertEqual(sent, [60], f"levels sent in order: {sent}")
-
-
 class ApprovalPolicyIsInTheBaseCurrency(SalesTestCase):
     """The policy's figures and the item's cost are rupees (the base); a euro order is weighed in euros."""
 
