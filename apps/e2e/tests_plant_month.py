@@ -468,6 +468,10 @@ class Month:
                 invoice_line = self.dom_invoice["lines"][0]["id"]
                 note = self.post("AR Manager", f"/api/sales/invoices/{self.dom_invoice['id']}/credit_note/",
                                  {"quantities": {str(invoice_line): "200"}})
+            if not note.get("posted"):
+                # Warehouse Staff may not post invoices, so their return leaves the note a draft for the AR side
+                # to post (O292): the receivable moves when the AR Manager posts it, the same day.
+                note = self.post("AR Manager", f"/api/sales/invoices/{note['id']}/post_invoice/")
             self.credit_note = self.get("AR Manager", f"/api/sales/invoices/{note['id']}/")
         with on(OCT(25)):
             self.cheque = self.receive_money(self.hooghly, OCT(25), "300000.00", self.inr, "cheque",
