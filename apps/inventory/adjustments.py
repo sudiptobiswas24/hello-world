@@ -488,6 +488,14 @@ class StockAdjustmentLine(AuditModel):
         item.check_uom(self.uom)
 
         if self.revaluation is not None:
+            # A shelf holding stock is worth something (the review of O327): taken below nothing, 10 kg worth
+            # -10.00 could not then give any of it up, every way out being refused for adding money.
+            held, worth = item._replay_valuation(adjustment.warehouse)
+            if held > 0 and worth + to_paisa(self.revaluation) < 0:
+                raise ValidationError(
+                    f"{format(held.normalize(), 'f')} {item.uom} of {item} at {adjustment.warehouse} are worth "
+                    f"{round_money(worth)}; a revaluation of {to_paisa(self.revaluation)} would leave them worth "
+                    "less than nothing. Write them off, or revalue them to nothing at most.")
             # Value with no quantity behind it, which is what
             # value_adjustment already means in the stock ledger.
             self.movement = StockMovement.objects.create(

@@ -300,3 +300,28 @@ class AWriteUpReadsTheItemAfterItsShelfIsHeldTests(AdjustmentTestCase):
             type(draft).objects.get(pk=draft.pk).post()
         # The rival ran inside the refused post here, so it rolled back with it: 5 at 3.
         self.assertEqual(item.valuation_at(self.warehouse), (D("5"), D("15.00")))
+
+
+class ARevaluationCannotTakeAShelfBelowNothingTests(AdjustmentTestCase):
+    """
+    The review of O327: 10 worth 50.00; a revaluation of -60 left 10 worth -10.00, and every way out was then
+    refused for adding money. Now refused; -50 (to nothing) is taken, and a write-off of 4 then leaves at 0.00.
+    """
+
+    def revalue(self, amount):
+        from .adjustments import StockAdjustment, StockAdjustmentLine
+
+        adjustment = StockAdjustment.objects.create(adjustment_date=datetime.date(2026, 3, 1),
+                                                    warehouse=self.warehouse, reason=self.found)
+        StockAdjustmentLine.objects.create(adjustment=adjustment, item=self.item, uom=self.item.uom,
+                                           quantity=D("0"), revaluation=D(amount))
+        adjustment.post()
+
+    def test_it(self):
+        self.stock("10", "5")
+        with self.assertRaises(ValidationError):
+            self.revalue("-60")
+        self.assertEqual(self.item.valuation_at(self.warehouse), (D("10"), D("50.00")))
+        self.revalue("-50")
+        self.adjust("-4", reason=self.shrink)
+        self.assertEqual(self.item.valuation_at(self.warehouse), (D("6"), D("0.00")))
