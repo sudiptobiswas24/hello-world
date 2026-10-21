@@ -197,12 +197,20 @@ class PurchasingInTheBrowserTests(BrowserTestCase):
         self.assertFalse(receipt.posted)
 
     def test_stock_on_hand_reads_the_ledger(self):
-        page = self.sign_in(self.person("Warehouse Staff"), "/app/stores/on-hand")
+        page = self.sign_in(self.person("Stores Manager"), "/app/stores/on-hand")
         row = page.locator("tbody tr", has_text="WDG-1")
         expect(row).to_contain_text("500")
         expect(row).to_contain_text("2,000.00")  # 500 at 4
         page.get_by_label("Find an item").fill("nothing like it")
         expect(page.get_by_text("No item held matches that.")).to_be_visible()
+
+    def test_the_store_reads_quantities_on_hand_not_their_worth(self):
+        # O331: Warehouse Staff see what is on the shelf, not what it is worth.
+        page = self.sign_in(self.person("Warehouse Staff"), "/app/stores/on-hand")
+        row = page.locator("tbody tr", has_text="WDG-1")
+        expect(row).to_contain_text("500")
+        expect(row).not_to_contain_text("2,000.00")
+        expect(page.get_by_role("columnheader", name="Worth")).to_have_count(0)
 
     def test_every_role_opens_what_it_reads_without_being_refused(self):
         from django.contrib.auth.models import Permission
