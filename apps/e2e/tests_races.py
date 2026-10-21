@@ -2366,3 +2366,39 @@ class BlanketCallOffRaceTests(RaceCase):
         outcomes = race((PurchaseOrderLine, PurchaseOrder), raise_it, release_more)
         self.assertEqual(sum(outcome == "done" for outcome in outcomes), 1, outcomes)
         self.assertLessEqual(BlanketOrderLine.objects.get(pk=agreed.pk).quantity_released(), Decimal("100"))
+
+
+@tag("race")
+@unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
+class ACostingMethodCannotChangeUnderAFirstReceiptRace(RaceCase):
+    """
+    The review of O330: a switch of an item's costing method and its first receipt at once both went through,
+    leaving a FIFO item with a movement booked under average. The freeze now holds the item's row before it asks.
+    """
+
+    def test_it(self):
+        from apps.core.models import UnitOfMeasure as Unit
+        from apps.inventory.models import Item as Stocked, MovementType as Kind, StockMovement as Movement
+        from apps.inventory.models import Warehouse as Shelf
+        from django.utils import timezone
+
+        kg = Unit.objects.create(code="kgr", name="kg")
+        item = Stocked.objects.create(sku="RACE", name="r", uom=kg)
+        shelf = Shelf.objects.create(code="RW", name="W")
+
+        def switch():
+            fresh = Stocked.objects.get(pk=item.pk)
+            fresh.costing_method = "fifo"
+            fresh.save()
+
+        def receive():
+            Movement.objects.create(item=Stocked.objects.get(pk=item.pk), warehouse=shelf,
+                                    movement_type=Kind.RECEIPT, uom=kg, quantity=Decimal("5"),
+                                    value=Decimal("10.00"), occurred_at=timezone.now())
+
+        outcomes = race((Stocked, Movement), switch, receive)
+        item.refresh_from_db()
+        # One of the two goes through: never a FIFO item with a movement worked out under average.
+        self.assertEqual(outcomes.count("done"), 1, outcomes)
+        self.assertEqual((item.costing_method, item.movements.count()) in {("average", 1), ("fifo", 0)}, True,
+                         (item.costing_method, item.movements.count(), outcomes))
