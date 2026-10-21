@@ -863,3 +863,25 @@ class PortalAnswerFromTomorrowTests(EInvoiceTestCase):
                 BuyerGstin=record.payload["BuyerDtls"]["Gstin"], TotInvVal=record.payload["ValDtls"]["TotInvVal"]))
         record.refresh_from_db()
         self.assertEqual(record.irn, "")
+
+
+class PortalClockSkewTests(EInvoiceTestCase):
+    """O289, decided: a portal's own clock may run up to five minutes ahead of the plant's, no more."""
+
+    def generated(self, ahead):
+        from unittest import mock
+
+        from .ewaybill import prepare
+
+        bill = prepare(self.sell(self.ka, "100000"), vehicle_number="MH12AB1234")
+        now = timezone.now()
+        with mock.patch("django.utils.timezone.now", return_value=now):
+            bill.record("123456789012", now + ahead, None)
+        return bill
+
+    def test_four_minutes_fifty_nine_ahead_is_taken(self):
+        self.assertEqual(self.generated(datetime.timedelta(minutes=4, seconds=59)).number, "123456789012")
+
+    def test_five_minutes_one_ahead_is_refused(self):
+        with self.assertRaisesMessage(ValidationError, "has not come"):
+            self.generated(datetime.timedelta(minutes=5, seconds=1))

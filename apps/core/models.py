@@ -358,15 +358,23 @@ def day_that_has_come(day, refused):
     return day
 
 
+# A government portal stamps its answer by its own clock, which may run ahead of the plant's (decided:
+# five minutes, no more).
+PORTAL_CLOCK_AHEAD = datetime.timedelta(minutes=5)
+
+
 def moment_that_has_come(moment, refused):
     """
-    `moment`, refused when it is still to come: what another system answers with (the e-invoice
-    portal's acknowledgement, an e-way bill's generation, a cancellation) is when it acted, and an
-    answer from next week is no answer. A future acknowledgement made the IRN uncancellable until
-    then, and a future e-way bill cancellable "within 24 hours" for good (O289). `refused` begins the
-    refusal, "the portal answers with when it acted".
+    `moment`, refused when it is still to come: what a government portal answers with (the e-invoice
+    acknowledgement, an e-way bill's generation, a cancellation) is when it acted, and an answer from
+    next week is no answer. A future acknowledgement made the IRN uncancellable until then, and a
+    future e-way bill cancellable "within 24 hours" for good (O289).
+
+    The portal stamps the time by its own clock, so up to five minutes ahead of the plant's
+    (PORTAL_CLOCK_AHEAD) is taken as clock skew; 4:59 ahead is taken and 5:01 refused. Use it only for a
+    time such a portal stamps. `refused` ends the refusal, "the portal answers with when it acted".
     """
-    if moment > timezone.now():
+    if moment > timezone.now() + PORTAL_CLOCK_AHEAD:
         raise ValidationError(f"{timezone.localtime(moment):%d %b %Y %H:%M} has not come; {refused}.")
     return moment
 
