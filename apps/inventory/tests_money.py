@@ -11,6 +11,7 @@ layers of 2 for 20.01 and 3 for 31.00 give up 30.34 for three. A kilo received a
 books 10.01, and so does the shelf.
 """
 
+import datetime
 from decimal import Decimal
 from pathlib import Path
 
@@ -270,3 +271,32 @@ class AWriteUpOfAStandardItemComesAtTheStandardTests(AdjustmentTestCase):
         up = self.adjust("2", reason=self.found, item=item)
         self.assertEqual(up.lines.get().posted_value, D("20.01"))
         self.assertEqual(item.valuation_at(self.warehouse)[1], D("60.03"))
+
+
+class AWriteUpReadsTheItemAfterItsShelfIsHeldTests(AdjustmentTestCase):
+    """
+    The review of O323: 5 held at a standard of 3; a write-up of 2 at 3 is posted while the standard moves to 4
+    between the line's read and the shelf's lock. Read before the lock it came on at the old standard, the shelf
+    7 kg worth 26.00 where 7 x 4 is 28.00; read after, 3 is not the standard and the write-up is refused.
+    """
+
+    def test_it(self):
+        from unittest import mock
+
+        from . import adjustments
+        from .models import set_standard_cost
+
+        item = Item.objects.create(sku="STD", name="Standard", uom=self.each, costing_method=CostingMethod.STANDARD,
+                                   standard_cost=D("3"))
+        self.stock("5", "3", item=item)
+        draft = self.adjust("2", reason=self.found, item=item, cost="3", post=False)
+        real = adjustments.lock_positions
+
+        def rival(*args, **kwargs):
+            set_standard_cost(Item.objects.get(pk=item.pk), D("4"), reason=self.found)
+            return real(*args, **kwargs)
+
+        with mock.patch.object(adjustments, "lock_positions", rival), self.assertRaises(ValidationError):
+            type(draft).objects.get(pk=draft.pk).post()
+        # The rival ran inside the refused post here, so it rolled back with it: 5 at 3.
+        self.assertEqual(item.valuation_at(self.warehouse), (D("5"), D("15.00")))
