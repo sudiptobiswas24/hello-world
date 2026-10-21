@@ -141,3 +141,61 @@ class ReversalTests(AccountingTestCase):
         entry = self.make_entry()
         with self.assertRaises(ValidationError):
             entry.create_reversal()
+
+
+# Regression tests from the second money audit (docs/handoff/reports/g23_audit2_money.md).
+import datetime  # noqa: E402
+
+from django.utils import timezone  # noqa: E402
+
+from apps.core.models import Company, Currency  # noqa: E402
+
+D = Decimal
+
+
+class MoneyBooks(TestCase):
+    def setUp(self):
+        self.inr = Currency.objects.create(code="INR", name="Rupee", is_base=True)
+        self.usd = Currency.objects.create(code="USD", name="Dollar")
+        Company.objects.create(name="Deccan Polysacks", base_currency=self.inr)
+        self.bank = Account.objects.create(code="1010", name="Bank", account_type=AccountType.ASSET, holds_money=True)
+        self.rent = Account.objects.create(code="5100", name="Rent", account_type=AccountType.EXPENSE)
+        self.equity = Account.objects.create(code="3000", name="Opening", account_type=AccountType.EQUITY)
+
+    def entry(self, day, amount="100", post=True, **options):
+        entry = JournalEntry.objects.create(date=day, memo="x")
+        JournalLine.objects.create(entry=entry, account=self.rent, debit=D(amount))
+        JournalLine.objects.create(entry=entry, account=self.bank, credit=D(amount))
+        if post:
+            entry.post(**options)
+        return entry
+
+
+class NothingBeforeTheBooksOpenedTests(MoneyBooks):
+    """O281: the opening balances stand at the opening day; only the old system's open documents keep older dates."""
+
+    def setUp(self):
+        super().setUp()
+        from .models import BooksOpening
+
+        BooksOpening.objects.create(opened_on=datetime.date(2026, 4, 1), opening_account=self.equity)
+
+    def test_an_entry_dated_before_the_books_opened_is_refused(self):
+        with self.assertRaisesMessage(ValidationError, "The books opened on 2026-04-01"):
+            self.entry(datetime.date(2026, 3, 15))
+        self.assertFalse(JournalEntry.objects.filter(posted=True).exists())
+
+    def test_an_entry_on_the_opening_day_and_after_posts(self):
+        self.entry(datetime.date(2026, 4, 1))
+        self.entry(datetime.date(2026, 4, 2))
+        self.assertEqual(JournalEntry.objects.filter(posted=True).count(), 2)
+
+    def test_an_open_document_from_the_old_system_keeps_its_date(self):
+        self.assertTrue(self.entry(datetime.date(2026, 3, 15), opening_balance=True).posted)
+
+    def test_a_reversal_is_not_dated_before_the_books_opened_either(self):
+        entry = self.entry(datetime.date(2026, 3, 15), opening_balance=True)
+        with self.assertRaises(ValidationError):
+            entry.create_reversal(entry_date=datetime.date(2026, 3, 20))
+        self.assertTrue(entry.create_reversal(entry_date=datetime.date(2026, 4, 5)).posted)
+
