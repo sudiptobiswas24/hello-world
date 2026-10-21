@@ -22,6 +22,9 @@ from apps.accounting.mixins import (
     refuse_correcting_past_what_it_holds,
     given_back_or_waiting,
     refuse_holding_past_what_is_left,
+    refuse_a_line_past_the_document,
+    refuse_a_note_off_its_original,
+    refuse_giving_back_past_the_document,
     refuse_naming_another_order_line,
 )
 from apps.accounting.models import (
@@ -4041,8 +4044,14 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         refuse_money_kept_as(self, "payable_account")
         if not (updating and updating <= self.SUPPLIER_NOTE_FIELDS):
             self._check_tcs()
+            self._check_against_its_bill()
         self._key_the_reference(kwargs)
         super().save(*args, **kwargs)
+
+    def _check_against_its_bill(self):
+        """A note on its bill's payable account, dated by correction_date (O298); asked at save and post."""
+        refuse_a_note_off_its_original(self, "debits", "payable_account", "bill_date",
+                                       f"A debit note on {self.debits} is not dated", "it is dated")
 
     # What the vendor-invoice key is made of: a save naming none of them leaves it as stored.
     REFERENCE_KEYED_BY = {"reference", "bill_date", "vendor", "debits"}
@@ -4373,8 +4382,11 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             # gives back only lines of the bill it debits, and no more of each than is left.
             for line in self.lines.select_related("debits_line__bill"):
                 refuse_correcting_another_line(line, self, "debits_line", "debits")
+            self._check_against_its_bill()
             if not original.is_prepayment and not self.corrects_old_supply:
                 refuse_correcting_past_what_it_holds(given_back, "debits_line", BillLine.quantity_debited, on="bill")
+                # A line typed in naming none of the bill's: the note as a whole, within the bill (O298).
+                refuse_giving_back_past_the_document(self, "debits", "debits_line", "bill")
             # Debit at the rate the bill was booked at, never today's, so
             # correcting an old foreign-currency bill can't book an FX gain.
             self.exchange_rate = original.exchange_rate or Decimal("1")
@@ -5651,6 +5663,10 @@ class BillLine(PostedLineMixin, TaxedLineMixin, AuditModel):
             # and unallocated -300. Every way a note line is made comes here.
             if self.cost_centre_id is None and self.debits_line.cost_centre_id is not None:
                 self.cost_centre_id = self.debits_line.cost_centre_id
+        note = self.bill
+        if note.debits_id and not note.corrects_old_supply and not note.debits.is_prepayment:
+            # A line typed in naming none of the bill's: the note as a whole, within the bill (O298).
+            refuse_a_line_past_the_document(self, note, "debits", "debits_line", "bill")
         super().save(*args, **kwargs)
 
     def refuse_giving_back_what_moved(self):

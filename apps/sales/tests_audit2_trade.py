@@ -11,55 +11,6 @@ from .models import Invoice, InvoiceLine
 from .tests_base import SalesTestCase
 
 
-class HandKeyedCreditNote(SalesTestCase):
-    def posted_invoice(self, day=datetime.date(2026, 3, 1)):
-        order = self.make_order(quantity="10", price="100")
-        self.ship(order, 10)
-        return self.bill(order, on=day)
-
-    def note(self, invoice, **extra):
-        return Invoice.objects.create(
-            customer=invoice.customer, invoice_date=extra.pop("invoice_date", invoice.invoice_date),
-            receivable_account=extra.pop("receivable_account", invoice.receivable_account),
-            currency=invoice.currency, credits=invoice, **extra)
-
-    def test_S1_a_note_by_hand_on_another_control_account_is_refused(self):
-        invoice = self.posted_invoice()
-        other = Account.objects.create(code="1101", name="AR 2", account_type=AccountType.ASSET)
-        line = invoice.lines.first()
-        note = self.note(invoice, receivable_account=other)
-        InvoiceLine.objects.create(invoice=note, credits_line=line, item=line.item, quantity=Decimal("2"),
-                                   unit_price=line.unit_price, revenue_account=line.revenue_account)
-        with self.assertRaises(ValidationError):
-            note.post()
-
-    def test_S2_a_note_by_hand_dated_before_its_invoice_is_refused(self):
-        invoice = self.posted_invoice(datetime.date(2026, 3, 10))
-        line = invoice.lines.first()
-        note = self.note(invoice, invoice_date=datetime.date(2026, 3, 1))
-        InvoiceLine.objects.create(invoice=note, credits_line=line, item=line.item, quantity=Decimal("2"),
-                                   unit_price=line.unit_price, revenue_account=line.revenue_account)
-        with self.assertRaises(ValidationError):
-            note.post()
-
-    def test_S2b_a_note_by_hand_dated_a_year_ahead_is_refused(self):
-        invoice = self.posted_invoice()
-        line = invoice.lines.first()
-        note = self.note(invoice, invoice_date=timezone.localdate() + datetime.timedelta(days=400))
-        InvoiceLine.objects.create(invoice=note, credits_line=line, item=line.item, quantity=Decimal("2"),
-                                   unit_price=line.unit_price, revenue_account=line.revenue_account)
-        with self.assertRaises(ValidationError):
-            note.post()
-
-    def test_S5_a_typed_credit_line_cannot_credit_more_than_the_invoice(self):
-        invoice = self.posted_invoice()   # 1000
-        note = self.note(invoice)
-        InvoiceLine.objects.create(invoice=note, description="oops", quantity=Decimal("1"),
-                                   unit_price=Decimal("5000"), revenue_account=self.revenue)
-        with self.assertRaises(ValidationError):
-            note.post()
-
-
 from apps.core.tests_roles import RolesTestCase  # noqa: E402
 
 

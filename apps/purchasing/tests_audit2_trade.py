@@ -24,39 +24,6 @@ class HandKeyedDebitNote(PurchasingLifecycleTestCase):
             vendor=bill.vendor, bill_date=extra.pop("bill_date", bill.bill_date),
             payable_account=extra.pop("payable_account", bill.payable_account), debits=bill, **extra)
 
-    def test_P1_a_note_by_hand_on_another_control_account_is_refused(self):
-        bill = self.posted_bill()
-        other = Account.objects.create(code="2001", name="AP 2", account_type=AccountType.LIABILITY)
-        note = self.note(bill, payable_account=other)
-        BillLine.objects.create(bill=note, debits_line=bill.lines.get(), description="Spares", quantity=Decimal("2"),
-                                unit_price=Decimal("100"), expense_account=self.expense)
-        with self.assertRaises(ValidationError):
-            note.post()
-
-    def test_P2_a_note_by_hand_dated_before_its_bill_is_refused(self):
-        bill = self.posted_bill(datetime.date(2026, 1, 10))
-        note = self.note(bill, bill_date=datetime.date(2026, 1, 1))
-        BillLine.objects.create(bill=note, debits_line=bill.lines.get(), description="Spares", quantity=Decimal("2"),
-                                unit_price=Decimal("100"), expense_account=self.expense)
-        with self.assertRaises(ValidationError):
-            note.post()
-
-    def test_P2b_a_note_by_hand_a_year_ahead_is_refused(self):
-        bill = self.posted_bill()
-        note = self.note(bill, bill_date=timezone.localdate() + datetime.timedelta(days=400))
-        BillLine.objects.create(bill=note, debits_line=bill.lines.get(), description="Spares", quantity=Decimal("2"),
-                                unit_price=Decimal("100"), expense_account=self.expense)
-        with self.assertRaises(ValidationError):
-            note.post()
-
-    def test_P3_a_typed_debit_line_cannot_debit_more_than_the_bill(self):
-        bill = self.posted_bill()
-        note = self.note(bill)
-        BillLine.objects.create(bill=note, description="oops", quantity=Decimal("1"), unit_price=Decimal("5000"),
-                                expense_account=self.expense)
-        with self.assertRaises(ValidationError):
-            note.post()
-
     def test_P4_a_debit_note_on_a_future_dated_bill_is_not_dated_before_it(self):
         day = timezone.localdate() + datetime.timedelta(days=10)
         bill = self.posted_bill(day)

@@ -581,7 +581,7 @@ class ADraftCreditNoteGivesNothingBackTests(SalesTestCase):
         deposit = order.create_down_payment_invoice(self.ar, percent=30)
         deposit.post()
         draft = Invoice.objects.create(customer=self.customer, receivable_account=self.ar,
-                                       invoice_date=datetime.date(2026, 3, 20),
+                                       invoice_date=deposit.invoice_date,  # never before it (O298)
                                        currency=self.usd, credits=deposit)
         InvoiceLine.objects.create(invoice=draft, credits_line=deposit.lines.get(),
                                    quantity=Decimal("1"), unit_price=Decimal("300"),

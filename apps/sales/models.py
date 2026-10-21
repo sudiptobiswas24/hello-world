@@ -79,6 +79,9 @@ from apps.accounting.mixins import (
     refuse_correcting_past_what_it_holds,
     given_back_or_waiting,
     refuse_holding_past_what_is_left,
+    refuse_a_line_past_the_document,
+    refuse_a_note_off_its_original,
+    refuse_giving_back_past_the_document,
     refuse_naming_another_order_line,
     value_left,
 )
@@ -2663,7 +2666,15 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
             if not self.receivable_account_id:
                 self.receivable_account = default_account("receivable", "receivable_account")
         refuse_money_kept_as(self, "receivable_account")
+        self._check_against_its_original()
         super().save(*args, **kwargs)
+
+    def _check_against_its_original(self):
+        """A note on its invoice's receivable account, dated by correction_date (O298); asked at save and post."""
+        refuse_a_note_off_its_original(self, "credits", "receivable_account", "invoice_date",
+                                       f"A credit note on {self.credits} is not dated", "it was invoiced")
+        refuse_a_note_off_its_original(self, "debits", "receivable_account", "invoice_date",
+                                       f"A debit note on {self.debits} is not dated", "it was invoiced")
 
     def _apply_customer_defaults(self):
         if not self.customer_id:
@@ -2797,6 +2808,8 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
             self._check_deposit_room()
 
         self.invoice_date = to_date(self.invoice_date)
+        # Asked again as it posts: the draft may be posted on a day its date has not come.
+        self._check_against_its_original()
         if not self.is_credit_note() and self.total() <= 0:
             raise ValidationError(
                 "This invoice has no value to post. Give its lines a quantity and price."
@@ -2811,6 +2824,8 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
                 # A claim too, by value: spread onto a line already given back whole, it over-credited it (O185).
                 refuse_correcting_past_what_it_holds(given_back, "credits_line", InvoiceLine.quantity_credited,
                                                      on="invoice", by_value_only=bool(self.claim_reason))
+                # A line typed in naming none of the invoice's: the note as a whole, within the invoice (O298).
+                refuse_giving_back_past_the_document(self, "credits", "credits_line", "invoice")
         going = defaultdict(Decimal)
         for line in self.lines.select_related("order_line__order"):
             if not line.order_line_id:
@@ -3444,6 +3459,8 @@ class InvoiceLine(PostedLineMixin, TaxedLineMixin, AuditModel):
         if self.credits_line_id and not self.invoice.claim_reason and not self.credits_line.invoice.is_down_payment:
             # Goods given back, drafts waiting counted (O336); a claim and an advance are held by value.
             refuse_holding_past_what_is_left(self, "credits_line", invoice__claim_reason="")
+        if self.invoice.credits_id and not self.invoice.credits.is_down_payment:
+            refuse_a_line_past_the_document(self, self.invoice, "credits", "credits_line", "invoice")
         # An order line may leave it blank; a sale cannot post without one,
         # and invoicing such a line was a database error rather than a
         # sentence. Here, where every invoice line is made.
