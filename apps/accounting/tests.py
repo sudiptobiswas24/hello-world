@@ -233,3 +233,42 @@ class CurrencyFrozenOncePostedTests(MoneyBooks):
         self.assertEqual(response.status_code, 400, response.content)
         self.assertIn("currency", response.json())
 
+
+class SwitchedOffTakesNothingNewTests(MoneyBooks):
+    """O283: an account or cost centre switched off takes no new posting; a reversal of what it holds does."""
+
+    def test_nothing_is_posted_to_an_account_switched_off(self):
+        self.rent.is_active = False
+        self.rent.save()
+        with self.assertRaisesMessage(ValidationError, "is switched off; it takes nothing new"):
+            self.entry(datetime.date(2026, 9, 1))
+
+    def test_a_reversal_still_takes_back_what_a_switched_off_account_holds(self):
+        entry = self.entry(datetime.date(2026, 9, 1))
+        self.rent.is_active = False
+        self.rent.save()
+        self.assertTrue(entry.create_reversal(entry_date=datetime.date(2026, 9, 2)).posted)
+
+    def test_a_switched_off_cost_centre_takes_no_new_line(self):
+        from .analytic import CostCentre
+
+        centre = CostCentre.objects.create(code="CC1", name="Old line", is_active=False)
+        entry = JournalEntry.objects.create(date=datetime.date(2026, 9, 1), memo="x")
+        with self.assertRaisesMessage(ValidationError, "is switched off; it takes no new line"):
+            JournalLine.objects.create(entry=entry, account=self.rent, debit=D("5"), cost_centre=centre)
+
+    def test_a_cost_centre_switched_off_after_the_line_was_keyed_refuses_the_post(self):
+        from .analytic import CostCentre
+
+        centre = CostCentre.objects.create(code="CC1", name="Old line")
+        entry = JournalEntry.objects.create(date=datetime.date(2026, 9, 1), memo="x")
+        JournalLine.objects.create(entry=entry, account=self.rent, debit=D("5"), cost_centre=centre)
+        JournalLine.objects.create(entry=entry, account=self.bank, credit=D("5"))
+        CostCentre.objects.filter(pk=centre.pk).update(is_active=False)
+        with self.assertRaises(ValidationError):
+            entry.post()
+        centre.is_active = True
+        centre.save()
+        entry.post()
+        CostCentre.objects.filter(pk=centre.pk).update(is_active=False)
+        self.assertTrue(entry.create_reversal(entry_date=datetime.date(2026, 9, 2)).posted)

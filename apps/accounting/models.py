@@ -315,6 +315,22 @@ def register_close_check(ask):
         CLOSE_CHECKS.append(ask)
 
 
+def refuse_switched_off(lines):
+    """
+    An account or cost centre switched off takes nothing new (O283): its flag was read by the money
+    pickers and nothing else, so a retired revenue account still took every invoice. What takes back an
+    earlier posting (a reversal, a credit or debit note) is not new, and is not asked.
+    """
+    for line in lines:
+        if not line.account.is_active:
+            raise ValidationError(
+                f"{line.account} is switched off; it takes nothing new. Post to the account that replaced "
+                "it, or switch it on again.")
+        if line.cost_centre_id and not line.cost_centre.is_active:
+            raise ValidationError({"cost_centre": [
+                f"{line.cost_centre} is switched off; it takes no new line. Switch it on again to use it."]})
+
+
 class JournalEntry(AuditModel):
     """
     A single balanced transaction. Draft entries (posted=False) may be
@@ -416,10 +432,13 @@ class JournalEntry(AuditModel):
         return debit > 0 and debit == self.total_credit()
 
     @serialised("posted")
-    def post(self, opening_balance=False):
+    def post(self, opening_balance=False, correcting=False):
         """
         `opening_balance`: the entry is an open invoice or bill brought in from the old system, which
         keeps the date it was issued on, before the books opened (O281). Nothing else is dated then.
+
+        `correcting`: the entry takes back what an earlier one posted (a credit or debit note), so an
+        account or cost centre switched off since still takes it (O283), as a reversal does.
         """
         if self.posted:
             raise ValidationError("This journal entry is already posted.")
@@ -435,6 +454,8 @@ class JournalEntry(AuditModel):
             raise ValidationError(
                 f"The books opened on {books.opened_on}; an entry is not posted on {to_date(self.date)}, before "
                 "them. Only an open invoice or bill brought in from the old system keeps an earlier date.")
+        if not correcting and self.reverses_id is None:
+            refuse_switched_off(self.lines.select_related("account", "cost_centre"))
         if not self.is_balanced():
             raise ValidationError(
                 f"Cannot post an unbalanced entry (debit={self.total_debit()}, "
@@ -543,6 +564,13 @@ class JournalLine(AuditModel):
     def save(self, *args, **kwargs):
         answer_to_its_document(
             self, "entry", "Cannot modify a line on a posted journal entry. Create a reversing entry instead.")
+        # Asked where the centre is chosen too, so the line is refused beside its field (O283).
+        if self.cost_centre_id and (self.pk is None or "cost_centre" in (kwargs.get("update_fields") or ["cost_centre"])):
+            from .analytic import CostCentre
+
+            if (not CostCentre.objects.filter(pk=self.cost_centre_id, is_active=True).exists()
+                    and not JournalEntry.objects.filter(pk=self.entry_id, reverses__isnull=False).exists()):
+                refuse_switched_off([self])
         super().save(*args, **kwargs)
 
     @transaction.atomic
