@@ -669,3 +669,37 @@ class DocumentsIssuedTests(GstReturnTestCase):
         self.assertEqual(deposit.number, "RV-2026-00001")
         vouchers = next(row for row in issued if row["kind"] == "receipt_vouchers")
         self.assertEqual((vouchers["from"], vouchers["total"]), ("RV-2026-00001", 1))
+
+
+class SwitchedOffSettingsTests(GstReturnTestCase):
+    """O283: a tax, fiscal position or charge type switched off is used by no new document; a note still is."""
+
+    def buyer(self, **profile):
+        return self.party("MH", gstin=gstin("27AAACB1234K1Z"), gst_state="27", gst_registration="regular", **profile)
+
+    def test_an_invoice_is_not_taxed_at_a_tax_switched_off(self):
+        buyer = self.buyer()
+        self.cgst.is_active = False
+        self.cgst.save()
+        with self.assertRaisesMessage(ValidationError, "is switched off; a new document is not taxed at it"):
+            self.sell(buyer, "1000")
+        self.assertFalse(Invoice.objects.filter(posted=True).exists())
+
+    def test_a_credit_note_bears_the_tax_its_invoice_bore_after_the_tax_is_switched_off(self):
+        invoice = self.sell(self.buyer(), "1000")
+        self.cgst.is_active = False
+        self.cgst.save()
+        self.assertTrue(invoice.create_credit_note().posted)
+
+    def test_a_party_on_a_switched_off_fiscal_position_is_not_invoiced(self):
+        sez = self.party("SEZ", gstin=gstin("24AABCS3333C1Z"), gst_registration="sez", fiscal_position=self.lut)
+        self.lut.is_active = False
+        self.lut.save()
+        with self.assertRaisesMessage(ValidationError, "fiscal position"):
+            self.sell(sez, "5000")
+
+    def test_a_switched_off_charge_is_not_billed(self):
+        self.freight.is_active = False
+        self.freight.save()
+        with self.assertRaisesMessage(ValidationError, "Charge FRT is switched off"):
+            self.sell(self.buyer(), "1000", freight="200")

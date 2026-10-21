@@ -4383,7 +4383,7 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             if self._is_full_debit_of(original):
                 entry.reverses = original.journal_entry
                 entry.save(update_fields=["reverses"])
-            entry.post()
+            entry.post(correcting=True)
         else:
             entry = self._build_journal_entry(self.exchange_rate)
             entry.post(opening_balance=self.is_opening_balance)

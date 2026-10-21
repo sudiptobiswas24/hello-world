@@ -660,6 +660,23 @@ class RecordedLineTax(models.Model):
         super().save(*args, **kwargs)
 
 
+def refuse_switched_off_settings(document):
+    """
+    A fiscal position or charge type switched off is used by no new document (O283); each flag was a
+    filter on a screen and nothing more. Asked as the document posts, of what it names then.
+    """
+    profile = getattr(document.tax_party(), "tax_profile", None)
+    position = getattr(profile, "fiscal_position", None) if profile is not None else None
+    if position is not None and not position.is_active:
+        raise ValidationError(
+            f"{document.tax_party()}'s fiscal position {position} is switched off, so there is no saying which "
+            "taxes replace which. Give the party a position in use, or switch it on again.")
+    for line in document.lines.all():
+        charge = getattr(line, "charge", None) if line.is_charge() else None
+        if charge is not None and not charge.is_active:
+            raise ValidationError(f"Charge {charge.code} is switched off; a new document does not bill it.")
+
+
 class PostedTaxDocumentMixin(models.Model):
     """
     The tax facts a document freezes when it posts: each line's taxes,
@@ -722,8 +739,15 @@ class PostedTaxDocumentMixin(models.Model):
         # In key order: each line's write below holds its row, and the lines come back in whatever order
         # the database keeps them; one edited earlier in the transaction came last (sales.invoiceline 1
         # locked after 13), against the lock order.
+        if original is None:
+            refuse_switched_off_settings(self)
         for line, amounts in sorted(self.line_tax_amounts().items(), key=lambda pair: pair[0].pk):
             for tax, amount in amounts:
+                if original is None and not tax.is_active:
+                    # A note bears what its original bore; anything else is new (O283).
+                    raise ValidationError(
+                        f"Tax {tax.code} is switched off; a new document is not taxed at it. Take it off "
+                        f"{line.label()}, or switch it on again.")
                 if under_gst and not tax.gst_head:
                     raise ValidationError(
                         f"Tax {tax.code} has no GST head, so no return can say "
