@@ -343,3 +343,64 @@ class AReturnWaitingAsADraftHoldsItsBillLineTests(PurchasingLifecycleTestCase):
         waiting.post()
         note.post()
         self.assertEqual((a.amount_due(), b.amount_due()), (Decimal("0.00"), Decimal("0.00")))
+
+
+class ANoteMadeInCodeKeepsToItsBillTests(PurchasingLifecycleTestCase):
+    """O298 (probes P1, P2, P2b, P3): a debit note keyed in code is refused as it is made, and again as it posts."""
+
+    def posted_bill(self, day=datetime.date(2026, 1, 10)):
+        bill = Bill.objects.create(vendor=self.vendor, bill_date=day, payable_account=self.payable)
+        BillLine.objects.create(bill=bill, description="Spares", quantity=Decimal("10"),
+                                unit_price=Decimal("100"), expense_account=self.expense)
+        bill.post()
+        return bill
+
+    def note(self, bill, **extra):
+        return Bill.objects.create(
+            vendor=bill.vendor, bill_date=extra.pop("bill_date", bill.bill_date),
+            payable_account=extra.pop("payable_account", bill.payable_account), debits=bill, **extra)
+
+    def line(self, note, bill):
+        return BillLine.objects.create(bill=note, debits_line=bill.lines.get(), description="Spares",
+                                       quantity=Decimal("2"), unit_price=Decimal("100"), expense_account=self.expense)
+
+    def test_a_note_on_another_control_account_is_refused(self):
+        bill = self.posted_bill()
+        other = Account.objects.create(code="2001", name="AP 2", account_type=AccountType.LIABILITY)
+        with self.assertRaisesMessage(ValidationError, "a note on it is booked there too"):
+            self.note(bill, payable_account=other)
+        note = self.note(bill)
+        self.line(note, bill)
+        Bill.objects.filter(pk=note.pk).update(payable_account=other)
+        with self.assertRaisesMessage(ValidationError, "a note on it is booked there too"):
+            Bill.objects.get(pk=note.pk).post()
+
+    def test_a_note_dated_before_its_bill_is_refused(self):
+        bill = self.posted_bill(datetime.date(2026, 1, 10))
+        with self.assertRaisesMessage(ValidationError, "it is dated on 2026-01-10"):
+            self.note(bill, bill_date=datetime.date(2026, 1, 1))
+        note = self.note(bill)
+        self.line(note, bill)
+        Bill.objects.filter(pk=note.pk).update(bill_date=datetime.date(2026, 1, 1))
+        with self.assertRaisesMessage(ValidationError, "it is dated on 2026-01-10"):
+            Bill.objects.get(pk=note.pk).post()
+
+    def test_a_note_a_year_ahead_is_refused(self):
+        from django.utils import timezone
+
+        bill = self.posted_bill()
+        with self.assertRaisesMessage(ValidationError, "that day has not come"):
+            self.note(bill, bill_date=timezone.localdate() + datetime.timedelta(days=400))
+
+    def test_a_typed_debit_line_cannot_debit_more_than_the_bill(self):
+        # 10 x 100: 1,000 to give back; 1 x 5,000 typed in is refused as it is saved, and at posting.
+        bill = self.posted_bill()
+        note = self.note(bill)
+        with self.assertRaisesMessage(ValidationError, "has 1000 left to give back"):
+            BillLine.objects.create(bill=note, description="oops", quantity=Decimal("1"), unit_price=Decimal("5000"),
+                                    expense_account=self.expense)
+        line = BillLine.objects.create(bill=note, description="rebate", quantity=Decimal("1"),
+                                       unit_price=Decimal("1000"), expense_account=self.expense)
+        BillLine.objects.filter(pk=line.pk).update(unit_price=Decimal("5000"))
+        with self.assertRaisesMessage(ValidationError, "this note gives back 5000"):
+            Bill.objects.get(pk=note.pk).post()

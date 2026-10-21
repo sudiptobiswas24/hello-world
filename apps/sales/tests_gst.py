@@ -307,7 +307,8 @@ class RecordedTaxTests(GstSalesTestCase):
         Company.objects.update(tax_rounding="document")
         invoice = self.make_invoice("10.05", post=False)
         original = invoice.lines.get()
-        type(original).objects.filter(pk=original.pk).update(quantity=Decimal("3"))
+        # 30 at 10.05 (301.50): room for the 110.10 the note gives back (O298); 3 (30.15) had none.
+        type(original).objects.filter(pk=original.pk).update(quantity=Decimal("30"))
         original.taxes.set([self.cgst])
         invoice.post()
 

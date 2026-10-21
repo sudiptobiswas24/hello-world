@@ -13,7 +13,7 @@ from decimal import ROUND_DOWN, Decimal
 from django.core.exceptions import ValidationError
 from django.db import models
 
-from apps.core.models import Company
+from apps.core.models import Company, correction_date
 
 from .models import Tax, compute_taxes, round_money
 
@@ -348,6 +348,71 @@ def refuse_holding_past_what_is_left(line, corrects, **only):
         raise ValidationError({corrects: [
             f"Only {plain(max(left, Decimal('0')))} of {corrected.label()} on {corrected.document()} is left to "
             f"give back, notes still waiting as drafts counted; this line gives back {plain(line.quantity)}."]})
+
+
+def refuse_a_note_off_its_original(document, original, account, date, refused, since):
+    """
+    A note is booked on its original's control account and dated by
+    correction_date: never before the original, nor on a day still to
+    come (O298). Made in code, a credit note posted on another receivable
+    account, before its invoice or a year ahead; only the generated path
+    kept to them, by copying the invoice. Asked as the note is saved and
+    again as it posts.
+    """
+    if not getattr(document, f"{original}_id") or document.posted:
+        return
+    held = getattr(document, original)
+    if getattr(document, f"{account}_id") != getattr(held, f"{account}_id"):
+        raise ValidationError({account: [
+            f"{held} is booked on {getattr(held, account)}; a note on it is booked there too, "
+            f"not on {getattr(document, account)}."]})
+    correction_date(getattr(document, date), getattr(held, date), refused, since)
+
+
+def refuse_giving_back_past_the_document(document, original, corrects, on):
+    """
+    A note holding a line that names no line of its original (a goodwill
+    credit typed in) gives back, all its lines together, no more than is
+    left of the original: its lines' booked net less every posted note's
+    on it (O298). A typed line of 5,000 posted against an invoice of 1,000
+    and took the receivable to -4,000. A note whose every line names one is
+    held line by line (refuse_correcting_past_what_it_holds), to the paisa.
+    Asked as the note posts, under its original's lock; as each line is
+    saved, refuse_a_line_past_the_document counts the drafts waiting too.
+    """
+    if not getattr(document, f"{original}_id"):
+        return
+    lines = document.lines.model._base_manager
+    mine = list(lines.filter(**{on: document}))
+    _refuse_past_the_document(document, original, mine, lines, corrects, on, waiting=False)
+
+
+def refuse_a_line_past_the_document(line, document, original, corrects, on):
+    """refuse_giving_back_past_the_document, asked as `line` is saved: its new figures, its note's others."""
+    if not getattr(document, f"{original}_id"):
+        return
+    lines = type(line)._base_manager
+    mine = [row for row in lines.filter(**{on: document}) if row.pk != line.pk] + [line]
+    _refuse_past_the_document(document, original, mine, lines, corrects, on, waiting=True)
+
+
+def _refuse_past_the_document(document, original, mine, lines, corrects, on, waiting):
+    from apps.core.api import plain
+
+    if all(getattr(row, f"{corrects}_id") for row in mine):
+        return
+    held = getattr(document, original)
+    others = lines.filter(**{f"{on}__{original}": held}).exclude(**{on: document})
+    if not waiting:
+        others = others.filter(**{f"{on}__posted": True})
+    whole = sum((row.net_amount() for row in held.lines.all()), Decimal("0"))
+    given = sum((row.net_amount() for row in others), Decimal("0"))
+    going = sum((row.net_amount() for row in mine), Decimal("0"))
+    if going > whole - given:
+        counted = "posted notes and drafts waiting" if waiting else "posted notes"
+        raise ValidationError(
+            f"{held} has {plain(max(whole - given, Decimal('0')))} left to give back ({plain(given)} of "
+            f"{plain(whole)} given back by {counted}); this note gives back {plain(going)}.")
 
 
 class TaxedLineMixin(models.Model):

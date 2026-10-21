@@ -14,6 +14,7 @@ import datetime
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
+from django.utils import timezone
 
 from apps.inventory.reports import reconcile_to_ledger
 
@@ -343,3 +344,78 @@ class AReturnWaitingAsADraftHoldsItsInvoiceLineTests(SalesTestCase):
         with self.assertRaises(ValidationError):
             InvoiceLine.objects.create(invoice=note, credits_line=line, item=line.item, quantity=Decimal("7"),
                                        unit_price=line.unit_price, revenue_account=line.revenue_account)
+
+
+class ANoteMadeInCodeKeepsToItsInvoiceTests(SalesTestCase):
+    """O298 (probes S1, S2, S2b, S5): a credit note keyed in code is refused as it is made, and again as it posts."""
+
+    def posted_invoice(self, day=datetime.date(2026, 3, 1)):
+        order = self.make_order(quantity="10", price="100")
+        self.ship(order, 10)
+        return self.bill(order, on=day)
+
+    def note(self, invoice, **extra):
+        return Invoice.objects.create(
+            customer=invoice.customer, invoice_date=extra.pop("invoice_date", invoice.invoice_date),
+            receivable_account=extra.pop("receivable_account", invoice.receivable_account),
+            currency=invoice.currency, credits=invoice, **extra)
+
+    def line(self, note, invoice, quantity="2"):
+        line = invoice.lines.first()
+        return InvoiceLine.objects.create(invoice=note, credits_line=line, item=line.item, quantity=Decimal(quantity),
+                                          unit_price=line.unit_price, revenue_account=line.revenue_account)
+
+    def test_a_note_on_another_control_account_is_refused(self):
+        from apps.accounting.models import Account, AccountType
+
+        invoice = self.posted_invoice()
+        other = Account.objects.create(code="1101", name="AR 2", account_type=AccountType.ASSET)
+        with self.assertRaisesMessage(ValidationError, "a note on it is booked there too"):
+            self.note(invoice, receivable_account=other)
+        # Moved after it was made, it is refused as it posts.
+        note = self.note(invoice)
+        self.line(note, invoice)
+        Invoice.objects.filter(pk=note.pk).update(receivable_account=other)
+        with self.assertRaisesMessage(ValidationError, "a note on it is booked there too"):
+            Invoice.objects.get(pk=note.pk).post()
+
+    def test_a_note_dated_before_its_invoice_is_refused(self):
+        invoice = self.posted_invoice(datetime.date(2026, 3, 10))
+        with self.assertRaisesMessage(ValidationError, "it was invoiced on 2026-03-10"):
+            self.note(invoice, invoice_date=datetime.date(2026, 3, 1))
+        note = self.note(invoice)
+        self.line(note, invoice)
+        Invoice.objects.filter(pk=note.pk).update(invoice_date=datetime.date(2026, 3, 1))
+        with self.assertRaisesMessage(ValidationError, "it was invoiced on 2026-03-10"):
+            Invoice.objects.get(pk=note.pk).post()
+
+    def test_a_note_dated_a_year_ahead_is_refused(self):
+        invoice = self.posted_invoice()
+        with self.assertRaisesMessage(ValidationError, "that day has not come"):
+            self.note(invoice, invoice_date=timezone.localdate() + datetime.timedelta(days=400))
+
+    def test_a_typed_credit_line_cannot_credit_more_than_the_invoice(self):
+        # 10 x 100: 1,000 to give back. A typed line of 1 x 5,000 is refused as it is saved.
+        invoice = self.posted_invoice()
+        note = self.note(invoice)
+        with self.assertRaisesMessage(ValidationError, "has 1000 left to give back"):
+            InvoiceLine.objects.create(invoice=note, description="oops", quantity=Decimal("1"),
+                                       unit_price=Decimal("5000"), revenue_account=self.revenue)
+
+    def test_a_typed_line_is_held_to_what_posted_notes_leave(self):
+        # 2 of the 10 credited (200): a typed goodwill credit may give back 800, not 800.01.
+        invoice = self.posted_invoice()
+        invoice.create_credit_note(quantities={invoice.lines.first(): Decimal("2")})
+        note = self.note(invoice)
+        with self.assertRaisesMessage(ValidationError, "has 800 left to give back (200 of 1000"):
+            InvoiceLine.objects.create(invoice=note, description="goodwill", quantity=Decimal("1"),
+                                       unit_price=Decimal("800.01"), revenue_account=self.revenue)
+        line = InvoiceLine.objects.create(invoice=note, description="goodwill", quantity=Decimal("1"),
+                                          unit_price=Decimal("800"), revenue_account=self.revenue)
+        # Raised past it behind save()'s back, the posting refuses it.
+        InvoiceLine.objects.filter(pk=line.pk).update(unit_price=Decimal("900"))
+        with self.assertRaisesMessage(ValidationError, "this note gives back 900"):
+            Invoice.objects.get(pk=note.pk).post()
+        InvoiceLine.objects.filter(pk=line.pk).update(unit_price=Decimal("800"))
+        Invoice.objects.get(pk=note.pk).post()
+        self.assertEqual(invoice.amount_due(), Decimal("0.00"))

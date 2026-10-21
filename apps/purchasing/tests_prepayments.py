@@ -502,7 +502,7 @@ class ADraftDebitNoteGivesNothingBackTests(PrepaymentTestCase):
         from .models import BillLine
 
         prepayment = self.prepay(self.make_order("10", "5"))
-        draft = Bill.objects.create(vendor=self.vendor, bill_date=datetime.date(2026, 1, 20),
+        draft = Bill.objects.create(vendor=self.vendor, bill_date=prepayment.bill_date,  # never before it (O298)
                                     payable_account=self.payable, debits=prepayment)
         BillLine.objects.create(bill=draft, debits_line=prepayment.lines.get(),
                                 quantity=Decimal("1"), unit_price=Decimal("15"),
