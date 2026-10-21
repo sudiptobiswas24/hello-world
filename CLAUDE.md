@@ -325,6 +325,9 @@ Go through it before running anything.
 - A "stale exemption" is a question, not a fix. A rewrite took the
   landed-cost release out of the date check's pattern while it could
   still be dated anywhere. Read the method before taking it off a list.
+- Never `git stash` in a worktree: every worktree of the repository
+  shares one stash, and a pop took another agent's half-done backup
+  script into the wrong tree (g23).
 - Do not hide the output of a step whose failure matters (`2>/dev/null`,
   `| tail -1`): a `git worktree add` failed that way, unseen.
 
