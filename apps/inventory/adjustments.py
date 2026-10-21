@@ -234,6 +234,11 @@ class StockAdjustment(AuditModel):
         # Before anything reads the shelf: a write-off checks what is
         # there and then takes it, and two of them can both find enough.
         lock_positions((line.item, self.warehouse) for line in lines)
+        # Each item read again now its shelf is held (the review of O323): read before the lock, a standard set
+        # in between was not seen, and a write-up of 2 came on at the old standard of 3 where 4 stood.
+        fresh = Item.objects.in_bulk({line.item_id for line in lines})
+        for line in lines:
+            line.item = fresh[line.item_id]
 
         self.adjustment_date = to_date(self.adjustment_date)
         occurred_at = timezone.now()
