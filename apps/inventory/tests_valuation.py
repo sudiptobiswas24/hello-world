@@ -222,6 +222,14 @@ class TheAccountStockIsHeldInTests(ValuationTestCase):
         response = client.patch(f"/api/inventory/items/{self.item.pk}/",
                                 {"inventory_account": self.spares.pk}, format="json")
         self.assertEqual(response.status_code, 400, response.content[:300])
+        # Choosing the account is the accountant's now (the review of O324); the accountant meets the freeze.
+        self.assertIn("may post journal entries", str(response.json()))
+        head.groups.add(Group.objects.get(name="Controller"))
+        head = User.objects.get(pk=head.pk)
+        client.force_authenticate(head)
+        response = client.patch(f"/api/inventory/items/{self.item.pk}/",
+                                {"inventory_account": self.spares.pk}, format="json")
+        self.assertEqual(response.status_code, 400, response.content[:300])
         self.assertIn("inventory account cannot change", str(response.json()))
 
     def test_an_item_with_no_movements_may_name_any_account(self):
