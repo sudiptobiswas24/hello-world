@@ -4833,11 +4833,11 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         if not selected:
             raise ValidationError("Nothing to debit.")
 
-        # Dated on `on_date` (a return's day), never before the bill it debits nor on a day to come;
-        # a note made by hand, today. A January return's note fell in October, in the wrong period
-        # and GST month.
-        day = (correction_date(on_date, self.bill_date, f"{self.number} is not debited on", "it is dated")
-               if on_date is not None else timezone.localdate())
+        # Dated on `on_date` (a return's day), never before the bill it debits nor on a day to come.
+        # A January return's note fell in October, in the wrong period and GST month. A note made by
+        # hand is dated by correction_date too, as sales' credit notes are: today, or the bill's own
+        # day when the bill is dated later (O297; it was today, before the bill).
+        day = correction_date(on_date, self.bill_date, f"{self.number} is not debited on", "it is dated")
         debit_note = Bill.objects.create(
             vendor=self.vendor,
             bill_date=day,
