@@ -69,6 +69,28 @@ class Account(AuditModel):
     def clean(self):
         self._check_tree()
         self._check_money()
+        self._check_currency()
+
+    def _check_currency(self):
+        """
+        The currency an account is kept in is what its posted amounts were written in, as its type and
+        whether it holds money are (O282): a rupee bank turned dollar reads its rupees as dollars and
+        refuses the payments it carried. Unset is the base currency, so setting it to the base is no change.
+        """
+        if self.pk is None:
+            return
+        from apps.core.models import Company
+
+        before = Account.objects.filter(pk=self.pk).values_list("currency_id", flat=True).first()
+        company = Company.objects.order_by("pk").values_list("base_currency_id", flat=True).first()
+        if (before or company) == (self.currency_id or company):
+            return
+        # Held as _check_money holds it: a payment through it holds the row while it posts.
+        list(row_lock_query(Account, self.pk))
+        if JournalLine.objects.filter(account_id=self.pk, entry__posted=True).exists():
+            raise ValidationError({"currency": [
+                f"{self} has posted entries in the currency it was kept in; they would be read in another. "
+                "Open a new account in the new currency instead."]})
 
     @transaction.atomic
     def save(self, *args, **kwargs):
@@ -76,6 +98,7 @@ class Account(AuditModel):
         # office writes through the API. Only the admin ever asked this.
         self._check_tree()
         self._check_money()
+        self._check_currency()
         super().save(*args, **kwargs)
 
     def _check_money(self):

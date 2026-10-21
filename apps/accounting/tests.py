@@ -199,3 +199,37 @@ class NothingBeforeTheBooksOpenedTests(MoneyBooks):
             entry.create_reversal(entry_date=datetime.date(2026, 3, 20))
         self.assertTrue(entry.create_reversal(entry_date=datetime.date(2026, 4, 5)).posted)
 
+
+class CurrencyFrozenOncePostedTests(MoneyBooks):
+    """O282: an account's currency is what its posted amounts were written in."""
+
+    def test_an_account_with_posted_rupees_cannot_become_a_dollar_account(self):
+        self.entry(datetime.date(2026, 9, 1))
+        self.bank.currency = self.usd
+        with self.assertRaisesMessage(ValidationError, "has posted entries in the currency"):
+            self.bank.save()
+        self.bank.refresh_from_db()
+        self.assertIsNone(self.bank.currency_id)
+
+    def test_naming_the_base_currency_on_a_posted_account_is_no_change(self):
+        self.entry(datetime.date(2026, 9, 1))
+        self.bank.currency = self.inr
+        self.bank.save()
+        self.bank.currency = None
+        self.bank.save()
+
+    def test_an_account_with_nothing_posted_may_change_currency(self):
+        self.entry(datetime.date(2026, 9, 1), post=False)
+        self.bank.currency = self.usd
+        self.bank.save()
+
+    def test_the_api_refuses_it_beside_the_field(self):
+        from apps.core.tests_roles import RolesTestCase
+
+        RolesTestCase.setUp(self)
+        self.entry(datetime.date(2026, 9, 1))
+        client = RolesTestCase.as_(self, "Bookkeeper")
+        response = client.patch(f"/api/accounting/accounts/{self.bank.pk}/", {"currency": self.usd.pk}, format="json")
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("currency", response.json())
+
