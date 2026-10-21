@@ -20,6 +20,8 @@ from apps.accounting.mixins import (
     refuse_correcting_a_note,
     refuse_correcting_another_line,
     refuse_correcting_past_what_it_holds,
+    given_back_or_waiting,
+    refuse_holding_past_what_is_left,
     refuse_naming_another_order_line,
 )
 from apps.accounting.models import (
@@ -5297,7 +5299,7 @@ class BillLine(PostedLineMixin, TaxedLineMixin, AuditModel):
                 "its cost is in their stock value, not on a machine."
             )
         # What debit notes gave back is not capitalised: a refunded line made an asset of nothing.
-        units = self.quantity_debitable()
+        units = self.quantity - self.quantity_debited()
         if units <= 0:
             raise ValidationError("This line has been given back in full; there is nothing to capitalise.")
         if units != units.to_integral_value():
@@ -5413,7 +5415,8 @@ class BillLine(PostedLineMixin, TaxedLineMixin, AuditModel):
         )["total"] or Decimal("0")
 
     def quantity_debitable(self):
-        return self.quantity - self.quantity_debited()
+        """What is left to debit: less what posted notes gave back and what drafts waiting will (O336, O335)."""
+        return self.quantity - given_back_or_waiting(self, "debits_line")
 
     def document(self):
         return self.bill
@@ -5640,6 +5643,9 @@ class BillLine(PostedLineMixin, TaxedLineMixin, AuditModel):
         refuse_correcting_another_line(self, self.bill, "debits_line", "debits", fill=True)
         if self.debits_line_id:
             self.refuse_giving_back_what_moved()
+            if not self.debits_line.bill.is_prepayment:
+                # Goods given back, drafts waiting counted (O336); a prepayment is held by value.
+                refuse_holding_past_what_is_left(self, "debits_line")
             # A note gives back off the centre that bore the cost (O56): with
             # none of its own, a loom shed's 1,000 less 300 read LOOM 1,000
             # and unallocated -300. Every way a note line is made comes here.

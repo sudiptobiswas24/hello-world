@@ -310,6 +310,46 @@ def refuse_correcting_past_what_it_holds(lines, corrects, already, on, by_value_
                 f"left to give back{share}; this note gives back {round_money(worth[pk])}."]})
 
 
+def given_back_or_waiting(corrected, corrects, but=None, **only):
+    """
+    How much of `corrected`, an invoice or bill line, the notes on it give
+    back: posted ones and drafts still waiting alike, less line `but` (the
+    one being saved). `only` narrows the notes (a claim gives back money,
+    not goods). The room a new note is offered (quantity_creditable,
+    quantity_debitable) and a return's allocation both ask it (O336, O335):
+    counted only once posted, a store hand's return waited as a draft of
+    10 while AR credited the same 10 by hand, and a second return's draft
+    took the bill the first had already taken. Posting asks posted notes
+    alone (refuse_correcting_past_what_it_holds): a draft waiting does not
+    stop the draft before it posting.
+    """
+    notes = type(corrected)._base_manager.filter(**{corrects: corrected}, **only)
+    if but is not None and but.pk:
+        notes = notes.exclude(pk=but.pk)
+    return notes.aggregate(total=models.Sum("quantity"))["total"] or Decimal("0")
+
+
+def refuse_holding_past_what_is_left(line, corrects, **only):
+    """
+    At save: a note's line gives back no more of the line it names than
+    is left of it, posted notes and drafts waiting counted, this note's
+    other lines on it too (given_back_or_waiting). Every way a note line
+    is made comes here; posting asks again, of posted notes alone.
+    """
+    if not getattr(line, f"{corrects}_id"):
+        return
+    from apps.core.api import plain
+
+    corrected = getattr(line, corrects)
+    # Its quantity as stored, not as the object in hand was read.
+    whole = type(corrected)._base_manager.values_list("quantity", flat=True).get(pk=corrected.pk)
+    left = whole - given_back_or_waiting(corrected, corrects, but=line, **only)
+    if line.quantity > left:
+        raise ValidationError({corrects: [
+            f"Only {plain(max(left, Decimal('0')))} of {corrected.label()} on {corrected.document()} is left to "
+            f"give back, notes still waiting as drafts counted; this line gives back {plain(line.quantity)}."]})
+
+
 class TaxedLineMixin(models.Model):
     """
     Money arithmetic for one line of a trading document: gross, discount,

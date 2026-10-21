@@ -210,7 +210,7 @@ class ReturnedAtWhatTheShipmentTookTests(SalesTestCase):
 
 from apps.core.tests_roles import RolesTestCase  # noqa: E402
 
-from .models import Invoice, InvoicePolicy  # noqa: E402
+from .models import Invoice, InvoiceLine, InvoicePolicy  # noqa: E402
 
 
 class WhoMayCreditByReturningTests(RolesTestCase, SalesTestCase):
@@ -258,3 +258,50 @@ class WhoMayCreditByReturningTests(RolesTestCase, SalesTestCase):
         (two,) = self.take_back(hand, second)
         credited = sorted(Invoice.objects.get(pk=note["id"]).credits_id for note in (one, two))
         self.assertEqual(credited, sorted([a.pk, b.pk]))
+
+
+class AReturnWaitingAsADraftHoldsItsInvoiceLineTests(SalesTestCase):
+    """O336: a store hand's return waits as a draft; AR cannot credit the same goods by hand meanwhile."""
+
+    def shipped_and_invoiced(self):
+        order = self.make_order(quantity="10", price="100")
+        delivery = self.ship(order, 10)
+        invoice = self.bill(order)
+        return delivery, invoice, invoice.lines.get()
+
+    def test_ar_credits_only_what_the_draft_leaves(self):
+        # 10 at 100 invoiced; 4 taken back by someone who may not post invoices: 6 are left to credit by hand.
+        delivery, invoice, line = self.shipped_and_invoiced()
+        delivery.create_return(quantities={delivery.lines.get(): Decimal("4")}, post_notes=False)
+        self.assertEqual(line.quantity_creditable(), Decimal("6"))
+        with self.assertRaises(ValidationError):
+            invoice.create_credit_note(quantities={line: Decimal("7")})
+        invoice.create_credit_note(quantities={line: Decimal("6")})
+        # The draft then posts: 1,000 credited in all, nothing over.
+        Invoice.objects.get(credits=invoice, posted=False).post()
+        self.assertEqual(invoice.amount_due(), Decimal("0.00"))
+
+    def test_a_whole_return_waiting_leaves_nothing_to_credit_by_hand(self):
+        delivery, invoice, line = self.shipped_and_invoiced()
+        delivery.create_return(post_notes=False)
+        self.assertEqual(line.quantity_creditable(), Decimal("0"))
+        with self.assertRaises(ValidationError):
+            invoice.create_credit_note()
+        with self.assertRaises(ValidationError):
+            invoice.create_credit_note(quantities={line: Decimal("10")})
+
+    def test_the_draft_deleted_gives_the_room_back(self):
+        delivery, invoice, line = self.shipped_and_invoiced()
+        delivery.create_return(post_notes=False)
+        Invoice.objects.get(credits=invoice, posted=False).delete()
+        self.assertEqual(line.quantity_creditable(), Decimal("10"))
+
+    def test_a_draft_line_typed_past_what_is_left_is_refused_at_save(self):
+        delivery, invoice, line = self.shipped_and_invoiced()
+        delivery.create_return(quantities={delivery.lines.get(): Decimal("4")}, post_notes=False)
+        note = Invoice.objects.create(customer=invoice.customer, invoice_date=invoice.invoice_date,
+                                      receivable_account=invoice.receivable_account, currency=invoice.currency,
+                                      credits=invoice)
+        with self.assertRaises(ValidationError):
+            InvoiceLine.objects.create(invoice=note, credits_line=line, item=line.item, quantity=Decimal("7"),
+                                       unit_price=line.unit_price, revenue_account=line.revenue_account)

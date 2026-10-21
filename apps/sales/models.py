@@ -77,6 +77,8 @@ from apps.accounting.mixins import (
     refuse_correcting_another_line,
     priced_to_give_back,
     refuse_correcting_past_what_it_holds,
+    given_back_or_waiting,
+    refuse_holding_past_what_is_left,
     refuse_naming_another_order_line,
     value_left,
 )
@@ -3425,7 +3427,8 @@ class InvoiceLine(PostedLineMixin, TaxedLineMixin, AuditModel):
         )["total"] or Decimal("0")
 
     def quantity_creditable(self):
-        return self.quantity - self.quantity_credited()
+        """What is left to credit: less what posted notes gave back and what drafts waiting will (O336)."""
+        return self.quantity - given_back_or_waiting(self, "credits_line", invoice__claim_reason="")
 
     def locked_before_it(self):
         """The invoices it leaves and joins, as save() holds them (apps.core.models.answer_to_its_document)."""
@@ -3438,6 +3441,9 @@ class InvoiceLine(PostedLineMixin, TaxedLineMixin, AuditModel):
             self, "invoice", "Cannot modify a line on a posted invoice. Issue a credit note instead.")
         refuse_naming_another_order_line(self, self.invoice, "customer", "sales_order")
         refuse_correcting_another_line(self, self.invoice, "credits_line", "credits", fill=True)
+        if self.credits_line_id and not self.invoice.claim_reason and not self.credits_line.invoice.is_down_payment:
+            # Goods given back, drafts waiting counted (O336); a claim and an advance are held by value.
+            refuse_holding_past_what_is_left(self, "credits_line", invoice__claim_reason="")
         # An order line may leave it blank; a sale cannot post without one,
         # and invoicing such a line was a database error rather than a
         # sentence. Here, where every invoice line is made.
@@ -4792,11 +4798,9 @@ class Delivery(AuditModel):
             for invoice_line in invoice_lines:
                 if remaining <= 0:
                     break
-                # Less what a return's notes still waiting as drafts already take (O292): counted
+                # Less what a return's notes still waiting as drafts already take (O292, O336): counted
                 # only once posted, the next return would credit the same line again.
-                available = invoice_line.quantity_creditable() - (invoice_line.credit_lines.filter(
-                    invoice__posted=False, invoice__claim_reason="").aggregate(t=models.Sum("quantity"))["t"]
-                    or Decimal("0"))
+                available = invoice_line.quantity_creditable()
                 if available <= 0:
                     continue
                 taken = min(available, remaining)
