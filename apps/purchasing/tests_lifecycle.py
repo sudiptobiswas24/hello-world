@@ -404,3 +404,25 @@ class ANoteMadeInCodeKeepsToItsBillTests(PurchasingLifecycleTestCase):
         BillLine.objects.filter(pk=line.pk).update(unit_price=Decimal("5000"))
         with self.assertRaisesMessage(ValidationError, "this note gives back 5000"):
             Bill.objects.get(pk=note.pk).post()
+
+
+class ADebitNoteByHandIsDatedByTheCorrectionRuleTests(PurchasingLifecycleTestCase):
+    """O297 (probe P4): create_debit_note with no date asks correction_date, as sales' credit notes do."""
+
+    posted_bill = ANoteMadeInCodeKeepsToItsBillTests.posted_bill
+
+    def test_a_debit_note_on_a_future_dated_bill_is_dated_on_the_bill(self):
+        from django.utils import timezone
+
+        day = timezone.localdate() + datetime.timedelta(days=10)
+        bill = self.posted_bill(day)
+        note = bill.create_debit_note(quantities={bill.lines.get(): Decimal("2")})
+        self.assertEqual(note.bill_date, day)
+
+    def test_a_debit_note_on_a_past_bill_is_dated_today(self):
+        from django.utils import timezone
+
+        bill = self.posted_bill(datetime.date(2026, 1, 10))
+        note = bill.create_debit_note(quantities={bill.lines.get(): Decimal("2")})
+        self.assertEqual(note.bill_date, timezone.localdate())
+
