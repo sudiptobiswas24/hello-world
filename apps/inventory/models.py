@@ -380,7 +380,10 @@ class Item(Extensible, AuditModel):
     def _check_counting_frozen(self):
         if not self.pk:
             return
-        before = Item.objects.filter(pk=self.pk).values(
+        # The row held before anything is asked (the review of O330): a first receipt inserting its movement
+        # holds a key share on this row, which FOR UPDATE waits for, so the question below sees it; asked
+        # unlocked, a switch to FIFO and the first receipt both went through, the receipt booked under average.
+        before = Item.objects.select_for_update().filter(pk=self.pk).values(
             "inventory_account_id", *(name for name, _ in self.COUNTED_AS)).first()
         if before is None:
             return
@@ -403,6 +406,11 @@ class Item(Extensible, AuditModel):
             )
 
     def save(self, *args, **kwargs):
+        # A save that locks opens its own transaction (_check_counting_frozen holds the row).
+        with transaction.atomic():
+            self._save(*args, **kwargs)
+
+    def _save(self, *args, **kwargs):
         from apps.accounting.gst import validate_hsn
 
         self._check_costing_is_answerable()
@@ -851,8 +859,26 @@ class StockMovement(AuditModel):
                 f"{self} has already been written. A stock ledger is appended "
                 "to, not edited: correct it with a reversing movement."
             )
-        super().save(*args, **kwargs)
+        with transaction.atomic():
+            self._check_the_method_it_was_booked_by()
+            super().save(*args, **kwargs)
         self._keep_valuation_foldable()
+
+    def _check_the_method_it_was_booked_by(self):
+        """
+        The first movement of an item holds the item's row and reads its costing method again (the review of
+        O330). The freeze in Item.save holds the row too, so a switch and a first receipt at once take turns:
+        the switch first, and the receipt, worked out under the old method, is refused here; the receipt first,
+        and the switch finds its movement. Only the first: once a movement stands the freeze refuses any switch.
+        """
+        if type(self).objects.filter(item_id=self.item_id).exists():
+            return
+        method = Item.objects.select_for_update(no_key=True).filter(pk=self.item_id).values_list(
+            "costing_method", flat=True).first()
+        if method is not None and method != self.item.costing_method:
+            raise ValidationError(
+                f"{self.item}'s costing method changed to {method} while this movement was worked out under "
+                f"{self.item.costing_method}; post it again.")
 
     def _settle_money(self, gross):
         """

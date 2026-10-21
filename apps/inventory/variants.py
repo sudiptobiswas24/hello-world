@@ -83,7 +83,25 @@ class ItemTemplate(AuditModel):
         from .valuation import check_stock_account
 
         check_stock_account(self.inventory_account)
+        self._check_costing_frozen()
         super().save(*args, **kwargs)
+
+    def _check_costing_frozen(self):
+        """
+        The template's costing method is its variants', and each variant's is frozen under stock (O330); changed
+        here while one holds stock, the variant could no longer be saved and the product's total mixed methods.
+        """
+        if not self.pk:
+            return
+        before = type(self).objects.filter(pk=self.pk).values_list("costing_method", flat=True).first()
+        if before is None or before == self.costing_method:
+            return
+        held = list(StockMovementModel().objects.filter(item__template=self).values_list(
+            "item__sku", flat=True).distinct().order_by("item__sku")[:3])
+        if held:
+            raise ValidationError({"costing_method": (
+                f"{', '.join(held)} have stock movements counted and valued as the template stands, so its "
+                "costing method cannot change. Make a new product and move the stock to it.")})
 
     name = models.CharField(max_length=255)
     description = models.TextField(blank=True)
