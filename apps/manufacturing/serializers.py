@@ -2,6 +2,8 @@ from decimal import Decimal
 
 from rest_framework import serializers
 
+from apps.inventory.serializers import HidesStockMoney
+
 from .bom import BillOfMaterials, BomByproduct, BomComponent
 from .orders import (
     MaterialIssue,
@@ -1002,7 +1004,10 @@ class ProductionByproductSerializer(serializers.ModelSerializer):
         read_only_fields = ["unit_value", "stock_movement"]
 
 
-class ProductionEntrySerializer(serializers.ModelSerializer):
+class ProductionEntrySerializer(HidesStockMoney, serializers.ModelSerializer):
+    # What the output was booked at is what the stock is worth: the floor (a Quality Inspector) reads the
+    # quantities only (O331, decided with the review).
+    stock_money = ("posted_value", "unit_cost")
     byproducts = ProductionByproductSerializer(many=True, read_only=True)
     work_order_number = serializers.CharField(source="work_order.number", read_only=True)
     makes = serializers.SerializerMethodField()

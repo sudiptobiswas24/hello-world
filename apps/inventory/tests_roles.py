@@ -135,7 +135,7 @@ class TheFloorReadsNoStockMoneyAnywhere(RolesTestCase):
     """
 
     MONEY = {"unit_cost", "value", "value_adjustment", "total_value", "revaluation", "posted_value"}
-    ROOTS = ("/api/inventory/",)
+    ROOTS = ("/api/inventory/", "/api/manufacturing/production-entries/")
 
     def keys(self, data):
         found = set()
