@@ -299,7 +299,6 @@ missing), **minor**.
 | O306 | hr | Leave asked before a leaving date is approved after it (seen 2026-10-20, audit2_people P10; docs/handoff/reports/g23_audit2_people.md) | rule | minor |
 | O307 | hr | carry_over_limit is read by nothing; raising annual_days restates earlier years' entitlement (seen 2026-10-20, audit2_people P11; docs/handoff/reports/g23_audit2_people.md) | rule | open |
 | O309 | hr | An inactive contractor still takes workers (seen 2026-10-20, audit2_people P14; docs/handoff/reports/g23_audit2_people.md) | rule | minor |
-| O310 | hr, accounting | hr registers no period-close check: a month closes with a pay run unposted (seen 2026-10-20, audit2_people P15; docs/handoff/reports/g23_audit2_people.md) | rule | open |
 | O311 | hr | UAN and ESI numbers are served to floor roles and line managers (seen 2026-10-20, audit2_people P2; docs/handoff/reports/g23_audit2_people.md) | security | minor |
 | O312 | hr | Timesheets have no route, screen, admin or role, so hourly pay cannot be fed from the office; matters only if anyone is paid by the hour (owner to say) (seen 2026-10-20, audit2_people P13; docs/handoff/reports/g23_audit2_people.md) | rule | minor |
 | O315 | planning | A requisition turned into a draft purchase order falls out of supply (requisition_supply nets draft orders, purchase_supply counts confirmed ones), so MRP proposes the same 1,000 kg again (seen 2026-10-20, audit2_core C3; docs/handoff/reports/g23_audit2_core.md) | rule | open |

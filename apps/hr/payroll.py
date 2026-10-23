@@ -1028,6 +1028,21 @@ def _net_pay_account():
     return account
 
 
+def pay_runs_owed(period):
+    """
+    [sentence]: pay runs still to post whose pay date, the day their entry is booked on, falls in `period`, for
+    the period's close to refuse on (O310). Closed first, the June run could only be posted with a July pay date.
+    """
+    runs = list(PayRun.objects.filter(
+        status__in=[PayRunStatus.DRAFT, PayRunStatus.CALCULATED],
+        pay_date__gte=period.start_date, pay_date__lte=period.end_date).order_by("pay_date", "pk"))
+    if not runs:
+        return []
+    shown = ", ".join(f"{run.number or run.name or run.pk} ({run.get_status_display().lower()}, paid {run.pay_date})"
+                      for run in runs[:5]) + (f" and {len(runs) - 5} more" if len(runs) > 5 else "")
+    return [f"{len(runs)} pay run(s) are still to post or delete: {shown}."]
+
+
 class Payslip(AuditModel):
     employee = models.ForeignKey(Employee, on_delete=models.PROTECT, related_name="payslips")
     run = models.ForeignKey(PayRun, on_delete=models.CASCADE, related_name="payslips")

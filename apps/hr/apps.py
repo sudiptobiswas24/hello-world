@@ -40,3 +40,10 @@ class HrConfig(AppConfig):
         from .bank_file import refuse_void_under_a_returned_transfer
 
         register_void_follow_up(refuse_void_under_a_returned_transfer)
+
+        from apps.accounting.models import register_close_check
+
+        from .payroll import pay_runs_owed
+
+        # A period closes with its pay runs posted (O310).
+        register_close_check(pay_runs_owed)
