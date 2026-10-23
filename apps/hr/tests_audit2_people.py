@@ -11,7 +11,7 @@ from .payroll import EmployeeCompensation
 
 from .attendance import AttendanceDay, AttendanceStatus, import_punches
 from .expenses import ExpenseClaim
-from .models import LeaveEntitlement, LeavePolicy, LeaveRequest, LeaveStatus
+from .models import Employee, LeaveEntitlement, LeavePolicy, LeaveRequest, LeaveStatus
 from .tests_pay_outputs import OutputsTestCase
 from .tests_statutory import StatutoryTestCase
 
@@ -198,8 +198,8 @@ class WhoIsStillOnTheRoll(OutputsTestCase):
         """M9b: 5,000 salary, status terminated and no date: the June run pays nobody for them."""
         person = self.employee("E1")
         self.pay(person, self.salary, "5000")
-        self.as_role("HR Admin").patch(f"/api/hr/employees/{person.pk}/", {"employment_status": "terminated"},
-                                       format="json")
+        # The PATCH is refused now (M9); a row stored before that rule is the case left.
+        Employee.objects.filter(pk=person.pk).update(employment_status="terminated")
         run = self.pay_run()
         with self.assertRaises(ValidationError):
             run.calculate()

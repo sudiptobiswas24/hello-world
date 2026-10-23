@@ -55,7 +55,7 @@ from apps.core.models import (
 )
 
 from .calendars import working_days
-from .models import Employee, LeaveRequest, LeaveStatus, hold_the_employee
+from .models import Employee, EmploymentStatus, LeaveRequest, LeaveStatus, hold_the_employee
 from .statutory import CEILINGS, FigureKind, figure_as_of, pension_stops, refuse_if_kept
 
 
@@ -630,6 +630,12 @@ class PayRun(AuditModel):
             and (person.termination_date is None or to_date(person.termination_date) >= self.period_start)
         ]
         people += self._leavers_owing(people, among=employees)
+        undated = sorted(person.employee_number for person in people
+                         if person.employment_status == EmploymentStatus.TERMINATED and not person.termination_date)
+        if undated:
+            # O302: a row from before the rule (Employee.clean) is not paid as if employed, nor left off unsaid.
+            raise ValidationError(f"{', '.join(undated)}: terminated with no leaving date. Set the day they left "
+                                  "(terminate), and work the run out again.")
         if not people:
             raise ValidationError("Nobody is employed during this period.")
 

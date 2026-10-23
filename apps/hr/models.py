@@ -260,6 +260,11 @@ class Employee(Extensible, AuditModel):
             raise ValidationError(
                 "employment_status must be 'terminated' when a termination_date is set."
             )
+        if self.employment_status == EmploymentStatus.TERMINATED and not self.termination_date:
+            # O302: the other direction. Every run, register and approval asks the leaving date, so a status
+            # with no date kept the person employed and paid while the station stopped their PIN.
+            raise ValidationError({"termination_date": [
+                "Terminated on which day? Set the leaving date (terminate), and the status goes with it."]})
         if self.termination_date and self.termination_date < self.hire_date:
             raise ValidationError("A termination date cannot precede the hire date.")
         parse_working_days(self.working_days)
