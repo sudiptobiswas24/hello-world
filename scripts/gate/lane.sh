@@ -64,7 +64,7 @@ pg-b)
     pg_half B erp2 apps.manufacturing apps.inventory apps.hr apps.planning apps.quality apps.assets apps.imports apps.e2e apps.web
     ;;
 mig)
-    timeout 6900 env $PW .venv/bin/python manage.py test apps --tag migration --parallel 2 > "$LOGS/${P}_mig.log" 2>&1
+    timeout 6900 env $PW .venv/bin/python manage.py test apps --tag migration --parallel 4 > "$LOGS/${P}_mig.log" 2>&1
     echo "mig exit=$?"; grep -E "^Found|^Ran|^OK|^FAILED" "$LOGS/${P}_mig.log"
     ;;
 *)
