@@ -1590,7 +1590,13 @@ class Payslip(AuditModel):
         if len(employer) != 1 or len(pension) != 1 or not {
                 employer[0].component_id, pension[0].component_id} <= set(unrounded):
             return lines
-        total = employer[0].component.round(unrounded[employer[0].component_id] + unrounded[pension[0].component_id])
+        # Of the month, as each share is (O301): the month's total rounded once, less what the month's other
+        # runs took of both shares. Taken of this run's total alone, the second fortnight of 8,000 booked PF-ER
+        # 1,216 where 256 is right: 2,760 for the month's 1,800.
+        before = sum((self._month_before(line.component)[1] for line in (employer[0], pension[0])
+                      if self._a_months_figure(line.component)), Decimal("0"))
+        total = employer[0].component.round(
+            unrounded[employer[0].component_id] + unrounded[pension[0].component_id]) - before
         employer[0].amount = total - pension[0].amount
         employer[0].kept_terms = {**(employer[0].kept_terms or {}), "employer_total": f"{total:.2f}"}
         return [line for line in lines if line.amount > 0]
