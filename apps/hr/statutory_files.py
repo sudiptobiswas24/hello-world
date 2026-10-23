@@ -126,18 +126,28 @@ def _month_members(run, kind):
     members = {}
     for month_run in _month_runs(run.period_end).order_by("period_end", "pk"):
         for slip in _slips(month_run):
-            lines = _lines(slip)
-            if lines.get(kind):
-                members.setdefault(slip.employee, []).append((slip, lines))
-    return dict(sorted(members.items(), key=lambda item: item[0].employee_number))
+            members.setdefault(slip.employee, []).append((slip, _lines(slip)))
+    # Every run of the month counts in the member's row, also one that took nothing (review 2): the ceiling
+    # reached in the first fortnight, the second has no PF line, and its gross and unpaid days were left out.
+    return dict(sorted(((employee, slips) for employee, slips in members.items()
+                        if any(lines.get(kind) for _slip, lines in slips)),
+                       key=lambda item: item[0].employee_number))
+
+
+def _last_line(slips, kind):
+    return [lines[kind][0] for _slip, lines in slips if lines.get(kind)][-1]
 
 
 def _month_base(slips, kind):
-    """The month's base for `kind`: each slip's uncapped, summed, capped once at the last slip's ceiling."""
-    base, ceiling = Decimal("0"), None
+    """
+    The month's base for `kind`: each slip's uncapped, summed, capped once at the last ceiling. A slip with no
+    `kind` line is taken of what the member's last line of it was taken of.
+    """
+    base, reference = Decimal("0"), _last_line(slips, kind)
     for slip, lines in slips:
-        here, ceiling = _base_and_ceiling(slip, lines[kind][0])
+        here, _ceiling = _base_and_ceiling(slip, (lines.get(kind) or [reference])[0])
         base += here
+    ceiling = _base_and_ceiling(reference.payslip, reference)[1]
     return base if ceiling is None else min(base, ceiling)
 
 
@@ -153,8 +163,8 @@ def ecr_rows(run):
         if not employee.uan:
             unnamed.append(employee.employee_number)
             continue
-        last, last_lines = slips[-1]
-        pf = last_lines[Statutory.PF]
+        pf = [_last_line(slips, Statutory.PF)]
+        last = pf[0].payslip
         epf_wages = _month_base(slips, Statutory.PF)
         capped = min(epf_wages, pension_ceiling(pf[0]))
         born = born_as_kept(last, pf[0])
