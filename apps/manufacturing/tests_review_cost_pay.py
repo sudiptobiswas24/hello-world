@@ -119,7 +119,9 @@ class LeaverProbes(PieceworkTestCase):
         (slip,) = run.payslips.all()
         self.assertEqual(slip.lines.get(component=pf).amount, D("81.00"))
         (row,) = ecr_rows(run)
-        self.assertEqual(row["epf_wages"], 675)
+        # One row for September (O301, decided): the first fortnight's 400 (PF 48) and this slip's 675 (PF 81),
+        # never the 256.50 taken back: 1,075, PF 129 = 12% of it (calc_fix_people2/o213_month.py).
+        self.assertEqual((row["epf_wages"], row["epf"]), (1075, 129))
 
     def test_a_no_wage_slip_does_not_break_the_run_s_files_and_registers(self):
         """O31's slip has no lines; the run's register, bank advice and ECR must still read."""
