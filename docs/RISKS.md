@@ -327,6 +327,8 @@ missing), **minor**.
 | O361 | hr, accounting | A period closes with draft documents dated in it (invoices, bills, claims); pay runs and depreciation already hold it. Decided: drafts dated in the period are listed and hold the close until posted, moved or deleted (seen 2026-10-23, fix_people2's questions, decided; docs/handoff/reports/g23_fix_people2.md) | rule | open |
 | O362 | hr | A contractor's licence headcount can be set below the workers already on it (probe M15). Decided: refused in words (seen 2026-10-23, fix_people2's questions, decided; docs/handoff/reports/g23_fix_people2.md) | rule | minor |
 | O363 | accounting, all modules | A correction step not marked with takes_back (a release, a write-off reversal, anything named outside the marked list) is refused against a switched-off account until it is marked; fix_money2 marked 70 steps by name and searched no further. Mark every remaining correction path and add an audit check that a method whose entry reverses another carries the marker (seen 2026-10-23, fix_money2) | rule | open |
+| O364 | hr | A leave carry stored above a lowered carry-over limit blocks any later edit of that row, and existing over-limit rows are not repaired (seen 2026-10-23, review_people2; docs/handoff/reports/g23_review_people2.md) | rule | minor |
+| O365 | hr | The O305 refusal blames pay rows even for employees not chosen for the run; punch rows imported then corrected by hand keep source=import (seen 2026-10-23, review_people2; docs/handoff/reports/g23_review_people2.md) | rule | minor |
 
 Upgrade notes, true of data made before the 8 October fixes:
 - Landed cost allocated before the stores fix releases to cost of sales, and old inventory differences stay where they were.
