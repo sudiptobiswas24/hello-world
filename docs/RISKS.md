@@ -310,6 +310,7 @@ missing), **minor**.
 | O365 | hr | The O305 refusal blames pay rows even for employees not chosen for the run; punch rows imported then corrected by hand keep source=import (seen 2026-10-23, review_people2; docs/handoff/reports/g23_review_people2.md) | rule | minor |
 | O366 | sales, purchasing | A return after a goodwill credit of the whole invoice or bill is now refused outright, so the goods cannot come back either. Decided: the stock comes back and nothing more is credited (seen 2026-10-23, fix_trade2) | rule | open |
 | O367 | hr | ESI coverage from the monthly rate (O358) reads a piece-rate or hourly member's rate as 0, so they always count as covered. Decided: their coverage comes from the month's wages so far at each run; pay cycles not on the calendar month are not in use (seen 2026-10-23, fix_people2 round 2) | statutory | open |
+| O368 | hr | `_is_covered` in apps/hr/payroll.py sums the earlier posted lines of the deciding components whatever their kind, so a take-back counts as ESI coverage wages. Reached only when a whole-month run follows another posted run in the same month (seen 2026-10-23, fix_people2 round 3) | statutory | open |
 
 Upgrade notes, true of data made before the 8 October fixes:
 - Landed cost allocated before the stores fix releases to cost of sales, and old inventory differences stay where they were.
