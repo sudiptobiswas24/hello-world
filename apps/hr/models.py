@@ -547,6 +547,27 @@ class LeavePolicy(AuditModel):
     def __str__(self):
         return f"{self.code} - {self.name}"
 
+    def save(self, *args, **kwargs):
+        """
+        A change of the annual days does not restate the years before the one it is made in (O307): the class
+        says changing it is a policy change rather than an edit to everybody's history, and raising 12 to 15
+        turned 2026's 12 into 15 for everybody. The figure that stood is kept for the years up to last year.
+        """
+        with transaction.atomic():
+            if self.pk:
+                before = LeavePolicy.objects.select_for_update().filter(pk=self.pk).values_list(
+                    "annual_days", flat=True).first()
+                if before is not None and before != self.annual_days:
+                    last_year = timezone.localdate().year - 1
+                    if not self.years.filter(year__gte=last_year).exists():
+                        LeavePolicyYear.objects.create(policy=self, year=last_year, annual_days=before)
+            super().save(*args, **kwargs)
+
+    def annual_days_for(self, year):
+        """The annual days `year` was granted: the earliest kept figure for it or a later year, else the policy's."""
+        kept = self.years.filter(year__gte=year).order_by("year").first()
+        return kept.annual_days if kept is not None else self.annual_days
+
     def entitlement_for(self, employee, year, as_of=None):
         """
         Days this employee has earned under this policy by `as_of`.
@@ -560,7 +581,7 @@ class LeavePolicy(AuditModel):
         override = LeaveEntitlement.objects.filter(
             employee=employee, policy=self, year=year
         ).first()
-        annual = override.days if override else self.annual_days
+        annual = override.days if override else self.annual_days_for(year)
         carried = override.carried_over if override else Decimal("0")
 
         year_start = datetime.date(year, 1, 1)
@@ -588,6 +609,24 @@ class LeavePolicy(AuditModel):
                 earned = earned * Decimal(earned_months) / Decimal(months)
 
         return (earned + carried).quantize(Decimal("0.01"))
+
+
+class LeavePolicyYear(AuditModel):
+    """
+    The annual days a policy granted up to and including `year`, kept when the policy's figure changed (O307).
+    Written by LeavePolicy.save, never by hand: what a past year granted is a fact, not a setting.
+    """
+
+    policy = models.ForeignKey(LeavePolicy, on_delete=models.CASCADE, related_name="years", editable=False)
+    year = models.PositiveIntegerField(editable=False)
+    annual_days = models.DecimalField(max_digits=6, decimal_places=2, editable=False)
+
+    class Meta:
+        ordering = ["policy", "year"]
+        constraints = [models.UniqueConstraint(fields=["policy", "year"], name="one_kept_figure_a_policy_year")]
+
+    def __str__(self):
+        return f"{self.policy.code} to {self.year}: {self.annual_days}"
 
 
 class LeaveEntitlement(AuditModel):
@@ -621,6 +660,16 @@ class LeaveEntitlement(AuditModel):
 
     def __str__(self):
         return f"{self.employee} {self.policy.code} {self.year}: {self.days}"
+
+    def save(self, *args, **kwargs):
+        # The help text said "already capped by that year's policy" and nothing capped it (O307): limit 5,
+        # 10 carried in, and the year had 30 days where 25 is right.
+        limit = self.policy.carry_over_limit
+        if self.carried_over is not None and self.carried_over > limit:
+            raise ValidationError({"carried_over": [
+                f"{self.policy.code} carries at most {format(limit.normalize(), 'f')} days into a year; the rest "
+                "lapses. Enter what carries."]})
+        super().save(*args, **kwargs)
 
 
 class LeaveStatus(models.TextChoices):

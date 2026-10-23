@@ -282,7 +282,6 @@ missing), **minor**.
 | O302 | hr | An employee set to terminated with no leaving date is taken over the API and stays on every run, paid (calculate filters on dates only) (seen 2026-10-20, audit2_people P7; docs/handoff/reports/g23_audit2_people.md) | rule | open |
 | O304 | hr | A punched day corrected by hand (half day) is overwritten by the next punch import (seen 2026-10-20, audit2_people P8; docs/handoff/reports/g23_audit2_people.md) | rule | open |
 | O306 | hr | Leave asked before a leaving date is approved after it (seen 2026-10-20, audit2_people P10; docs/handoff/reports/g23_audit2_people.md) | rule | minor |
-| O307 | hr | carry_over_limit is read by nothing; raising annual_days restates earlier years' entitlement (seen 2026-10-20, audit2_people P11; docs/handoff/reports/g23_audit2_people.md) | rule | open |
 | O309 | hr | An inactive contractor still takes workers (seen 2026-10-20, audit2_people P14; docs/handoff/reports/g23_audit2_people.md) | rule | minor |
 | O311 | hr | UAN and ESI numbers are served to floor roles and line managers (seen 2026-10-20, audit2_people P2; docs/handoff/reports/g23_audit2_people.md) | security | minor |
 | O312 | hr | Timesheets have no route, screen, admin or role, so hourly pay cannot be fed from the office; matters only if anyone is paid by the hour (owner to say) (seen 2026-10-20, audit2_people P13; docs/handoff/reports/g23_audit2_people.md) | rule | minor |
