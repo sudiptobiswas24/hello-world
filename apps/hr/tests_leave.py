@@ -764,3 +764,20 @@ class WhatAPolicyChangeLeavesAloneTests(LeaveTestCase):
         self.assertEqual((self.policy.entitlement_for(person, 2025), self.policy.entitlement_for(person, 2026),
                           self.policy.entitlement_for(person, 2027)),
                          (Decimal("25.00"), Decimal("25.00"), Decimal("28.00")))
+
+
+class LeaveAskedBeforeALeavingDateTests(LeaveTestCase):
+    """O306: approval asks the employment the request was made under, as it stands when it is decided."""
+
+    def test_left_on_10_june_the_15th_to_19th_is_not_approved(self):
+        from django.core.exceptions import ValidationError
+
+        from .models import LeaveRequest, LeaveStatus
+
+        person = self.employee("D1")
+        leave = LeaveRequest.objects.create(employee=person, leave_type="vacation", start_date=datetime.date(2026, 6, 15),
+                                            end_date=datetime.date(2026, 6, 19))
+        person.terminate(datetime.date(2026, 6, 10))
+        with self.assertRaisesMessage(ValidationError, "is not employed on 2026-06-15"):
+            leave.approve(by=self.boss, as_hr=True)
+        self.assertEqual(LeaveRequest.objects.get(pk=leave.pk).status, LeaveStatus.PENDING)

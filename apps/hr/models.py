@@ -957,6 +957,9 @@ class LeaveRequest(AuditModel):
         # at once must not both find the same days left.
         lock_rows(self.employee)
         self.check_approver(by, as_hr)
+        # Asked again where it is decided (O306): leave asked for before a leaving date was set ran past it,
+        # and was approved after it, five days off for somebody gone. The check the request was made under.
+        self._check_within_employment()
         self._check_balance()
         self._check_not_worked()
         self._check_not_paid_on(self.start_date, self.end_date, "approve")
