@@ -616,3 +616,49 @@ class AMonthPaidInTwoRunsTests(StatutoryTestCase):
         first.void(on_date=datetime.date(2026, 6, 15))
         again = self.run_for(*self.FIRST)
         self.assertEqual(self.lines(again, person)["PF"], Decimal("960.00"))
+
+
+class AMonthPaidInTwoRunsWithThePensionApartTests(AMonthPaidInTwoRunsTests):
+    """
+    Review 1 (O301 with O237): PF-ER 3.67% and EPS 8.33% as components of their own. Two fortnights of 8,000:
+    PF-ER 294 + 256 and EPS 666 + 584, 1,800 for the month; the ECR's EPS 1,250 and difference 550
+    (calc_fix_people2/review1.py).
+    """
+
+    def filed(self, **pay):
+        from .payroll import Statutory
+
+        self.eps = PayComponent.objects.create(
+            code="EPS", name="EPS", kind=ComponentKind.EMPLOYER_COST, basis=self.pf_er.basis,
+            liability_account=self.pf_payable, sequence=65, expense_account=self.employer,
+            base_ceiling=Decimal("15000"), rounding=self.pf_er.rounding, statutory=Statutory.EPS, remit_by_day=15)
+        self.eps.base_components.set([self.basic, self.special])
+        person, first, second = super().filed(**pay)
+        return person, first, second
+
+    def person(self, code, **pay):
+        employee = super().person(code, **pay)
+        if hasattr(self, "eps"):
+            EmployeeCompensation.objects.filter(employee=employee, component=self.pf_er).update(amount=Decimal("3.67"))
+            self.paid(employee, self.eps, "8.33")
+        return employee
+
+    def test_pf_on_two_fortnights_of_8000_stops_at_the_months_15000(self):
+        person, first, second = self.filed(basic="8000")
+        got = [(self.lines(run, person)["PF-ER"], self.lines(run, person)["EPS"]) for run in (first, second)]
+        self.assertEqual(got, [(Decimal("294.00"), Decimal("666.00")), (Decimal("256.00"), Decimal("584.00"))])
+
+    def test_the_ecr_is_one_row_a_member_for_the_month(self):
+        from .statutory_files import ecr_rows
+
+        person, first, second = self.filed(basic="8000")
+        [row] = [row for row in ecr_rows(second) if row["name"] == "F"]
+        self.assertEqual((row["epf"], row["eps"], row["epf_diff"]), (1800, 1250, 550))
+
+    def test_a_fortnight_voided_and_worked_out_again_still_comes_to_the_months_1800(self):
+        person, first, second = self.filed(basic="8000")
+        first.void(on_date=datetime.date(2026, 6, 15))
+        again = self.run_for(*self.FIRST)
+        lines = self.lines(again, person)
+        self.assertEqual(lines["PF-ER"] + lines["EPS"] + self.lines(second, person)["PF-ER"]
+                         + self.lines(second, person)["EPS"], Decimal("1800.00"))
