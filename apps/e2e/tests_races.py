@@ -627,6 +627,27 @@ class PayrollRaceTests(RaceCase):
         run = self.run_for(*payroll_fixture.JUNE, post=False)
         self.once(race(JournalEntry, *[lambda: PayRun.objects.get(pk=run.pk).post()] * 2))
 
+    def test_two_fortnights_posted_at_once_take_the_months_pf_once(self):
+        """
+        O301: both fortnights of June at 8,000 calculated (each 960 alone) and posted at once. Each post works
+        its slips out again with the employee held, so whichever posts second finds the month's PF changed under
+        it and is refused (posted_as_calculated); worked out again it takes 840: 960 + 840 = 1,800, never 1,920.
+        """
+        import datetime
+
+        person = self.person("F", basic="8000")
+        runs = [self.run_for(datetime.date(2026, 6, 1), datetime.date(2026, 6, 15), post=False),
+                self.run_for(datetime.date(2026, 6, 16), datetime.date(2026, 6, 30), post=False)]
+        outcomes = race(JournalEntry, *[lambda run=run: PayRun.objects.get(pk=run.pk).post() for run in runs])
+        self.assertEqual(sorted(outcome.split(":")[0] for outcome in outcomes), ["done", "refused"], outcomes)
+        self.assertIn("pay has changed since this run was calculated", "".join(outcomes))
+        late = PayRun.objects.filter(pk__in=[run.pk for run in runs]).exclude(status="posted").get()
+        late.calculate()
+        late.post()
+        taken = sum((line.amount for run in runs for line in PayRun.objects.get(pk=run.pk).payslips.get(
+            employee=person).lines.all() if line.component.code == "PF"), Decimal("0"))
+        self.assertEqual(taken, Decimal("1800.00"), outcomes)
+
     def test_a_payslip_is_paid_once(self):
         slip = self.run_for(*payroll_fixture.JUNE).payslips.get(employee=self.a)
         payments = [self.payment(self.net_pay, slip.net(), self.a.party) for _ in range(2)]
