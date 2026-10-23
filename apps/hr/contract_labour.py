@@ -77,6 +77,11 @@ class ContractWorker(AuditModel):
         with transaction.atomic():
             contractor = self.contractor
             lock_rows(contractor)
+            if self._state.adding and not contractor.is_active:
+                # O309: a contractor who has stopped (licence surrendered) brings nobody new; a worker already on
+                # the register is still edited, to give the day they left.
+                raise ValidationError({"contractor": [f"{contractor} is no longer active; a new worker comes "
+                                                      "through an active contractor."]})
             if self.joined_on > contractor.licence_valid_to:
                 raise ValidationError({"joined_on": f"{contractor}'s licence ran out on "
                                                     f"{contractor.licence_valid_to:%d %b %Y}."})
