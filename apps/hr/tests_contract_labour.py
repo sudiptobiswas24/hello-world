@@ -78,3 +78,38 @@ class AStoppedContractorTests(TestCase):
         ravi.left_on = datetime.date(2026, 10, 20)
         ravi.save()
         self.assertEqual(ContractWorker.objects.get(pk=ravi.pk).left_on, datetime.date(2026, 10, 20))
+
+
+class NoWorkerJoinsAStoppedContractorTests(TestCase):
+    """Review 4 (O309): moved to a stopped contractor, or brought back under one, is refused as a new worker is."""
+
+    def test_moved_to_it_or_brought_back_under_it_is_refused(self):
+        import datetime
+        from decimal import Decimal
+
+        from django.core.exceptions import ValidationError
+
+        from apps.core.models import Party
+
+        from .contract_labour import ContractWorker, LabourContractor
+
+        def contractor(code, active=True):
+            return LabourContractor.objects.create(
+                party=Party.objects.create(code=code, name=code), licence_number=code,
+                licence_valid_to=datetime.date(2027, 3, 31), work_nature="Loading", max_workers=5, is_active=active)
+
+        working, stopped = contractor("CON1"), contractor("CON2")
+        ravi = ContractWorker.objects.create(contractor=working, name="Ravi", gender="male", daily_wage=Decimal("600"),
+                                             joined_on=datetime.date(2026, 10, 1))
+        mohan = ContractWorker.objects.create(contractor=stopped, name="Mohan", gender="male",
+                                              daily_wage=Decimal("600"), joined_on=datetime.date(2026, 10, 1),
+                                              left_on=datetime.date(2026, 10, 5))
+        stopped.is_active = False
+        stopped.save()
+        ravi.contractor = stopped
+        with self.assertRaisesMessage(ValidationError, "no longer active"):
+            ravi.save()
+        mohan.left_on = None
+        with self.assertRaisesMessage(ValidationError, "no longer active"):
+            mohan.save()
+        self.assertEqual(ContractWorker.objects.get(pk=ravi.pk).contractor, working)
