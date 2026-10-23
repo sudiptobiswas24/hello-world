@@ -715,12 +715,33 @@ class PayRun(AuditModel):
 
     # -- posting ---------------------------------------------------------
 
+    # The Payment of Wages Act's outer limit: wages are paid by the tenth day after the wage period ends.
+    PAY_WITHIN_DAYS = 10
+
+    def _check_pay_date(self):
+        """
+        The pay date the entry is booked on is near the period (O308): June 2026 with a pay date of 30 June 2062,
+        a typed year, booked wages 36 years ahead, and its void was then allowed only on that day. Never before
+        the period starts, and never later than the Act's ten days after the period, or after today when it is
+        paid late. Not correction_date: a run is rightly posted on the 8th for a pay date of the 11th, a day
+        still to come, which that rule refuses.
+        """
+        pay_date, start = to_date(self.pay_date), to_date(self.period_start)
+        latest = max(timezone.localdate(), to_date(self.period_end)) + datetime.timedelta(days=self.PAY_WITHIN_DAYS)
+        if pay_date < start:
+            raise ValidationError({"pay_date": [f"A pay date of {pay_date} is before the period starts ({start})."]})
+        if pay_date > latest:
+            raise ValidationError({"pay_date": [
+                f"A pay date of {pay_date} is past {latest}: wages are paid within {self.PAY_WITHIN_DAYS} days of "
+                "the period's end, or today if late. Is the year right?"]})
+
     @serialised("status")
     def post(self, memo=""):
         if self.status == PayRunStatus.POSTED:
             raise ValidationError("This pay run is already posted.")
         if self.status == PayRunStatus.VOIDED:
             raise ValidationError("A voided pay run cannot be posted again.")
+        self._check_pay_date()
         slips = list(self.payslips.prefetch_related("lines"))
         if not slips:
             raise ValidationError("Cannot post a pay run with no payslips.")

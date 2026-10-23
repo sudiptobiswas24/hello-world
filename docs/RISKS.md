@@ -283,7 +283,6 @@ missing), **minor**.
 | O304 | hr | A punched day corrected by hand (half day) is overwritten by the next punch import (seen 2026-10-20, audit2_people P8; docs/handoff/reports/g23_audit2_people.md) | rule | open |
 | O306 | hr | Leave asked before a leaving date is approved after it (seen 2026-10-20, audit2_people P10; docs/handoff/reports/g23_audit2_people.md) | rule | minor |
 | O307 | hr | carry_over_limit is read by nothing; raising annual_days restates earlier years' entitlement (seen 2026-10-20, audit2_people P11; docs/handoff/reports/g23_audit2_people.md) | rule | open |
-| O308 | hr | A pay run posts with a pay date 36 years ahead (no correction-date rule on pay_date) (seen 2026-10-20, audit2_people P12; docs/handoff/reports/g23_audit2_people.md) | rule | open |
 | O309 | hr | An inactive contractor still takes workers (seen 2026-10-20, audit2_people P14; docs/handoff/reports/g23_audit2_people.md) | rule | minor |
 | O310 | hr, accounting | hr registers no period-close check: a month closes with a pay run unposted (seen 2026-10-20, audit2_people P15; docs/handoff/reports/g23_audit2_people.md) | rule | open |
 | O311 | hr | UAN and ESI numbers are served to floor roles and line managers (seen 2026-10-20, audit2_people P2; docs/handoff/reports/g23_audit2_people.md) | security | minor |
