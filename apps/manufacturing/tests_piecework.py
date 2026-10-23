@@ -424,7 +424,11 @@ class ATakeBackOutsideAFinalRunTests(PieceworkTestCase):
         self.assertEqual((self.amount(slip, self.pf), self.amount(slip, self.esi), slip.gross(), slip.net(),
                           slip.recoverable),
                          (Decimal("216.00"), Decimal("14"), Decimal("1800.00"), Decimal("1170.00"), Decimal("0")))
-        self.assertEqual((ecr_rows(run)[0]["epf_wages"], esi_rows(run)[0]["wages"]), (1800, 1800))
+        # The files are one row a member a month (O301, decided): September's row holds both fortnights'
+        # earnings, 400 (PF 48, the roll voided after payday) and 1,800 (PF 216), not the 400 taken back
+        # (a deduction, R3): EPF wages 2,200, PF 264 = 12% of them; ESI 2,200 (calc_fix_people2/o213_month.py).
+        row = ecr_rows(run)[0]
+        self.assertEqual((row["epf_wages"], row["epf"], esi_rows(run)[0]["wages"]), (2200, 264, 2200))
         # Taken back from the wages it was charged to: 400 + 1,800 - 400.
         self.assertEqual(self.wages(), Decimal("1800.00"))
 
