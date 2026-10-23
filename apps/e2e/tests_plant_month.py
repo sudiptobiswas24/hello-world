@@ -438,7 +438,7 @@ class Month:
                                    TotInvVal=float(invoice["total"]))})
         eway = self.post(officer, "/api/gst/eway-bills/", {"invoice": invoice["id"], "vehicle_number": vehicle})
         self.post(officer, f"/api/gst/eway-bills/{eway['id']}/record/", {
-            "number": f"3310000000{invoice['id']:02d}", "generated_at": f"{invoice['invoice_date']}T10:00:00+05:30"})
+            "number": f"33{invoice['id']:010d}", "generated_at": f"{invoice['invoice_date']}T10:00:00+05:30"})
 
     def sell_to_hooghly(self):
         with on(OCT(10)):
