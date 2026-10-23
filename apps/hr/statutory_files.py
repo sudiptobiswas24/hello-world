@@ -1,7 +1,7 @@
 """
 The two files the payroll month ends with: EPFO's ECR (electronic
-challan-cum-return) and ESIC's monthly contribution file, each from a
-posted pay run, one line a member.
+challan-cum-return) and ESIC's monthly contribution file, each for the
+month of a posted pay run, one line a member a month over all its posted runs.
 
 Everything in them is read off the posted payslip lines, never worked
 out again: a component says which statutory line it is (`statutory`),
@@ -62,6 +62,12 @@ def _lines(slip):
 
 def wage_base(slip, line):
     """What a percentage line was taken of, from the slip's own lines, capped as its component caps it."""
+    base, ceiling = _base_and_ceiling(slip, line)
+    return base if ceiling is None else min(base, ceiling)
+
+
+def _base_and_ceiling(slip, line):
+    """(the slip's base for `line`, uncapped; the ceiling its component capped it at, or None)."""
     component = line.component
     # The list as it stood for the month (R7); a slip from before it was kept reads it now.
     named = (line.kept_base if slip.kept_paid_days is not None and line.kept_base is not None
@@ -79,9 +85,7 @@ def wage_base(slip, line):
     # The ceiling as it stood when the slip was worked out (O6); a slip from
     # before it was kept reads the component's.
     ceiling = line.base_ceiling if slip.kept_paid_days is not None else component.base_ceiling
-    if ceiling is not None:
-        base = min(base, ceiling)
-    return base
+    return base, ceiling
 
 
 def pension_ceiling(line):
@@ -113,39 +117,65 @@ def _slips(run):
         "lines__component__base_components").order_by("employee__employee_number")
 
 
+def _month_members(run, kind):
+    """
+    {employee: [(slip, lines by kind)]} for every member with a `kind` line on a posted run of `run`'s month,
+    in employee-number order: each file is one row a member a month (O301, decided), whatever number of runs
+    paid the month. Two fortnights of June filed a member twice, each at its own run's wages.
+    """
+    members = {}
+    for month_run in _month_runs(run.period_end).order_by("period_end", "pk"):
+        for slip in _slips(month_run):
+            lines = _lines(slip)
+            if lines.get(kind):
+                members.setdefault(slip.employee, []).append((slip, lines))
+    return dict(sorted(members.items(), key=lambda item: item[0].employee_number))
+
+
+def _month_base(slips, kind):
+    """The month's base for `kind`: each slip's uncapped, summed, capped once at the last slip's ceiling."""
+    base, ceiling = Decimal("0"), None
+    for slip, lines in slips:
+        here, ceiling = _base_and_ceiling(slip, lines[kind][0])
+        base += here
+    return base if ceiling is None else min(base, ceiling)
+
+
+def _total(slips, kind):
+    return sum((line.amount for _slip, lines in slips for line in lines.get(kind, [])), Decimal("0"))
+
+
 def ecr_rows(run):
-    """[{uan, name, gross, epf_wages, eps_wages, edli_wages, epf, eps, epf_diff, ncp_days, refund}] for every member with a PF line."""
+    """[{uan, name, gross, epf_wages, eps_wages, edli_wages, epf, eps, epf_diff, ncp_days, refund}] a member a month."""
     _posted(run)
     rows, unnamed, undated = [], [], []
-    for slip in _slips(run):
-        lines = _lines(slip)
-        pf = lines.get(Statutory.PF)
-        if not pf:
+    for employee, slips in _month_members(run, Statutory.PF).items():
+        if not employee.uan:
+            unnamed.append(employee.employee_number)
             continue
-        if not slip.employee.uan:
-            unnamed.append(slip.employee.employee_number)
-            continue
-        epf_wages = wage_base(slip, pf[0])
+        last, last_lines = slips[-1]
+        pf = last_lines[Statutory.PF]
+        epf_wages = _month_base(slips, Statutory.PF)
         capped = min(epf_wages, pension_ceiling(pf[0]))
-        born = born_as_kept(slip, pf[0])
+        born = born_as_kept(last, pf[0])
         if born is None:
-            undated.append(slip.employee.employee_number)
+            undated.append(employee.employee_number)
             continue
         # From the month after the member turns 58, no pension: the whole employer share is EPF's.
-        eps_wages = Decimal("0") if pension_stops(born, run.period_end) else capped
-        employer = sum((line.amount for line in lines.get(Statutory.PF_EMPLOYER, [])), Decimal("0"))
-        named_eps = lines.get(Statutory.EPS)
-        if named_eps:
-            eps = sum((line.amount for line in named_eps), Decimal("0"))
+        eps_wages = Decimal("0") if pension_stops(born, last.run.period_end) else capped
+        employer = _total(slips, Statutory.PF_EMPLOYER)
+        if any(lines.get(Statutory.EPS) for _slip, lines in slips):
+            eps = _total(slips, Statutory.EPS)
             epf_diff = employer
         else:
             eps = (eps_wages * EPS_RATE / 100).quantize(RUPEE, rounding=ROUND_HALF_UP)
             epf_diff = employer - eps
-        _paid, ncp = slip.kept_days()
+        ncp = sum((slip.kept_days()[1] for slip, _lines in slips), Decimal("0"))
         rows.append({
-            "uan": slip.employee.uan, "name": slip.employee.party.name,
-            "gross": _rupees(slip.gross()), "epf_wages": _rupees(epf_wages), "eps_wages": _rupees(eps_wages),
-            "edli_wages": _rupees(capped), "epf": _rupees(sum((line.amount for line in pf), Decimal("0"))),
+            "uan": employee.uan, "name": employee.party.name,
+            "gross": _rupees(sum((slip.gross() for slip, _lines in slips), Decimal("0"))),
+            "epf_wages": _rupees(epf_wages), "eps_wages": _rupees(eps_wages),
+            "edli_wages": _rupees(capped), "epf": _rupees(_total(slips, Statutory.PF)),
             "eps": _rupees(eps), "epf_diff": _rupees(epf_diff), "ncp_days": _days(ncp), "refund": 0,
         })
     if unnamed:
@@ -175,24 +205,22 @@ ESI_HEADINGS = [
 
 
 def esi_rows(run):
-    """[{ip, name, days, wages, reason, last_day}] for every insured person with an ESI line."""
+    """[{ip, name, days, wages, reason, last_day}] an insured person a month, over the month's posted runs."""
     _posted(run)
     rows, unnamed = [], []
-    for slip in _slips(run):
-        lines = _lines(slip)
-        esi = lines.get(Statutory.ESI)
-        if not esi:
+    first = run.period_end.replace(day=1)
+    following = (first + datetime.timedelta(days=32)).replace(day=1)
+    for employee, slips in _month_members(run, Statutory.ESI).items():
+        if not employee.esi_number:
+            unnamed.append(employee.employee_number)
             continue
-        if not slip.employee.esi_number:
-            unnamed.append(slip.employee.employee_number)
-            continue
-        days, _ncp = slip.kept_days()
-        left = slip.employee.termination_date
+        days = sum((slip.kept_days()[0] for slip, _lines in slips), Decimal("0"))
+        left = employee.termination_date
         rows.append({
-            "ip": slip.employee.esi_number, "name": slip.employee.party.name,
-            "days": max(_days(days), 0), "wages": _rupees(wage_base(slip, esi[0])),
+            "ip": employee.esi_number, "name": employee.party.name,
+            "days": max(_days(days), 0), "wages": _rupees(_month_base(slips, Statutory.ESI)),
             "reason": 0,
-            "last_day": left.strftime("%d/%m/%Y") if left and run.period_start <= left <= run.period_end else "",
+            "last_day": left.strftime("%d/%m/%Y") if left and first <= left < following else "",
         })
     if unnamed:
         raise ValidationError(f"No ESI number on {', '.join(unnamed)}: the contribution file names a "
