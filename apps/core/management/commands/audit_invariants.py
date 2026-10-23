@@ -1037,6 +1037,8 @@ class Command(BaseCommand):
         "inventory/models.py:Item.cost_of_removing": "the costing helper itself; its callers ask",
         "manufacturing/orders.py:MaterialIssueLine.post": "MaterialIssue.post asks it, its run the holder",
         "sales/models.py:Delivery.post": "its batches come from plan_issue, which asks the promise (O340)",
+        "inventory/models.py:StockMovement._settle_money": "settles the money of a movement its door has already "
+                                                           "decided to write, inside StockMovement.save; the doors ask (O326)",
     }
 
     def named_draws_past_the_promise(self, labels, sources):

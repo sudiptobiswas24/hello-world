@@ -143,19 +143,24 @@ class AdjustmentReason(AuditModel):
         if refusal:
             raise ValidationError({"account": refusal})
 
-    def clean(self):
-        # The admin's form asks here, so a control account is a field error there, not a 500 (the review).
-        super().clean()
-        if self.account_id:
-            self.check_account()
-
-    def save(self, *args, **kwargs):
-        # Asked when the account is chosen or changed: a reason left on a control account from before the rule
-        # can still be renamed or retired, and posting asks again, so it books nothing (the review).
+    def check_account_if_chosen(self):
+        """
+        Asked when the account is chosen or changed: a reason left on a control account from before the rule
+        can still be renamed or retired, and posting asks again, so it books nothing (the review). The admin's
+        form and save() ask the one question, so neither is stricter than the other.
+        """
         before = type(self).objects.filter(pk=self.pk).values_list("account_id", flat=True).first() \
             if self.pk else None
-        if before is None or before != self.account_id:
+        if self.account_id and (before is None or before != self.account_id):
             self.check_account()
+
+    def clean(self):
+        # The admin's form asks here, so a control account is a field error there, not a 500 (the review).
+        # Nothing above this class defines clean(); Model.clean() is empty.
+        self.check_account_if_chosen()
+
+    def save(self, *args, **kwargs):
+        self.check_account_if_chosen()
         super().save(*args, **kwargs)
 
     def permits(self, quantity):
