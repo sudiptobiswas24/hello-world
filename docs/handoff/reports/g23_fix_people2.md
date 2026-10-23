@@ -93,3 +93,41 @@ Calc scripts: /home/user/work/calc_fix_people2/o301.py.
 - apps/hr/statutory_files.py: ECR/ESI are now the month's, built from whichever posted runs exist; downloading the
   file from the first fortnight before the second is posted gives a part month. Kind: workflow; the file could say
   which runs it holds, or refuse while a run of the month is unposted. Owner.
+
+# Round 2: the review (/home/user/work/reports/review_people2.md, probes 07a10a3 cherry-picked)
+
+Figures: /home/user/work/calc_fix_people2/review1.py (plain Python).
+
+## Commits
+- 688a3d6 O301: employer PF total is the month's less what its other runs took of both shares (review 1, BLOCKS).
+  PF-ER 3.67% + EPS 8.33% apart, fortnights of 8,000: PF-ER 294 + 256, EPS 666 + 584 = 1,800; ECR eps 1,250, diff 550.
+  Both configurations tested: AMonthPaidInTwoRunsTests (one 12%) and AMonthPaidInTwoRunsWithThePensionApartTests (void
+  and redo included). Failed without: `(Decimal('1216.00'), Decimal('584.00'))` for `(256, 584)`; `(1800, 1250, 1510) != (1800, 1250, 550)`.
+- 0310baa O301: every run of the month counts in the member's ECR/ESI row, one with no line included (review 2, BLOCKS).
+  15,000 then 4,000: ECR gross 19,000, EPF wages 15,000, PF 1,800. Failed without: `(15000, 15000, 1800) != (19000, 15000, 1800)`.
+- 4dbcda3 O308: a late run's pay date ends at today (review 3). latest = max(end + 10, today). Failed without:
+  `ValidationError not raised` (June posted 23 October for 2 November).
+- 170702a O308: tests_payroll VoidingTests' fixture posted last month's run for today + 3, late under review 3 from the
+  11th of any month, so the calendar decided it (failed on 23 October). Its period now ends yesterday. Test-only.
+- 73ce631 O309: no worker joins a stopped contractor by an edit either (review 4): a move to it, a leaver brought back.
+  Failed without: `ValidationError not raised`.
+- eb6177e O358: ESI coverage of a month paid in runs shorter than itself is decided from the monthly rate at its first
+  run: fixed period amounts of the deciding components on that run's first day employed x month days / run days.
+  Fortnights of 8,000 = 16,000 (ESI 60, 60 again after a void and redo); 12,000 = 24,000 (neither covered). A whole-month
+  run is decided by its wages as before. Failed without: `(Decimal('90.00'), None) != (None, None)`.
+  The O358 row is not in my base (03873b6): the integrator takes it off, or registercheck will see its id in a subject.
+
+## Runs
+- fastsettings, --parallel 1: apps.hr.tests_statutory, tests_statutory_files, tests_review_cost, tests_review_people,
+  tests_payroll, tests_pay_outputs, the audit2 plant month, tests_contract_labour: OK after the fixture fix.
+- PostgreSQL PayrollRaceTests (5, the O301 race included): OK. makemigrations --check: No changes detected.
+  audit_invariants: the same 2 inventory findings as round 1, none in hr.
+
+## Left, for the owner or adviser
+- O358 for a run period not aligned to the calendar month (say 26 May to 25 June) is treated as part of a month and
+  scaled by days; a plant on such cycles should say whether that is meant.
+- Rate-based coverage reads only fixed earnings; a piece-rate or hourly member of a fortnightly plant has a rate of 0
+  under it (covered). Adviser.
+- Review 5 (O307 rows above a lowered limit refused on any later save, no repair), 6 (posted-as-calculated refusal of the
+  second fortnight needs words on the screen), 7 (toast wording for a subset run), 8 (O304 rows imported before release
+  overwritten once), 9 (Controller reads UAN; `?missing=uan` yes/no): not in this brief, not done.
