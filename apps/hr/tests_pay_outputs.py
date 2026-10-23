@@ -545,3 +545,41 @@ class WhoARunLeftOffTests(OutputsTestCase):
         self.assertEqual(said.status_code, 200, said.content)
         self.assertEqual([row["employee_number"] for row in said.json()["skipped"]], ["ZED9"])
         self.assertEqual(run.skipped(), [forgotten])
+
+
+class APayDateNearItsPeriodTests(OutputsTestCase):
+    """O308: a run is posted for a pay date from its period's start to ten days after its end (or today, if late)."""
+
+    def posted(self, pay_date):
+        person = self.employee("E1")
+        self.pay(person, self.salary, "5000")
+        run = self.pay_run(pay_date=pay_date)
+        run.calculate()
+        return run
+
+    def test_a_typed_year_is_refused(self):
+        run = self.posted(datetime.date(2062, 6, 30))
+        with self.assertRaisesMessage(ValidationError, "Is the year right?"):
+            run.post()
+
+    def test_a_day_before_the_period_is_refused(self):
+        run = self.posted(datetime.date(2026, 5, 31))
+        with self.assertRaisesMessage(ValidationError, "before the period starts"):
+            run.post()
+
+    def test_posted_on_the_last_day_the_tenth_day_after_is_taken_and_the_eleventh_is_not(self):
+        from unittest import mock
+
+        with mock.patch("apps.hr.payroll.timezone.localdate", return_value=datetime.date(2026, 6, 30)):
+            run = self.posted(datetime.date(2026, 7, 11))
+            with self.assertRaisesMessage(ValidationError, "past 2026-07-10"):
+                run.post()
+            run.pay_date = datetime.date(2026, 7, 10)
+            run.save()
+            run.post()
+        self.assertEqual(run.status, "posted")
+
+    def test_paid_late_today_is_taken(self):
+        run = self.posted(timezone.localdate())
+        run.post()
+        self.assertEqual(run.status, "posted")
