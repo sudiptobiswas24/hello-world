@@ -371,14 +371,16 @@ def refuse_a_note_off_its_original(document, original, account, date, refused, s
 
 def refuse_giving_back_past_the_document(document, original, corrects, on):
     """
-    A note holding a line that names no line of its original (a goodwill
-    credit typed in) gives back, all its lines together, no more than is
-    left of the original: its lines' booked net less every posted note's
-    on it (O298). A typed line of 5,000 posted against an invoice of 1,000
-    and took the receivable to -4,000. A note whose every line names one is
-    held line by line (refuse_correcting_past_what_it_holds), to the paisa.
-    Asked as the note posts, under its original's lock; as each line is
-    saved, refuse_a_line_past_the_document counts the drafts waiting too.
+    Every note, whatever made it, gives back, all its lines together, no
+    more than is left of its original: the original's booked net less every
+    posted note's on it (O298). A typed line of 5,000 posted against an
+    invoice of 1,000 and took the receivable to -4,000; and asked only of a
+    note with a typed line, a goodwill credit of the whole 1,000 and then a
+    return's credit of the goods both posted, the receivable at -1,000 (the
+    review of O298). Asked as the note posts, under its original's lock. A
+    goods line is also held line by line (refuse_correcting_past_what_it_holds),
+    to the paisa; as each line is saved, refuse_a_line_past_the_document asks
+    a note with a typed line, drafts waiting counted.
     """
     if not getattr(document, f"{original}_id"):
         return
@@ -399,7 +401,8 @@ def refuse_a_line_past_the_document(line, document, original, corrects, on):
 def _refuse_past_the_document(document, original, mine, lines, corrects, on, waiting):
     from apps.core.api import plain
 
-    if all(getattr(row, f"{corrects}_id") for row in mine):
+    if waiting and all(getattr(row, f"{corrects}_id") for row in mine):
+        # At save a goods line is held line by line, drafts waiting counted; posting asks the whole.
         return
     held = getattr(document, original)
     others = lines.filter(**{f"{on}__{original}": held}).exclude(**{on: document})
