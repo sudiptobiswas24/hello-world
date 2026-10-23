@@ -44,6 +44,8 @@ from apps.core.models import AuditModel, DocumentSequence, lock_rows, serialised
 MINUTES_PER_HOUR = Decimal("60")
 
 
+from apps.core.models import takes_back  # noqa: E402  (O354: a correction step)
+
 class Shift(AuditModel):
     """
     One named slot in the plant's day.
@@ -325,6 +327,7 @@ class Downtime(AuditModel):
         )
 
     @serialised("voided_at")
+    @takes_back
     def void(self, reason, by=None):
         """A stoppage booked wrong: kept, and no longer counted."""
         if self.voided_at is not None:

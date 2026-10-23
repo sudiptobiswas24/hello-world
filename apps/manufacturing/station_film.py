@@ -25,6 +25,8 @@ from apps.core.models import AuditModel
 from .station_scale import TYPED_REASONS
 
 
+from apps.core.models import takes_back  # noqa: E402  (O354: a correction step)
+
 class FilmRoll(AuditModel):
     station = models.ForeignKey("manufacturing.LoomStation", on_delete=models.PROTECT,
                                 related_name="film_rolls")
@@ -138,6 +140,7 @@ def record_film(station, operator, machine, gross_kg, core_type, metres, micron_
 
 
 @transaction.atomic
+@takes_back
 def void_film(roll, station, supervisor, operator, reason):
     from .process_rolls import RollMount
     from .station_gauge import void_gauged

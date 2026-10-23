@@ -24,6 +24,8 @@ from apps.accounting.tds import deduction_terms, financial_year
 from apps.core.models import AuditModel, Company, correction_date, lock_rows, serialised, to_date
 
 
+from apps.core.models import takes_back  # noqa: E402  (O354: a correction step)
+
 def taxable_net(bill):
     """The bill's taxable value, less its posted debit notes'."""
     return bill.subtotal() - sum(
@@ -94,6 +96,7 @@ class TdsDeduction(AuditModel):
         super().save(*args, **kwargs)
 
     @serialised("reversed_entry", "challan")
+    @takes_back
     def reverse(self, on_date=None):
         """
         Take a deduction back: made under the wrong section, or the bill
@@ -292,6 +295,7 @@ class TdsChallan(AuditModel):
                 challan_number=challan_number, bsr_code=bsr_code, amount=total, journal_entry=entry))
 
     @serialised("voided_entry")
+    @takes_back
     def void(self, on_date=None):
         """The payment did not go through: the tax is owed again, and its deductions wait for another."""
         from apps.accounting.challans import void_challan

@@ -51,6 +51,8 @@ INPUTS_DAYS = 365
 CAPITAL_GOODS_DAYS = 3 * 365
 
 
+from apps.core.models import takes_back  # noqa: E402  (O354: a correction step)
+
 def _refuse_closed(on_date, doing):
     """What ITC-04 reports, issued or withdrawn, asks the period as an entry would."""
     from apps.accounting.models import AccountingPeriod
@@ -179,6 +181,7 @@ class JobWorkChallan(AuditModel):
         ])
 
     @serialised("posted", "voided_at")
+    @takes_back
     def void(self):
         """
         Withdraw a challan issued in error. Only while what is still out
@@ -327,6 +330,7 @@ class JobWorkLoss(AuditModel):
         raise ValidationError("A recorded loss is a fact; void it rather than delete it.")
 
     @serialised("voided_at")
+    @takes_back
     def void(self):
         """Withdraw a loss recorded in error; the goods count as still out again."""
         if self.voided_at is not None:

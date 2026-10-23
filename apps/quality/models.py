@@ -61,6 +61,8 @@ from apps.core.models import (
 from apps.inventory.models import Item, Lot
 
 
+from apps.core.models import takes_back  # noqa: E402  (O354: a correction step)
+
 class QualitySettings(AuditModel):
     """
     The one thing about quality that is a policy rather than a rule.
@@ -1124,6 +1126,7 @@ class Inspection(AuditModel):
         return [self.lot]
 
     @serialised("posted", "voided_at", "disposition", held_first="held_for_void")
+    @takes_back
     def void(self, reason="", by=None):
         """
         Undo a posting.

@@ -49,6 +49,8 @@ GRAMMES_PER_KG = Decimal("1000")
 CM_PER_M = Decimal("100")
 
 
+from apps.core.models import takes_back  # noqa: E402  (O354: a correction step)
+
 class RollKind(models.TextChoices):
     COATED = "coated", "Laminated (coated)"
     BOPP = "bopp", "BOPP laminated"
@@ -425,6 +427,7 @@ def off_rolls(mount):
 
 
 @transaction.atomic
+@takes_back
 def void_mount(mount, station, supervisor, operator, reason):
     """Mounted wrongly: the issue goes back, while nothing was made from it."""
     from .station import check_supervisor
@@ -449,6 +452,7 @@ def void_mount(mount, station, supervisor, operator, reason):
 
 
 @transaction.atomic
+@takes_back
 def void_roll(roll, station, supervisor, operator, reason):
     from .station import check_supervisor
 

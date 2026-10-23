@@ -47,6 +47,8 @@ HUNDRED = Decimal("100")
 PER_UNIT = Decimal("0.000001")
 
 
+from apps.core.models import takes_back  # noqa: E402  (O354: a correction step)
+
 class PriceIndex(AuditModel):
     code = models.CharField(max_length=32, unique=True)
     name = models.CharField(max_length=255)
@@ -167,6 +169,7 @@ class PriceVariationBill(AuditModel):
         return sum((line.amount for line in self.lines.all()), ZERO)
 
     @serialised("cancelled_at", "invoice", "credit_note")
+    @takes_back
     def cancel(self):
         """Only while its documents are drafts; frees its deliveries."""
         if self.cancelled_at is not None:

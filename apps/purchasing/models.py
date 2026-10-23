@@ -116,6 +116,8 @@ from apps.inventory.valuation import (
 from .pricing import preferred_vendor, resolve_lead_time, resolve_purchase_price
 
 
+from apps.core.models import takes_back  # noqa: E402  (O354: a correction step)
+
 def _require_employee_role(party):
     if party and not party.role_assignments.filter(role=PartyRole.EMPLOYEE).exists():
         raise ValidationError(f"{party} does not have the Employee role.")
@@ -393,6 +395,7 @@ class RequestForQuotation(AuditModel):
         self.save(update_fields=["number", "status", "updated_at"])
 
     @serialised("status")
+    @takes_back
     def cancel(self):
         if self.status == RfqStatus.AWARDED:
             raise ValidationError("This RFQ has been awarded; cancel the purchase order.")
@@ -830,6 +833,7 @@ class PurchaseRequisition(AuditModel):
             f"{self} is called off by {self.requested_by}, who asked for it, or by whoever decides requisitions.")
 
     @serialised("status")
+    @takes_back
     def cancel(self, by=None, may_decide=False):
         """Call the request off, as `by` (check_canceller)."""
         self.check_canceller(by, may_decide)
@@ -2092,6 +2096,7 @@ class PurchaseOrder(Extensible, TaxedDocumentMixin, ChangesWithinItsApproval, Ap
         self.save(update_fields=["number", "status", "updated_at"])
 
     @serialised("status")
+    @takes_back
     def cancel(self):
         if self.status == OrderStatus.CANCELLED:
             raise ValidationError("This order is already cancelled.")
@@ -3853,6 +3858,7 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         offset = min(self.amount_debited() - spent, max(self.total() - paid, Decimal("0")))
         return self.total() - paid - offset
 
+    @takes_back
     def _undo_settlements_without_money(self):
         """
         Past what it clears of its bill, a debit note undoes the settlement
@@ -4294,6 +4300,7 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         return entry
 
     @serialised("posted", held_first=True)
+    @takes_back(when=lambda self: self.is_debit_note())
     def post(self, memo=None, apply_prepayments=True):
         if self.posted:
             raise ValidationError("This bill is already posted.")
@@ -4775,6 +4782,7 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         return all(debited.get(line.pk) == line.quantity for line in original_lines)
 
     @serialised("posted", held_first=True)
+    @takes_back
     def create_debit_note(self, memo="", quantities=None, accruals=None, amount=None,
                           supplier_note_number="", supplier_note_date=None, on_date=None, post=True):
         """
@@ -4882,6 +4890,7 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             note.tcs_amount = share
             note.save()
 
+    @takes_back
     def debit_old_supply(self, lines, memo="", on_date=None, old_value=None,
                          supplier_note_number="", supplier_note_date=None):
         """
@@ -6355,6 +6364,7 @@ def vendor_balance(vendor):
     return owed - refundable - paid_out + received
 
 
+@takes_back
 def undo_what_it_settled(payment, on_date):
     """
     Our payment returned (Payment.void asks), on the void's day: the exchange difference each
@@ -6913,6 +6923,7 @@ class GoodsReceipt(AuditModel):
         return authors(self, "lines") | ({self.posted_by_id} if self.posted_by_id else set())
 
     @serialised("posted", held_first=True)
+    @takes_back(when=lambda self: self.is_return())
     def post(self, by=None):
         if self.posted:
             raise ValidationError("This goods receipt is already posted.")
@@ -8033,6 +8044,7 @@ class GoodsReceipt(AuditModel):
         return orders + [SalesOrder(pk=pk) for pk in sold]
 
     @serialised("posted", held_first="locked_before_returning")
+    @takes_back
     def create_return(self, quantities=None, debit_bills=True, from_inspection=False, post_notes=True,
                       on_date=None):
         """

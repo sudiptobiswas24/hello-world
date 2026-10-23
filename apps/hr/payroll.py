@@ -59,6 +59,8 @@ from .models import Employee, LeaveRequest, LeaveStatus, hold_the_employee
 from .statutory import CEILINGS, FigureKind, figure_as_of, pension_stops, refuse_if_kept
 
 
+from apps.core.models import takes_back  # noqa: E402  (O354: a correction step)
+
 class ComponentKind(models.TextChoices):
     EARNING = "earning", "Earning"
     DEDUCTION = "deduction", "Employee deduction"
@@ -859,6 +861,7 @@ class PayRun(AuditModel):
             )
 
     @serialised("status", "voided_entry")
+    @takes_back
     def void(self, on_date=None, memo=""):
         """
         Reverse a posted run.

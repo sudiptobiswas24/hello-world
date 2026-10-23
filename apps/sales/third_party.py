@@ -51,6 +51,8 @@ from apps.core.models import AuditModel, DocumentSequence, serialised, to_date
 ZERO = Decimal("0")
 
 
+from apps.core.models import takes_back  # noqa: E402  (O354: a correction step)
+
 def _q(value):
     return format(Decimal(value).normalize(), "f")
 
@@ -149,6 +151,7 @@ class ThirdPartyRelease(AuditModel):
         self._write(["number", "their_reference", "inspected_on", "posted", "posted_at"])
 
     @serialised("posted", "voided_at")
+    @takes_back
     def void(self, reason):
         from apps.inventory.models import Lot
 

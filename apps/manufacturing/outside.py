@@ -44,6 +44,8 @@ from apps.core.models import AuditModel, DocumentSequence, correction_date, seri
 from .orders import VoidedNotDeleted
 
 
+from apps.core.models import takes_back  # noqa: E402  (O354: a correction step)
+
 class OutsideMovement(VoidedNotDeleted, AuditModel):
     """
     Work coming back from a vendor against an outside step — or going
@@ -214,6 +216,7 @@ class OutsideMovement(VoidedNotDeleted, AuditModel):
         return self.journal_entry
 
     @serialised("posted", "voided_at")
+    @takes_back
     def void(self, on_date=None, memo=""):
         """
         Undo a movement entered in error. Written in the same sitting as

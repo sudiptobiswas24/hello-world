@@ -36,6 +36,8 @@ from django.utils import timezone
 ZERO = Decimal("0")
 
 
+from apps.core.models import takes_back  # noqa: E402  (O354: a correction step)
+
 def _number(value, what, places=None):
     """
     A positive number typed at a station. With `places`, what the field it
@@ -225,6 +227,7 @@ def waste_variance(order):
 
 
 @transaction.atomic
+@takes_back
 def void_waste(entry, station, supervisor, operator, reason):
     if entry.warehouse_id != station.warehouse_id or entry.quantity_produced != 0 or \
             entry.quantity_scrapped != 0 or not entry.machine_id or \
@@ -243,6 +246,7 @@ def _supervised(station, supervisor, operator):
 
 
 @transaction.atomic
+@takes_back
 def void_stoppage(stoppage, station, supervisor, operator, reason):
     if stoppage.station_id != station.pk:
         raise ValidationError(f"{stoppage} was not booked at {station}.")
@@ -251,6 +255,7 @@ def void_stoppage(stoppage, station, supervisor, operator, reason):
 
 
 @transaction.atomic
+@takes_back
 def void_count(counted, station, supervisor, operator, reason):
     if counted.machine_id is None or not station.machines.filter(
             pk=counted.machine_id).exists():
@@ -260,6 +265,7 @@ def void_count(counted, station, supervisor, operator, reason):
 
 
 @transaction.atomic
+@takes_back
 def void_scrap(entry, station, supervisor, operator, reason):
     if entry.warehouse_id != station.warehouse_id or entry.quantity_produced != 0 or \
             entry.quantity_scrapped <= 0 or not entry.machine_id or \

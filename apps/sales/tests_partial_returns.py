@@ -258,3 +258,41 @@ class WhoMayCreditByReturningTests(RolesTestCase, SalesTestCase):
         (two,) = self.take_back(hand, second)
         credited = sorted(Invoice.objects.get(pk=note["id"]).credits_id for note in (one, two))
         self.assertEqual(credited, sorted([a.pk, b.pk]))
+
+
+class AReturnTakesBackWhatASwitchedOffAccountHoldsTests(SalesTestCase):
+    """O354: a return is a correction; goods shipped go on coming back after their accounts are switched off."""
+
+    def setUp(self):
+        super().setUp()
+        self.order = self.make_order("50", "25")
+        self.shipment = self.ship(self.order, "50")
+        self.invoice = self.bill(self.order)
+
+    def test_a_return_with_cogs_and_inventory_switched_off_posts(self):
+        for account in (self.cogs, self.inventory):
+            account.is_active = False
+            account.save()
+        back = self.shipment.create_return()
+        self.assertTrue(back.posted)
+
+    def test_a_credit_note_with_revenue_switched_off_posts(self):
+        self.revenue.is_active = False
+        self.revenue.save()
+        self.assertTrue(self.invoice.create_credit_note().posted)
+
+    def test_a_new_invoice_to_a_switched_off_receivable_is_refused(self):
+        from django.core.exceptions import ValidationError
+
+        self.ar.is_active = False
+        self.ar.save()
+        with self.assertRaisesMessage(ValidationError, "is switched off; it takes nothing new"):
+            self.bill(self.make_order("5", "25"))
+
+    def test_a_new_delivery_with_inventory_switched_off_is_refused(self):
+        from django.core.exceptions import ValidationError
+
+        self.inventory.is_active = False
+        self.inventory.save()
+        with self.assertRaisesMessage(ValidationError, "is switched off; it takes nothing new"):
+            self.ship(self.make_order("5", "25"), "5")

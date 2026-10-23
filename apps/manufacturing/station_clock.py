@@ -37,6 +37,8 @@ from apps.core.models import AuditModel, lock_rows
 LEFT_RUNNING = datetime.timedelta(hours=24)
 
 
+from apps.core.models import takes_back  # noqa: E402  (O354: a correction step)
+
 class MachineClock(AuditModel):
     station = models.ForeignKey("manufacturing.LoomStation", on_delete=models.PROTECT,
                                 related_name="clocks")
@@ -162,6 +164,7 @@ def stop_clock(station, operator, machine, quantity=None, supervisor=None, at=No
 
 
 @transaction.atomic
+@takes_back
 def void_clock(clock, station, supervisor, operator, reason):
     from .station import check_supervisor
 

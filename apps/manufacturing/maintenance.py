@@ -72,6 +72,8 @@ CENTS = Decimal("0.01")
 SPARE_ISSUE = "maintenance spare issue"
 
 
+from apps.core.models import takes_back  # noqa: E402  (O354: a correction step)
+
 class MaintenanceSchedule(AuditModel):
     """How often a machine needs attention, and for how long."""
 
@@ -407,6 +409,7 @@ class MaintenanceJob(AuditModel):
             self._saving_state = False
 
     @serialised("cancelled_at", "done_on")
+    @takes_back
     def cancel(self, reason):
         """Raised in error, or no longer wanted: off the board, and kept."""
         if self.cancelled_at is not None:
@@ -789,6 +792,7 @@ def issue_spares(job, warehouse, lines, on_date=None, issued_to=None, reason=Non
 
 
 @transaction.atomic
+@takes_back
 def return_spares(issue, on_date=None):
     """What was issued comes back whole, while the job is still open."""
     if not issue.is_standing():

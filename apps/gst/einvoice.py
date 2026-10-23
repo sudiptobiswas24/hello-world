@@ -77,6 +77,8 @@ _ACK = re.compile(r"^[0-9]{1,20}$")
 CANCEL_WITHIN = datetime.timedelta(hours=24)
 
 
+from apps.core.models import takes_back  # noqa: E402  (O354: a correction step)
+
 class IrnCancelReason(models.TextChoices):
     # The invoice registration portal's codes, which are not the e-way bill
     # portal's: there 2 is "order cancelled" and 3 "data entry mistake".
@@ -234,6 +236,7 @@ class EInvoice(AuditModel):
 
     @transaction.atomic
     @serialised("irn", "cancelled_at", "cancel_payload")
+    @takes_back
     def record_cancellation(self, cancelled_at):
         """
         Keep the portal's answer that the IRN is cancelled, and reverse the

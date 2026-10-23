@@ -30,6 +30,8 @@ from apps.core.models import AuditModel, lock_rows
 ZERO = Decimal("0")
 
 
+from apps.core.models import takes_back  # noqa: E402  (O354: a correction step)
+
 class CreelSide(models.TextChoices):
     WARP = "warp", "Warp creel"
     WEFT = "weft", "Weft"
@@ -126,6 +128,7 @@ def load_tape(station, operator, machine, code, kg, side, at=None):
 
 
 @transaction.atomic
+@takes_back
 def void_load(load, station, supervisor, operator, reason):
     from .rolls import FabricRoll
     from .station import check_supervisor

@@ -274,8 +274,10 @@ class SwitchedOffTakesNothingNewTests(MoneyBooks):
         self.assertTrue(entry.create_reversal(entry_date=datetime.date(2026, 9, 2)).posted)
 
 
+
 class EveryVoidTakesBackWhatASwitchedOffAccountHolds(MoneyBooks):
-    """O283, decided: a correction is always possible; the refusal stands for new postings only."""
+    """O283, decided: a correction is always possible; the refusal stands for new postings only. O354: a correction
+    says so with apps.core.models.takes_back, not by its name."""
 
     def setUp(self):
         super().setUp()
@@ -297,20 +299,33 @@ class EveryVoidTakesBackWhatASwitchedOffAccountHolds(MoneyBooks):
         Account.objects.filter(pk=self.rent.pk).update(is_active=False)
         CostCentre.objects.filter(pk=self.centre.pk).update(is_active=False)
 
-    def test_a_void_that_builds_its_own_entry_posts_to_a_switched_off_account_and_centre(self):
+    def test_a_step_marked_as_taking_back_posts_to_a_switched_off_account_and_centre(self):
+        from apps.core.models import takes_back
+
         self.entry(datetime.date(2026, 9, 1))
         self.switch_off()
 
-        def void():
+        @takes_back
+        def give_back():
             return self.taking_back(datetime.date(2026, 9, 2))
 
-        self.assertTrue(void().posted)
+        self.assertTrue(give_back().posted)
 
-    def test_the_same_entry_made_as_new_business_is_refused(self):
+    def test_a_new_posting_under_a_correcting_name_is_refused(self):
+        # O354: the name of the function it is made in exempts nothing.
         self.switch_off()
 
-        def book_a_refund():
+        def reverse_something():
             return self.taking_back(datetime.date(2026, 9, 2))
 
-        with self.assertRaises(ValidationError):
-            book_a_refund()
+        def void_and_rebook():
+            return self.taking_back(datetime.date(2026, 9, 2))
+
+        for step in (reverse_something, void_and_rebook):
+            with self.subTest(step=step.__name__), self.assertRaises(ValidationError):
+                step()
+
+    def test_a_payment_void_and_a_hand_reversal_take_back_what_a_switched_off_account_holds(self):
+        entry = self.entry(datetime.date(2026, 9, 1))
+        self.switch_off()
+        self.assertTrue(entry.create_reversal(entry_date=datetime.date(2026, 9, 2)).posted)

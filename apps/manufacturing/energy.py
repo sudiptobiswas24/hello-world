@@ -46,6 +46,8 @@ ZERO = Decimal("0")
 MINUTES_PER_HOUR = Decimal("60")
 
 
+from apps.core.models import takes_back  # noqa: E402  (O354: a correction step)
+
 def slot(day, shift):
     """Where a shift-day sits in time. No shift is the whole day, so it comes last."""
     return (day, shift.starts_at if shift is not None else datetime.time.max)
@@ -222,6 +224,7 @@ class MeterReading(AuditModel):
         raise ValidationError("A reading is what the dial said. Void it.")
 
     @serialised("voided_at")
+    @takes_back
     def void(self, reason):
         if self.voided_at is not None:
             raise ValidationError(f"{self} is already void.")

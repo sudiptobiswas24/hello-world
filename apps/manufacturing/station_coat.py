@@ -40,6 +40,8 @@ COATING_SAMPLES = 3
 DISC_SQ_CM = Decimal("100")
 
 
+from apps.core.models import takes_back  # noqa: E402  (O354: a correction step)
+
 class CoatingCheck(AuditModel):
     station = models.ForeignKey("manufacturing.LoomStation", on_delete=models.PROTECT,
                                 related_name="coating_checks")
@@ -187,6 +189,7 @@ def off_coatings(order, mount):
 
 
 @transaction.atomic
+@takes_back
 def void_coating(check, station, supervisor, operator, reason):
     from .station import check_supervisor
 

@@ -29,6 +29,8 @@ from django.utils import timezone
 from apps.core.models import AuditModel, Company, DocumentSequence, lock_rows
 
 
+from apps.core.models import takes_back  # noqa: E402  (O354: a correction step)
+
 class SalaryTransferFile(AuditModel):
     run = models.ForeignKey("hr.PayRun", on_delete=models.PROTECT, related_name="bank_files")
     number = models.CharField(max_length=32, unique=True)
@@ -164,6 +166,7 @@ class SalaryTransfer(AuditModel):
     def is_returned(self):
         return self.returned_by_id is not None and not self.returned_by.is_voided()
 
+    @takes_back
     def return_transfer(self, receipt):
         with transaction.atomic():
             from apps.accounting.models import PaymentDirection

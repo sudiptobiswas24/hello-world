@@ -81,6 +81,8 @@ from .shifts import Downtime, DowntimeReason, Shift
 from .tooling import Tool, ToolUsage
 
 
+from apps.core.models import takes_back  # noqa: E402  (O354: a correction step)
+
 class ManufacturingSettings(AuditModel):
     """
     Where the manufacturing side of the ledger lands.
@@ -1497,6 +1499,7 @@ class WorkOrder(AuditModel):
     # -- and back again --------------------------------------------------
 
     @serialised("status")
+    @takes_back
     def cancel(self):
         """
         Abandon an order nothing has been drawn against.
@@ -2523,6 +2526,7 @@ class MaterialIssue(VoidedNotDeleted, AuditModel):
             ).first()
         )
 
+    @takes_back
     def void_with(self, owner, on_date=None, memo=""):
         """Void this as part of voiding `owner`, the document that raised it."""
         self._voided_with = owner
@@ -2533,6 +2537,7 @@ class MaterialIssue(VoidedNotDeleted, AuditModel):
             self._voided_with = None
 
     @serialised("posted", "voided_at")
+    @takes_back
     def void(self, on_date=None, memo=""):
         """Undo a posting that should not have happened at all."""
         if not self.posted:
@@ -2826,6 +2831,7 @@ class MaterialIssueLine(AuditModel):
             return value_left
         return to_paisa(value_left * quantity / left)
 
+    @takes_back
     def reverse(self, issue, occurred_at, label):
         """
         Put the movement back. What went out to the run comes back in at
@@ -3211,6 +3217,7 @@ class ProductionEntry(VoidedNotDeleted, AuditModel):
         return self.journal_entry
 
     @serialised("posted", "voided_at")
+    @takes_back
     def void(self, on_date=None, memo=""):
         """
         Take the output back off the shelf and put the cost back into
@@ -3409,6 +3416,7 @@ class ProductionByproduct(AuditModel):
         super().save(update_fields=["unit_value", "stock_movement", "updated_at"])
         return value
 
+    @takes_back
     def reverse(self, entry, occurred_at, label):
         """Off the shelf again at what removing it takes off now; returns that."""
         if self.stock_movement_id is None:
@@ -3667,6 +3675,7 @@ class TimeBooking(VoidedNotDeleted, AuditModel):
         return self.journal_entry
 
     @serialised("posted", "voided_at")
+    @takes_back
     def void(self, on_date=None, memo=""):
         """Take the hours and their cost back off the run."""
         if not self.posted:
