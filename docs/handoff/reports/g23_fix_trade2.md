@@ -61,3 +61,34 @@ At the tip 6d0ceac. At the integrator's request (machine overloaded, then reboot
 - O299 mirror (security): apps/core/approvals.py `refuse_going_past_the_policy` words its refusal with policy_breaches() text, so a rep editing a confirmed order past its approval reads "Gross margin is -300.00%, below the 20% floor." Same for Quotation approvals if they weigh margin (not checked).
 - audit_invariants on my tree reports one finding in a module I did not touch: `named draw past the promise: inventory/models.py:StockMovement._settle_money:830 takes self.lot off without asking refuse_drawing_what_is_promised()`. Present before my first commit (run after 0bdbac7's edits, which touch no inventory code); another lane's row, or new in the base.
 - O335 as written (two receipts of 5, bills A and B, two returns) was already held: receipts_billed_by() replays the first return's goods out of A. The defect needed a draft not made by a return (AP's own draft on A) to show; that is the regression test.
+
+---
+
+# Second round: the review (/home/user/work/reports/review_trade2.md)
+
+The review's probes (ea2537b, here 37b279d) were cherry-picked first. There are four commits since: items 1 and 5 share one root and one commit.
+
+| commit | item | what |
+|---|---|---|
+| 7341ff9 | 1, 5, O299 | `core.approvals.CostWords` (a str carrying its withheld wording and the permission told the figure) and `PolicyRefusal`. Its message is the withheld one; `told_to(user)` gives the full one. `refuse_going_past_the_policy` and `SalesOrder.confirm` raise it. The API exception handler and the confirm action answer with `told_to(request.user)`. `reasons_told_to` is `told()` of each reason: no text is compared |
+| 5f3789e | 2, O298 | the whole-document ceiling is asked as every note posts, under its original's lock, whatever made the note; at save it still applies only to a note with a typed line |
+| 76125ee | 4, O296 | under the hold the invoice is read again: days overdue, amount due and the notices are all asked of that read |
+| 2009a8e | 3, O337 | `figures_as_kept()` names the currency (`"currency": <base code>`). The migrations convert only figures that name none and add the name, so a second run converts nothing. The docstrings now say the reverse is lossy (-300.00 -> 95.79 -> -299.95 at 95) |
+
+Failures without each fix:
+- 7341ff9: as a Sales Rep, PATCH of a confirmed line's price: `'-700' unexpectedly found in '[... Gross margin is -700.00%, below the 20.00% floor. ...]'`. tests_guards' three margin refusals now assert the figure on `in_full` and the withheld words on the message. That is a deliberate change: a path that does not know who asked now tells no figure.
+- 5f3789e: OneCeilingForEveryCreditNoteTests and OneCeilingForEveryDebitNoteTests (probes s2 and p2): `ValidationError not raised`. A return after a goodwill credit of the whole is now refused with the return's own refusal ("has 0 left to give back (1000 of 1000 ..."); the stock does not come back either. The note-centric files of sales and purchasing (450 tests) pass.
+- 76125ee: ADunningRunReadsTheInvoiceUnderItsHoldTests (1,000 allocated between the walk's read and the hold): `AssertionError: 1 != 0`.
+- 2009a8e: with the "already named" check taken out, on a row already in the base: `'total': '405000000.00', 'margin': '99.95'` against `'4500000.00', '95.56'`, both sides.
+
+Runs (targeted only, --parallel 1):
+- Approval-related test files (purchasing tests, tests_approval_tiers, tests_audit2, tests_audit3, tests_budgets, tests_requisitions, tests_review_purch_migrations, tests_rfq_from_requisitions, tests_vendor_prices, tests_vendor_profile; sales tests_approvals, tests_guards, tests_seed_approved_figures; core tests_admin_immutability, tests_errors): 301 OK.
+- Note-centric files (sales tests, tests_gst, tests_partial_returns, tests_deposits; purchasing tests, tests_audit, tests_lifecycle, tests_prepayments, tests_returns_and_landed): 450 OK.
+- The two O337 migration tests (--tag migration): OK.
+- PostgreSQL (fix_trade2, test databases dropped first): TwoDunningRunsAtOnceRaceTests plus the review's three race probes: 4 tests OK.
+- makemigrations --check: no changes. audit_invariants: not run in this round.
+
+Questions for the owner, new or changed:
+- A goods return after a goodwill credit of the whole invoice is now refused outright, so the stock does not come back either. The goods can still come back with credit_invoices=False / debit_bills=False. Should the return instead take the stock back and leave a note to be settled?
+- Figures kept by O293's code before 2009a8e name no currency. A database that ran g23's tree before this release and approved foreign orders would still have those figures converted twice. I assumed no such database is in use.
+- Review item 6 (forgotten drafts) and item 9 (capitalising a bill line while a debit draft waits) were not changed. On item 9: `refuse_giving_back_what_moved` is asked again when a debit note posts (purchasing post, under the lines' locks), so the draft cannot post onto a capitalised line.
