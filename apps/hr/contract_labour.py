@@ -77,9 +77,14 @@ class ContractWorker(AuditModel):
         with transaction.atomic():
             contractor = self.contractor
             lock_rows(contractor)
-            if self._state.adding and not contractor.is_active:
-                # O309: a contractor who has stopped (licence surrendered) brings nobody new; a worker already on
-                # the register is still edited, to give the day they left.
+            stored = None if self._state.adding else ContractWorker.objects.filter(pk=self.pk).values(
+                "contractor_id", "left_on").first()
+            joins = stored is None or stored["contractor_id"] != self.contractor_id or (
+                stored["left_on"] is not None and self.left_on is None)
+            if joins and not contractor.is_active:
+                # O309: a contractor who has stopped (licence surrendered) brings nobody new: not a new worker, not
+                # one moved to it, not one who had left brought back (review 4: the edit paths). A worker already
+                # working through it is still edited, to give the day they left.
                 raise ValidationError({"contractor": [f"{contractor} is no longer active; a new worker comes "
                                                       "through an active contractor."]})
             if self.joined_on > contractor.licence_valid_to:
