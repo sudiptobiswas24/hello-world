@@ -127,8 +127,9 @@ class RemindersAndRecurringTests(ExtrasTestCase):
         from apps.sales.models import RecurringInvoice, RecurringInvoiceLine
         from apps.sales.tests_base import carries_every_customer
 
+        # Both runs in the past whatever day the suite runs on: a run dated ahead is refused (O284).
         schedule = RecurringInvoice.objects.create(code="RENT2", customer=self.acme, receivable_account=self.receivable,
-                                                   interval="monthly", start_date=datetime.date(2026, 10, 1))
+                                                   interval="monthly", start_date=datetime.date(2026, 8, 1))
         RecurringInvoiceLine.objects.create(schedule=schedule, item=self.item, quantity=1, unit_price=100,
                                             revenue_account=self.revenue)
         # Keeps schedules and may add invoices, but may not post them.
