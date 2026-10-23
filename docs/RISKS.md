@@ -331,6 +331,9 @@ missing), **minor**.
 | O352 | sales | The Controller cannot approve orders (403), so it never sees the margin; whether it should approve is the owner's (seen 2026-10-23, review_trade2) | rule | minor |
 | O353 | assets, purchasing | Capitalising a bill line counts posted debit notes only, not waiting drafts (given_back_or_waiting not asked); not exercised (seen 2026-10-23, review_trade2) | books | open |
 | O354 | accounting | O283's void exemption goes by the name of the step making the posting (void, reverse, cancel, undo): a correction under another name is refused. Decided: an explicit marker on each correction path (seen 2026-10-23, fix_money2) | rule | open |
+| O355 | core, accounting, sales | Moving a recurring schedule's start_date past its next_run_date makes run_date (apps/core/recurrence.py near 63) refuse every run, journals and invoices alike; next_run_date is read-only over the API. Decided: a start_date edit moves next_run_date with it, or is refused in words (seen 2026-10-23, review_money2 item 3; docs/handoff/reports/g23_review_money2.md) | rule | open |
+| O356 | gst | In the GSTR-2B reconcile (gstr2b.py near 424) a bill the portal marks ITC not available sits in no total, so booked no longer equals matched plus waiting: give it its own bucket (seen 2026-10-23, review_money2 item 4; docs/handoff/reports/g23_review_money2.md) | statutory | open |
+| O357 | sales | In committed_in_base one old confirmed order with no rate on its own date blocks the credit check of every new order for that customer, and the message names a date, not the order. Decided: the message names the order; legacy orders without a rate are listed for the accountant (seen 2026-10-23, review_money2 item 5; docs/handoff/reports/g23_review_money2.md) | rule | minor |
 
 Upgrade notes, true of data made before the 8 October fixes:
 - Landed cost allocated before the stores fix releases to cost of sales, and old inventory differences stay where they were.
