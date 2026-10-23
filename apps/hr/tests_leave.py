@@ -461,6 +461,9 @@ class BalanceTests(LeaveTestCase):
 
     def test_carried_over_days_are_added(self):
         person = self.employee("B5")
+        # Within the policy's limit (O307): with none set, nothing carries.
+        self.policy.carry_over_limit = Decimal("5")
+        self.policy.save()
         LeaveEntitlement.objects.create(
             employee=person, policy=self.policy, year=2026,
             days=Decimal("25"), carried_over=Decimal("3"),
@@ -730,3 +733,34 @@ class APolicyHoldsNoSettingNothingReadsTests(TestCase):
         from .models import LeavePolicy
 
         self.assertNotIn("requires_approval", {field.name for field in LeavePolicy._meta.get_fields()})
+
+
+class WhatAPolicyChangeLeavesAloneTests(LeaveTestCase):
+    """O307: carry_over_limit is enforced where the carry is entered, and a change of annual days restates no
+    year before the one it is made in."""
+
+    def test_a_carry_over_beyond_the_limit_is_refused_and_one_within_it_counts(self):
+        from django.core.exceptions import ValidationError
+
+        person = self.employee("C1")
+        self.policy.carry_over_limit = Decimal("5")
+        self.policy.save()
+        with self.assertRaisesMessage(ValidationError, "carries at most 5 days"):
+            LeaveEntitlement.objects.create(employee=person, policy=self.policy, year=2026, days=Decimal("20"),
+                                            carried_over=Decimal("10"))
+        LeaveEntitlement.objects.create(employee=person, policy=self.policy, year=2026, days=Decimal("20"),
+                                        carried_over=Decimal("5"))
+        self.assertEqual(self.policy.entitlement_for(person, 2026), Decimal("25.00"))
+
+    def test_changed_twice_on_2_january_2027_2026_keeps_its_25_and_2027_has_28(self):
+        from unittest import mock
+
+        person = self.employee("C2")
+        with mock.patch("apps.hr.models.timezone.localdate", return_value=datetime.date(2027, 1, 2)):
+            self.policy.annual_days = Decimal("30")
+            self.policy.save()
+            self.policy.annual_days = Decimal("28")
+            self.policy.save()
+        self.assertEqual((self.policy.entitlement_for(person, 2025), self.policy.entitlement_for(person, 2026),
+                          self.policy.entitlement_for(person, 2027)),
+                         (Decimal("25.00"), Decimal("25.00"), Decimal("28.00")))

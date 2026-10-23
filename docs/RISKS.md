@@ -296,7 +296,6 @@ missing), **minor**.
 | O298 | sales, purchasing | A credit or debit note made in code posts on another control account, before its invoice, a year ahead, or for more than the invoice; the API cannot reach it (credits/debits read-only) (seen 2026-10-20, audit2_trade T7; docs/handoff/reports/g23_audit2_trade.md) | rule | minor |
 | O299 | sales | GET sales-orders/approval returns margin_percent to a Sales Rep, so cost can be worked out (not probed) (seen 2026-10-20, audit2_trade T8; docs/handoff/reports/g23_audit2_trade.md) | security | minor |
 | O306 | hr | Leave asked before a leaving date is approved after it (seen 2026-10-20, audit2_people P10; docs/handoff/reports/g23_audit2_people.md) | rule | minor |
-| O307 | hr | carry_over_limit is read by nothing; raising annual_days restates earlier years' entitlement (seen 2026-10-20, audit2_people P11; docs/handoff/reports/g23_audit2_people.md) | rule | open |
 | O309 | hr | An inactive contractor still takes workers (seen 2026-10-20, audit2_people P14; docs/handoff/reports/g23_audit2_people.md) | rule | minor |
 | O311 | hr | UAN and ESI numbers are served to floor roles and line managers (seen 2026-10-20, audit2_people P2; docs/handoff/reports/g23_audit2_people.md) | security | minor |
 | O312 | hr | Timesheets have no route, screen, admin or role, so hourly pay cannot be fed from the office; matters only if anyone is paid by the hour (owner to say) (seen 2026-10-20, audit2_people P13; docs/handoff/reports/g23_audit2_people.md) | rule | minor |

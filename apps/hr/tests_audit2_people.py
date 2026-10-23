@@ -48,8 +48,12 @@ class TheLeaveRules(OutputsTestCase):
         person = self.employee("E1")
         policy = LeavePolicy.objects.create(code="PL", name="Privilege", leave_type="vacation",
                                             annual_days=Decimal("20"), carry_over_limit=Decimal("5"))
+        # Refused where it is entered (O307), so no year holds more than the limit.
+        with self.assertRaises(ValidationError):
+            LeaveEntitlement.objects.create(employee=person, policy=policy, year=2026, days=Decimal("20"),
+                                            carried_over=Decimal("10"))
         LeaveEntitlement.objects.create(employee=person, policy=policy, year=2026, days=Decimal("20"),
-                                        carried_over=Decimal("10"))
+                                        carried_over=Decimal("5"))
         self.assertEqual(policy.entitlement_for(person, 2026, as_of=D(2026, 6, 1)), Decimal("25.00"))
 
     def test_leave_asked_before_a_leaving_date_is_not_approved_past_it(self):
@@ -297,9 +301,12 @@ class APolicyChangedForNextYearLeavesThisYearAlone(OutputsTestCase):
         person = self.employee("E1")
         policy = LeavePolicy.objects.create(code="PL", name="Privilege", leave_type="vacation",
                                             annual_days=Decimal("12"))
+        from unittest import mock
+
         before = policy.entitlement_for(person, 2026)
-        policy.annual_days = Decimal("15")
-        policy.save()
+        with mock.patch("apps.hr.models.timezone.localdate", return_value=D(2027, 1, 2)):
+            policy.annual_days = Decimal("15")
+            policy.save()
         self.assertEqual(policy.entitlement_for(person, 2026), before)
 
 
