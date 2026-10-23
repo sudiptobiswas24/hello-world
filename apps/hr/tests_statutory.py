@@ -604,11 +604,18 @@ class AMonthPaidInTwoRunsTests(StatutoryTestCase):
         [row] = [row for row in esi_rows(second) if row["name"] == "F"]
         self.assertEqual(row["wages"], 16000)
 
-    def test_esi_coverage_reads_the_months_wages_not_a_runs(self):
-        """Fortnights of 12,000: the first is a month of 12,000 so far, covered (90); with the second it is 24,000."""
+    def test_esi_coverage_is_decided_from_the_monthly_rate_at_the_first_run(self):
+        """O358 (decided): fortnights of 12,000 are a monthly rate of 24,000: neither fortnight is covered."""
         person, first, second = self.filed(basic="12000")
-        self.assertEqual(self.lines(first, person).get("ESI"), Decimal("90.00"))
-        self.assertIsNone(self.lines(second, person).get("ESI"))
+        self.assertEqual((self.lines(first, person).get("ESI"), self.lines(second, person).get("ESI")), (None, None))
+
+    def test_under_the_limit_both_fortnights_are_covered_and_a_redo_does_not_change_it(self):
+        """Fortnights of 8,000: 16,000 a month, covered: ESI 60 each; the first voided and worked out again, 60."""
+        person, first, second = self.filed(basic="8000")
+        self.assertEqual((self.lines(first, person)["ESI"], self.lines(second, person)["ESI"]),
+                         (Decimal("60.00"), Decimal("60.00")))
+        first.void(on_date=datetime.date(2026, 6, 15))
+        self.assertEqual(self.lines(self.run_for(*self.FIRST), person)["ESI"], Decimal("60.00"))
 
     def test_a_fortnight_voided_and_worked_out_again_still_comes_to_the_months_1800(self):
         """Both fortnights posted (960 + 840); the first voided and paid again: 1,800 - 840 = 960."""
@@ -680,5 +687,5 @@ class ARunOfTheMonthThatTookNothingTests(AMonthPaidInTwoRunsTests):
         self.assertIsNone(self.lines(second_run, person).get("PF"))
         [row] = [row for row in ecr_rows(second_run) if row["name"] == "F"]
         self.assertEqual((row["gross"], row["epf_wages"], row["epf"]), (19000, 15000, 1800))
-        [esi] = [esi for esi in esi_rows(second_run) if esi["name"] == "F"]
-        self.assertEqual(esi["wages"], row["gross"])
+        # 15,000 a fortnight is 30,000 a month at the first run: not insured (O358), so in no ESI file.
+        self.assertEqual([esi for esi in esi_rows(second_run) if esi["name"] == "F"], [])

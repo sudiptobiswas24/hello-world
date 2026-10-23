@@ -1794,6 +1794,18 @@ class Payslip(AuditModel):
         month = (first.run.period_end if first is not None else self.run.period_end).replace(day=1)
         following = (month + datetime.timedelta(days=32)).replace(day=1)
         wanted = {other.pk for other in deciding}
+        # A month paid in runs shorter than itself is decided from the monthly wage rate at its first run
+        # (O358, decided), not from wages paid: those are not all known at the first run, and read from the
+        # posted runs a void and redo changed the answer and the second run asked the first to be worked out again.
+        month_runs = [slip.run for slip in Payslip.objects.filter(
+            employee=self.employee, run__status=PayRunStatus.POSTED,
+            run__period_end__gte=month, run__period_end__lt=following).exclude(run=self.run).select_related("run")]
+        if month <= self.run.period_end < following:
+            month_runs.append(self.run)
+        opening = min(month_runs, key=lambda run: (run.period_start, run.pk or 0), default=None)
+        if opening is not None and (opening.period_start > month
+                                    or opening.period_end < following - datetime.timedelta(days=1)):
+            return self._monthly_rate(deciding, opening, month, following) <= component.coverage_ceiling
         lines = PayslipLine.objects.filter(
             payslip__employee=self.employee, payslip__run__status=PayRunStatus.POSTED,
             payslip__run__period_end__gte=month, payslip__run__period_end__lt=following,
@@ -1804,6 +1816,21 @@ class Payslip(AuditModel):
         if month <= self.run.period_end < following:
             wages += self._sum_of(component, deciding, computed, running_taxable)
         return wages <= component.coverage_ceiling
+
+    def _monthly_rate(self, deciding, opening, month, following):
+        """
+        The month's wage rate at `opening`, the month's first run (O358): the fixed period amounts of the
+        deciding components (every taxable fixed earning when none is named) in force on its first day employed,
+        times the days of the month over the days of that run's period. Fortnights of 8,000 in June: 16,000.
+        """
+        on = max(to_date(opening.period_start), to_date(self.employee.hire_date))
+        rows = EmployeeCompensation.objects.filter(
+            employee=self.employee, component__basis=ComponentBasis.FIXED, component__kind=ComponentKind.EARNING,
+            effective_from__lte=on).filter(Q(effective_to__isnull=True) | Q(effective_to__gte=on))
+        rows = rows.filter(component__in=deciding) if deciding else rows.filter(component__is_taxable=True)
+        rate = sum((row.amount for row in rows), Decimal("0"))
+        days = (to_date(opening.period_end) - to_date(opening.period_start)).days + 1
+        return rate * Decimal((following - month).days) / Decimal(days)
 
     def _amount_for(self, row, proportion, running_taxable, hours, computed=None):
         """
