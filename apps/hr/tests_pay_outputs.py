@@ -529,3 +529,19 @@ class ALeaverNoLongerSignsInOrDecides(OutputsTestCase):
             ExpenseClaim(employee=report, purpose="Taxi")._check_decider(boss, as_hr=False)
         with self.assertRaisesMessage(ValidationError, "has left (leaving date 01-06-2026)"):
             Timesheet(employee=report).check_approver(boss)
+
+
+class WhoARunLeftOffTests(OutputsTestCase):
+    """O305: a run names who was employed in its period and has no slip on it."""
+
+    def test_the_forgotten_joiner_is_named_and_the_paid_and_the_gone_are_not(self):
+        paid, forgotten = self.employee("E1"), self.employee("ZED9", hire=datetime.date(2026, 6, 16))
+        gone = self.employee("OLD1")
+        gone.terminate(datetime.date(2026, 5, 31))
+        self.employee("NEW1", hire=datetime.date(2026, 7, 1))
+        self.pay(paid, self.salary, "5000")
+        run = self.pay_run()
+        said = self.as_role("Payroll Officer").post(f"/api/hr/pay-runs/{run.pk}/calculate/", {}, format="json")
+        self.assertEqual(said.status_code, 200, said.content)
+        self.assertEqual([row["employee_number"] for row in said.json()["skipped"]], ["ZED9"])
+        self.assertEqual(run.skipped(), [forgotten])

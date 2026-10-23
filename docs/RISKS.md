@@ -297,7 +297,6 @@ missing), **minor**.
 | O299 | sales | GET sales-orders/approval returns margin_percent to a Sales Rep, so cost can be worked out (not probed) (seen 2026-10-20, audit2_trade T8; docs/handoff/reports/g23_audit2_trade.md) | security | minor |
 | O302 | hr | An employee set to terminated with no leaving date is taken over the API and stays on every run, paid (calculate filters on dates only) (seen 2026-10-20, audit2_people P7; docs/handoff/reports/g23_audit2_people.md) | rule | open |
 | O304 | hr | A punched day corrected by hand (half day) is overwritten by the next punch import (seen 2026-10-20, audit2_people P8; docs/handoff/reports/g23_audit2_people.md) | rule | open |
-| O305 | hr | An employee with no pay row is left off the run without a word (shape 7) (seen 2026-10-20, audit2_people P9; docs/handoff/reports/g23_audit2_people.md) | rule | open |
 | O306 | hr | Leave asked before a leaving date is approved after it (seen 2026-10-20, audit2_people P10; docs/handoff/reports/g23_audit2_people.md) | rule | minor |
 | O307 | hr | carry_over_limit is read by nothing; raising annual_days restates earlier years' entitlement (seen 2026-10-20, audit2_people P11; docs/handoff/reports/g23_audit2_people.md) | rule | open |
 | O308 | hr | A pay run posts with a pay date 36 years ahead (no correction-date rule on pay_date) (seen 2026-10-20, audit2_people P12; docs/handoff/reports/g23_audit2_people.md) | rule | open |
