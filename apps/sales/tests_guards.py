@@ -945,10 +945,15 @@ class ACutIsAskedTheMarginFloorTests(TradeRuleCase):
         self.assertEqual(order.margin_percent(), Decimal("53.00"))
         widgets = order.lines.get(item=self.item)
         widgets.quantity = Decimal("1")  # 17.82%
-        with self.assertRaisesMessage(ValidationError, "Gross margin is 17.82%, below the 40.00% floor"):
+        with self.assertRaises(ValidationError) as refused1782:
             widgets.save()
-        with self.assertRaisesMessage(ValidationError, "Gross margin is 10.00%, below the 40.00% floor"):
+        with self.assertRaises(ValidationError) as refused1000:
             order.lines.get(item=self.item).delete()
+        # In full for whoever may approve; anyone else reads the floor alone (O299).
+        self.assertIn("Gross margin is 17.82%, below the 40.00% floor", refused1782.exception.in_full)
+        self.assertIn("Gross margin is 10.00%, below the 40.00% floor", refused1000.exception.in_full)
+        self.assertIn("The gross margin is below the 40.00% floor.", str(refused1782.exception))
+        self.assertNotIn("17.82", str(refused1782.exception))
         self.assertEqual(SalesOrder.objects.get(pk=order.pk).margin_percent(), Decimal("53.00"))
 
     def test_an_approved_order_cuts_within_what_was_approved(self):
@@ -959,8 +964,9 @@ class ACutIsAskedTheMarginFloorTests(TradeRuleCase):
         dear.save()
         widgets = order.lines.get(item=self.item)
         widgets.quantity = Decimal("1")  # 4 + 720 on 900: 19.56%
-        with self.assertRaisesMessage(ValidationError, "Gross margin is 19.56%, below the 40.00% floor"):
+        with self.assertRaises(ValidationError) as refused1956:
             widgets.save()
+        self.assertIn("Gross margin is 19.56%, below the 40.00% floor", refused1956.exception.in_full)
         order = SalesOrder.objects.get(pk=order.pk)
         self.assertEqual((order.margin_percent(), order.approved_at is not None), (Decimal("38.67"), True))
 

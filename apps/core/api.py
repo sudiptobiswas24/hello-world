@@ -46,6 +46,12 @@ def exception_handler(exc, context):
     refusal about one field stays about that field, so a form can show it
     beside the box; the rest is a list of sentences.
     """
+    from .approvals import PolicyRefusal
+
+    if isinstance(exc, PolicyRefusal):
+        # Told in full only to whoever may see what it weighs (O299).
+        request = context.get("request")
+        exc = DjangoValidationError(exc.told_to(getattr(request, "user", None)))
     if isinstance(exc, DjangoValidationError):
         if hasattr(exc, "error_dict"):
             exc = DRFValidationError({
