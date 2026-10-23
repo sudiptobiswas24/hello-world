@@ -293,7 +293,7 @@ class P6Promise(TapeLoadTestCase):
         from apps.inventory.adjustments import StockCount, StockCountLine
         from apps.accounting.models import Account
         from apps.inventory.adjustments import AdjustmentReason, AdjustmentDirection
-        reason = AdjustmentReason.objects.create(code="CNT", name="Count", account=Account.objects.order_by("pk").first(), direction=AdjustmentDirection.DECREASE)
+        reason = AdjustmentReason.objects.create(code="CNT", name="Count", account=Account.objects.filter(account_type="expense").order_by("pk").first(), direction=AdjustmentDirection.DECREASE)
         count = StockCount.objects.create(count_date=TODAY, warehouse=self.plant, reason=reason)
         StockCountLine.objects.create(count=count, item=self.tape, uom=self.tape.uom, lot=self.d1, counted_quantity=Decimal("60"),
                                       system_quantity=Decimal("100"))

@@ -413,7 +413,7 @@ class PromisedTapeStaysForItsRunTests(TapeLoadTestCase):
                                                 StockAdjustmentLine)
 
         reason = AdjustmentReason.objects.create(code="SHRINK", name="Shrinkage",
-                                                 account=Account.objects.order_by("pk").first(),
+                                                 account=Account.objects.filter(account_type="expense").order_by("pk").first(),
                                                  direction=AdjustmentDirection.DECREASE)
         adjustment = StockAdjustment.objects.create(adjustment_date=TODAY, warehouse=self.plant, reason=reason)
         StockAdjustmentLine.objects.create(adjustment=adjustment, item=self.tape, uom=self.tape.uom,

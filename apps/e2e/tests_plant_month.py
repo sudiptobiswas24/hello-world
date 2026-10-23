@@ -431,7 +431,7 @@ class Month:
         record = self.post(officer, "/api/gst/e-invoices/", {"invoice": invoice["id"]})
         self.post(officer, f"/api/gst/e-invoices/{record['id']}/record/", {
             "irn": IRN[:-len(str(invoice["id"]))] + str(invoice["id"]), "ack_number": f"11261000000000{invoice['id']}",
-            "ack_date": f"{invoice['invoice_date']}T11:30",
+            "ack_date": f"{invoice['invoice_date']}T10:30:00+05:30",
             "signed_qr": signed_qr(Irn=IRN[:-len(str(invoice["id"]))] + str(invoice["id"]), DocNo=invoice["number"],
                                    SellerGstin=gstin("19AAACB1234C1Z"),
                                    BuyerGstin=record["payload"]["BuyerDtls"]["Gstin"],
