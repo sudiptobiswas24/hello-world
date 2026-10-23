@@ -631,8 +631,8 @@ from django.test import TransactionTestCase, tag  # noqa: E402
 class ApprovedFiguresPutInTheBaseMigrationTests(TransactionTestCase):
     """O337: an approval kept before O293 in the order's currency is put in the base at the order's rate."""
 
-    before = [("sales", "0077_one_opportunity_an_order")]
-    after = [("sales", "0078_approved_figures_in_base")]
+    before = [("sales", "0079_b2cl_limit_filled")]
+    after = [("sales", "0080_approved_figures_in_base")]
 
     def test_a_euro_order_is_put_in_the_base_and_the_others_are_left(self):
         from django.db import connection

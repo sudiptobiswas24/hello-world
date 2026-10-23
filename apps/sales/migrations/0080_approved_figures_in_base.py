@@ -99,7 +99,7 @@ class Migration(migrations.Migration):
 
     dependencies = [
         ("core", "0040_apikeyuse_prefix_apikeyuse_refused_and_more"),
-        ("sales", "0077_one_opportunity_an_order"),
+        ("sales", "0079_b2cl_limit_filled"),
     ]
 
     operations = [
