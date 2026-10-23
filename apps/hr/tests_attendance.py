@@ -39,8 +39,11 @@ class AttendanceTestCase(PayrollTestCase):
         self.pay(self.worker, self.overtime, "125")
 
     def mark(self, day, status=AttendanceStatus.PRESENT, person=None, **extra):
-        return AttendanceDay.objects.create(employee=person or self.worker, on=D(2026, 10, day), status=status,
-                                            **extra)
+        made = AttendanceDay(employee=person or self.worker, on=D(2026, 10, day), status=status, **extra)
+        # A day is the punch file's only as the file writes it (O304); a fixture standing for one says so.
+        made._from_the_punch_file = extra.get("source") == "import"
+        made.save()
+        return made
 
     def october(self):
         return self.pay_run(*OCT, pay_date=OCT[1])
@@ -199,3 +202,22 @@ class AttendanceApiTests(AttendanceTestCase):
         self.assertEqual((checked["created"], checked["committed"]), (0, False))
         self.assertEqual(len(checked["kept"]), 1)
         self.assertEqual(self.as_("Warehouse Staff").get("/api/hr/attendance/").status_code, 403)
+
+
+class AHandCorrectionOfAPunchedDayTests(AttendanceTestCase):
+    """O304: a punched day changed by anything but the punch file is the hand's, and the next file keeps it."""
+
+    PUNCH = "employee_number,date,shift,in,out\nW1,2026-10-07,,06:00,14:00\n"
+
+    def test_set_to_half_a_day_in_code_it_survives_the_next_file(self):
+        from .attendance import AttendanceSource, import_punches
+
+        import_punches(self.PUNCH, commit=True)
+        day = AttendanceDay.objects.get(employee=self.worker, on=D(2026, 10, 7))
+        self.assertEqual(day.source, AttendanceSource.IMPORT)
+        day.status = AttendanceStatus.HALF_DAY
+        day.save()
+        said = import_punches(self.PUNCH, commit=True)
+        day.refresh_from_db()
+        self.assertEqual((day.source, day.status, len(said["kept"])),
+                         (AttendanceSource.MANUAL, AttendanceStatus.HALF_DAY, 1))
