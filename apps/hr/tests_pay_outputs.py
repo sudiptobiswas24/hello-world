@@ -583,3 +583,31 @@ class APayDateNearItsPeriodTests(OutputsTestCase):
         run = self.posted(timezone.localdate())
         run.post()
         self.assertEqual(run.status, "posted")
+
+
+class APeriodClosesWithItsPayRunsPostedTests(OutputsTestCase):
+    """O310: hr tells the period's close what it still owes it."""
+
+    def test_june_does_not_close_with_its_run_calculated_and_closes_once_it_is_posted(self):
+        from apps.accounting.models import AccountingPeriod
+
+        person = self.employee("E1")
+        self.pay(person, self.salary, "5000")
+        run = self.pay_run()
+        run.calculate()
+        june = AccountingPeriod.objects.create(name="June 2026", start_date=datetime.date(2026, 6, 1),
+                                               end_date=datetime.date(2026, 6, 30))
+        with self.assertRaisesMessage(ValidationError, "1 pay run(s) are still to post or delete"):
+            june.close()
+        run.post()
+        june.close()
+        self.assertTrue(AccountingPeriod.objects.get(pk=june.pk).closed)
+
+    def test_a_run_paid_in_july_does_not_hold_june(self):
+        from apps.accounting.models import AccountingPeriod
+
+        self.pay_run(pay_date=datetime.date(2026, 7, 7))
+        june = AccountingPeriod.objects.create(name="June 2026", start_date=datetime.date(2026, 6, 1),
+                                               end_date=datetime.date(2026, 6, 30))
+        june.close()
+        self.assertTrue(AccountingPeriod.objects.get(pk=june.pk).closed)
