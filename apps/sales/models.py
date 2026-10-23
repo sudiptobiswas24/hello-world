@@ -5405,6 +5405,12 @@ def run_dunning(as_of=None, send=True):
         # and the customer would never be chased at it.
         with transaction.atomic():
             lock_rows(invoice, refresh=False)
+            # Read again under the hold, not from the prefetch: a payment allocated since the walk began
+            # left the invoice settled and it was still chased (the review of O296).
+            invoice = Invoice.objects.select_related("customer", "currency", "payment_terms").get(pk=invoice.pk)
+            days = invoice.days_overdue(as_of)
+            if days <= 0 or invoice.amount_due() <= 0:
+                continue
             due_level = _dunning_level_due(
                 DunningNotice.objects.filter(invoice=invoice).select_related("level"), levels, days)
             if due_level is None:

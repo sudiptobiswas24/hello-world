@@ -473,3 +473,31 @@ class ADunningReminderOnlyGoesUpTests(SalesTestCase):
             run_dunning(as_of=invoice.due_date + datetime.timedelta(days=days), send=False)
         sent = list(DunningNotice.objects.filter(invoice=invoice).order_by("id").values_list("level__days_overdue", flat=True))
         self.assertEqual(sent, [7, 30, 60])
+
+
+class ADunningRunReadsTheInvoiceUnderItsHoldTests(SalesTestCase):
+    """Review of O296: what is due is read again once the invoice is held, not from the run's first read."""
+
+    def test_an_invoice_paid_as_the_run_reaches_it_is_not_chased(self):
+        from unittest import mock
+
+        from . import models
+        from .models import DunningLevel, DunningNotice, run_dunning
+
+        DunningLevel.objects.create(name="First", days_overdue=7)
+        order = self.make_order(quantity="10", price="100")
+        self.ship(order, 10)
+        invoice = self.bill(order, on=datetime.date(2026, 3, 1))
+        real = models.lock_rows
+        paid = []
+
+        def paid_first(*rows, **kwargs):
+            # The customer's 1,000 is allocated after the run read the invoice, before it is held.
+            if not paid and any(isinstance(row, models.Invoice) for row in rows):
+                paid.append(True)
+                self.allocate(self.receipt("1000"), invoice, "1000")
+            return real(*rows, **kwargs)
+
+        with mock.patch.object(models, "lock_rows", paid_first):
+            run_dunning(as_of=invoice.due_date + datetime.timedelta(days=10), send=False)
+        self.assertEqual(DunningNotice.objects.filter(invoice=invoice).count(), 0)
