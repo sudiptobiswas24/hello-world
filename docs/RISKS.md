@@ -326,6 +326,11 @@ missing), **minor**.
 | O347 | inventory, accounting | A Stores Manager can point an item's cogs_account at any account, the same hole as an inventory account set to payables. Decided: the shared rule asks it too (an expense account kept for cost of sales; changing it needs accounting) (seen 2026-10-21, fix_stores2 round 2; docs/handoff/reports/g23_fix_stores2.md) | books | open |
 | O348 | inventory, manufacturing | Floor roles still read an item's standard_cost and a Quality Inspector a work order's costs. Decided: the stock-money rule (HidesStockMoney) hides them without inventory.view_stock_value (seen 2026-10-21, fix_stores2 round 2; docs/handoff/reports/g23_fix_stores2.md) | security | open |
 | O349 | purchasing | A legacy standard-costed subcontract return with no recorded consumption leaves -3.17 of price variance (average and FIFO net to 0) (seen 2026-10-21, fix_stores2 round 2; docs/handoff/reports/g23_fix_stores2.md) | books | minor |
+| O350 | sales | TCS is not revenue: the commission divisor leaves it out (decided on fix_trade2's question) (seen 2026-10-23, fix_trade2) | books | open |
+| O351 | sales, purchasing | A waiting draft note blocks a hand credit with no expiry. Decided: it waits until AR posts or deletes it; the screen says which draft holds the line (seen 2026-10-23, review_trade2) | rule | minor |
+| O352 | sales | The Controller cannot approve orders (403), so it never sees the margin; whether it should approve is the owner's (seen 2026-10-23, review_trade2) | rule | minor |
+| O353 | assets, purchasing | Capitalising a bill line counts posted debit notes only, not waiting drafts (given_back_or_waiting not asked); not exercised (seen 2026-10-23, review_trade2) | books | open |
+| O354 | accounting | O283's void exemption goes by the name of the step making the posting (void, reverse, cancel, undo): a correction under another name is refused. Decided: an explicit marker on each correction path (seen 2026-10-23, fix_money2) | rule | open |
 
 Upgrade notes, true of data made before the 8 October fixes:
 - Landed cost allocated before the stores fix releases to cost of sales, and old inventory differences stay where they were.
