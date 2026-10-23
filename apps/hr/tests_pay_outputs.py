@@ -611,3 +611,21 @@ class APeriodClosesWithItsPayRunsPostedTests(OutputsTestCase):
                                                end_date=datetime.date(2026, 6, 30))
         june.close()
         self.assertTrue(AccountingPeriod.objects.get(pk=june.pk).closed)
+
+
+class WhoReadsStatutoryNumbersTests(OutputsTestCase):
+    """O311: UAN and ESI numbers are served to HR and payroll, not to the floor or a line manager."""
+
+    def test_the_floor_reads_names_and_hr_and_payroll_read_the_numbers(self):
+        person = self.employee("E1")
+        person.uan, person.esi_number = "100000000001", "2200012345"
+        person.save()
+        for role in ("Quality Inspector", "Maintenance", "Production Supervisor", "Process Engineer",
+                     "Quality Manager", "Line Manager"):
+            said = self.as_role(role).get("/api/hr/employees/")
+            self.assertEqual(said.status_code, 200, role)
+            self.assertNotIn("100000000001", said.content.decode(), role)
+            self.assertNotIn("2200012345", said.content.decode(), role)
+        for role in ("HR Admin", "Payroll Officer"):
+            [row] = self.as_role(role).get("/api/hr/employees/").json()
+            self.assertEqual((row["uan"], row["esi_number"]), ("100000000001", "2200012345"), role)

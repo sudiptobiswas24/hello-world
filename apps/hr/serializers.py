@@ -22,6 +22,20 @@ class EmployeeSerializer(ExtensibleSerializerMixin, serializers.ModelSerializer)
     # not also keep customers and vendors to take somebody on.
     new_name = serializers.CharField(write_only=True, required=False, max_length=255)
 
+    # Statutory identifiers are the personnel and payroll offices' (O311), as pay details hide PAN, bank and
+    # birth date: the floor and a line manager read names, and were served every employee's UAN and ESI number.
+    STATUTORY_IDS = ("uan", "esi_number")
+    READS_STATUTORY_IDS = ("hr.change_employee", "hr.view_employeepaydetails")
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if user is not None and not any(user.has_perm(perm) for perm in self.READS_STATUTORY_IDS):
+            for field in self.STATUTORY_IDS:
+                data.pop(field, None)
+        return data
+
     def validate(self, attrs):
         if self.instance is None and not attrs.get("party") and not attrs.get("new_name"):
             raise serializers.ValidationError({"party": ["Name the person, or choose who they already are."]})
