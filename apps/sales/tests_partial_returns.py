@@ -419,3 +419,22 @@ class ANoteMadeInCodeKeepsToItsInvoiceTests(SalesTestCase):
         InvoiceLine.objects.filter(pk=line.pk).update(unit_price=Decimal("800"))
         Invoice.objects.get(pk=note.pk).post()
         self.assertEqual(invoice.amount_due(), Decimal("0.00"))
+
+
+class OneCeilingForEveryCreditNoteTests(SalesTestCase):
+    """Review of O298 (probe s2): a goodwill credit of the whole invoice, then a return: the return's note is refused."""
+
+    def test_a_return_after_a_goodwill_credit_of_the_whole_is_refused_at_posting(self):
+        order = self.make_order(quantity="10", price="100")
+        delivery = self.ship(order, 10)
+        invoice = self.bill(order)
+        goodwill = Invoice.objects.create(customer=invoice.customer, invoice_date=invoice.invoice_date,
+                                          receivable_account=invoice.receivable_account, currency=invoice.currency,
+                                          credits=invoice)
+        InvoiceLine.objects.create(invoice=goodwill, description="goodwill", quantity=Decimal("1"),
+                                   unit_price=Decimal("1000"), revenue_account=self.revenue)
+        goodwill.post()
+        with self.assertRaisesMessage(ValidationError, "has 0 left to give back (1000 of 1000"):
+            delivery.create_return()
+        self.assertEqual(Invoice.objects.filter(credits=invoice, posted=True).count(), 1)
+        self.assertEqual(invoice.amount_due(), Decimal("0.00"))

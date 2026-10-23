@@ -426,3 +426,23 @@ class ADebitNoteByHandIsDatedByTheCorrectionRuleTests(PurchasingLifecycleTestCas
         note = bill.create_debit_note(quantities={bill.lines.get(): Decimal("2")})
         self.assertEqual(note.bill_date, timezone.localdate())
 
+
+
+class OneCeilingForEveryDebitNoteTests(PurchasingLifecycleTestCase):
+    """Review of O298 (probe p2): a goodwill debit of the whole bill, then a return: the return's note is refused."""
+
+    def test_a_return_after_a_goodwill_debit_of_the_whole_is_refused_at_posting(self):
+        # 10 at 5 received and billed: 50.00; a goodwill debit of 50 posted first.
+        order = self.make_order(quantity="10", price="5")
+        receipt = self.receive(order, 10)
+        bill = order.create_bill(self.payable, bill_date=datetime.date(2026, 1, 10))
+        bill.post()
+        goodwill = Bill.objects.create(vendor=bill.vendor, bill_date=bill.bill_date, payable_account=self.payable,
+                                       debits=bill)
+        BillLine.objects.create(bill=goodwill, description="goodwill", quantity=Decimal("1"),
+                                unit_price=Decimal("50"), expense_account=self.expense)
+        goodwill.post()
+        with self.assertRaisesMessage(ValidationError, "has 0 left to give back (50 of 50"):
+            receipt.create_return()
+        self.assertEqual(Bill.objects.filter(debits=bill, posted=True).count(), 1)
+        self.assertEqual(bill.amount_due(), Decimal("0.00"))
