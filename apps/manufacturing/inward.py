@@ -43,6 +43,8 @@ KEEP_FOR = datetime.timedelta(days=365)
 MAX_DEPTH = 6
 
 
+from apps.core.models import takes_back  # noqa: E402  (O354: a correction step)
+
 def _q(value):
     return format(Decimal(value).normalize(), "f")
 
@@ -206,6 +208,7 @@ class CustomerMaterialReceipt(_Posted):
         self._write(["number", "received_on", "their_challan", "posted", "posted_at"])
 
     @serialised("posted", "voided_at")
+    @takes_back
     def void(self, reason):
         """Withdraw a receipt entered in error, while all of it is still on the shelf."""
         from apps.inventory.locking import lock_positions
@@ -323,6 +326,7 @@ class CustomerMaterialReturn(_Posted):
         self._write(["number", "returned_on", "posted", "posted_at"])
 
     @serialised("posted", "voided_at")
+    @takes_back
     def void(self, reason):
         if not self.posted or self.voided_at is not None:
             raise ValidationError(f"{self} is not a standing return.")

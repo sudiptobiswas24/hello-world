@@ -18,6 +18,8 @@ from apps.accounting.models import JournalEntry, JournalLine, TdsSection, round_
 from apps.core.models import AuditModel, Company, correction_date, lock_rows, serialised, to_date
 
 
+from apps.core.models import takes_back  # noqa: E402  (O354: a correction step)
+
 class CustomerTds(AuditModel):
     invoice = models.ForeignKey("sales.Invoice", on_delete=models.PROTECT, related_name="tds_withheld")
     section = models.ForeignKey(TdsSection, on_delete=models.PROTECT, related_name="+")
@@ -41,6 +43,7 @@ class CustomerTds(AuditModel):
         return f"{self.section.code} {self.amount} on {self.invoice}"
 
     @serialised("reversed_entry", "confirmed_on")
+    @takes_back
     def reverse(self, on_date=None):
         """The customer never filed it: the invoice is owed that much again."""
         if self.reversed_entry_id:

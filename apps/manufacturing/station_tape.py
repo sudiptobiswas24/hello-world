@@ -38,6 +38,8 @@ from apps.core.models import AuditModel
 from .station_scale import TYPED_REASONS
 
 
+from apps.core.models import takes_back  # noqa: E402  (O354: a correction step)
+
 class TapeDoff(AuditModel):
     station = models.ForeignKey("manufacturing.LoomStation", on_delete=models.PROTECT,
                                 related_name="doffs")
@@ -162,6 +164,7 @@ def record_tape(station, operator, machine, gross_kg, bobbins, core_type, denier
 
 
 @transaction.atomic
+@takes_back
 def void_doff(doff, station, supervisor, operator, reason):
     from .station_gauge import void_gauged
 

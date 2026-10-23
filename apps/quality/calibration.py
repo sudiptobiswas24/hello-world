@@ -41,6 +41,8 @@ from django.utils import timezone
 from apps.core.models import AuditModel, DocumentSequence, lock_rows, serialised, to_date
 
 
+from apps.core.models import takes_back  # noqa: E402  (O354: a correction step)
+
 class Instrument(AuditModel):
     code = models.CharField(max_length=32, unique=True)
     name = models.CharField(max_length=255)
@@ -169,6 +171,7 @@ class Calibration(AuditModel):
         self._write(["number", "calibrated_on", "due_on", "posted", "posted_at"])
 
     @serialised("posted", "voided_at")
+    @takes_back
     def void(self, reason):
         from .models import Reading
 

@@ -45,6 +45,8 @@ from apps.core.models import AuditModel, serialised, to_date
 ZERO = Decimal("0")
 
 
+from apps.core.models import takes_back  # noqa: E402  (O354: a correction step)
+
 def _q(value):
     return format(Decimal(value).normalize(), "f")
 
@@ -156,6 +158,7 @@ class OperationReport(AuditModel):
         return order.item.to_stock_quantity(self.quantity_good, order.uom)
 
     @serialised("voided_at")
+    @takes_back
     def void(self, reason):
         # What was counted is what is stored, not whatever this object has
         # been given since.

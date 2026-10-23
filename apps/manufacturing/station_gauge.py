@@ -17,6 +17,8 @@ from django.utils import timezone
 ZERO = Decimal("0")
 
 
+from apps.core.models import takes_back  # noqa: E402  (O354: a correction step)
+
 def floor_note(station, supervisor, reason, off):
     """What booking something off its limits at the machines records: whose PIN, and why."""
     return f"Booked {off} at {station} with {supervisor}'s PIN: {reason}"
@@ -143,6 +145,7 @@ def gauged_batch(station, operator, machine, order, plan, gauge, readings, noun,
     return mean, passed, reason, lot, inspection, entry
 
 
+@takes_back
 def void_gauged(row, station, supervisor, operator, reason, noun):
     """Withdraw a gauged batch: its output reversed, its inspection voided or removed."""
     from .station import check_supervisor

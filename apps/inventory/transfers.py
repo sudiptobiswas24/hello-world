@@ -31,6 +31,8 @@ from .locking import lock_position, lock_positions
 from .models import Item, MovementType, StockMovement, Warehouse
 
 
+from apps.core.models import takes_back  # noqa: E402  (O354: a correction step)
+
 def move_stock(item, source, destination, quantity, reference, occurred_at, notes,
                lot=None, from_bin=None, to_bin=None):
     """
@@ -322,6 +324,7 @@ class StockTransfer(AuditModel):
     # -- the reverse path -------------------------------------------------
 
     @serialised("status")
+    @takes_back
     def cancel(self, occurred_at=None, memo=""):
         """
         Undo the transfer, putting every unit back where it came from.
@@ -567,6 +570,7 @@ class StockTransferStep(AuditModel):
         return f"{self.leg} {self.quantity} {self.source.code}->{self.destination.code}"
 
     @transaction.atomic
+    @takes_back
     def reverse(self, line, occurred_at, label):
         """
         Send this hop back the way it came, at the value it carried.

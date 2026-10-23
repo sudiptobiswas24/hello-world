@@ -654,3 +654,29 @@ class OneRuleForDocumentNumbersMigrationTests(VendorInvoiceKeyMigrationTests):
         self.assertEqual(printed.count("purchasing 0079"), 2)
         with self.assertRaises(IntegrityError), transaction.atomic():
             Bill.objects.filter(pk=rows["case"].pk).update(reference_key="2025:INV-77")
+
+
+class AReturnToTheVendorTakesBackWhatASwitchedOffAccountHoldsTests(PurchasingTestCase):
+    """O354: goods received go on going back after GRNI or inventory is switched off; a new receipt does not post."""
+
+    def received(self, quantity="6"):
+        line = self.make_po_line(Decimal("10"))
+        receipt = GoodsReceipt.objects.create(purchase_order=line.order, receipt_date="2026-01-05")
+        GoodsReceiptLine.objects.create(receipt=receipt, order_line=line, warehouse=self.warehouse,
+                                        quantity_received=Decimal(quantity))
+        return receipt
+
+    def test_a_return_with_grni_or_inventory_switched_off_posts(self):
+        for account in (self.grni, self.inventory):
+            with self.subTest(account=account.code):
+                receipt = self.received()
+                receipt.post()
+                Account.objects.filter(pk=account.pk).update(is_active=False)
+                self.assertTrue(receipt.create_return().posted)
+                Account.objects.filter(pk=account.pk).update(is_active=True)
+
+    def test_a_new_receipt_with_grni_switched_off_is_refused(self):
+        receipt = self.received()
+        Account.objects.filter(pk=self.grni.pk).update(is_active=False)
+        with self.assertRaisesMessage(ValidationError, "is switched off; it takes nothing new"):
+            receipt.post()

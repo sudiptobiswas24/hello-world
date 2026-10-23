@@ -35,6 +35,8 @@ from apps.accounting.tds import rupees
 from apps.core.models import AuditModel, Company, serialised, to_date
 
 
+from apps.core.models import takes_back  # noqa: E402  (O354: a correction step)
+
 class TcsCollection(AuditModel):
     invoice = models.ForeignKey("sales.Invoice", on_delete=models.PROTECT, related_name="tcs_collected")
     section = models.ForeignKey(TcsSection, on_delete=models.PROTECT, related_name="+")
@@ -502,6 +504,7 @@ class TcsChallan(AuditModel):
             signed=TcsCollection.signed)
 
     @serialised("voided_entry")
+    @takes_back
     def void(self, on_date=None):
         """The payment did not go through: the tax is owed again, and its rows wait for another challan."""
         from apps.accounting.challans import void_challan

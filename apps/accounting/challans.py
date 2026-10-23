@@ -16,6 +16,8 @@ from apps.core.models import correction_date, lock_rows, to_date
 from .models import JournalEntry, JournalLine
 
 
+from apps.core.models import takes_back  # noqa: E402  (O354: a correction step)
+
 def pay_over(section, waiting, live, bank_account, date, challan_number, what, memo, make_challan,
              signed=lambda row: row.amount):
     """
@@ -68,6 +70,7 @@ def pay_over(section, waiting, live, bank_account, date, challan_number, what, m
         return challan
 
 
+@takes_back
 def void_challan(challan, on_date=None):
     """
     The payment over did not go through: the tax is owed again, and the

@@ -46,6 +46,8 @@ LOCK_AFTER = 5
 LOCK_WINDOW = datetime.timedelta(minutes=10)
 
 
+from apps.core.models import takes_back  # noqa: E402  (O354: a correction step)
+
 class LineKind(models.TextChoices):
     LOOM_EXIT = "loom_exit", "Loom exit"
     CONVERSION = "conversion", "Cutting and stitching"
@@ -202,6 +204,7 @@ class VoidedMeasurement(models.Model):
         abstract = True
 
     @serialised("voided_at")
+    @takes_back
     def void(self, supervisor, operator, station, at=None):
         if self.voided_at is not None:
             raise ValidationError("This figure is already withdrawn.")

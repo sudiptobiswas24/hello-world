@@ -116,6 +116,8 @@ from .pricing import resolve_price
 logger = logging.getLogger(__name__)
 
 
+from apps.core.models import takes_back  # noqa: E402  (O354: a correction step)
+
 def _require_customer_role(party):
     if party and not party.role_assignments.filter(role=PartyRole.CUSTOMER).exists():
         raise ValidationError(f"{party} does not have the Customer role.")
@@ -917,6 +919,7 @@ class SalesOrder(PlacedWhereTheGoodsGo, Extensible, TaxedDocumentMixin, ChangesW
                              filename=f"{what} {self.number or 'draft'}.pdf")
 
     @serialised("status")
+    @takes_back
     def cancel(self):
         """Cancel an order that hasn't been acted on yet."""
         if self.status == OrderStatus.CANCELLED:
@@ -2287,6 +2290,7 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
         super(Invoice, self).save(update_fields=["written_off_amount", "updated_at"])
         return entry
 
+    @takes_back
     def _undo_settlements_without_money(self):
         """
         Past what it clears of its invoice, a credit note undoes the write-off
@@ -2776,6 +2780,7 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
         return all(credited.get(line.pk) == line.quantity for line in original_lines)
 
     @serialised("posted", held_first=True)
+    @takes_back(when=lambda self: self.is_credit_note() or self.is_debit_note())
     def post(self, memo=None, apply_deposits=True):
         if self.posted:
             raise ValidationError("This invoice is already posted.")
@@ -2934,6 +2939,7 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
             self.apply_available_deposits(on_date=self.invoice_date)
 
 
+    @takes_back
     def _credit_note(self, on_date=None, **extra):
         """A credit note against this invoice, carrying its terms, addresses and rep; the lines are the caller's."""
         return Invoice.objects.create(
@@ -2943,6 +2949,7 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
             credits=self, **extra)
 
     @serialised("posted", held_first=True)
+    @takes_back
     def create_credit_note(self, memo="", quantities=None, amount=None, on_date=None, post=True):
         """
         Credit this invoice, on `on_date` or today. By default the whole thing; pass
@@ -3118,6 +3125,7 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
             note.post(memo=memo or f"Debit note on {self.number}: {reason}")
             return note
 
+    @takes_back
     def credit_old_supply(self, lines, memo="", on_date=None, old_value=None):
         """
         A credit note with GST on an invoice the old system issued (see
@@ -3783,6 +3791,7 @@ def outstanding_balance(customer):
     return owed - sum((note.refund_due() for note in notes), Decimal("0")) - received + paid_out
 
 
+@takes_back
 def undo_what_it_settled(payment, on_date):
     """
     A receipt returned (Payment.void asks; accounting imports nothing here), on the void's day: the
@@ -4477,6 +4486,7 @@ class Delivery(AuditModel):
         return pick_list_for([self])
 
     @serialised("posted", held_first=True)
+    @takes_back(when=lambda self: self.is_return())
     def post(self):
         if self.posted:
             raise ValidationError("This delivery is already posted.")
@@ -4890,6 +4900,7 @@ class Delivery(AuditModel):
         ).order_by("pk"))
 
     @serialised("posted", held_first="locked_before_returning")
+    @takes_back
     def create_return(self, credit_invoices=True, quantities=None, post_notes=True):
         """
         Take goods back: reverse the stock movement and, unless this is a

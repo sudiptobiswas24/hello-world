@@ -35,6 +35,8 @@ from apps.core.models import AuditModel, Company, correction_date, lock_rows, se
 from .models import hold_the_employee
 
 
+from apps.core.models import takes_back  # noqa: E402  (O354: a correction step)
+
 class SettlementKind(models.TextChoices):
     RECEIPT = "receipt", "Paid back"
     WRITE_OFF = "write_off", "Written off"
@@ -190,6 +192,7 @@ class ShortfallSettlement(AuditModel):
         raise ValidationError(f"{self} is posted: void it instead.")
 
     @serialised("voided_at", held_first="held_first")
+    @takes_back
     def void(self, on_date=None, memo=""):
         """Owed again: a receipt's payment is voided with it, a write-off's entry reversed."""
         if self.voided_at is not None:

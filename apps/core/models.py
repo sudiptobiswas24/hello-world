@@ -1,4 +1,5 @@
 import calendar
+import contextlib
 import contextvars
 import datetime
 import re
@@ -356,6 +357,49 @@ def day_that_has_come(day, refused):
     if day > timezone.localdate():
         raise ValidationError(f"{refused} {day}: that day has not come.")
     return day
+
+
+# -- Taking something back -----------------------------------------------------
+
+# Set while a step that takes something back runs (O354): a void, a reversal, a cancellation, a
+# return either way, a credit or debit note. A switched-off account or cost centre refuses new
+# postings and nothing a correction posts, since a correction is always possible (O283, decided). An
+# explicit marker each correction step carries, never a name read off the stack: a new posting made
+# under a function called reverse_something is new business.
+_TAKING_BACK = contextvars.ContextVar("taking_back", default=False)
+
+
+@contextlib.contextmanager
+def taking_back():
+    """Everything posted inside takes something back."""
+    token = _TAKING_BACK.set(True)
+    try:
+        yield
+    finally:
+        _TAKING_BACK.reset(token)
+
+
+def is_taking_back():
+    return _TAKING_BACK.get()
+
+
+def takes_back(method=None, *, when=None):
+    """
+    Mark a correction step: what it posts takes something back. `when(self)` for a method that is a
+    correction only sometimes (a delivery's post() when the delivery is a return).
+    """
+    import functools
+
+    def wrap(method):
+        @functools.wraps(method)
+        def inner(*args, **kwargs):
+            if when is not None and not when(args[0]):
+                return method(*args, **kwargs)
+            with taking_back():
+                return method(*args, **kwargs)
+        inner.takes_back = True
+        return inner
+    return wrap(method) if method is not None else wrap
 
 
 # A government portal stamps its answer by its own clock, which may run ahead of the plant's (decided:

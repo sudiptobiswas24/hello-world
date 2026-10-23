@@ -44,6 +44,8 @@ ZERO = Decimal("0")
 WEIGHT_CODES = ("BAGWT", "LINERWT")
 
 
+from apps.core.models import takes_back  # noqa: E402  (O354: a correction step)
+
 class BagCount(AuditModel):
     station = models.ForeignKey("manufacturing.LoomStation", on_delete=models.PROTECT,
                                 related_name="bag_counts")
@@ -285,6 +287,7 @@ def floor_checks_decided(lot, by=None):
 
 
 @transaction.atomic
+@takes_back
 def void_bags(count, supervisor, reason):
     """Take a count back: its production and its inspection with it."""
     from .station_gauge import discard_open, withdraw_inspection

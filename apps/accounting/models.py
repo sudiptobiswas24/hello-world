@@ -27,6 +27,8 @@ from apps.core.models import (
 CENTS = Decimal("0.01")
 
 
+from apps.core.models import takes_back  # noqa: E402  (O354: a correction step)
+
 def round_money(amount):
     return amount.quantize(CENTS, rounding=ROUND_HALF_UP)
 
@@ -315,35 +317,19 @@ def register_close_check(ask):
         CLOSE_CHECKS.append(ask)
 
 
-# The steps that take something back, by the name every one of them goes by: a void, a reversal, a
-# cancellation, an undo. Decided (O283): a correction is always possible, so a switched-off account or
-# cost centre refuses new postings only. Seventy-odd void paths build their entries in their own way,
-# most without `reverses`; asking which step the posting is made from covers each one, and the next.
-CORRECTING_STEPS = re.compile(r"^_*(void|revers|cancel|undo)")
-
-
-def in_a_correction():
-    """True when a step that takes something back (CORRECTING_STEPS) is on the way to this posting."""
-    import sys
-
-    frame = sys._getframe(1)
-    while frame is not None:
-        if CORRECTING_STEPS.match(frame.f_code.co_name):
-            return True
-        frame = frame.f_back
-    return False
-
-
 def refuse_switched_off(lines):
     """
     An account or cost centre switched off takes nothing new (O283): its flag was read by the money
     pickers and nothing else, so a retired revenue account still took every invoice. What takes back an
-    earlier posting (a reversal, a credit or debit note, any void) is not new, and is not asked.
+    earlier posting (a reversal, a note, a void, a return: what runs under apps.core.models.takes_back)
+    is not new, and is not asked.
     """
+    from apps.core.models import is_taking_back
+
     lines = list(lines)
     off = [line for line in lines
            if not line.account.is_active or (line.cost_centre_id and not line.cost_centre.is_active)]
-    if not off or in_a_correction():
+    if not off or is_taking_back():
         return
     line = off[0]
     if not line.account.is_active:
@@ -426,6 +412,7 @@ class JournalEntry(AuditModel):
         return None
 
     @serialised("posted")
+    @takes_back
     def reverse_by_hand(self, memo=""):
         """A person's reversal, from the journal: only of an entry no document keeps, and never of a reversal."""
         document = self.recorded_by()
@@ -506,6 +493,7 @@ class JournalEntry(AuditModel):
                     f"{account.currency.code}.")
 
     @serialised("posted")
+    @takes_back
     def create_reversal(self, entry_date=None, memo=""):
         if not self.posted:
             raise ValidationError("Only a posted journal entry can be reversed.")
@@ -1304,6 +1292,7 @@ class Payment(AuditModel):
         )
 
     @serialised("posted", "voided_entry")
+    @takes_back
     def void(self, memo="", on_date=None):
         """
         Reverse a posted payment — a bounced cheque, a recalled transfer.
@@ -1857,6 +1846,7 @@ class BankStatementLine(AuditModel):
         return entry
 
     @serialised("payment", "journal_entry", "returned_payment", "booked_entry", held_first=True)
+    @takes_back
     def reverse_posting(self, on_date=None):
         """
         Take back a line posted to the wrong account. `unmatch` said to

@@ -37,6 +37,8 @@ from apps.core.models import AuditModel, DocumentSequence, serialised
 MAX_DEPTH = 4
 
 
+from apps.core.models import takes_back  # noqa: E402  (O354: a correction step)
+
 class TestCertificate(AuditModel):
     number = models.CharField(max_length=32, blank=True, editable=False)
     delivery = models.ForeignKey("sales.Delivery", on_delete=models.PROTECT,
@@ -69,6 +71,7 @@ class TestCertificate(AuditModel):
         raise ValidationError("A certificate is what the customer was sent; void it.")
 
     @serialised("voided_at")
+    @takes_back
     def void(self, reason):
         if self.voided_at is not None:
             raise ValidationError(f"{self} is already void.")

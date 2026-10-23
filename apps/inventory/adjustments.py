@@ -35,6 +35,8 @@ from .models import Item, MovementType, StockMovement, Warehouse
 from .valuation import inventory_account_for
 
 
+from apps.core.models import takes_back  # noqa: E402  (O354: a correction step)
+
 def _system_quantity(item, warehouse, lot=None, storage_bin=None):
     """
     What the books say is in the place a count line looked at.
@@ -342,6 +344,7 @@ class StockAdjustment(AuditModel):
         return entry
 
     @serialised("posted", "voided_at")
+    @takes_back
     def void(self, on_date=None, memo="", through=""):
         """
         Undo a posted adjustment: reverse the ledger entry and put the
@@ -613,6 +616,7 @@ class StockAdjustmentLine(AuditModel):
         super().save(update_fields=["unit_cost", "posted_value", "movement", "updated_at"])
         return self.movement
 
+    @takes_back
     def reverse(self, adjustment, occurred_at, label):
         """
         Put back exactly what this line took, in quantity and in value.

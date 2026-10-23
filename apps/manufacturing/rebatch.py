@@ -55,6 +55,8 @@ ZERO = Decimal("0")
 RATE_PLACES = Decimal("0.00000001")
 
 
+from apps.core.models import takes_back  # noqa: E402  (O354: a correction step)
+
 def _q(value):
     return format(Decimal(value).normalize(), "f")
 
@@ -180,6 +182,7 @@ class Rebatch(AuditModel):
         self._write(["number", "rebatched_on", "reason", "posted", "posted_at"])
 
     @serialised("posted", "voided_at")
+    @takes_back
     def void(self, reason):
         from apps.inventory.locking import lock_positions
 

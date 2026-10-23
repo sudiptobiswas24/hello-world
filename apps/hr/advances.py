@@ -34,6 +34,8 @@ from apps.core.models import AuditModel, Company, documents_it_answers_to, lock_
 from .models import Employee, hold_the_employee
 
 
+from apps.core.models import takes_back  # noqa: E402  (O354: a correction step)
+
 class AdvanceKind(models.TextChoices):
     ADVANCE = "advance", "Salary advance"
     LOAN = "loan", "Loan"
@@ -177,6 +179,7 @@ class SalaryAdvance(AuditModel):
         return [self.payment, *self.locked_before_it()]
 
     @serialised("voided_at", held_first="held_for_void")
+    @takes_back
     def void(self, on_date=None, memo=""):
         """Take it back as never given: refused once a posted run recovered from it; its payment is voided with it."""
         if self.voided_at is not None:
