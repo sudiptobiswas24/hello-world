@@ -323,7 +323,13 @@ built.
     audits, reviews, probes and small mechanical fixes; Haiku for
     mechanical runs, sweeps and summaries. A design question an agent
     raises comes back to the integrator, not settled by the agent.
-  - At most two agents at once.
+  - At most three agents at once on this 4-CPU machine (owner, 21 October:
+    run it faster). Fix agents run only the tests their own commits add or
+    touch, plus their races on PostgreSQL; never whole modules or the whole
+    suite. The integrator runs the whole suites once, on the integration
+    tree, before the gate: eight suites at once had each round taking hours.
+  - Each fix round gets one review. Blockers it finds are fixed at once;
+    anything smaller is registered and batched into the next round.
   - Briefs name the exact files and lines (the register has them).
   - About 60 tool calls per agent; at that point it commits and reports.
   - New work goes to a fresh agent with a tight brief. Resume an agent
