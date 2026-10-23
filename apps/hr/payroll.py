@@ -688,6 +688,16 @@ class PayRun(AuditModel):
                 found.append(person)
         return found
 
+    def skipped(self):
+        """
+        People employed on some day of the period with no slip on this run, in employee-number order (O305):
+        a joiner whose pay row was forgotten had no slip and nothing said so. Derived, so it is true after any
+        recalculation; the calculate action answers with it.
+        """
+        return list(Employee.objects.filter(hire_date__lte=self.period_end).filter(
+            Q(termination_date__isnull=True) | Q(termination_date__gte=self.period_start),
+        ).exclude(payslips__run=self).select_related("party").order_by("employee_number"))
+
     def _eligible_employees(self):
         """Everyone with pay in force at any point in the period."""
         return Employee.objects.filter(

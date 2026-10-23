@@ -211,8 +211,11 @@ class PayRunViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
                 raise DRFValidationError([f"Hours for {person} are a number, not negative."])
         _run(run.calculate, employees=people, hours=hours)
         run = self._fresh(run)
+        # Who is employed in the period and was left off, by name (O305): no pay set up, or not chosen.
+        skipped = [{"id": person.pk, "employee_number": person.employee_number, "name": person.party.name}
+                   for person in run.skipped()]
         return Response({**self.get_serializer(run).data,
-                         "payslips": [_slip(slip) for slip in run.payslips.all()]})
+                         "payslips": [_slip(slip) for slip in run.payslips.all()], "skipped": skipped})
 
     def _fresh(self, run):
         """The run read again: what was prefetched for it predates the action."""

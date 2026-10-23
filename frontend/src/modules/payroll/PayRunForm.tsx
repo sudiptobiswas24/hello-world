@@ -78,8 +78,15 @@ export default function PayRunForm() {
     draft.reset();
     if (isNew) navigate(`/payroll/runs/${outcome.data.id}`, { replace: true });
   };
-  const run_ = (action: string, done: string, body?: unknown) =>
+  const run_ = (action: string, done: string | ((result: Run) => string), body?: unknown) =>
     act.run("POST", `${ENDPOINT}${run!.id}/${action}/`, body ?? {}, { done });
+  // Who is employed in the period and has no slip (O305): named, never left off in silence.
+  const workedOut = (result: Run) => {
+    const skipped = (result as Run & { skipped?: { employee_number: string; name: string }[] }).skipped ?? [];
+    return skipped.length
+      ? `Worked out. No slip for ${skipped.map((p) => `${p.employee_number} ${p.name}`).join(", ")}: no pay set up for the period.`
+      : "Worked out";
+  };
 
   const field = (key: "name" | "period_start" | "period_end" | "pay_date", label: string, type = "date") => (
     <Field label={label} errors={draft.errors[key]}>
@@ -95,7 +102,7 @@ export default function PayRunForm() {
         state={run?.status} tone={run?.status === "posted" ? "done" : run?.status === "voided" ? "cancelled" : "draft"}>
         {editable && (draft.dirty || isNew) && <ActionButton primary pending={act.pending} onClick={() => void save()}>{isNew ? "Open run" : "Save"}</ActionButton>}
         {run && ["draft", "calculated"].includes(run.status) && !draft.dirty && can("hr.change_payrun") && (
-          <ActionButton primary={run.status === "draft"} pending={act.pending} onClick={() => void run_("calculate", "Worked out")}>
+          <ActionButton primary={run.status === "draft"} pending={act.pending} onClick={() => void run_("calculate", workedOut)}>
             {run.status === "draft" ? "Work it out" : "Work it out again"}
           </ActionButton>
         )}
