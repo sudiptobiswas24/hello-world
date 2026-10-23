@@ -238,6 +238,20 @@ class ExpenseLine(AuditModel):
         """The claims it leaves and joins, as save() holds them (apps.core.models.answer_to_its_document)."""
         return documents_it_answers_to(self, "claim")
 
+    def check_account(self):
+        """
+        What a claim is charged to is an active expense account, never a bank or a control account (O303):
+        a self-service taxi line of 500 charged to Net pay payable was debited to it on payment, and the
+        account stopped footing to the slips it holds.
+        """
+        from apps.accounting.models import AccountType
+
+        account = self.expense_account
+        if account.account_type != AccountType.EXPENSE or account.holds_money or not account.is_active:
+            raise ValidationError({"expense_account": [
+                f"{account.code} {account.name} is not an active expense account; a claim is charged to what "
+                "was spent on, not to a bank, a liability or an asset."]})
+
     def _check_open(self):
         # Shared rule B: the claim it leaves and the one it joins, both held and both drafts. Asked of
         # the one it joined alone, a line was moved off an approved claim onto a draft.
@@ -252,6 +266,7 @@ class ExpenseLine(AuditModel):
             raise ValidationError({"description": ["Say what was bought."]})
         if self.amount is None or self.amount <= 0:
             raise ValidationError({"amount": ["An expense is more than nothing."]})
+        self.check_account()
         self.spent_on = to_date(self.spent_on) or timezone.localdate()
         super().save(*args, **kwargs)
 

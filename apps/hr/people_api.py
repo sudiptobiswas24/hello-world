@@ -104,9 +104,16 @@ class ExpenseClaimViewSet(OwnOrReportsMixin, AuditableViewSetMixin, viewsets.Mod
         "unpay": "hr.pay_expenseclaim",
     }
 
-    def perform_create(self, serializer):
+    def _claimant(self, serializer, default):
+        """
+        Whose claim it is: one's own, unless HR records it. Asked on an edit as on the create (O303): a PATCH
+        of {"employee": colleague} by the maker's own login handed a draft to the colleague, to be decided by
+        the colleague's manager. An edit that leaves the claimant alone keeps it.
+        """
         user = self.request.user
-        employee = serializer.validated_data.get("employee")
+        employee = serializer.validated_data.get("employee", default)
+        if default is not None and employee == default:
+            return employee
         if not (user.is_superuser or user.has_perm("hr.change_employee")):
             me = _me(self.request)
             if employee is not None and employee != me:
@@ -114,7 +121,13 @@ class ExpenseClaimViewSet(OwnOrReportsMixin, AuditableViewSetMixin, viewsets.Mod
             employee = me
         elif employee is None:
             employee = _me(self.request)
-        super().perform_create(serializer, employee=employee)
+        return employee
+
+    def perform_create(self, serializer):
+        super().perform_create(serializer, employee=self._claimant(serializer, None))
+
+    def perform_update(self, serializer):
+        super().perform_update(serializer, employee=self._claimant(serializer, serializer.instance.employee))
 
     def _answer(self, claim):
         return Response(self.get_serializer(self.get_queryset().get(pk=claim.pk)).data)
