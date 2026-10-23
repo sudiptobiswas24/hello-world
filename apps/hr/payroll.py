@@ -722,12 +722,14 @@ class PayRun(AuditModel):
         """
         The pay date the entry is booked on is near the period (O308): June 2026 with a pay date of 30 June 2062,
         a typed year, booked wages 36 years ahead, and its void was then allowed only on that day. Never before
-        the period starts, and never later than the Act's ten days after the period, or after today when it is
+        the period starts, and never later than the Act's ten days after the period, or than today when it is
         paid late. Not correction_date: a run is rightly posted on the 8th for a pay date of the 11th, a day
         still to come, which that rule refuses.
         """
         pay_date, start = to_date(self.pay_date), to_date(self.period_start)
-        latest = max(timezone.localdate(), to_date(self.period_end)) + datetime.timedelta(days=self.PAY_WITHIN_DAYS)
+        # A late run is booked on a day that has come (review 3): max(today, end) + 10 let June, posted on
+        # 23 October, be booked on 2 November, a day still to come.
+        latest = max(timezone.localdate(), to_date(self.period_end) + datetime.timedelta(days=self.PAY_WITHIN_DAYS))
         if pay_date < start:
             raise ValidationError({"pay_date": [f"A pay date of {pay_date} is before the period starts ({start})."]})
         if pay_date > latest:
