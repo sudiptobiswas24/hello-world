@@ -579,6 +579,19 @@ class APayDateNearItsPeriodTests(OutputsTestCase):
             run.post()
         self.assertEqual(run.status, "posted")
 
+    def test_paid_late_the_window_ends_today(self):
+        """Review 3: June posted on 23 October: 23 October is taken, 2 November (ten days on) is not."""
+        from unittest import mock
+
+        with mock.patch("apps.hr.payroll.timezone.localdate", return_value=datetime.date(2026, 10, 23)):
+            run = self.posted(datetime.date(2026, 11, 2))
+            with self.assertRaisesMessage(ValidationError, "past 2026-10-23"):
+                run.post()
+            run.pay_date = datetime.date(2026, 10, 23)
+            run.save()
+            run.post()
+        self.assertEqual(run.status, "posted")
+
     def test_paid_late_today_is_taken(self):
         run = self.posted(timezone.localdate())
         run.post()
