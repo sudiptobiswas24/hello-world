@@ -110,6 +110,10 @@ class AttendanceDay(AuditModel):
         # day marked as the leave is approved would find no leave, and the
         # leave no mark.
         hold_the_employee(*self.locked_before_it())
+        # A day is the punch file's only while the punch file alone writes it (O304): a punched day the supervisor
+        # set to half a day kept source=import, and the next read of the reader's file put it back to present.
+        # Any other save of it (the API, the admin, code) is a hand's, and the file keeps it as entered.
+        self.source = AttendanceSource.IMPORT if getattr(self, "_from_the_punch_file", False) else AttendanceSource.MANUAL
         if not self.employee.is_employed_on(self.on):
             raise ValidationError({"on": f"{self.employee} was not employed on {self.on}."})
         if self.status == AttendanceStatus.ABSENT and (self.time_in or self.overtime_hours):
@@ -294,11 +298,14 @@ def _punch(row, number, employees, report):
         return
     values = dict(status=AttendanceStatus.PRESENT, shift=row.get("shift", ""), time_in=time_in, time_out=time_out)
     if existing is None:
-        AttendanceDay(employee=employee, on=day, source=AttendanceSource.IMPORT, **values).save()
+        made = AttendanceDay(employee=employee, on=day, source=AttendanceSource.IMPORT, **values)
+        made._from_the_punch_file = True
+        made.save()
         report["created"] += 1
     else:
         for name, value in values.items():
             setattr(existing, name, value)
+        existing._from_the_punch_file = True
         existing.save()
         report["updated"] += 1
 
