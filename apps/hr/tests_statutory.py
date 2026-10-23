@@ -662,3 +662,23 @@ class AMonthPaidInTwoRunsWithThePensionApartTests(AMonthPaidInTwoRunsTests):
         lines = self.lines(again, person)
         self.assertEqual(lines["PF-ER"] + lines["EPS"] + self.lines(second, person)["PF-ER"]
                          + self.lines(second, person)["EPS"], Decimal("1800.00"))
+
+
+class ARunOfTheMonthThatTookNothingTests(AMonthPaidInTwoRunsTests):
+    """Review 2: 15,000 then 4,000 in June: the second fortnight takes no PF and still counts in the ECR row."""
+
+    def test_the_ecr_row_holds_both_runs_and_agrees_with_the_esi_file(self):
+        from .statutory_files import ecr_rows, esi_rows
+
+        person, first, _second = self.filed(basic="15000")
+        EmployeeCompensation.objects.filter(employee=person, component=self.basic).update(
+            effective_to=self.FIRST[1])
+        # The run of the second fortnight is worked out again at 4,000 (filed() posted it at 15,000).
+        _second.void(on_date=self.SECOND[1])
+        self.paid(person, self.basic, "4000", since=self.SECOND[0])
+        second_run = self.run_for(*self.SECOND)
+        self.assertIsNone(self.lines(second_run, person).get("PF"))
+        [row] = [row for row in ecr_rows(second_run) if row["name"] == "F"]
+        self.assertEqual((row["gross"], row["epf_wages"], row["epf"]), (19000, 15000, 1800))
+        [esi] = [esi for esi in esi_rows(second_run) if esi["name"] == "F"]
+        self.assertEqual(esi["wages"], row["gross"])
