@@ -551,3 +551,68 @@ class SlabBandsDoNotOverlapTests(StatutoryTestCase):
         self.assertEqual(self.pt.slab_for(Decimal("9000"), 3), Decimal("190"))
         self.assertEqual(self.pt.slab_for(Decimal("9000"), 4), Decimal("175"))
         self.assertEqual(self.pt.slab_for(Decimal("5000"), 4), Decimal("0"))
+
+
+class AMonthPaidInTwoRunsTests(StatutoryTestCase):
+    """
+    O301 (decided): the PF and ESI wage ceilings are a month's across its runs, and each file is one row a member
+    a month. Figures from calc_fix_people2/o301.py.
+    """
+
+    FIRST, SECOND = (datetime.date(2026, 6, 1), datetime.date(2026, 6, 15)), (datetime.date(2026, 6, 16),
+                                                                               datetime.date(2026, 6, 30))
+
+    def filed(self, **pay):
+        from .pay_details import EmployeePayDetails
+        from .payroll import Statutory
+
+        for component, marked in ((self.pf, Statutory.PF), (self.pf_er, Statutory.PF_EMPLOYER),
+                                  (self.esi, Statutory.ESI), (self.esi_er, Statutory.ESI_EMPLOYER)):
+            component.statutory = marked
+            component.save()
+        person = self.person("F", **pay)
+        for number, employee in enumerate(Employee.objects.order_by("pk")):
+            Employee.objects.filter(pk=employee.pk).update(uan=f"10000000000{number}", esi_number=f"220000000{number}")
+            EmployeePayDetails.objects.create(employee=employee, date_of_birth=datetime.date(1990, 1, 1))
+        return person, self.run_for(*self.FIRST), self.run_for(*self.SECOND)
+
+    def test_pf_on_two_fortnights_of_8000_stops_at_the_months_15000(self):
+        person, first, second = self.filed(basic="8000")
+        self.assertEqual((self.lines(first, person)["PF"], self.lines(second, person)["PF"]),
+                         (Decimal("960.00"), Decimal("840.00")))
+        self.assertEqual(self.lines(first, person)["PF-ER"] + self.lines(second, person)["PF-ER"], Decimal("1800.00"))
+
+    def test_under_the_ceiling_each_run_takes_its_own_wages(self):
+        person, first, second = self.filed(basic="6000")
+        self.assertEqual(self.lines(first, person)["PF"] + self.lines(second, person)["PF"], Decimal("1440.00"))
+
+    def test_the_ecr_is_one_row_a_member_for_the_month(self):
+        from .statutory_files import ecr_rows
+
+        person, first, second = self.filed(basic="8000")
+        for run in (first, second):
+            [row] = [row for row in ecr_rows(run) if row["name"] == "F"]
+            self.assertEqual({key: row[key] for key in ("gross", "epf_wages", "eps_wages", "edli_wages", "epf",
+                                                        "eps", "epf_diff")},
+                             {"gross": 16000, "epf_wages": 15000, "eps_wages": 15000, "edli_wages": 15000,
+                              "epf": 1800, "eps": 1250, "epf_diff": 550})
+
+    def test_the_esi_file_is_one_row_for_the_month(self):
+        from .statutory_files import esi_rows
+
+        person, first, second = self.filed(basic="8000")
+        [row] = [row for row in esi_rows(second) if row["name"] == "F"]
+        self.assertEqual(row["wages"], 16000)
+
+    def test_esi_coverage_reads_the_months_wages_not_a_runs(self):
+        """Fortnights of 12,000: the first is a month of 12,000 so far, covered (90); with the second it is 24,000."""
+        person, first, second = self.filed(basic="12000")
+        self.assertEqual(self.lines(first, person).get("ESI"), Decimal("90.00"))
+        self.assertIsNone(self.lines(second, person).get("ESI"))
+
+    def test_a_fortnight_voided_and_worked_out_again_still_comes_to_the_months_1800(self):
+        """Both fortnights posted (960 + 840); the first voided and paid again: 1,800 - 840 = 960."""
+        person, first, second = self.filed(basic="8000")
+        first.void(on_date=datetime.date(2026, 6, 15))
+        again = self.run_for(*self.FIRST)
+        self.assertEqual(self.lines(again, person)["PF"], Decimal("960.00"))

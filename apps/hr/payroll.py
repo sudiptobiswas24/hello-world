@@ -1302,7 +1302,7 @@ class Payslip(AuditModel):
                 owed, unrounded, taken = [], Decimal("0"), Decimal("0")
                 # A slab is a month's figure (professional tax, the welfare fund): what other posted runs of
                 # the month took of it comes off, once, however many rates the component has (review RP5).
-                rebate = self._month_before(component)[1] if component.basis == ComponentBasis.SLAB else 0
+                rebate = self._month_before(component)[1] if self._a_months_figure(component) else 0
                 for row in group:
                     unrounded += self._amount_for(row, proportion, before, hours, computed)
                     so_far = component.round(max(unrounded - rebate, Decimal("0")))
@@ -1571,6 +1571,13 @@ class Payslip(AuditModel):
             cache[component.pk] = (base, taken)
         return cache[component.pk]
 
+    def _a_months_figure(self, component):
+        """Whether `component` is owed once a month whatever number of runs pay it: a slab, or a share capped at
+        a wage ceiling (O301)."""
+        return component.basis == ComponentBasis.SLAB or (
+            component.basis == ComponentBasis.PERCENT_OF_GROSS
+            and (component.ceiling_figure or component.base_ceiling is not None))
+
     def _terms(self, component_id):
         """What the dated figures `component_id` is worked out at on this slip: kept on its lines."""
         return self.__dict__.setdefault("_kept", {}).setdefault(component_id, {})
@@ -1719,20 +1726,23 @@ class Payslip(AuditModel):
         start = self._block_start(component.coverage_period_months)
         first = Payslip.objects.filter(
             employee=self.employee, run__status=PayRunStatus.POSTED,
-            run__period_end__gte=start, run__period_end__lt=self.run.period_end,
-        ).exclude(pk=self.pk).order_by("run__period_end").first()
-        if first is not None:
-            lines = first.lines.all()
-            if deciding:
-                wanted = {other.pk for other in deciding}
-                wages = sum((line.amount for line in lines if line.component_id in wanted),
-                            Decimal("0"))
-            else:
-                wages = sum((line.amount for line in lines
-                             if line.kind == ComponentKind.EARNING and line.is_taxable),
-                            Decimal("0"))
-        else:
-            wages = self._sum_of(component, deciding, computed, running_taxable)
+            run__period_end__gte=start, run__period_end__lte=self.run.period_end,
+        ).exclude(run=self.run).order_by("run__period_end").first()
+        # The ceiling is on a month's wages (O301, decided), not a run's: two fortnights of 12,000 are a
+        # month of 24,000. The deciding month is the first of the contribution period with a posted run;
+        # its wages are every posted run of that month and, when this run is of that month, this one.
+        month = (first.run.period_end if first is not None else self.run.period_end).replace(day=1)
+        following = (month + datetime.timedelta(days=32)).replace(day=1)
+        wanted = {other.pk for other in deciding}
+        lines = PayslipLine.objects.filter(
+            payslip__employee=self.employee, payslip__run__status=PayRunStatus.POSTED,
+            payslip__run__period_end__gte=month, payslip__run__period_end__lt=following,
+        ).exclude(payslip__run=self.run)
+        wages = sum((line.amount for line in lines if (
+            line.component_id in wanted if wanted else line.kind == ComponentKind.EARNING and line.is_taxable)),
+            Decimal("0"))
+        if month <= self.run.period_end < following:
+            wages += self._sum_of(component, deciding, computed, running_taxable)
         return wages <= component.coverage_ceiling
 
     def _amount_for(self, row, proportion, running_taxable, hours, computed=None):
@@ -1756,6 +1766,16 @@ class Payslip(AuditModel):
                                 computed, running_taxable)
             ceiling = self._ceiling(component)
             if ceiling is not None:
+                if component.basis == ComponentBasis.PERCENT_OF_GROSS:
+                    # A wage ceiling is a month's (O301, decided): the month's base is this run's and what other
+                    # posted runs of the month paid on, capped once, and what they took comes off in calculate,
+                    # as a slab's does. Two fortnights of June at 8,000 took PF on 8,000 each, 1,920, where 12%
+                    # of the month's 15,000 is 1,800. Taken off what was taken, not off the room left, so a run
+                    # of the month voided and worked out again still comes to the month's figure.
+                    earlier_base, earlier_taken = self._month_before(component)
+                    if earlier_base or earlier_taken:
+                        self._terms(component.pk)["month_before"] = [f"{earlier_base:.2f}", f"{earlier_taken:.2f}"]
+                    base += earlier_base
                 base = min(base, ceiling)
             if component.basis == ComponentBasis.SLAB:
                 # The band of the month's wages: this run's base and what other posted runs of the month paid on.
