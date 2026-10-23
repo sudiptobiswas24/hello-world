@@ -895,8 +895,10 @@ class VoidingTests(PayrollTestCase):
         today = timezone.localdate()
         person = self.employee(code)
         self.pay(person, self.salary, "5000")
-        last_month_end = today.replace(day=1) - datetime.timedelta(days=1)
-        run = self.pay_run(start=last_month_end.replace(day=1), end=last_month_end,
+        # A period ended yesterday, so payday three days on is within the Act's ten days whatever today is
+        # (O308): last month's run paid on the 26th was late from the 11th, and the calendar decided the test.
+        ended = today - datetime.timedelta(days=1)
+        run = self.pay_run(start=ended - datetime.timedelta(days=29), end=ended,
                            pay_date=today + datetime.timedelta(days=3))
         run.calculate()
         run.post()
