@@ -540,6 +540,24 @@ class AForeignOrderIsWeighedInTheBaseTests(ApprovalTestCase):
 from apps.core.tests_roles import RolesTestCase  # noqa: E402
 
 
+class KeptFiguresNameTheirCurrencyTests(ApprovalTestCase):
+    """O337: an approval names the currency its figures are kept in, and still covers what it covered."""
+
+    def test_an_approval_keeps_its_figures_in_the_base_and_names_it(self):
+        from .models import ApprovalPolicy
+
+        ApprovalPolicy.objects.create(code="P", name="Discount", max_discount_percent=Decimal("10"))
+        order = self.draft(discount="20")
+        order.approve(by=self.approver)
+        order.refresh_from_db()
+        self.assertEqual(order.approved_figures["currency"], "USD")
+        self.assertEqual(order._covered()["currency"], "USD")
+        order.confirm()
+        line = order.lines.get()
+        line.discount_percent = Decimal("20")
+        line.save()   # within what was approved
+
+
 class ARepIsNotToldTheMarginTests(RolesTestCase, ApprovalTestCase):
     """O299: the margin is cost; the approval panel and a refused confirm tell it only to someone who may approve."""
 
@@ -636,16 +654,20 @@ class ApprovedFiguresPutInTheBaseMigrationTests(TransactionTestCase):
             PartyRoleAssignment.objects.create(party=customer, role=PartyRole.CUSTOMER)
             kept = {"discounts": {"1": "5.00"}, "total": "50000.00", "margin": "-300.00"}
             orders = {}
-            for name, currency in (("eur", eur), ("inr", inr), ("gbp", gbp)):
+            for name, currency in (("eur", eur), ("inr", inr), ("gbp", gbp), ("named", eur)):
                 orders[name] = SalesOrder.objects.create(customer=customer, order_date=datetime.date(2026, 3, 1),
                                                          currency=currency)
             SalesOrder.objects.update(approved_at=timezone.now(), approved_figures=kept)
+            # Kept since this release: they name the base, and are not converted again.
+            in_base = {"discounts": {"1": "5.00"}, "total": "4500000.00", "margin": "95.56", "currency": "INR"}
+            SalesOrder.objects.filter(pk=orders["named"].pk).update(approved_figures=in_base)
             MigrationExecutor(connection).migrate(self.after)
             figures = {name: SalesOrder.objects.get(pk=order.pk).approved_figures for name, order in orders.items()}
             # 50,000 EUR at 90; the margin 100 - (100 + 300) / 90 = 95.56 (calc_fix_trade2/o337.py).
-            self.assertEqual(figures["eur"], {"discounts": {"1": "5.00"}, "total": "4500000.00", "margin": "95.56"})
-            self.assertEqual(figures["inr"], kept)
-            self.assertEqual(figures["gbp"], kept)   # no rate on 1 March: left as it is
+            self.assertEqual(figures["eur"], in_base)
+            self.assertEqual(figures["inr"], {**kept, "currency": "INR"})
+            self.assertEqual(figures["gbp"], kept)   # no rate on 1 March: left as it is, unnamed
+            self.assertEqual(figures["named"], in_base)
         finally:
             executor = MigrationExecutor(connection)
             executor.migrate(executor.loader.graph.leaf_nodes())

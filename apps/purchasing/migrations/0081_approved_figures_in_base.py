@@ -14,8 +14,18 @@ A line's price a unit ("prices") stays in the order's currency, as
 policy_figures() still keeps it. An order in the base currency, or with
 no rate on its date, is left as it is.
 
-Runs once, in the release that brings O293: figures kept after O293 are
-already in the base and would be converted twice.
+Figures kept from now on name the currency they are in (approved_figures
+"currency", the base's code: ChangesWithinItsApproval.figures_as_kept). This
+converts only figures that name none, and names it on each it converts, so
+running it again converts nothing twice. An order in the base currency is named
+too; one with no rate on its date is left unnamed and unconverted. Figures kept
+by O293's code before this release name no currency and are already in the
+base: no released database holds any, O293 and this ship together (g23).
+
+Undone, converted figures go back by the same rate and lose the name. That is
+lossy: the total comes back within a paisa of what it was, but the margin was
+rounded to 2 places and is multiplied back up by the rate (at 95, -300.00 ->
+95.79 -> -299.95), so it can be off by several hundredths of a point.
 """
 
 from decimal import ROUND_HALF_UP, Decimal
@@ -23,6 +33,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from django.db import migrations
 
 CENTS = Decimal("0.01")
+KEPT_IN = "currency"   # apps.core.approvals.KEPT_IN, as it stood at this migration
 
 
 def rate_on(apps, currency_id, day):
@@ -36,18 +47,34 @@ def rate_on(apps, currency_id, day):
 
 def convert(apps, forward):
     orders = apps.get_model("purchasing", "PurchaseOrder")
-    for order in orders.objects.filter(approved_at__isnull=False, approved_figures__isnull=False,
-                                       currency__isnull=False).order_by("pk"):
+    currencies = apps.get_model("core", "Currency").objects
+    base = currencies.filter(is_base=True).values_list("code", flat=True).first() or "base"
+    for order in orders.objects.filter(approved_at__isnull=False, approved_figures__isnull=False).order_by("pk"):
+        if not isinstance(order.approved_figures, dict):
+            continue
+        figures = dict(order.approved_figures)
+        if (KEPT_IN in figures) == forward:
+            continue   # forward: already named, so in the base; back: not named here
+        if order.currency_id is None or currencies.get(pk=order.currency_id).is_base:
+            if forward:
+                figures[KEPT_IN] = base
+            else:
+                figures.pop(KEPT_IN)
+            orders.objects.filter(pk=order.pk).update(approved_figures=figures)
+            continue
         rate = rate_on(apps, order.currency_id, order.order_date)
         if rate is None:
             continue
-        figures = dict(order.approved_figures)
         if figures.get("total") is not None:
             total = Decimal(figures["total"])
             figures["total"] = money(total * rate if forward else total / rate)
         figures["lines"] = {pk: None if value is None else money(
             Decimal(value) * rate if forward else Decimal(value) / rate)
             for pk, value in (figures.get("lines") or {}).items()}
+        if forward:
+            figures[KEPT_IN] = base
+        else:
+            figures.pop(KEPT_IN, None)
         orders.objects.filter(pk=order.pk).update(approved_figures=figures)
 
 
@@ -60,7 +87,7 @@ def in_base(apps, schema_editor):
 
 
 def back_in_its_currency(apps, schema_editor):
-    """Undone, the figures go back to the order's currency, within a paisa."""
+    """Undone, the figures converted here go back to the order's currency: lossy, see the module's note."""
     convert(apps, forward=False)
 
 

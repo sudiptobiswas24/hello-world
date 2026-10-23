@@ -336,12 +336,17 @@ class ApprovedFiguresPutInTheBaseMigrationTests(TransactionTestCase):
             kept = {"total": "50000.00", "lines": {"7": "50000.00"}, "prices": {"7": "5000.00"}}
             eur_order = PurchaseOrder.objects.create(vendor=vendor, order_date=datetime.date(2026, 3, 1), currency=eur)
             inr_order = PurchaseOrder.objects.create(vendor=vendor, order_date=datetime.date(2026, 3, 1), currency=inr)
+            named = PurchaseOrder.objects.create(vendor=vendor, order_date=datetime.date(2026, 3, 1), currency=eur)
             PurchaseOrder.objects.update(approved_at=timezone.now(), approved_figures=kept)
+            in_base = {"total": "4500000.00", "lines": {"7": "4500000.00"}, "prices": {"7": "5000.00"},
+                       "currency": "INR"}
+            PurchaseOrder.objects.filter(pk=named.pk).update(approved_figures=in_base)
             MigrationExecutor(connection).migrate(self.after)
             # 50,000 EUR at 90, total and line; the price a unit stays in euros, as policy_figures() keeps it.
-            self.assertEqual(PurchaseOrder.objects.get(pk=eur_order.pk).approved_figures,
-                             {"total": "4500000.00", "lines": {"7": "4500000.00"}, "prices": {"7": "5000.00"}})
-            self.assertEqual(PurchaseOrder.objects.get(pk=inr_order.pk).approved_figures, kept)
+            self.assertEqual(PurchaseOrder.objects.get(pk=eur_order.pk).approved_figures, in_base)
+            self.assertEqual(PurchaseOrder.objects.get(pk=inr_order.pk).approved_figures, {**kept, "currency": "INR"})
+            # Named already: in the base, not converted twice.
+            self.assertEqual(PurchaseOrder.objects.get(pk=named.pk).approved_figures, in_base)
         finally:
             executor = MigrationExecutor(connection)
             executor.migrate(executor.loader.graph.leaf_nodes())

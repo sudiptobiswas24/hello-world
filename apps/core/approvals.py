@@ -189,8 +189,20 @@ def _read_back(value):
     from decimal import Decimal
 
     if isinstance(value, dict):
-        return {int(key) if key.isdigit() else key: _read_back(part) for key, part in value.items()}
+        return {int(key) if key.isdigit() else key: (part if key == KEPT_IN else _read_back(part))
+                for key, part in value.items()}
     return None if value is None else Decimal(value)
+
+
+# The key under which kept figures name the currency they are in: the base's code (O337). Figures
+# kept before O293 were in the order's own currency and named none.
+KEPT_IN = "currency"
+
+
+def base_code():
+    from apps.core.models import Currency
+
+    return Currency.objects.filter(is_base=True).values_list("code", flat=True).first() or "base"
 
 
 def _figure(figures, path):
@@ -231,8 +243,8 @@ class ChangesWithinItsApproval:
         type(self)._base_manager.filter(pk=self.pk).update(approved_figures=self.approved_figures)
 
     def figures_as_kept(self):
-        """policy_figures() as approved_figures keeps them."""
-        return _kept(self.policy_figures())
+        """policy_figures() as approved_figures keeps them, naming the base currency they are in (O337)."""
+        return {**_kept(self.policy_figures()), KEPT_IN: base_code()}
 
     def _covered(self):
         """What the approval covered, or nothing when there is none standing."""
