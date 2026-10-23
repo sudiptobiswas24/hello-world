@@ -50,3 +50,31 @@ class RegisterTests(TestCase):
     def test_licences_running_out(self):
         self.assertEqual(list(licences_due(30, on_date=datetime.date(2026, 12, 5))), [self.contractor])
         self.assertEqual(list(licences_due(30, on_date=datetime.date(2026, 11, 1))), [])
+
+
+class AStoppedContractorTests(TestCase):
+    """O309: an inactive contractor takes no new worker, and its workers already working can still leave."""
+
+    def test_no_new_worker_and_the_one_working_is_given_a_leaving_day(self):
+        import datetime
+        from decimal import Decimal
+
+        from django.core.exceptions import ValidationError
+
+        from apps.core.models import Party
+
+        from .contract_labour import ContractWorker, LabourContractor
+
+        contractor = LabourContractor.objects.create(
+            party=Party.objects.create(code="CON1", name="Sai Labour"), licence_number="L1",
+            licence_valid_to=datetime.date(2027, 3, 31), work_nature="Loading", max_workers=5)
+        ravi = ContractWorker.objects.create(contractor=contractor, name="Ravi", gender="male",
+                                             daily_wage=Decimal("600"), joined_on=datetime.date(2026, 10, 1))
+        contractor.is_active = False
+        contractor.save()
+        with self.assertRaisesMessage(ValidationError, "no longer active"):
+            ContractWorker.objects.create(contractor=contractor, name="Mohan", gender="male",
+                                          daily_wage=Decimal("600"), joined_on=datetime.date(2026, 10, 2))
+        ravi.left_on = datetime.date(2026, 10, 20)
+        ravi.save()
+        self.assertEqual(ContractWorker.objects.get(pk=ravi.pk).left_on, datetime.date(2026, 10, 20))
