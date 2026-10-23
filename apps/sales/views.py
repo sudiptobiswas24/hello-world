@@ -33,6 +33,8 @@ from django.db.models import Count, Prefetch
 
 from .teams import SalesTarget, SalesTeam, targets_report
 from .documents import render_pick_list_pdf
+from apps.core.approvals import PolicyRefusal
+
 from .models import (
     deliveries_to_pick,
     pick_list_for,
@@ -179,11 +181,10 @@ class SalesOrderViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.Mod
         order = self.get_object()
         try:
             order.confirm()
+        except PolicyRefusal as exc:
+            # The margin's figure is cost: told in full only to whoever may approve (O299).
+            raise DRFValidationError([exc.told_to(request.user)])
         except DjangoValidationError as exc:
-            if not order.sees_its_cost(request.user) and order.approval_status() == "pending":
-                # The refusal names the reasons; the margin's figure is cost (O299).
-                raise DRFValidationError(["This order needs approval before it can be confirmed: "
-                                          + " ".join(order.reasons_told_to(request.user))])
             raise DRFValidationError(exc.messages)
         return Response(self.get_serializer(order).data)
 

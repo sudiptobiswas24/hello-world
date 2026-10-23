@@ -576,6 +576,28 @@ class ARepIsNotToldTheMarginTests(RolesTestCase, ApprovalTestCase):
         self.assertNotIn("-300", refused.content.decode())
         self.assertIn("below the 20.00% floor", refused.content.decode())
 
+    def test_a_rep_pricing_a_confirmed_line_is_not_told_the_margin(self):
+        # Approved at -300.00% and confirmed; the rep takes the price to 0.5: (5 - 40) / 5 = -700.00%.
+        approver = self.client_as("AR Manager")
+        self.assertEqual(approver.post(f"/api/sales/sales-orders/{self.order.pk}/approve/", {},
+                                       format="json").status_code, 200)
+        self.order.refresh_from_db()
+        self.order.confirm()
+        line = self.order.lines.get()
+        rep = self.client_as("Sales Rep")
+        refused = rep.patch(f"/api/sales/sales-order-lines/{line.pk}/", {"unit_price": "0.5"}, format="json")
+        self.assertEqual(refused.status_code, 400, refused.content)
+        self.assertNotIn("-700", refused.content.decode())
+        self.assertIn("The gross margin is below the 20.00% floor.", refused.content.decode())
+        added = rep.post("/api/sales/sales-order-lines/", {
+            "order": self.order.pk, "item": self.item.pk, "uom": self.uom.pk, "quantity": "1",
+            "unit_price": "0.1", "revenue_account": self.revenue.pk}, format="json")
+        self.assertEqual(added.status_code, 400, added.content)
+        self.assertNotIn("%, below", added.content.decode())
+        # The approver is told the figure.
+        told = approver.patch(f"/api/sales/sales-order-lines/{line.pk}/", {"unit_price": "0.5"}, format="json")
+        self.assertIn("Gross margin is -700.00%, below the 20.00% floor.", told.content.decode())
+
     def test_the_approver_is_told_the_figure(self):
         approver = self.client_as("AR Manager")
         reply = approver.get(f"/api/sales/sales-orders/{self.order.pk}/approval/")

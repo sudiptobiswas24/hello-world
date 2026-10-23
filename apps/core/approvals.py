@@ -248,10 +248,63 @@ class ChangesWithinItsApproval:
             if allowed is None or (value < allowed if low else value > allowed):
                 reasons.append(words)
         if reasons:
-            raise ValidationError(
-                f"{self} is confirmed, and this change needs approval beyond what it has: {' '.join(reasons)} A "
-                "confirmed order is not changed past the policy; take it as a new order, which "
+            raise PolicyRefusal(
+                f"{self} is confirmed, and this change needs approval beyond what it has: ",
+                *joined(reasons),
+                " A confirmed order is not changed past the policy; take it as a new order, which "
                 "asks for approval.")
+
+
+def joined(reasons, between=" "):
+    """The reasons with `between` among them, each kept as itself (a CostWords stays one)."""
+    parts = []
+    for reason in reasons:
+        parts += [between, reason] if parts else [reason]
+    return parts
+
+
+class CostWords(str):
+    """
+    A breach's words that carry cost (a margin's figure), with `withheld`, the
+    same breach in words that do not, and `seen_with`, the permission that is
+    told the figure (O299). A str, so it joins and is kept as before; who is
+    told what is decided on these attributes, never by comparing text.
+    """
+
+    def __new__(cls, words, withheld, seen_with):
+        made = super().__new__(cls, words)
+        made.withheld, made.seen_with = withheld, seen_with
+        return made
+
+
+def told(words, user):
+    """`words` as `user` is told them: a CostWords' figure only to whoever holds its seen_with."""
+    if isinstance(words, CostWords) and not (user is not None and user.has_perm(words.seen_with)):
+        return words.withheld
+    return str(words)
+
+
+class PolicyRefusal(ValidationError):
+    """
+    A refusal made of a document's breaches. Its message is what anyone may
+    read: a CostWords part in its withheld words, so a path that does not know
+    who asked (an action re-raising exc.messages) tells no figure.
+    told_to(user) is the message in full for whoever may see it; the API's
+    exception handler answers with it. A Sales Rep pricing a confirmed order's
+    line read "Gross margin is -700.00%", and each price was an oracle for
+    the cost (O299).
+    """
+
+    def __init__(self, *parts):
+        self.parts = parts
+        super().__init__("".join(told(part, None) for part in parts))
+
+    def told_to(self, user):
+        return "".join(told(part, user) for part in self.parts)
+
+    @property
+    def in_full(self):
+        return "".join(str(part) for part in self.parts)
 
 
 def asks_its_policy_when_taxes_change(line_model):

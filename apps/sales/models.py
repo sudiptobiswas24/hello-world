@@ -19,6 +19,10 @@ from apps.accounting.models import (
 )
 from apps.accounting.trade_terms import FreightTerms, Incoterm
 from apps.core.approvals import (
+    CostWords,
+    PolicyRefusal,
+    joined,
+    told,
     ApprovableMixin, ApprovalStatus, ChangesWithinItsApproval, asks_its_policy_when_taxes_change, authors,
 )
 from apps.core.history import EventKind, record
@@ -580,6 +584,10 @@ class PlacedWhereTheGoodsGo:
             raise ValidationError(problem)
 
 
+# Who is told an order's margin: cost, so the approver's, not the rep's (O299).
+COST_SEEN_WITH = "sales.approve_order"
+
+
 class SalesOrder(PlacedWhereTheGoodsGo, Extensible, TaxedDocumentMixin, ChangesWithinItsApproval,
                  ApprovableMixin, AuditModel):
     number = models.CharField(max_length=32, blank=True, editable=False)
@@ -854,7 +862,7 @@ class SalesOrder(PlacedWhereTheGoodsGo, Extensible, TaxedDocumentMixin, ChangesW
     @staticmethod
     def sees_its_cost(user):
         """Whether `user` is told an order's margin: cost, so the approver's, not the rep's (O299)."""
-        return user.has_perm("sales.approve_order")
+        return user.has_perm(COST_SEEN_WITH)
 
     def reasons_told_to(self, user):
         """
@@ -862,15 +870,7 @@ class SalesOrder(PlacedWhereTheGoodsGo, Extensible, TaxedDocumentMixin, ChangesW
         figure from the approval panel and could work the cost out. Anyone who may not approve
         orders reads that the margin is under the floor, not by how much (O299).
         """
-        reasons = self.approval_reasons()
-        if self.sees_its_cost(user):
-            return reasons
-        margin = {words for path, _, _, words in self.policy_breaches() if path == ("margin",)}
-        if not margin:
-            return reasons
-        floor = ApprovalPolicy.active().min_margin_percent
-        return [f"The gross margin is below the {floor}% floor." if reason in margin else reason
-                for reason in reasons]
+        return [told(reason, user) for reason in self.approval_reasons()]
 
     def policy_reasons(self):
         """
@@ -899,8 +899,10 @@ class SalesOrder(PlacedWhereTheGoodsGo, Extensible, TaxedDocumentMixin, ChangesW
         if policy.min_margin_percent is not None:
             margin = self.margin_percent()
             if margin is not None and margin < policy.min_margin_percent:
-                breaches.append((("margin",), margin, True,
-                                 f"Gross margin is {margin}%, below the {policy.min_margin_percent}% floor."))
+                # Cost: its figure told only to whoever may approve (O299).
+                breaches.append((("margin",), margin, True, CostWords(
+                    f"Gross margin is {margin}%, below the {policy.min_margin_percent}% floor.",
+                    f"The gross margin is below the {policy.min_margin_percent}% floor.", COST_SEEN_WITH)))
         return breaches
 
     def can_be_approved(self):
@@ -1017,10 +1019,8 @@ class SalesOrder(PlacedWhereTheGoodsGo, Extensible, TaxedDocumentMixin, ChangesW
         # discount the limit exists to check — and left no record that
         # anyone had decided anything.
         if self.approval_status() == ApprovalStatus.PENDING:
-            raise ValidationError(
-                "This order needs approval before it can be confirmed: "
-                + " ".join(self.approval_reasons())
-            )
+            raise PolicyRefusal("This order needs approval before it can be confirmed: ",
+                                *joined(self.approval_reasons()))
         # The recipe in force when the goods are promised. Checked again
         # when they ship, on the batches that actually go.
         refuse_material_problems(self.customer, [
