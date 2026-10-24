@@ -1013,3 +1013,66 @@ class NoteCountedAtWhatItBookedTests(FxSettlementTestCase):
         BillPayment.objects.create(bill=bill, payment=pay, amount=D("25.37"))
         self.assertEqual((note.total(), bill.amount_due(), self.balance(self.ap)), (D("30.79"), D("0"), D("0")),
                          "(note, due, AP)")
+
+
+class TcsCountedInWhatTheInvoiceBookedTests(FxSettlementTestCase):
+    """
+    O260: an invoice's TCS is its own entry at the base rate, and total() counts it. The allocation's slice
+    read the invoice's own entry alone, as the drawdown did before g22. TCS is refused in a foreign currency
+    today, so the foreign case plants the collection and its entry (calc_fix_books3/o260.py): 1,000 EUR at
+    1.20 (1,200.00) with 1.00 EUR of TCS booked at 1.20, received 1,001 at 1.25 (1,251.25). What it booked
+    is 1,201.20 and the receivable clears; read without the TCS entry it kept 1.20.
+    """
+
+    def plant_tcs(self, invoice, amount, base):
+        from apps.accounting.models import JournalEntry
+        from apps.accounting.tcs import TcsSection
+        from apps.sales.models import Invoice, TcsCollection
+
+        payable = Account.objects.create(code="2290", name="TCS payable", account_type=AccountType.LIABILITY)
+        section = TcsSection.objects.create(code="206C(1)", name="Scrap", form_code="6CE", payable_account=payable)
+        entry = JournalEntry.objects.create(date=invoice.invoice_date, reference=invoice.number, memo="TCS")
+        JournalLine.objects.create(entry=entry, account=self.ar, party=self.customer, debit=D(base))
+        JournalLine.objects.create(entry=entry, account=payable, party=self.customer, credit=D(base))
+        entry.post()
+        TcsCollection.objects.create(invoice=invoice, section=section, base=invoice.subtotal(), rate_percent=D("0.1"),
+                                     amount=D(amount), date=invoice.invoice_date, journal_entry=entry,
+                                     posted_account=payable)
+        Invoice.objects.filter(pk=invoice.pk).update(tcs_amount=D(amount))
+        return Invoice.objects.get(pk=invoice.pk)
+
+    def test_the_reader_counts_the_tcs_entry_in_a_foreign_invoice(self):
+        from apps.accounting.settlement import booked_by
+        from apps.sales.models import InvoicePayment
+
+        self.rate_moves_to("1.25")
+        invoice = self.plant_tcs(self.euro_invoice("1000"), "1.00", "1.20")
+        self.assertEqual((invoice.total(), booked_by(invoice, self.ar)), (D("1001.00"), D("1201.20")))
+        receipt = self.euro_payment(PaymentDirection.RECEIPT, "1001")
+        row = InvoicePayment.objects.create(invoice=invoice, payment=receipt, amount=D("1001"))
+        row.refresh_from_db()
+        self.assertEqual((row.document_base, row.payment_base, invoice.amount_due(), self.balance(self.ar)),
+                         (D("1201.20"), D("1251.25"), D("0"), D("0")), "(document base, payment base, due, AR)")
+
+    def test_a_rupee_invoice_does_not_move(self):
+        # In the base currency: 1,000 invoiced, 10.00 of TCS, 1,010 received; no exchange, the receivable clears.
+        from apps.accounting.models import JournalEntry
+        from apps.sales.models import InvoicePayment, SalesOrder, SalesOrderLine
+
+        order = SalesOrder.objects.create(customer=self.customer, order_date=datetime.date(2026, 1, 1),
+                                          currency=self.usd)
+        SalesOrderLine.objects.create(order=order, item=self.item, uom=self.uom, quantity=D("1"),
+                                      unit_price=D("1000"), revenue_account=self.revenue)
+        order.confirm()
+        invoice = order.create_invoice(self.ar, invoice_date=datetime.date(2026, 1, 1))
+        invoice.post()
+        invoice = self.plant_tcs(invoice, "10.00", "10.00")
+        receipt = Payment.objects.create(party=self.customer, direction=PaymentDirection.RECEIPT,
+                                         payment_date=datetime.date(2026, 2, 15), amount=D("1010"),
+                                         currency=self.usd, bank_account=self.bank, counterpart_account=self.ar)
+        receipt.post()
+        row = InvoicePayment.objects.create(invoice=invoice, payment=receipt, amount=D("1010"))
+        row.refresh_from_db()
+        self.assertEqual((row.document_base, row.fx_entry_id, self.balance(self.ar)), (D("1010.00"), None, D("0")))
+        self.assertFalse(JournalEntry.objects.filter(memo__startswith="Exchange difference").exists())
+
