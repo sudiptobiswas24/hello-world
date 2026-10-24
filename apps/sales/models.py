@@ -2590,6 +2590,12 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
         """
         return [self.journal_entry] + [row.journal_entry for row in self.tcs_collected.all() if row.journal_entry_id]
 
+    def absorbed_into(self):
+        """On a credit note: (its document, the part of it absorbed there), for settlement.absorbed_part (O261)."""
+        if not self.is_credit_note():
+            return None
+        return self.credits, self.amount_absorbed()
+
     def settled_by_entries(self):
         """Its credit notes and drawdowns, for an allocation to count at what they booked (settlement.entries_that_settled)."""
         return entries_that_settled(self.credit_notes.all(), self.deposit_applications.all())
