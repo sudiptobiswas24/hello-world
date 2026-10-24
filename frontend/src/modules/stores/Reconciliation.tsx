@@ -2,7 +2,7 @@ import { money } from "../../lib/format";
 import { ReportView, type ParamDef } from "../../views/ReportView";
 
 interface Row { account: string; stock_value: string; ledger_balance: string; difference: string; items: number; [key: string]: unknown }
-interface Data { balanced: boolean; total_stock_value: string; total_ledger_balance: string; difference: string; rows: Row[]; unvalued_items: string[] }
+interface Data { balanced: boolean; total_stock_value: string; total_ledger_balance: string; difference: string; out_by: string; rows: Row[]; unvalued_items: string[] }
 
 const PARAMS: ParamDef[] = [{ key: "as_of", label: "As at", kind: "date", initial: "today" }];
 
@@ -16,7 +16,7 @@ export default function Reconciliation() {
       rows={(data) => data.rows}
       above={(data) => (
         <p className={data.balanced ? "note" : "form-error"} role="note">
-          {data.balanced ? "The stock agrees with the books." : `They differ by ${money(data.difference)}.`}
+          {data.balanced ? "The stock agrees with the books." : `They differ by ${money(data.out_by)}, account by account.`}
           {data.unvalued_items.length > 0 && ` Items with no value: ${data.unvalued_items.join(", ")}.`}
         </p>
       )}

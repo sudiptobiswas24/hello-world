@@ -159,3 +159,101 @@ class EachMovementGivenItsMoneyTests(MigrationCase):
         self.assertIn("from -10.005 as replayed then", rows.get(pk=written_off.pk).notes)
         self.assertEqual(rows.get(pk=received.pk).notes, "")
         self.assertFalse(apps.get_model("inventory", "StockValuationSnapshot").objects.exists())
+
+
+@tag("migration")
+class EachMovementGivenWhatItsDocumentBookedTests(MigrationCase):
+    """
+    O329 (calc_fix_books3/o329.py): tape, average, on 1200. 2 kg in at 10.005 under GRN-1, whose entry booked
+    20.01; 1 kg written off under ADJ-1, whose entry booked 10.00 at the old rounding where the replay read
+    -10.005, -10.01. The row takes -10.00 off its entry and the shelf, 10.01, is the books'. A delivery DEL-1
+    moving tape and frame on the same account, a row with no reference and one whose reference has no entry
+    are named in the summary with why, and keep the replay's paisa. Back to 0039 the notes come off; forward
+    again they are written once.
+    """
+
+    before = [("inventory", "0039_moved_from")]
+    after = [("inventory", "0040_movement_money")]
+
+    def move(self, item, warehouse, quantity, cost=None, minute=0, reference=""):
+        uom = self.apps.get_model("core", "UnitOfMeasure").objects.get(code="kg")
+        return self.apps.get_model("inventory", "StockMovement").objects.create(
+            item_id=item.pk, warehouse_id=warehouse.pk, movement_type="adjustment", uom_id=uom.pk,
+            quantity=Decimal(quantity), unit_cost=Decimal(cost) if cost is not None else None, reference=reference,
+            occurred_at=timezone.now() + datetime.timedelta(minutes=minute))
+
+    def entry(self, reference, account, amount, against):
+        Entry = self.apps.get_model("accounting", "JournalEntry")
+        Line = self.apps.get_model("accounting", "JournalLine")
+        entry = Entry.objects.create(date=datetime.date(2026, 3, 1), reference=reference, memo=reference, posted=True)
+        amount = Decimal(amount)
+        Line.objects.create(entry_id=entry.pk, account_id=account.pk, debit=max(amount, Decimal("0")),
+                            credit=max(-amount, Decimal("0")))
+        Line.objects.create(entry_id=entry.pk, account_id=against.pk, debit=max(-amount, Decimal("0")),
+                            credit=max(amount, Decimal("0")))
+
+    def build(self):
+        Account = self.apps.get_model("accounting", "Account")
+        stock = Account.objects.create(code="1200", name="Inventory", account_type="asset")
+        other = Account.objects.create(code="2100", name="GRNI", account_type="liability")
+        store = self.shelf("STORE")
+        tape, frame = self.goods("TAPE"), self.goods("FRAME")
+        for item in (tape, frame):
+            item.inventory_account_id = stock.pk
+            item.save()
+        rows = {
+            "in": self.move(tape, store, "2", "10.005", minute=1, reference="GRN-1"),
+            "off": self.move(tape, store, "-1", minute=2, reference="ADJ-1"),
+            "shared": self.move(tape, store, "1", "4", minute=3, reference="DEL-1"),
+            "bare": self.move(tape, store, "1", "4", minute=4),
+            "lost": self.move(tape, store, "1", "4", minute=5, reference="ADJ-9"),
+        }
+        self.move(frame, store, "1", "3", minute=1, reference="DEL-1")
+        self.entry("GRN-1", stock, "20.01", other)
+        self.entry("ADJ-1", stock, "-10.00", other)
+        self.entry("DEL-1", stock, "7.00", other)
+        return rows
+
+    def forward(self):
+        import io
+        from contextlib import redirect_stdout
+
+        printed = io.StringIO()
+        with redirect_stdout(printed):
+            apps = self.migrated()
+        return apps.get_model("inventory", "StockMovement").objects, printed.getvalue()
+
+    def test_a_row_takes_what_its_entry_booked_and_the_rest_are_named(self):
+        rows = self.build()
+        Row, printed = self.forward()
+        values = {name: Row.get(pk=row.pk).value for name, row in rows.items()}
+        self.assertEqual(values, {"in": Decimal("20.01"), "off": Decimal("-10.00"), "shared": Decimal("4.00"),
+                                  "bare": Decimal("4.00"), "lost": Decimal("4.00")})
+        self.assertIn("from its entry under ADJ-1; the replay read -10.005", Row.get(pk=rows["off"].pk).notes)
+        self.assertIn("TAPE in warehouse", printed)
+        for why, row in (("several movements share its reference", rows["shared"]),
+                         ("no reference to read its document by", rows["bare"]),
+                         ("no posted entry under its reference", rows["lost"])):
+            line = next((text for text in printed.splitlines() if why in text and "TAPE" in text), "")
+            self.assertTrue(line.endswith(f": {row.pk}"), printed)
+
+    def test_back_and_forward_again_writes_each_note_once(self):
+        rows = self.build()
+        self.forward()
+        MigrationExecutor(connection).migrate(self.before)
+        notes = self.apps.get_model("inventory", "StockMovement").objects.get(pk=rows["off"].pk).notes
+        self.assertEqual(notes, "")
+        Row, _ = self.forward()
+        self.assertEqual(Row.get(pk=rows["off"].pk).notes.count("by inventory 0040"), 1)
+        self.assertEqual(Row.get(pk=rows["off"].pk).value, Decimal("-10.00"))
+
+    def test_the_summary_counts_each_drop_not_their_net(self):
+        # Already so at 9e9d4d4 (tally[2]): 1 kg in at 10.005 (10.01) and out again (-10.01) drop -0.005 and
+        # +0.005; the summary says 0.01 rounded away in all and 0 net, not "0 dropped".
+        store = self.shelf("STORE")
+        tape = self.goods("TAPE")
+        self.move(tape, store, "1", "10.005", minute=1)
+        self.move(tape, store, "-1", minute=2)
+        _, printed = self.forward()
+        self.assertIn("TAPE in warehouse", printed)
+        self.assertIn("2 rows, 0.01 rounded away in all, 0 net", printed)

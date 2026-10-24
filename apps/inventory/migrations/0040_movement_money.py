@@ -18,6 +18,17 @@ each revaluation, and a revaluation its own amount.
 
 Snapshots are a cache of the replay, and FIFO's layers now hold money
 rather than rates: every one goes, and the next write refolds.
+
+Where the row's document can be read, the row takes what that document
+booked instead (O329): the posted entries under its reference, on its
+item's inventory account, when it is the one movement under that reference
+on that account. The replay's paisa was only what the books would have
+said had the document rounded the same way; a document that rounded
+otherwise left shelf and books apart from day one. Every row it could not
+read is named in the summary with the reason: no reference, no posted
+entry under it on that account, or several movements sharing it (one
+figure cannot be split between them). Going back takes the notes 0040
+wrote off again, so a second run writes them once.
 """
 
 from collections import defaultdict
@@ -152,6 +163,9 @@ def give_each_movement_its_money(apps, schema_editor):
     positions = Movement.objects.order_by("item_id", "warehouse_id").values_list(
         "item_id", "warehouse_id").distinct()
     unread = defaultdict(lambda: [0, ZERO, ZERO])
+    booked, sharing = _what_documents_booked(apps, items, others)
+    taken = defaultdict(lambda: [0, ZERO])
+    unreadable = defaultdict(list)
     for item_id, warehouse_id in positions:
         item = items[item_id]
         standard = item.standard_cost or ZERO
@@ -166,9 +180,22 @@ def give_each_movement_its_money(apps, schema_editor):
         else:
             walked = _average(rows.iterator())
         changed = []
+        account = item.inventory_account_id or booked["default"]
         for row, exact in walked:
             row.value = paisa(exact)
-            if row.value != exact:
+            figure, why = _booked_for(row, account, booked, sharing, warehouse_id in others)
+            if figure is not None:
+                if figure != row.value:
+                    note = (f"Money {figure} given by inventory 0040 from its entry under {row.reference}; the "
+                            f"replay read {exact.normalize():f} (O329).")
+                    row.notes = f"{row.notes}\n{note}" if row.notes else note
+                    tally = taken[(item.sku, warehouse_id)]
+                    tally[0] += 1
+                    tally[1] += figure - row.value
+                row.value = figure
+            elif why:
+                unreadable[(why, item.sku, warehouse_id)].append(row.pk)
+            if figure is None and row.value != exact:
                 note = f"Money {row.value} given by inventory 0040 from {exact.normalize():f} as replayed then (O269)."
                 row.notes = f"{row.notes}\n{note}" if row.notes else note
                 tally = unread[(item.sku, warehouse_id)]
@@ -184,12 +211,77 @@ def give_each_movement_its_money(apps, schema_editor):
                 changed = []
         if changed:
             Movement.objects.bulk_update(changed, ["value", "notes", "value_adjustment"])
+    if taken:
+        print("\n  inventory 0040: movements given what their document's entry booked, not the replay's paisa:")
+        for (sku, warehouse_id), (count, moved) in sorted(taken.items()):
+            print(f"    {sku} in warehouse {warehouse_id}: {count} rows, {moved.normalize():f} from the replay")
+    if unreadable:
+        print("\n  inventory 0040: movements whose document could not be read, given the replay's paisa:")
+        for (why, sku, warehouse_id), pks in sorted(unreadable.items()):
+            shown = ", ".join(str(pk) for pk in pks[:10]) + (f" and {len(pks) - 10} more" if len(pks) > 10 else "")
+            print(f"    {sku} in warehouse {warehouse_id}: {len(pks)} rows, {why}: {shown}")
     if unread:
         print("\n  inventory 0040: movements whose replayed money was not a whole paisa, rounded:")
         for (sku, warehouse_id), (count, net, moved) in sorted(unread.items(),
                                                                 key=lambda pair: (pair[0][0], pair[0][1])):
             print(f"    {sku} in warehouse {warehouse_id}: {count} rows, {moved.normalize():f} rounded away "
                   f"in all, {net.normalize():f} net")
+
+
+NO_REFERENCE = "no reference to read its document by"
+NO_ENTRY = "no posted entry under its reference on its inventory account"
+SHARED = "several movements share its reference on that account, and one figure cannot be split"
+
+
+def _what_documents_booked(apps, items, others):
+    """
+    ({(reference, account): what its posted entries put on it, "default": the company's account},
+    {(reference, account): how many movements name it}) for every inventory account an item holds stock in.
+    """
+    Company = apps.get_model("core", "Company")
+    Line = apps.get_model("accounting", "JournalLine")
+    Movement = apps.get_model("inventory", "StockMovement")
+    company = Company.objects.order_by("pk").first()
+    default = company.default_inventory_account_id if company is not None else None
+    accounts = {item.inventory_account_id or default for item in items.values()} - {None}
+    booked = {"default": default}
+    rows = (Line.objects.filter(entry__posted=True, account_id__in=accounts).exclude(entry__reference="")
+            .values("entry__reference", "account_id").annotate(debit=models.Sum("debit"), credit=models.Sum("credit")))
+    for row in rows:
+        booked[(row["entry__reference"], row["account_id"])] = (row["debit"] or ZERO) - (row["credit"] or ZERO)
+    sharing = defaultdict(int)
+    for item_id, warehouse_id, reference in Movement.objects.exclude(reference="").values_list(
+            "item_id", "warehouse_id", "reference").iterator():
+        if warehouse_id in others:
+            continue
+        item = items[item_id]
+        sharing[(reference, item.inventory_account_id or default)] += 1
+    return booked, sharing
+
+
+def _booked_for(row, account, booked, sharing, books_nothing):
+    """(what the row's document booked, None) when it can be read, else (None, why); (None, "") on a shelf
+    that books nothing (a consignment's, one held for someone)."""
+    if books_nothing:
+        return None, ""
+    if not row.reference:
+        return None, NO_REFERENCE
+    key = (row.reference, account)
+    if key not in booked:
+        return None, NO_ENTRY
+    if sharing.get(key, 0) != 1:
+        return None, SHARED
+    return paisa(booked[key]), ""
+
+
+def take_off_its_notes(apps, schema_editor):
+    """Going back: the notes 0040 wrote come off, so a run forward again writes each once."""
+    Movement = apps.get_model("inventory", "StockMovement")
+    changed = []
+    for row in Movement.objects.filter(notes__contains="by inventory 0040").iterator():
+        row.notes = "\n".join(line for line in row.notes.split("\n") if "by inventory 0040" not in line)
+        changed.append(row)
+    Movement.objects.bulk_update(changed, ["notes"], batch_size=500)
 
 
 class Migration(migrations.Migration):
@@ -204,7 +296,7 @@ class Migration(migrations.Migration):
             name="value",
             field=models.DecimalField(decimal_places=2, max_digits=18, null=True, editable=False),
         ),
-        migrations.RunPython(give_each_movement_its_money, migrations.RunPython.noop),
+        migrations.RunPython(give_each_movement_its_money, take_off_its_notes),
         migrations.AlterField(
             model_name="stockmovement",
             name="value",

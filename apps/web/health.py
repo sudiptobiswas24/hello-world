@@ -223,7 +223,8 @@ def _stock(day):
              "href": "/stores/value"} for row in off[:SHOW]]
     unvalued = report["unvalued_items"]
     if off:
-        detail = f"{len(off)} inventory account(s) differ from the stock on the shelves."
+        detail = (f"{len(off)} inventory account(s) differ from the stock on the shelves, out by "
+                  f"{_money(report['out_by'])} account by account.")
     elif unvalued:
         detail = (f"{len(unvalued)} item(s) have no inventory account, so their stock was not counted: "
                   + ", ".join(str(item) for item in unvalued[:SHOW]))

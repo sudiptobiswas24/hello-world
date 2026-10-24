@@ -238,6 +238,46 @@ class ReconciliationTests(ReportTestCase):
         self.assertFalse(report["balanced"])
         self.assertEqual(report["difference"], Decimal("-50.00"))
 
+    def manual(self, account, amount):
+        from apps.accounting.models import JournalEntry
+
+        entry = JournalEntry.objects.create(date=datetime.date(2026, 3, 1), memo="Manual")
+        amount = Decimal(amount)
+        JournalLine.objects.create(entry=entry, account=account, debit=max(amount, Decimal("0")),
+                                   credit=max(-amount, Decimal("0")))
+        JournalLine.objects.create(entry=entry, account=self.shrinkage, debit=max(-amount, Decimal("0")),
+                                   credit=max(amount, Decimal("0")))
+        entry.post()
+
+    def test_one_accounts_surplus_does_not_hide_anothers_shortfall(self):
+        # O329: 0.01 too much in the books on 1200 and 0.01 too little on 1210. Each account's row says so, and
+        # what the report is out by is 0.02, account by account; the net of the two, which the report and the
+        # page gave as "they differ by 0.00", is only the totals' difference.
+        from apps.web.health import _stock
+
+        self.buy("100", "6")
+        self.buy("50", "4", item=self.spare)
+        self.manual(self.inventory, "0.01")
+        self.manual(self.spares_stock, "-0.01")
+        report = reconcile_to_ledger()
+        rows = {row["account"].code: row["difference"] for row in report["rows"]}
+        self.assertEqual((rows, report["difference"], report["out_by"], report["balanced"]),
+                         ({"1200": Decimal("-0.01"), "1210": Decimal("0.01")}, Decimal("0.00"), Decimal("0.02"), False))
+        finding = _stock(None)
+        self.assertEqual((finding["ok"], finding["count"]), (False, 2), finding)
+        self.assertIn("out by 0.02", finding["detail"])
+
+    def test_an_inventory_account_no_stocked_item_maps_to_is_still_reconciled(self):
+        # O329: an item that stopped being stocked left 200.00 in 1210; no stocked item points there, so the
+        # report never asked that account, and its balance hid behind the stocked accounts agreeing.
+        self.buy("50", "4", item=self.spare)
+        Item.objects.filter(pk=self.spare.pk).update(track_inventory=False)
+        self.buy("100", "6")
+        report = reconcile_to_ledger()
+        rows = {row["account"].code: (row["stock_value"], row["ledger_balance"]) for row in report["rows"]}
+        self.assertEqual(rows.get("1210"), (Decimal("0.00"), Decimal("200.00")))
+        self.assertFalse(report["balanced"])
+
     def test_it_can_be_asked_as_at_a_date(self):
         self.buy("100", "6")
         self.sell("40", "15")
