@@ -56,25 +56,24 @@ class ItemUnitSerializer(serializers.ModelSerializer):
         fields = ["id", "item", "uom", "factor", "uom_code"]
 
 
-def validate_stock_account(serializer, account):
+def validate_kept_account(serializer, account, field, refusal_of, what):
     """
-    Where an item's stock is valued is the accountant's to say (the review of O324): the type rule is
-    stock_account_refusal's, and choosing or changing the account needs accounting.post_journalentry, as a
-    reason's account does. Blank (the company's default) stays the keeper's to choose.
+    An item's account for `what` is the accountant's to say: the type rule is `refusal_of`'s, and choosing or
+    changing the account needs accounting.post_journalentry, as a reason's account does. Blank (the company's
+    default) stays the keeper's to choose. Asked of the inventory account (the review of O324) and the
+    cost-of-sales account (O347).
     """
-    from .valuation import stock_account_refusal
-
-    refusal = stock_account_refusal(account)
+    refusal = refusal_of(account)
     if refusal:
         raise serializers.ValidationError(refusal)
-    if getattr(serializer.instance, "inventory_account_id", None) == getattr(account, "pk", None):
+    if getattr(serializer.instance, f"{field}_id", None) == getattr(account, "pk", None):
         return account
     if account is None and serializer.instance is None:
         return account
     request = serializer.context.get("request")
     if request is None or not request.user.has_perm("accounting.post_journalentry"):
         raise serializers.ValidationError(
-            "Which account holds an item's stock value is set by someone who may post journal entries, not by "
+            f"Which account holds an item's {what} is set by someone who may post journal entries, not by "
             "whoever keeps the item.")
     return account
 
@@ -111,11 +110,26 @@ class HidesStockMoney:
 ITEM_MONEY = ("standard_cost",)
 
 
+def validate_stock_account(serializer, account):
+    from .valuation import stock_account_refusal
+
+    return validate_kept_account(serializer, account, "inventory_account", stock_account_refusal, "stock value")
+
+
+def validate_cogs_account(serializer, account):
+    from .valuation import cogs_account_refusal
+
+    return validate_kept_account(serializer, account, "cogs_account", cogs_account_refusal, "cost of sales")
+
+
 class ItemSerializer(HidesStockMoney, ExtensibleSerializerMixin, serializers.ModelSerializer):
     stock_money = ITEM_MONEY
 
     def validate_inventory_account(self, account):
         return validate_stock_account(self, account)
+
+    def validate_cogs_account(self, account):
+        return validate_cogs_account(self, account)
 
     def validate_tcs_section(self, section):
         """
@@ -443,6 +457,9 @@ class ItemTemplateSerializer(serializers.ModelSerializer):
 
     def validate_inventory_account(self, account):
         return validate_stock_account(self, account)
+
+    def validate_cogs_account(self, account):
+        return validate_cogs_account(self, account)
 
     class Meta:
         model = ItemTemplate
