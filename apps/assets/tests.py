@@ -1,0 +1,663 @@
+"""
+Fixed assets.
+
+Buying a machine is not buying stock and not incurring an expense. It is
+exchanging cash for something useful for years, and the cost belongs on
+the balance sheet until those years consume it. Without this a capital
+purchase had two bad homes: inventory, where it would be relieved on a
+sale that never comes, or an expense, which puts a decade of value into
+one month's profit.
+"""
+
+import contextlib
+import datetime
+from decimal import Decimal
+from unittest import mock
+
+from django.core.exceptions import ValidationError
+from django.db.models import Sum
+from django.test import TestCase
+
+from apps.accounting.models import Account, AccountType, JournalLine
+from apps.core.models import Company, Currency, Party, PartyRole, PartyRoleAssignment
+
+from .models import (
+    AssetCategory,
+    AssetStatus,
+    DepreciationMethod,
+    FixedAsset,
+    asset_register,
+)
+
+
+@contextlib.contextmanager
+def the_plants_day(day):
+    """
+    Today at the plant, for a test whose story is told after its months
+    have ended: depreciation is charged only through a day that has come,
+    so a lathe run to December is run in January. Also a decorator.
+    """
+    from django.utils import timezone
+
+    real = timezone.localdate
+
+    def localdate(value=None, timezone=None):
+        return day if value is None else real(value, timezone)
+
+    with mock.patch("django.utils.timezone.localdate", side_effect=localdate):
+        yield
+
+
+class AssetTestCase(TestCase):
+    def setUp(self):
+        self.usd = Currency.objects.create(code="USD", name="USD", is_base=True)
+        Company.objects.create(name="Test Co", base_currency=self.usd)
+        acc = lambda c, n, t: Account.objects.create(code=c, name=n, account_type=t)
+        self.plant = acc("1500", "Plant", AccountType.ASSET)
+        self.accumulated = acc("1590", "Accumulated depreciation", AccountType.ASSET)
+        self.depreciation = acc("6100", "Depreciation", AccountType.EXPENSE)
+        self.disposal = acc("6200", "Disposal", AccountType.EXPENSE)
+        # The books opened on 1 January 2026: an asset typed in by hand is an opening balance then.
+        from apps.accounting.models import BooksOpening
+
+        self.opening = acc("3900", "Opening balances", AccountType.EQUITY)
+        self.books_opened = BooksOpening.objects.create(opened_on=datetime.date(2026, 1, 1), opening_account=self.opening)
+        self.category = AssetCategory.objects.create(
+            code="PLANT", name="Plant and machinery",
+            asset_account=self.plant, accumulated_account=self.accumulated,
+            expense_account=self.depreciation, disposal_account=self.disposal,
+            default_life_months=12,
+        )
+
+    def asset(self, cost="12000", salvage="0", life=12, in_service=True):
+        asset = FixedAsset.objects.create(
+            name="Lathe", category=self.category,
+            acquisition_date=datetime.date(2026, 1, 1),
+            cost=Decimal(cost), salvage_value=Decimal(salvage), life_months=life,
+        )
+        if in_service:
+            asset.place_in_service(on_date=datetime.date(2026, 1, 1))
+        return asset
+
+    def balance(self, account):
+        rows = JournalLine.objects.filter(account=account, entry__posted=True).aggregate(
+            debit=Sum("debit"), credit=Sum("credit")
+        )
+        return (rows["debit"] or Decimal("0")) - (rows["credit"] or Decimal("0"))
+
+    def as_role(self, role):
+        """The API as someone setup_roles puts in `role`: a superuser proves nothing about who may."""
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        if not Group.objects.filter(name=role).exists():
+            call_command("setup_roles", verbosity=0)
+        user = User.objects.create_user(f"{role.lower().replace(' ', '-')}-{User.objects.count()}")
+        user.groups.add(Group.objects.get(name=role))
+        client = APIClient()
+        client.force_authenticate(user)
+        return client
+
+
+class LifecycleTests(AssetTestCase):
+    def test_placing_in_service_numbers_it(self):
+        asset = self.asset()
+        self.assertEqual(asset.number, "FA-2026-00001")
+        self.assertEqual(asset.status, AssetStatus.IN_SERVICE)
+
+    def test_a_draft_has_no_number(self):
+        self.assertEqual(self.asset(in_service=False).number, "")
+
+    def test_salvage_must_be_below_cost(self):
+        asset = FixedAsset(
+            name="X", category=self.category, acquisition_date=datetime.date(2026, 1, 1),
+            cost=Decimal("100"), salvage_value=Decimal("100"), life_months=12,
+        )
+        with self.assertRaisesMessage(ValidationError, "below cost"):
+            asset.clean()
+
+    def test_it_cannot_be_in_service_before_it_was_acquired(self):
+        asset = FixedAsset(
+            name="X", category=self.category, acquisition_date=datetime.date(2026, 6, 1),
+            in_service_date=datetime.date(2026, 1, 1),
+            cost=Decimal("100"), life_months=12,
+        )
+        with self.assertRaisesMessage(ValidationError, "before it was acquired"):
+            asset.clean()
+
+    def test_a_draft_asset_is_not_depreciated(self):
+        asset = self.asset(in_service=False)
+        with self.assertRaisesMessage(ValidationError, "Only an asset in service"):
+            asset.depreciate(through=datetime.date(2026, 6, 30))
+
+
+class DepreciationTests(AssetTestCase):
+    def test_it_charges_a_month_at_a_time(self):
+        """Each month is a period somebody closed; a lump posted to the
+        current one misstates every month it covers."""
+        asset = self.asset("12000", life=12)
+
+        entries = asset.depreciate(through=datetime.date(2026, 3, 31))
+
+        self.assertEqual(len(entries), 3)
+        self.assertEqual([entry.amount for entry in entries], [Decimal("1000.00")] * 3)
+        self.assertEqual(
+            [entry.period_end for entry in entries],
+            [datetime.date(2026, 1, 31), datetime.date(2026, 2, 28),
+             datetime.date(2026, 3, 31)],
+        )
+
+    def test_it_posts_expense_against_accumulated(self):
+        asset = self.asset("12000", life=12)
+        asset.depreciate(through=datetime.date(2026, 3, 31))
+
+        self.assertEqual(self.balance(self.depreciation), Decimal("3000"))
+        self.assertEqual(self.balance(self.accumulated), Decimal("-3000"))
+
+    def test_running_it_twice_charges_nothing_extra(self):
+        asset = self.asset("12000", life=12)
+        asset.depreciate(through=datetime.date(2026, 3, 31))
+
+        self.assertEqual(asset.depreciate(through=datetime.date(2026, 3, 31)), [])
+        self.assertEqual(asset.accumulated(), Decimal("3000"))
+
+    def test_it_catches_up_missed_months(self):
+        asset = self.asset("12000", life=12)
+        asset.depreciate(through=datetime.date(2026, 1, 31))
+
+        entries = asset.depreciate(through=datetime.date(2026, 5, 31))
+
+        self.assertEqual(len(entries), 4)
+        self.assertEqual(asset.accumulated(), Decimal("5000"))
+
+    @the_plants_day(datetime.date(2028, 1, 15))
+    def test_it_never_depreciates_past_salvage(self):
+        """The last month takes whatever is left rather than the full
+        charge."""
+        asset = self.asset("10000", salvage="1000", life=12)
+
+        asset.depreciate(through=datetime.date(2027, 12, 31))
+
+        self.assertEqual(asset.accumulated(), Decimal("9000"))
+        self.assertEqual(asset.net_book_value(), Decimal("1000"))
+
+    @the_plants_day(datetime.date(2029, 1, 15))
+    def test_a_finished_asset_charges_nothing_more(self):
+        asset = self.asset("12000", life=12)
+        asset.depreciate(through=datetime.date(2027, 12, 31))
+        self.assertEqual(asset.depreciate(through=datetime.date(2028, 12, 31)), [])
+
+    @the_plants_day(datetime.date(2027, 1, 15))
+    def test_a_non_depreciating_category_charges_nothing(self):
+        land = AssetCategory.objects.create(
+            code="LAND", name="Land", asset_account=self.plant,
+            accumulated_account=self.accumulated, expense_account=self.depreciation,
+            method=DepreciationMethod.NONE,
+        )
+        asset = FixedAsset.objects.create(
+            name="Yard", category=land, acquisition_date=datetime.date(2026, 1, 1),
+            cost=Decimal("50000"), life_months=0,
+        )
+        asset.place_in_service()
+
+        self.assertEqual(asset.depreciate(through=datetime.date(2027, 1, 1)), [])
+        self.assertEqual(asset.net_book_value(), Decimal("50000"))
+
+    def test_depreciation_starts_from_service_not_acquisition(self):
+        """A machine in a crate is not being consumed."""
+        asset = FixedAsset.objects.create(
+            name="Press", category=self.category,
+            acquisition_date=datetime.date(2026, 1, 1),
+            cost=Decimal("12000"), life_months=12,
+        )
+        asset.place_in_service(on_date=datetime.date(2026, 4, 1))
+
+        entries = asset.depreciate(through=datetime.date(2026, 6, 30))
+
+        self.assertEqual(len(entries), 3)
+        self.assertEqual(entries[0].period_end, datetime.date(2026, 4, 30))
+
+
+class TheLastMonthOfItsLifeTests(AssetTestCase):
+    """
+    Each month's charge is rounded to the paisa. 10,000 over twelve months
+    is 833.33 a month, which leaves 0.04 after the twelfth: it was charged
+    in a thirteenth month, a month after the lathe's life ended. The last
+    month of its life takes what is left, 833.37, and nothing comes after.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.enterContext(the_plants_day(datetime.date(2029, 1, 15)))
+
+    def test_it_takes_what_is_left_and_nothing_is_charged_after_it(self):
+        asset = self.asset("10000", life=12)
+        made = asset.depreciate(through=datetime.date(2027, 12, 31))
+        self.assertEqual(
+            ([row.amount for row in made], made[-1].period_end, asset.accumulated()),
+            ([Decimal("833.33")] * 11 + [Decimal("833.37")], datetime.date(2026, 12, 31), Decimal("10000.00")))
+
+    def test_a_charge_rounded_up_ends_on_its_last_month_as_before(self):
+        """10,000 over 36 months is 277.78 a month: the 36th takes the 277.70 left."""
+        made = self.asset("10000", life=36).depreciate(through=datetime.date(2028, 12, 31))
+        self.assertEqual((len(made), made[-2].amount, made[-1].amount, made[-1].period_end,
+                          sum(row.amount for row in made)),
+                         (36, Decimal("277.78"), Decimal("277.70"), datetime.date(2028, 12, 31), Decimal("10000.00")))
+
+    def test_one_disposed_of_mid_life_clears_its_accounts_to_the_paisa(self):
+        asset = self.asset("10000", life=12)
+        asset.depreciate(through=datetime.date(2026, 6, 30))
+        asset.dispose(on_date=datetime.date(2026, 7, 1))
+        self.assertEqual((self.balance(self.accumulated), self.balance(self.depreciation), self.balance(self.disposal)),
+                         (Decimal("0"), Decimal("4999.98"), Decimal("5000.02")))
+
+    def test_one_reinstated_still_ends_on_the_last_month_of_its_life(self):
+        asset = self.asset("10000", life=12)
+        asset.depreciate(through=datetime.date(2026, 12, 31))
+        asset.dispose(on_date=datetime.date(2026, 6, 15))
+        asset.reinstate()
+        later = asset.depreciate(through=datetime.date(2027, 12, 31))
+        self.assertEqual((later, asset.accumulated(), self.balance(self.accumulated), self.balance(self.depreciation),
+                          self.balance(self.disposal)),
+                         ([], Decimal("10000.00"), Decimal("-10000.00"), Decimal("10000.00"), Decimal("0")))
+
+class DisposalTests(AssetTestCase):
+    def test_selling_at_book_value_makes_neither_gain_nor_loss(self):
+        asset = self.asset("12000", life=12)
+        asset.depreciate(through=datetime.date(2026, 6, 30))
+        plant_before = self.balance(self.plant)
+
+        asset.dispose(on_date=datetime.date(2026, 7, 1), proceeds=Decimal("6000"))
+
+        # Creating an asset posts nothing — it cannot know what paid for
+        # it — so only capitalisation debits the asset account. Disposal
+        # takes the cost back off, whatever put it there.
+        self.assertEqual(self.balance(self.plant) - plant_before, Decimal("-12000"))
+        self.assertEqual(self.balance(self.accumulated), Decimal("0"))
+        self.assertEqual(self.balance(self.disposal), Decimal("6000"))
+
+    def test_selling_above_book_value_is_a_gain(self):
+        asset = self.asset("12000", life=12)
+        asset.depreciate(through=datetime.date(2026, 6, 30))
+
+        asset.dispose(on_date=datetime.date(2026, 7, 1), proceeds=Decimal("7000"))
+
+        # Proceeds 7000 debited, gain 1000 credited: 6000 net, the book value.
+        self.assertEqual(self.balance(self.disposal), Decimal("6000"))
+        entry = asset.disposal_entry
+        self.assertEqual(sum(l.debit for l in entry.lines.all()),
+                         sum(l.credit for l in entry.lines.all()))
+
+    def test_scrapping_writes_off_what_is_left(self):
+        asset = self.asset("12000", life=12)
+        asset.depreciate(through=datetime.date(2026, 6, 30))
+
+        asset.dispose(on_date=datetime.date(2026, 7, 1))
+
+        self.assertEqual(self.balance(self.disposal), Decimal("6000"))
+        self.assertEqual(asset.status, AssetStatus.DISPOSED)
+
+    def test_the_entry_always_balances(self):
+        asset = self.asset("12000", life=12)
+        asset.depreciate(through=datetime.date(2026, 4, 30))
+        asset.dispose(on_date=datetime.date(2026, 5, 1), proceeds=Decimal("2000"))
+
+        entry = asset.disposal_entry
+        self.assertEqual(sum(l.debit for l in entry.lines.all()),
+                         sum(l.credit for l in entry.lines.all()))
+
+    def test_it_cannot_be_disposed_twice(self):
+        asset = self.asset("12000", life=12)
+        asset.dispose(on_date=datetime.date(2026, 5, 1))
+        with self.assertRaisesMessage(ValidationError, "already been disposed"):
+            asset.dispose(on_date=datetime.date(2026, 6, 1))
+
+    def test_a_category_with_no_disposal_account_is_refused(self):
+        """A gain or loss with nowhere to go would hide in depreciation."""
+        self.category.disposal_account = None
+        self.category.save()
+        asset = self.asset("12000", life=12)
+
+        with self.assertRaisesMessage(ValidationError, "no disposal account"):
+            asset.dispose()
+
+
+class RegisterTests(AssetTestCase):
+    def test_it_reports_cost_depreciation_and_book_value(self):
+        asset = self.asset("12000", life=12)
+        asset.depreciate(through=datetime.date(2026, 3, 31))
+
+        row = asset_register()[0]
+
+        self.assertEqual(row["cost"], Decimal("12000"))
+        self.assertEqual(row["accumulated"], Decimal("3000"))
+        self.assertEqual(row["net_book_value"], Decimal("9000"))
+
+    def test_drafts_are_left_out(self):
+        self.asset(in_service=False)
+        self.assertEqual(asset_register(), [])
+
+    def test_a_disposed_asset_leaves_the_register(self):
+        asset = self.asset("12000", life=12)
+        asset.dispose(on_date=datetime.date(2026, 5, 1))
+        self.assertEqual(asset_register(as_of=datetime.date(2026, 6, 1)), [])
+
+
+class CapitalisationFixture(AssetTestCase):
+    """A vendor, an expense account and a posted bill line to capitalise."""
+
+    def setUp(self):
+        super().setUp()
+        from apps.core.models import UnitOfMeasure
+        from apps.inventory.models import Item
+
+        self.uom = UnitOfMeasure.objects.create(code="ea", name="Each")
+        self.item = Item.objects.create(sku="MACH", name="Machine", uom=self.uom)
+        self.payable = Account.objects.create(
+            code="2000", name="AP", account_type=AccountType.LIABILITY
+        )
+        self.expense = Account.objects.create(
+            code="5000", name="Purchases", account_type=AccountType.EXPENSE
+        )
+        self.vendor = Party.objects.create(
+            code="V-1", name="Supplier", default_currency=self.usd
+        )
+        PartyRoleAssignment.objects.create(party=self.vendor, role=PartyRole.VENDOR)
+
+    def bill_line(self, quantity="1", price="12000"):
+        from apps.purchasing.models import Bill, BillLine
+
+        bill = Bill.objects.create(
+            vendor=self.vendor, bill_date=datetime.date(2026, 1, 1),
+            payable_account=self.payable, currency=self.usd,
+        )
+        line = BillLine.objects.create(
+            bill=bill, description="Machine", quantity=Decimal(quantity),
+            unit_price=Decimal(price), expense_account=self.expense,
+        )
+        bill.post()
+        return line
+
+
+class CapitalisationTests(CapitalisationFixture):
+    def test_capitalising_moves_the_cost_onto_the_asset_account(self):
+        line = self.bill_line("1", "12000")
+
+        assets = line.capitalise_as_asset(self.category)
+
+        self.assertEqual(len(assets), 1)
+        self.assertEqual(assets[0].cost, Decimal("12000"))
+        self.assertEqual(self.balance(self.plant), Decimal("12000"))
+        self.assertEqual(self.balance(self.expense), Decimal("0"))
+
+    def test_each_unit_becomes_its_own_asset(self):
+        """Assets are tracked, disposed of and depreciated individually."""
+        line = self.bill_line("3", "4000")
+
+        assets = line.capitalise_as_asset(self.category)
+
+        self.assertEqual(len(assets), 3)
+        self.assertEqual(sum(asset.cost for asset in assets), Decimal("12000"))
+
+    def test_a_rounding_remainder_lands_on_the_last_one(self):
+        line = self.bill_line("3", "3333.34")
+        assets = line.capitalise_as_asset(self.category)
+        self.assertEqual(sum(asset.cost for asset in assets), Decimal("10000.02"))
+
+    def test_the_asset_remembers_the_purchase(self):
+        line = self.bill_line("1", "12000")
+        asset = line.capitalise_as_asset(self.category)[0]
+
+        self.assertEqual(asset.bill_line, line)
+        self.assertEqual(asset.vendor, self.vendor)
+        self.assertEqual(asset.acquisition_date, datetime.date(2026, 1, 1))
+
+    def test_it_cannot_be_capitalised_twice(self):
+        line = self.bill_line("1", "12000")
+        line.capitalise_as_asset(self.category)
+        with self.assertRaisesMessage(ValidationError, "already been capitalised"):
+            line.capitalise_as_asset(self.category)
+
+    def test_a_fractional_quantity_is_refused(self):
+        line = self.bill_line("1.5", "1000")
+        with self.assertRaisesMessage(ValidationError, "whole units"):
+            line.capitalise_as_asset(self.category)
+
+    def test_the_category_default_life_is_used(self):
+        line = self.bill_line("1", "12000")
+        asset = line.capitalise_as_asset(self.category)[0]
+        self.assertEqual(asset.life_months, 12)
+
+
+class APeriodClosesWithItsDepreciationTests(AssetTestCase):
+    """
+    O29: January closed with the lathe's January uncharged, and every
+    asset's month-end run stopped on it. The close is refused until the
+    month is charged (1,000 a month: 12,000 over twelve).
+    """
+
+    def setUp(self):
+        super().setUp()
+        from apps.accounting.models import AccountingPeriod
+
+        self.lathe = self.asset()
+        self.january = AccountingPeriod.objects.create(
+            name="January 2026", start_date=datetime.date(2026, 1, 1), end_date=datetime.date(2026, 1, 31))
+
+    def test_refused_while_a_month_in_it_is_uncharged(self):
+        with self.assertRaisesMessage(ValidationError, f"Depreciation is still to charge for 1 asset(s): "
+                                                       f"{self.lathe} (January 2026)"):
+            self.january.close()
+        self.january.refresh_from_db()
+        self.assertFalse(self.january.closed)
+
+    def test_through_the_api_as_the_controller(self):
+        controller = self.as_role("Controller")
+        url = f"/api/accounting/periods/{self.january.pk}/close/"
+        refused = controller.post(url, {}, format="json")
+        self.assertEqual(refused.status_code, 400, refused.content)
+        self.assertIn("Run the depreciation through 2026-01-31 first", refused.content.decode())
+        self.lathe.depreciate(through=datetime.date(2026, 1, 31))
+        self.assertEqual(self.balance(self.accumulated), Decimal("-1000.00"))
+        closed = controller.post(url, {}, format="json")
+        self.assertEqual(closed.status_code, 200, closed.content)
+        self.assertTrue(closed.json()["closed"])
+
+    def test_an_asset_with_nothing_to_charge_does_not_hold_it(self):
+        from apps.accounting.models import AccountingPeriod
+
+        self.lathe.depreciate(through=datetime.date(2026, 1, 31))
+        land = AssetCategory.objects.create(
+            code="LAND", name="Land", asset_account=self.plant, accumulated_account=self.accumulated,
+            expense_account=self.depreciation, disposal_account=self.disposal, method="none")
+        plot = FixedAsset.objects.create(name="Plot", category=land, acquisition_date=datetime.date(2026, 1, 1),
+                                         cost=Decimal("50000"), salvage_value=Decimal("0"), life_months=12)
+        plot.place_in_service(on_date=datetime.date(2026, 1, 1))
+        self.january.close()
+        self.assertTrue(AccountingPeriod.objects.get(pk=self.january.pk).closed)
+
+
+class TheRegisterFootsToTheLedgerTests(AssetTestCase):
+    """
+    O34: the daily health checks never footed the register against the
+    ledger. The lathe at 12,000 with three months charged (3,000): the
+    plant and accumulated accounts agree; 500 posted to plant by hand is
+    reported, account by account.
+    """
+
+    def journal(self, day, debit, credit, amount):
+        from apps.accounting.models import JournalEntry
+
+        entry = JournalEntry.objects.create(date=day, memo="By hand")
+        JournalLine.objects.create(entry=entry, account=debit, debit=Decimal(amount))
+        JournalLine.objects.create(entry=entry, account=credit, credit=Decimal(amount))
+        entry.post()
+
+    def test_agreeing_then_a_journal_by_hand(self):
+        from apps.assets.models import register_against_ledger
+        from apps.web.health import integrity
+
+        capital = Account.objects.create(code="3000", name="Capital", account_type=AccountType.EQUITY)
+        # Typed in, the lathe brings its own opening balance onto plant (no journal by hand).
+        lathe = self.asset()
+        lathe.depreciate(through=datetime.date(2026, 3, 31))
+        day = datetime.date(2026, 3, 31)
+        self.assertEqual([(row["account"].code, row["register"], row["ledger"], row["difference"])
+                          for row in register_against_ledger(day)],
+                         [("1500", Decimal("12000.00"), Decimal("12000.00"), Decimal("0.00")),
+                          ("1590", Decimal("-3000.00"), Decimal("-3000.00"), Decimal("0.00"))])
+        finding = lambda: next(row for row in integrity(day, fresh=True)["findings"]  # noqa: E731
+                               if row["key"] == "fixed_assets")
+        self.assertEqual((finding()["ok"], finding()["count"]), (True, 0))
+        self.journal(datetime.date(2026, 3, 15), self.plant, capital, "500")
+        found = finding()
+        self.assertEqual((found["ok"], found["count"]), (False, 1))
+        self.assertEqual([row["label"] for row in found["rows"]],
+                         ["1500 Plant: register 12,000.00, ledger 12,500.00, difference 500.00"])
+
+
+class NotIntoServiceFromADayToComeTests(AssetTestCase):
+    # O12: put into service from tomorrow, its months were charged before anyone used it.
+    def test_refused(self):
+        from django.utils import timezone
+
+        lathe = self.asset(in_service=False)
+        tomorrow = timezone.localdate() + datetime.timedelta(days=1)
+        with self.assertRaisesMessage(ValidationError, f"is not put into service from {tomorrow}: "
+                                                       "that day has not come"):
+            lathe.place_in_service(on_date=tomorrow)
+        self.assertEqual(FixedAsset.objects.get(pk=lathe.pk).status, AssetStatus.DRAFT)
+        lathe.place_in_service(on_date=timezone.localdate())
+        self.assertEqual(lathe.status, AssetStatus.IN_SERVICE)
+
+
+class DepreciationBroughtInAtGoLiveTests(AssetTestCase):
+    """
+    O13: on a draft typed in by hand, what the old system had depreciated
+    was anybody's to type at any time: to a day still to come, before the
+    machine arrived, or moved after it was brought in.
+    """
+
+    def drafted(self, **kwargs):
+        return FixedAsset.objects.create(name="Loom 7", category=self.category, cost=Decimal("12000"),
+                                         life_months=12, acquisition_date=datetime.date(2026, 1, 1), **kwargs)
+
+    def test_not_to_a_day_still_to_come(self):
+        from django.utils import timezone
+
+        with self.assertRaisesMessage(ValidationError, "that day has not come"):
+            self.drafted(depreciated_before=timezone.localdate() + datetime.timedelta(days=1))
+
+    def test_not_before_it_arrived_though_no_in_service_date_is_typed(self):
+        with self.assertRaisesMessage(ValidationError, "Nothing was depreciated before the asset was in service"):
+            self.drafted(depreciated_before=datetime.date(2025, 12, 31))
+
+    def test_not_changed_after_it_was_brought_in(self):
+        loom = self.drafted(depreciated_before=datetime.date(2026, 3, 31), opening_depreciation=Decimal("3000"))
+        loom.depreciated_before = datetime.date(2026, 6, 30)
+        with self.assertRaisesMessage(ValidationError, "are not changed after"):
+            loom.save()
+        controller = self.as_role("Controller")
+        refused = controller.patch(f"/api/assets/assets/{loom.pk}/", {"opening_depreciation": "6000.00"},
+                                   format="json")
+        self.assertEqual(refused.status_code, 400, refused.content)
+        self.assertEqual(FixedAsset.objects.get(pk=loom.pk).opening_depreciation, Decimal("3000.00"))
+        renamed = controller.patch(f"/api/assets/assets/{loom.pk}/", {"name": "Loom 7A"}, format="json")
+        self.assertEqual(renamed.status_code, 200, renamed.content)
+        loom.refresh_from_db()
+        loom.place_in_service(on_date=datetime.date(2026, 1, 1))
+        self.assertEqual([row.period_end for row in loom.depreciate(through=datetime.date(2026, 4, 30))],
+                         [datetime.date(2026, 4, 30)])
+
+
+class ItsStatusIsWhatHappenedToItTests(AssetTestCase):
+    # O14: the admin's status box put a draft in service with no number and no accounts kept.
+    def test_a_status_set_by_hand_is_refused(self):
+        lathe = self.asset(in_service=False)
+        lathe.status = AssetStatus.IN_SERVICE
+        with self.assertRaisesMessage(ValidationError, "its status changes by what happens to it"):
+            lathe.save()
+        self.assertEqual(FixedAsset.objects.get(pk=lathe.pk).status, AssetStatus.DRAFT)
+
+    def test_the_admin_does_not_offer_it(self):
+        from django.contrib import admin
+
+        self.assertIn("status", admin.site._registry[FixedAsset].readonly_fields)
+
+    def test_each_method_still_moves_it(self):
+        lathe = self.asset()
+        lathe.depreciate(through=datetime.date(2026, 1, 31))
+        lathe.dispose(on_date=datetime.date(2026, 2, 15))
+        lathe.reinstate()
+        self.assertEqual(FixedAsset.objects.get(pk=lathe.pk).status, AssetStatus.IN_SERVICE)
+
+
+class TypedInIsAnOpeningBalanceTests(AssetTestCase):
+    """
+    The integrator's decision: an asset entered by hand is an opening balance. The books opened
+    on 1 January 2026 against 3900. Loom 7, 12,000, bought 1 April 2025, with 3,000 the old
+    system had depreciated to 31 December 2025: Dr plant 12,000 / Cr 3900 12,000, and Dr 3900
+    3,000 / Cr accumulated 3,000, dated 1 January 2026. The register and the ledger foot.
+    """
+
+    def loom(self, acquired=datetime.date(2025, 4, 1), **kwargs):
+        return FixedAsset.objects.create(name="Loom 7", category=self.category, acquisition_date=acquired,
+                                         cost=Decimal("12000"), life_months=48, **kwargs)
+
+    def test_it_posts_its_cost_and_what_was_depreciated_on_the_opening_day(self):
+        from apps.assets.models import register_against_ledger
+
+        loom = self.loom(depreciated_before=datetime.date(2025, 12, 31), opening_depreciation=Decimal("3000"))
+        loom.place_in_service(on_date=datetime.date(2025, 4, 1))
+        entry = loom.capitalisation_entry
+        self.assertEqual(entry.date, datetime.date(2026, 1, 1))
+        self.assertEqual(sorted((line.account.code, line.debit, line.credit) for line in entry.lines.all()),
+                         [("1500", Decimal("12000.00"), Decimal("0.00")), ("1590", Decimal("0.00"), Decimal("3000.00")),
+                          ("3900", Decimal("0.00"), Decimal("12000.00")), ("3900", Decimal("3000.00"), Decimal("0.00"))])
+        self.assertEqual([row["difference"] for row in register_against_ledger(datetime.date(2026, 1, 31))],
+                         [Decimal("0.00"), Decimal("0.00")])
+
+    def test_one_bought_after_the_books_opened_is_capitalised_from_its_bill(self):
+        press = self.loom(acquired=datetime.date(2026, 2, 1))
+        with self.assertRaisesMessage(ValidationError, "after the books opened on 2026-01-01: typed in, it would be "
+                                                       "an opening balance it never was. Capitalise it from its bill"):
+            press.place_in_service()
+        self.assertEqual(FixedAsset.objects.get(pk=press.pk).status, AssetStatus.DRAFT)
+
+    def test_removed_before_anything_else_is_posted_against_it(self):
+        loom = self.loom()
+        loom.place_in_service(on_date=datetime.date(2025, 4, 1))
+        controller = self.as_role("Controller")
+        removed = controller.post(f"/api/assets/assets/{loom.pk}/remove-opening/", {}, format="json")
+        self.assertEqual(removed.status_code, 200, removed.content)
+        self.assertEqual((removed.json()["status"], self.balance(self.plant), self.balance(self.opening)),
+                         (AssetStatus.CANCELLED, Decimal("0"), Decimal("0")))
+        again = self.loom()
+        again.place_in_service(on_date=datetime.date(2025, 4, 1))
+        again.depreciate(through=datetime.date(2026, 1, 31))
+        refused = controller.post(f"/api/assets/assets/{again.pk}/remove-opening/", {}, format="json")
+        self.assertEqual(refused.status_code, 400, refused.content)
+        self.assertIn("dispose of it instead", refused.content.decode())
+
+
+class TheBooksOpenOnceTests(AssetTestCase):
+    """Accounting's books setting: set once, changed only while nothing is posted on or before its day."""
+
+    def test_set_once_and_held_by_what_is_posted(self):
+        from apps.accounting.models import BooksOpening
+
+        with self.assertRaisesMessage(ValidationError, "The books opened once"):
+            BooksOpening.objects.create(opened_on=datetime.date(2026, 2, 1), opening_account=self.opening)
+        with self.assertRaisesMessage(ValidationError, "is not an equity account"):
+            self.books_opened.opening_account = self.plant
+            self.books_opened.save()
+        self.books_opened.refresh_from_db()
+        self.books_opened.opened_on = datetime.date(2025, 12, 31)
+        self.books_opened.save()
+        # Typed in: its opening balance posts on 31 December 2025.
+        FixedAsset.objects.create(name="Loom 7", category=self.category, acquisition_date=datetime.date(2025, 6, 1),
+                                  cost=Decimal("12000"), life_months=48).place_in_service()
+        self.books_opened.opened_on = datetime.date(2026, 1, 1)
+        with self.assertRaisesMessage(ValidationError, "on or before that day: opening balances were written against it"):
+            self.books_opened.save()
