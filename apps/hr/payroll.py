@@ -2172,10 +2172,9 @@ class StatutoryRemittance(AuditModel):
         self.amount = round_money(Decimal(self.amount))
         payment = self.payment
         # What is left on the payment and owed on the account for the month
-        # are both read below; another remittance could spend either. The payment first, then the
-        # account (O258): lock_rows() alone sorts them by name, the account first.
-        lock_rows(payment)
-        lock_rows(self.liability_account)
+        # are both read below; another remittance could spend either. lock_rows() takes the payment
+        # first, by the lock order's rank (O258).
+        lock_rows(payment, self.liability_account)
         if not payment.posted:
             raise ValidationError("That payment has not been posted; nothing has left the bank.")
         if payment.is_voided():
@@ -2215,8 +2214,7 @@ class StatutoryRemittance(AuditModel):
         guard closes. A payment that bounced paid nothing over, and its
         remittance then counts for nothing and goes.
         """
-        lock_rows(self.payment)
-        lock_rows(self.liability_account)
+        lock_rows(self.payment, self.liability_account)
         if not self.payment.is_voided():
             raise ValidationError(
                 f"{self.payment.number} paid {self.amount} over against {self.liability_account} for "
