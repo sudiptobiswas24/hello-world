@@ -1076,3 +1076,65 @@ class TcsCountedInWhatTheInvoiceBookedTests(FxSettlementTestCase):
         self.assertEqual((row.document_base, row.fx_entry_id, self.balance(self.ar)), (D("1010.00"), None, D("0")))
         self.assertFalse(JournalEntry.objects.filter(memo__startswith="Exchange difference").exists())
 
+
+class NotePartlyRefundedTests(FxSettlementTestCase):
+    """
+    O261: 3.54 + 23.07 + 39.72 EUR at 1.12345, line by line (74.52); 48.73 received at 1.09876 and applied
+    first, clearing 54.75; a note on the first two lines (26.61 EUR, booked 29.90) absorbs the 17.60 left and
+    the other 9.01 is refunded at 1.09876 (9.90). The absorbed part clears what the invoice had left, 19.77,
+    so the refund clears 10.13 (0.23 of exchange); at the note's own slice of it (19.78) the refund cleared
+    10.12 and the receivable kept -0.01 with every document settled (calc_fix_books3/o261.py). Sales and
+    purchasing share the code (settlement.absorbed_part); each side is proven.
+    """
+
+    def setUp(self):
+        super().setUp()
+        ExchangeRate.objects.create(currency=self.eur, rate=D("1.12345"), valid_from=JAN5)
+        ExchangeRate.objects.create(currency=self.eur, rate=D("1.09876"), valid_from=datetime.date(2026, 2, 1))
+
+    def refund(self, party, direction, control):
+        payment = Payment.objects.create(party=party, direction=direction, payment_date=datetime.date(2026, 2, 15),
+                                         amount=D("9.01"), currency=self.eur, bank_account=self.bank,
+                                         counterpart_account=control)
+        payment.post()
+        return payment
+
+    def test_a_credit_note_partly_refunded_leaves_the_receivable_square(self):
+        from apps.sales.models import InvoicePayment, SalesOrder, SalesOrderLine
+        order = SalesOrder.objects.create(customer=self.customer, order_date=JAN5, currency=self.eur)
+        for price in ("3.54", "23.07", "39.72"):
+            SalesOrderLine.objects.create(order=order, item=self.item, uom=self.uom, quantity=D("1"),
+                                          unit_price=D(price), revenue_account=self.revenue)
+        order.confirm()
+        inv = order.create_invoice(self.ar, invoice_date=JAN5)
+        inv.post()
+        receipt = self.euro_payment(PaymentDirection.RECEIPT, "48.73")
+        InvoicePayment.objects.create(invoice=inv, payment=receipt, amount=D("48.73"))
+        first, second, _ = inv.lines.order_by("pk")
+        note = inv.create_credit_note(quantities={first: D("1"), second: D("1")}, on_date=JAN5)
+        self.assertEqual((note.total(), note.amount_absorbed(), note.refund_due()), (D("26.61"), D("17.60"), D("9.01")))
+        refund = self.refund(self.customer, PaymentDirection.DISBURSEMENT, self.ar)
+        row = InvoicePayment.objects.create(invoice=note, payment=refund, amount=D("9.01"))
+        row.refresh_from_db()
+        self.assertEqual((row.document_base, row.payment_base, inv.amount_due(), note.amount_due(),
+                          self.balance(self.ar)),
+                         (D("10.13"), D("9.90"), D("0"), D("0"), D("0")),
+                         "(refund's document base, payment base, invoice due, note due, AR)")
+
+    def test_the_payable_mirror_a_debit_note_partly_refunded(self):
+        from apps.purchasing.models import Bill, BillLine, BillPayment
+        bill = Bill.objects.create(vendor=self.vendor, bill_date=JAN5, payable_account=self.ap, currency=self.eur)
+        lines = [BillLine.objects.create(bill=bill, description="Parts", quantity=D("1"), unit_price=D(price),
+                                         expense_account=self.expense) for price in ("3.54", "23.07", "39.72")]
+        bill.post()
+        pay = self.euro_payment(PaymentDirection.DISBURSEMENT, "48.73")
+        BillPayment.objects.create(bill=bill, payment=pay, amount=D("48.73"))
+        note = bill.create_debit_note(quantities={lines[0]: D("1"), lines[1]: D("1")})
+        self.assertEqual((note.total(), note.amount_absorbed(), note.refund_due()), (D("26.61"), D("17.60"), D("9.01")))
+        refund = self.refund(self.vendor, PaymentDirection.RECEIPT, self.ap)
+        row = BillPayment.objects.create(bill=note, payment=refund, amount=D("9.01"))
+        row.refresh_from_db()
+        self.assertEqual((row.document_base, row.payment_base, bill.amount_due(), note.amount_due(),
+                          self.balance(self.ap)),
+                         (D("10.13"), D("9.90"), D("0"), D("0"), D("0")),
+                         "(refund's document base, payment base, bill due, note due, AP)")

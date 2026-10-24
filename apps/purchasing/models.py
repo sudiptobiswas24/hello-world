@@ -3806,6 +3806,12 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
     def date_for_discount(self):
         return to_date(self.bill_date)
 
+    def absorbed_into(self):
+        """On a debit note: (its document, the part of it absorbed there), for settlement.absorbed_part (O261)."""
+        if not self.is_debit_note():
+            return None
+        return self.debits, self.amount_absorbed()
+
     def settled_by_entries(self):
         """Its debit notes and prepayment drawdowns, for a payment to count at what they booked (O209, review F1)."""
         return entries_that_settled(self.debit_notes.all(), self.prepayment_applications.all())
