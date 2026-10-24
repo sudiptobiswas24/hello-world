@@ -1071,13 +1071,21 @@ class WhereTheFreightIsTests(OneChargeLandsOnceTests):
             note.post()
         self.assertEqual(self.balance(self.freight_expense), Decimal("0"))
 
-    def test_a_refund_drafted_before_the_capitalising_is_refused_as_it_posts(self):
+    def test_a_refund_drafted_before_the_capitalising_leaves_nothing_to_capitalise(self):
+        # O353: the draft waiting gives the whole charge back, so capitalising it is refused and the draft
+        # posts. Before, the charge was capitalised and the draft could then never post.
         bill, charge = self.carrier_bill("80")
         note = self.drafted_refund(bill, charge)
+        with self.assertRaisesMessage(ValidationError, "nothing to capitalise"):
+            charge.capitalise_as_asset(self.category)
+        note.post()
+        self.assertEqual(self.balance(self.freight_expense), Decimal("0"))
+
+    def test_a_refund_drafted_after_the_capitalising_is_refused(self):
+        bill, charge = self.carrier_bill("80")
         charge.capitalise_as_asset(self.category)
         with self.assertRaisesMessage(ValidationError, "was capitalised as fixed assets"):
-            note.post()
-        self.assertEqual(self.balance(self.freight_expense), Decimal("0"))
+            self.drafted_refund(bill, charge)
 
     def test_a_euro_charge_lands_at_the_rate_it_was_booked(self):
         eur = self.euro()

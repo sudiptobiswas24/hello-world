@@ -5153,6 +5153,15 @@ class BillLine(PostedLineMixin, TaxedLineMixin, AuditModel):
         return sum((line.booked_amount() for line in self.debit_lines.filter(bill__posted=True).select_related("bill")),
                    Decimal("0"))
 
+    def amount_waiting_to_be_given_back(self):
+        """
+        What draft debit notes waiting on this line will give back of it, in base: at the rate its bill was
+        booked at, which a debit note posts at (Bill.post). Capitalising leaves it in the line's account.
+        """
+        rate = self.bill.exchange_rate or Decimal("1")
+        return sum((round_money(line.net_amount() * rate) for line in self.debit_lines.filter(bill__posted=False)),
+                   Decimal("0"))
+
     def amount_in_its_account(self):
         """
         What of this line's cost still sits in the account it posted to, in
@@ -5325,10 +5334,13 @@ class BillLine(PostedLineMixin, TaxedLineMixin, AuditModel):
                 f"'{self.label()}' was landed on the goods on {self.bill.number} when it posted; "
                 "its cost is in their stock value, not on a machine."
             )
-        # What debit notes gave back is not capitalised: a refunded line made an asset of nothing.
-        units = self.quantity - self.quantity_debited()
+        # What debit notes gave back is not capitalised: a refunded line made an asset of nothing. Nor
+        # what a draft waiting will give back (O353, given_back_or_waiting): counted once posted, a draft
+        # of one of three machines saw all three capitalised, and could then never post.
+        units = self.quantity - given_back_or_waiting(self, "debits_line")
         if units <= 0:
-            raise ValidationError("This line has been given back in full; there is nothing to capitalise.")
+            raise ValidationError("This line has been given back in full, or a draft debit note waiting gives "
+                                  "back the rest; there is nothing to capitalise.")
         if units != units.to_integral_value():
             raise ValidationError(
                 "Capitalise whole units; a fraction of an asset cannot be disposed of."
@@ -5338,7 +5350,8 @@ class BillLine(PostedLineMixin, TaxedLineMixin, AuditModel):
         # what the bill put in the account this takes it out of. At the
         # bill's own figures a foreign machine went onto the asset
         # account at its euro price and left the difference behind.
-        total = self.booked_amount() - self.amount_given_back()
+        # A draft waiting leaves its share where the bill put it, for it to take back as it posts.
+        total = self.booked_amount() - self.amount_given_back() - self.amount_waiting_to_be_given_back()
         unit_cost = round_money(total / units)
         memo = f"Capitalised from {self.bill.number}"
         source = self.posted_account or self.expense_account
@@ -5690,7 +5703,9 @@ class BillLine(PostedLineMixin, TaxedLineMixin, AuditModel):
         original put it in, so that cost must still be there.
         """
         original = self.debits_line
-        if original.assets.exclude(status="cancelled").exists():
+        # A draft counted when the line was capitalised (O353) left its share in the account: it takes that.
+        takes = round_money(self.net_amount() * (original.bill.exchange_rate or Decimal("1")))
+        if original.assets.exclude(status="cancelled").exists() and original.amount_in_its_account() < takes:
             # The line's cost has moved onto the asset account, so a
             # debit note crediting the line's own account would take it
             # out of an account that no longer holds it — below nothing —
