@@ -79,7 +79,41 @@ def validate_stock_account(serializer, account):
     return account
 
 
-class ItemSerializer(ExtensibleSerializerMixin, serializers.ModelSerializer):
+# What a movement says about money. Warehouse Staff and Quality Inspectors read the stock ledger for its quantities
+# and see none of these (O331).
+MOVEMENT_MONEY = ("unit_cost", "value", "value_adjustment")
+
+
+def sees_stock_value(request):
+    """Whether the person asking may read what stock is worth; no request (code, the shell) reads everything."""
+    return request is None or request.user.has_perm("inventory.view_stock_value")
+
+
+class HidesStockMoney:
+    """
+    The one rule for what stock is worth over the API (O331): a serializer that carries it names those fields in
+    `stock_money`, and they are left out for whoever lacks inventory.view_stock_value, nested lines included (a
+    nested serializer reads its root's request). Warehouse Staff read money through the adjustments until every
+    such serializer asked this, not only the stock ledger's.
+    """
+
+    stock_money = ()
+
+    def to_representation(self, instance):
+        row = super().to_representation(instance)
+        if self.stock_money and not sees_stock_value(self.context.get("request")):
+            for field in self.stock_money:
+                row.pop(field, None)
+        return row
+
+
+# What an item says about money: at a standard cost, quantity x standard_cost is the stock's worth (O348).
+ITEM_MONEY = ("standard_cost",)
+
+
+class ItemSerializer(HidesStockMoney, ExtensibleSerializerMixin, serializers.ModelSerializer):
+    stock_money = ITEM_MONEY
+
     def validate_inventory_account(self, account):
         return validate_stock_account(self, account)
 
@@ -109,34 +143,6 @@ class ItemSerializer(ExtensibleSerializerMixin, serializers.ModelSerializer):
         # A standard cost cannot be assigned: changing it revalues the
         # stock on hand, which is a posting. set_standard_cost() does it.
         read_only_fields = ["standard_cost"]
-
-
-# What a movement says about money. Warehouse Staff and Quality Inspectors read the stock ledger for its quantities
-# and see none of these (O331).
-MOVEMENT_MONEY = ("unit_cost", "value", "value_adjustment")
-
-
-def sees_stock_value(request):
-    """Whether the person asking may read what stock is worth; no request (code, the shell) reads everything."""
-    return request is None or request.user.has_perm("inventory.view_stock_value")
-
-
-class HidesStockMoney:
-    """
-    The one rule for what stock is worth over the API (O331): a serializer that carries it names those fields in
-    `stock_money`, and they are left out for whoever lacks inventory.view_stock_value, nested lines included (a
-    nested serializer reads its root's request). Warehouse Staff read money through the adjustments until every
-    such serializer asked this, not only the stock ledger's.
-    """
-
-    stock_money = ()
-
-    def to_representation(self, instance):
-        row = super().to_representation(instance)
-        if self.stock_money and not sees_stock_value(self.context.get("request")):
-            for field in self.stock_money:
-                row.pop(field, None)
-        return row
 
 
 class StockMovementSerializer(HidesStockMoney, serializers.ModelSerializer):

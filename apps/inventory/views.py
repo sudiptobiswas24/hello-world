@@ -628,7 +628,7 @@ class ItemTemplateViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         template = self.get_object()
         created = _run(template.generate_variants)
         return Response({
-            "created": [ItemSerializer(item).data for item in created],
+            "created": [ItemSerializer(item, context=self.get_serializer_context()).data for item in created],
             # Counted freshly rather than off template.variants: the
             # queryset was prefetched before any of these existed, so the
             # cached one reports the set as it was on the way in.

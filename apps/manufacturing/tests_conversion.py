@@ -624,6 +624,12 @@ class AMeasurementExplainsPolymerNotLoomTimeTests(ConversionTestCase):
             content_type__app_label="manufacturing", codename="view_workorder"))
         planner = User.objects.get(pk=planner.pk)  # permissions are cached on the instance
         client.force_authenticate(planner)
+        # The run alone is not what is left in it: that is stock money (O348).
+        self.assertEqual(client.get(url).status_code, 403)
+        planner.user_permissions.add(Permission.objects.get(
+            content_type__app_label="inventory", codename="view_stock_value"))
+        planner = User.objects.get(pk=planner.pk)
+        client.force_authenticate(planner)
         body = client.get(url).json()
 
         self.assertAlmostEqual(Decimal(body["machine_time"]), Decimal("1060.00"), places=2)
