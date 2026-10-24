@@ -58,10 +58,13 @@ class AnOrderApprovedBefore0063KeepsItsApprovalTests(TransactionTestCase):
         executor.loader.build_graph()
         executor.migrate(executor.loader.graph.leaf_nodes())
 
+        # Seeded at 0065, then named in the base by 0080 on the way to the latest: the order is in USD, the base.
         self.assertEqual(SalesOrder.objects.get(pk=uncut.pk).approved_figures,
-                         {"discounts": {str(uncut_line.pk): "20.00"}, "total": None, "margin": None})
+                         {"discounts": {str(uncut_line.pk): "20.00"}, "total": None, "margin": None,
+                          "currency": "USD"})
         self.assertEqual(SalesOrder.objects.get(pk=cut.pk).approved_figures,
-                         {"discounts": {str(cut_line.pk): "20.00"}, "total": None, "margin": None})
+                         {"discounts": {str(cut_line.pk): "20.00"}, "total": None, "margin": None,
+                          "currency": "USD"})
         self.assertIsNone(SalesOrder.objects.get(pk=untouched.pk).approved_figures)
         for discount in ("10", "20"):  # cut, then put back within what was approved
             self.put(uncut_line, discount)
