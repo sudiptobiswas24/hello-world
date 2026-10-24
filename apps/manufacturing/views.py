@@ -1423,6 +1423,8 @@ class WorkOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         "reopen": "manufacturing.change_workorder",
         "cancel": "manufacturing.change_workorder",
         "board": "manufacturing.view_workorder",
+        # Every figure there but the minutes is money left in the run (O348).
+        "money_variance": "inventory.view_stock_value",
     }
 
     @action(detail=False, methods=["get"])
@@ -1459,8 +1461,10 @@ class WorkOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=["get"])
     def energy(self, request, pk=None):
         """What the meters say this run drew. Read, never posted."""
+        from apps.inventory.serializers import sees_stock_value
+
         found = energy.run_energy(self.get_object())
-        return Response(found | {
+        answer = found | {
             "kwh": _kwh(found["kwh"]), "cost": _rupees(found["cost"]),
             "kwh_per_unit": (None if found["kwh_per_unit"] is None
                              else str(found["kwh_per_unit"].quantize(Decimal("0.000001")))),
@@ -1468,7 +1472,10 @@ class WorkOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
             "variance_kwh": _kwh(found["variance_kwh"]),
             "metered_minutes": str(found["metered_minutes"]),
             "unmetered_minutes": str(found["unmetered_minutes"]),
-        })
+        }
+        if not sees_stock_value(request):
+            answer.pop("cost", None)  # what the run's power cost is the run's cost (O348)
+        return Response(answer)
 
     def _reply(self, order):
         return Response(self.get_serializer(order).data)

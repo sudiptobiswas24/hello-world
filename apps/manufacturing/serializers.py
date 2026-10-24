@@ -842,7 +842,15 @@ class OperationChoiceSerializer(serializers.ModelSerializer):
         return f"{row.work_order.number} · {row.sequence} {row.name} · {row.work_order.item.sku}"
 
 
-class WorkOrderOperationSerializer(serializers.ModelSerializer):
+# What a run says about money (O348): what it was planned to cost, what it has cost and what is left in it. A
+# Quality Inspector reads the run for its quantities and steps, and sees none of these.
+WORK_ORDER_MONEY = ("planned_unit_cost", "planned_material_cost", "planned_conversion_cost", "conversion_cost",
+                    "conversion_variance", "wip_balance", "unaccounted")
+OPERATION_MONEY = ("planned_outside_cost",)
+
+
+class WorkOrderOperationSerializer(HidesStockMoney, serializers.ModelSerializer):
+    stock_money = OPERATION_MONEY
     planned_hours = serializers.SerializerMethodField()
 
     minutes_booked = serializers.SerializerMethodField()
@@ -898,7 +906,8 @@ class WorkOrderListSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
-class WorkOrderSerializer(serializers.ModelSerializer):
+class WorkOrderSerializer(HidesStockMoney, serializers.ModelSerializer):
+    stock_money = WORK_ORDER_MONEY
     item_sku = serializers.CharField(source="item.sku", read_only=True)
     item_name = serializers.CharField(source="item.name", read_only=True)
     work_centre_code = serializers.CharField(source="work_centre.code", read_only=True, default="")
