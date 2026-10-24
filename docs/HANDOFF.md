@@ -198,14 +198,47 @@ built.
        ledger, every derived balance foots to its account, and the
        statutory files read what was posted. Run it on PostgreSQL and in
        Asia/Kolkata. Each failure is a register row.
-   - **g23b, in flight (started 24 October): the security, crash, books and
-     race rows**, before g24. Three agents, briefs docs/handoff/g23b_*.md,
-     base 9e9d4d4, worktrees /home/user/work/fix_{sec4,books3,hrlocks},
-     integration tree /home/user/work/g23btree, gate logs
-     /home/user/gate-logs-g23b. Rows: O255, O317, O318, O348 (sec); O260,
-     O261, O350, O353, O349, O347, O329 (books); O262, O360, O270, O257, O258
-     (hr and locks). O312 and O352 wait on the owner. Register and handoff
-     commits are made in the integration tree only (g23's lesson).
+   - **g23b, in flight: the security, crash, books and race rows.** Briefs
+     docs/handoff/g23b_*.md. Stopped on 24 October by the session's limit,
+     before the gate. To resume:
+     - Integration tree /home/user/work/g23btree (snapshot
+       claude/erp-wip-g23btree). It holds 22 agent commits cherry-picked on
+       603a9ca: sec4 (O255, O317, O318, O348), books3 (O260, O261, O350,
+       O353, O349, O347) and hrlocks (O262, O360, O270, O258, and seven of
+       O257's eight shapes). Those 14 rows are off the register. One conflict,
+       apps/inventory/serializers.py, was resolved to keep both sides
+       (HidesStockMoney on ItemSerializer, and the stock and cogs account
+       validators). makemigrations --check and audit_invariants are clean;
+       no test suite has run on the combined tree yet.
+     - Agent worktrees, each backed up at claude/erp-g23b-<name> (commits)
+       and claude/erp-wip-fix_<name> (uncommitted edits too). Each was still
+       working when the session stopped. Start one new agent per worktree
+       with its brief, its report in /home/user/work/reports/, and
+       `git diff HEAD`:
+       - fix_sec4: grant inventory.view_stock_value to the Controller and
+         Bookkeeper (decided: they keep the ledger, the inventory account
+         included; no other role gains it), with role tests; rerun core,
+         assets, inventory, manufacturing, quality and web.
+       - fix_books3: O329 (inventory 0040 gives rows what their documents
+         booked; the stock-to-ledger check does not let one account's
+         surplus hide another's shortfall). The "nets its drops" half is
+         already fixed at 9e9d4d4: prove it with a test.
+       - fix_hrlocks: O257's numbering (decided: serialise behind one
+         numbering row per company, because GST Rule 46(b) needs
+         consecutive invoice numbers, so no gaps); lock_rows sorts by
+         LOCK_ORDER rank, not model name (root cause; take off the
+         statutory remittance's local fix); a leaver with no final slip can
+         settle an advance (O262's reverse path).
+     - Then cherry-pick each worktree's new commits beyond its
+       claude/erp-g23b-<name> tip into g23btree, one review per agent, and
+       the six-lane gate (gate logs /home/user/gate-logs-g23b), finalize
+       from the pushed tip, and push. O257 stays open until the numbering
+       commit; registercheck fails the ui lane while a subject names it, so
+       take it off in that commit.
+     - Shared venv: cryptography 44.0.2 is installed and pinned.
+       Production now needs ERP_FIELD_KEYS in .env (.env.example,
+       docker-compose.yml and deploy/backup.sh say so).
+     - O312 and O352 wait on the owner.
    - **g23 is pushed (b344a2c gated, c34e9b0 the tip, 24 October), all six
      lanes green on one tip:** SQLite 7726, 174 skipped; PostgreSQL 7726;
      Asia/Kolkata 7726; migration-tagged 39; vitest 45. 131 commits and a
