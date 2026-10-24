@@ -25,6 +25,27 @@ from apps.accounting.models import AccountType, JournalEntry, JournalLine, round
 from apps.core.models import Company
 
 
+def _kept_for(account, account_type, own_field, rule):
+    """
+    Why `account` cannot be an item's account under `rule`, or "": it is of `account_type`, not a money
+    account, and none of the company's other accounts but its own default (`own_field`). The one rule the
+    inventory account (the review of O324) and the cost-of-sales account (O347) both ask.
+    """
+    if account is None:
+        return ""
+    if account.account_type != account_type or account.holds_money:
+        kind = "money" if account.holds_money else account.get_account_type_display().lower()
+        return f"{account.code} is a {kind} account. {rule}"
+    company = Company.objects.order_by("pk").first()
+    if company is not None:
+        for field in type(company)._meta.get_fields():
+            if (getattr(field, "related_model", None) is type(account) and field.concrete
+                    and field.name != own_field
+                    and getattr(company, f"{field.name}_id") == account.pk):
+                return f"{account.code} is the company's {field.verbose_name}. {rule}"
+    return ""
+
+
 def stock_account_refusal(account):
     """
     Why `account` cannot hold stock's value, or "" when it can (the review of O324). An inventory account is an
@@ -33,21 +54,30 @@ def stock_account_refusal(account):
     adjustment through it and debited them 50.00 with no vendor. One rule, asked wherever an inventory account is
     set (an item, an item template, the company default) and again where one is used.
     """
-    if account is None:
-        return ""
-    if account.account_type != AccountType.ASSET or account.holds_money:
-        kind = "money" if account.holds_money else account.get_account_type_display().lower()
-        return (f"{account.code} is a {kind} account. Stock's value is held in an asset account kept for "
-                "stock, never a control or money account.")
-    company = Company.objects.order_by("pk").first()
-    if company is not None:
-        for field in type(company)._meta.get_fields():
-            if (getattr(field, "related_model", None) is type(account) and field.concrete
-                    and field.name != "default_inventory_account"
-                    and getattr(company, f"{field.name}_id") == account.pk):
-                return (f"{account.code} is the company's {field.verbose_name}. Stock's value is held in an "
-                        "asset account kept for stock, never a control or money account.")
-    return ""
+    return _kept_for(account, AccountType.ASSET, "default_inventory_account",
+                     "Stock's value is held in an asset account kept for stock, never a control or money account.")
+
+
+def cogs_account_refusal(account):
+    """
+    Why `account` cannot take an item's cost of sales, or "" when it can (O347): an expense account kept for
+    cost of sales, not a money account and none of the company's other accounts (the price variance, the
+    exchange loss). The same hole as the inventory account's: a Stores Manager could point an item's cost of
+    sales at the payables, and every delivery debited them. Asked where it is set and again where it is used.
+    """
+    return _kept_for(account, AccountType.EXPENSE, "default_cogs_account",
+                     "Cost of sales is booked to an expense account kept for it, never a control or money account.")
+
+
+def check_cogs_account(account, field="cogs_account"):
+    refusal = cogs_account_refusal(account)
+    if refusal:
+        raise ValidationError({field: refusal})
+
+
+def refuse_a_default_cogs_account_that_is_not_one(company):
+    """A company check: the default cost-of-sales account is an expense account kept for it (O347)."""
+    check_cogs_account(company.default_cogs_account, "default_cogs_account")
 
 
 def check_stock_account(account, field="inventory_account"):
@@ -101,6 +131,8 @@ def cogs_account_for(item):
         raise ValidationError(
             f"{item} has no cost-of-sales account and the company has no default."
         )
+    # Asked again where it is used: one set before the rule, or retyped since, books nothing (O347).
+    check_cogs_account(account)
     return account
 
 

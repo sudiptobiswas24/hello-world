@@ -417,9 +417,10 @@ class Item(Extensible, AuditModel):
         self._check_matches_template()
         self._check_variant_key_frozen()
         self._check_counting_frozen()
-        from .valuation import check_stock_account
+        from .valuation import check_cogs_account, check_stock_account
 
         check_stock_account(self.inventory_account)
+        check_cogs_account(self.cogs_account)
         self.hsn_code = validate_hsn(self.hsn_code)
         super().save(*args, **kwargs)
 
