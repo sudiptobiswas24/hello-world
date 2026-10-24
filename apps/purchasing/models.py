@@ -96,7 +96,7 @@ from apps.accounting.settlement import (
     slice_of,
     take_settlement_discount as settle_discount,
     spent_undoing,
-    booked_on,
+    booked_by,
     post_drawdown,
     standing_allocations,
     standing_paid,
@@ -3714,7 +3714,7 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             memo=f"Prepayment {prepayment.number} applied to {self.number}",
             is_receivable=False,
             held_left=(left, prepayment.prepayment_base_left(account)),
-            document_slice=(booked_on(self.journal_entry, self.payable_account), self.total(),
+            document_slice=(booked_by(self, self.payable_account), self.total(),
                             self.total() - self.amount_due()),
         )
         return PrepaymentApplication.objects.create(
