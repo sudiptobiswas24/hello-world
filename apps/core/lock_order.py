@@ -50,6 +50,13 @@ LOCK_ORDER = (
     #    bill it settles (every path the survey of 14 October saw)
     "core.party",
     "accounting.payment",
+    # 3b. an account, after the payment that moves money through it (O258, the survey of 24 October
+    #     over accounting, sales, purchasing, hr, inventory and e2e on PostgreSQL): a payment posting
+    #     holds itself, then shares its bank account (accounting.money.hold_money_account), and the
+    #     party is held before either; after it, every path seen took a sales invoice (dunning), the
+    #     period, or rows ranked nowhere. A remittance took its liability account before its payment,
+    #     the one pair the other way round, and takes the payment first now.
+    "accounting.account",
     # 3a. what a payment pays in payroll, after it (rereview 5, 6): Payment.void holds the payment
     #     and its follow-up the bank file or the slip; paying a file or a slip and returning a
     #     transfer take the money first (hr.payroll.hold_the_money_first), then the file, the
@@ -92,7 +99,6 @@ UNRANKED = {
                                "own. Seen both ways round sales.invoice (14 October), not ranked",
     "core.documentsequence": "one row per document type, taken by the document numbering it, before and after "
                              "documents and lines alike (14 October); ranks by type, not by document",
-    "accounting.account": "a control account, locked by payroll and banking paths, not trading ones",
 }
 
 
