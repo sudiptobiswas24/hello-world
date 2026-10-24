@@ -167,7 +167,6 @@ UNSEEN = {
     "manufacturing.billofmaterials": "a woven bag's save rebuilds its components' BOMs in the order built",
     "manufacturing.materialissue": "a roll mount's void voids its issues in the order mounted",
     "manufacturing.standardcost": "roll_up() holds each component's cost in the order the tree is walked",
-    "manufacturing.timebooking": "a station clock's void voids its bookings in the order booked",
     "quality.inspectionplan": "a woven bag's save rebuilds its plans in the order built",
 }
 
