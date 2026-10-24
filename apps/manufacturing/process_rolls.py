@@ -40,7 +40,7 @@ from django.db import models, transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from apps.core.models import AuditModel
+from apps.core.models import AuditModel, lock_rows
 
 from .station_scale import TYPED_REASONS
 
@@ -446,6 +446,13 @@ def void_mount(mount, station, supervisor, operator, reason):
             entry__voided_at__isnull=True).exists():
         raise ValidationError(f"Something was made from {mount}; withdraw that first.")
     check_supervisor(station, supervisor, operator)
+    # The return is voided before the issue it returns, a later row before an earlier one: both held in key
+    # order first (O257), so a void of the issue alone waits here rather than across.
+    issues = [issue for issue in (mount.issue if mount.issue_id else None,
+                                  mount.returned if mount.returned_id else None) if issue is not None]
+    lock_rows(*issues)
+    # And the entries the two voids reverse, the return's (the later) first.
+    lock_rows(*[issue.journal_entry for issue in issues if issue.journal_entry_id], refresh=False)
     if mount.returned_id:
         mount.returned.void_with(mount, memo=f"Withdrawn at {station}: {reason}"[:255])
     if mount.issue_id:
