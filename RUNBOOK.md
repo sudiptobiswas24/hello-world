@@ -116,6 +116,7 @@ the fortnight before that.
 |---|---|
 | `POSTGRES_PASSWORD` | output of `openssl rand -hex 32`. Hex only: it goes inside a URL. |
 | `DJANGO_SECRET_KEY` | another `openssl rand -hex 32`. Signs every login. The server refuses to start without one. |
+| `ERP_FIELD_KEYS` | `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. Seals every login's second factor in the database, so a copy of the database holds none of them. The server refuses to start without one. It is not in any backup: keep a copy off the machine, apart from the backups (see "Backups"). |
 | `ERP_SITE` | what people type in the browser: `erp.deccanpolysacks.in`, or `erp.plant.local`, or `192.168.1.10`. |
 | `ERP_TLS` | empty for a public domain name; `tls internal` for a name or address on the plant network. |
 | `DJANGO_ALLOWED_HOSTS` | the same name(s) as `ERP_SITE`, comma-separated. Anything else is refused. |
@@ -316,7 +317,21 @@ two files with the same stamp, and deletes those older than
 | `backups/erp_YYYY-MM-DD_HHMM.media.sha256` | each attached file's sha256, as it was backed up |
 
 Neither is a backup without the other: the database says a file is
-attached, and only the archive holds it. Copy them together. The log
+attached, and only the archive holds it. Copy them together.
+
+**The backups do not hold `ERP_FIELD_KEYS`, on purpose.** The database
+keeps each login's second factor sealed with it, so a stolen backup
+signs nobody in. A restore needs that key as well: restored without it
+(or with a different one), every enrolled login is told its second
+factor can no longer be read, and whoever keeps logins resets each one
+so that it sets up its phone again. Keep a copy of `.env`, or at least
+that line, off the machine and apart from the backups.
+
+To change the key: put the new one first in `ERP_FIELD_KEYS`, the old
+one after it, comma-separated; restart; run
+`docker compose exec web python manage.py rotate_field_keys`; then drop
+the old key and restart again. A login the command names could not be
+opened with any key: reset its second factor. The log
 line for each backup names both files and how many attachments it holds.
 Check that it is working:
 
