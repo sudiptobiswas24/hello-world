@@ -161,7 +161,6 @@ UNSEEN = {
                              "in no fixed order between types (sales.Invoice.post)",
     "core.documentsequenceyear": "the year's counter of a document type, as core.documentsequence",
     "manufacturing.billofmaterials": "a woven bag's save rebuilds its components' BOMs in the order built",
-    "manufacturing.standardcost": "roll_up() holds each component's cost in the order the tree is walked",
     "quality.inspectionplan": "a woven bag's save rebuilds its plans in the order built",
 }
 

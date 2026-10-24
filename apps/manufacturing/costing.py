@@ -150,6 +150,9 @@ class CostVersion(AuditModel):
                 BillOfMaterials.objects.filter(is_default=True, is_active=True)
                 .select_related("item")
             ]
+        # This version's standards held in key order before the walk writes them in the order the tree is
+        # walked (O257); rows the walk makes are its own.
+        lock_rows(*self.costs.order_by("pk"), refresh=False)
         done = {}
         for item in wanted:
             self._cost(item, (), done)
