@@ -430,6 +430,40 @@ class CapitalisationTests(CapitalisationFixture):
         self.assertEqual(asset.life_months, 12)
 
 
+class ADraftDebitNoteWaitingIsNotCapitalisedTests(CapitalisationFixture):
+    """
+    O353: 3 machines at 1,000.01 (3,000.03); a draft debit note for one waits. Capitalising makes two, at
+    2,000.02 (1,000.01 each), and leaves the draft's 1,000.01 in purchases; the draft then posts and takes
+    it, purchases at 0.00. Counted once posted only, all three were capitalised at 3,000.03 and the draft
+    could never post (calc_fix_books3/o353.py).
+    """
+
+    def test_the_waiting_draft_reduces_what_is_capitalised_and_still_posts(self):
+        line = self.bill_line("3", "1000.01")
+        note = line.bill.create_debit_note(quantities={line: Decimal("1")}, post=False)
+        assets = line.capitalise_as_asset(self.category)
+        self.assertEqual(([asset.cost for asset in assets], self.balance(self.plant), self.balance(self.expense)),
+                         ([Decimal("1000.01"), Decimal("1000.01")], Decimal("2000.02"), Decimal("1000.01")))
+        note.post()
+        self.assertEqual((self.balance(self.plant), self.balance(self.expense)), (Decimal("2000.02"), Decimal("0")))
+
+    def test_a_draft_for_all_of_it_leaves_nothing_to_capitalise(self):
+        from django.core.exceptions import ValidationError
+
+        line = self.bill_line("2", "1000.01")
+        line.bill.create_debit_note(quantities={line: Decimal("2")}, post=False)
+        with self.assertRaisesMessage(ValidationError, "nothing to capitalise"):
+            line.capitalise_as_asset(self.category)
+
+    def test_a_new_draft_after_the_whole_line_is_capitalised_is_still_refused(self):
+        from django.core.exceptions import ValidationError
+
+        line = self.bill_line("2", "1000.01")
+        line.capitalise_as_asset(self.category)
+        with self.assertRaisesMessage(ValidationError, "was capitalised as fixed assets"):
+            line.bill.create_debit_note(quantities={line: Decimal("1")}, post=False)
+
+
 class APeriodClosesWithItsDepreciationTests(AssetTestCase):
     """
     O29: January closed with the lathe's January uncharged, and every
