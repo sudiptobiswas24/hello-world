@@ -109,6 +109,11 @@ class ExpenseClaim(AuditModel):
         finally:
             self._moving = False
 
+    def check_accounts(self):
+        """Every line charged to an active expense account, as the accounts stand now (O303, O360)."""
+        for line in self.lines.select_related("expense_account"):
+            line.check_account()
+
     @serialised("status")
     def submit(self):
         if self.status != ClaimStatus.DRAFT:
@@ -117,6 +122,7 @@ class ExpenseClaim(AuditModel):
             raise ValidationError("A claim with no lines claims nothing.")
         if self.total() <= 0:
             raise ValidationError("A claim comes to more than nothing.")
+        self.check_accounts()
         if not self.number:
             self.number = DocumentSequence.next_for("hr.expense_claim", self.claim_date, name="Expense claims", prefix="EXP-")
         self.status = ClaimStatus.SUBMITTED
@@ -167,6 +173,10 @@ class ExpenseClaim(AuditModel):
         on_date = correction_date(on_date, self.claim_date, f"{self} is not paid on", "it was claimed")
         if on_date > timezone.localdate():
             raise ValidationError(f"{self} is not paid on {on_date}: that day has not come.")
+        # Asked again as it is posted (O360): an account still unposted to can be re-typed after the line
+        # named it, and a claim line of 2,000 for a drill charged to an expense account re-typed as an asset
+        # was debited to the asset on payment.
+        self.check_accounts()
         by_account = defaultdict(lambda: ZERO)
         for line in self.lines.select_related("expense_account"):
             by_account[line.expense_account] += line.amount
@@ -242,7 +252,9 @@ class ExpenseLine(AuditModel):
         """
         What a claim is charged to is an active expense account, never a bank or a control account (O303):
         a self-service taxi line of 500 charged to Net pay payable was debited to it on payment, and the
-        account stopped footing to the slips it holds.
+        account stopped footing to the slips it holds. Nor an asset (O360, decided): a tool bought on a
+        claim and capitalised is capitalised by the books, not by the claimant. Asked on save, and again
+        as the claim is submitted and paid (ExpenseClaim.check_accounts), the account read as it stands.
         """
         from apps.accounting.models import AccountType
 
