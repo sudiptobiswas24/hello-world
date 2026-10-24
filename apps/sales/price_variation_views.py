@@ -8,8 +8,6 @@ invoice_date?} to write one, {id}/cancel/ while its documents are
 drafts.
 """
 
-from decimal import Decimal, InvalidOperation
-
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.shortcuts import get_object_or_404
 from django.utils.dateparse import parse_date
@@ -19,6 +17,7 @@ from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.response import Response
 
 from apps.accounting.models import Account
+from apps.core.api import number
 from apps.core.audit import AuditableViewSetMixin
 
 from .models import SalesOrder
@@ -99,12 +98,9 @@ class PriceIndexViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         index = self.get_object()
         if request.method == "POST":
             valid_from = parse_date(str(request.data.get("valid_from") or ""))
-            try:
-                value = Decimal(str(request.data.get("value")))
-            except (InvalidOperation, TypeError, ValueError):
-                value = None
-            if valid_from is None or value is None or not value.is_finite() or value <= 0:
-                raise DRFValidationError(["valid_from is a date and value a positive number."])
+            if valid_from is None:
+                raise DRFValidationError({"valid_from": ["A date, YYYY-MM-DD."]})
+            value = number(request.data, "value", PriceIndexValue._meta.get_field("value").decimal_places)
             _run(PriceIndexValue.objects.create, index=index, valid_from=valid_from,
                  value=value)
         return Response([{"valid_from": row.valid_from, "value": str(row.value)}

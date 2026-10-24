@@ -7,7 +7,7 @@ from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.permissions import IsAuthenticated
 
 from apps.accounting.defaults import chosen_or_default
-from apps.core.api import flag, money_amount, posts_its_notes, quantities_by_line, record_or_404
+from apps.core.api import flag, money_amount, number, posts_its_notes, quantities_by_line, record_or_404
 from apps.inventory.models import Warehouse
 from apps.core.models import to_date
 from apps.core.permissions import ActionPermission, RequiredPermission
@@ -179,18 +179,11 @@ class PurchaseOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         {payable_account?, amount | percent, bill_date?, description?}: a
         draft prepayment bill, the vendor asking for money up front.
         """
-        from decimal import Decimal, InvalidOperation
-
         order = self.get_object()
         account = chosen_or_default(request.data, "payable_account", "payable")
-        figures = {}
-        for name in ("amount", "percent"):
-            value = request.data.get(name)
-            if value not in (None, ""):
-                try:
-                    figures[name] = Decimal(str(value))
-                except InvalidOperation:
-                    raise DRFValidationError(f"{name} must be a number.")
+        # An amount to the paisa, or a percent to four places; the model asks that just one is given.
+        figures = {name: figure for name, places in (("amount", 2), ("percent", 4))
+                   if (figure := number(request.data, name, places, default=None)) is not None}
         try:
             bill = order.create_prepayment_bill(
                 account,
