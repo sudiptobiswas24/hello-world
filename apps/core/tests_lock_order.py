@@ -59,6 +59,17 @@ class TheSentinelHoldsTestsToTheLockOrderTests(TestCase):
             lock_rows(self.first)
             taken(connection, "manufacturing.machine", [2])
 
+    def test_an_account_is_ranked_after_the_payment_and_before_the_invoice(self):
+        """O258: a payment, then the account it moves money through, then a sales invoice; never the account first."""
+        with transaction.atomic():
+            taken(connection, "accounting.payment", [4])
+            taken(connection, "accounting.account", [9], how="for_share")
+            taken(connection, "sales.invoice", [1])
+        with self.assertRaisesMessage(LockOrderViolation, "accounting.payment 4 locked after accounting.account 9"):
+            with transaction.atomic():
+                taken(connection, "accounting.account", [9])
+                taken(connection, "accounting.payment", [4])
+
     def test_an_unranked_models_own_rows_are_taken_in_key_order(self):
         # O182: two landed costs onto the same two receipt lines, listed the other way round, took
         # their stock positions 2 then 1 and 1 then 2, and deadlocked: ranked against nothing, the
