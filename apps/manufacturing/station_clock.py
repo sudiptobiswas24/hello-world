@@ -175,7 +175,11 @@ def void_clock(clock, station, supervisor, operator, reason):
     if not (reason or "").strip():
         raise ValidationError("Say why the time is withdrawn.")
     check_supervisor(station, supervisor, operator)
-    for booking in clock.bookings.all():
+    # Every booking held in key order before any is voided (O257): voided in the order booked, two clocks
+    # sharing bookings took them in two orders.
+    bookings = list(clock.bookings.order_by("pk"))
+    lock_rows(*bookings)
+    for booking in bookings:
         booking.void(memo=f"Withdrawn at {station}: {reason.strip()}"[:255])
     clock.voided_at, clock.voided_reason = timezone.now(), reason.strip()
     clock.save(update_fields=["voided_at", "voided_reason", "updated_at"])
