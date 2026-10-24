@@ -117,8 +117,10 @@ def hold_the_payer(payment):
 
 
 class ShortfallSettlement(AuditModel):
-    payslip = models.ForeignKey("hr.Payslip", on_delete=models.PROTECT, related_name="settlements",
-                                help_text="The final slip whose shortfall this settles.")
+    payslip = models.ForeignKey(
+        "hr.Payslip", null=True, blank=True, on_delete=models.PROTECT, related_name="settlements",
+        help_text="The final slip whose shortfall this settles, or which left the advance owed. Empty only for "
+                  "an advance of someone who left before any run paid them (O262).")
     kind = models.CharField(max_length=16, choices=SettlementKind.choices)
     amount = models.DecimalField(max_digits=18, decimal_places=2)
     advance = models.ForeignKey(
@@ -150,13 +152,31 @@ class ShortfallSettlement(AuditModel):
         ]
         constraints = [
             models.CheckConstraint(check=Q(amount__gt=0), name="shortfall_settlement_amount_positive"),
+            models.CheckConstraint(check=Q(payslip__isnull=False) | Q(advance__isnull=False),
+                                   name="shortfall_settlement_settles_something"),
             models.CheckConstraint(
                 check=(Q(kind="receipt", payment__isnull=False) | Q(kind="write_off", payment__isnull=True)),
                 name="shortfall_settlement_receipt_has_its_payment"),
         ]
 
     def __str__(self):
-        return f"{self.get_kind_display()} {self.pk} of {self.amount} for {self.payslip.employee}"
+        return f"{self.get_kind_display()} {self.pk} of {self.amount} for {self.person()}"
+
+    def person(self):
+        """Whose debt it settles: the slip's, or for a leaver no run paid, the advance's (O262)."""
+        return self.payslip.employee if self.payslip_id else self.advance.employee
+
+    def owed_since(self):
+        """
+        The day it was first owed by a former employee, which nothing settling it precedes: the final run's
+        pay date, or, for someone who left before any run paid them, their leaving date (O262).
+        """
+        if self.payslip_id:
+            return self.payslip.run.pay_date
+        return self.advance.employee.termination_date
+
+    def _reference(self):
+        return self.payslip.run.number if self.payslip_id else (self.advance.payment.number or "")
 
     def stands(self):
         if self.voided_at is not None:
@@ -165,14 +185,16 @@ class ShortfallSettlement(AuditModel):
 
     def held_first(self):
         """The run, then the person: the order PayRun.post and PayRun.void take them in."""
-        return [self.payslip.run]
+        return [self.payslip.run] if self.payslip_id else []
 
     def _the_advance(self, slip):
         """What is left of the advance, and the account it was given against: read under the person's lock."""
         from .advances import SalaryAdvance
         from .payroll import PayRunStatus
 
-        advance = SalaryAdvance.objects.select_related("payment").get(pk=self.advance_id)
+        advance = SalaryAdvance.objects.select_related("payment", "employee").get(pk=self.advance_id)
+        if slip is None:
+            return self._the_advance_of_a_leaver_no_run_paid(advance)
         if advance.employee_id != slip.employee_id:
             raise ValidationError({"advance": f"{advance} was given to {advance.employee}, not {slip.employee}."})
         if slip.run.status != PayRunStatus.POSTED or not slip.is_final():
@@ -184,10 +206,33 @@ class ShortfallSettlement(AuditModel):
             raise ValidationError({"advance": f"Nothing is left of {advance} to settle."})
         return advance.receivable_account, left
 
+    def _the_advance_of_a_leaver_no_run_paid(self, advance):
+        """
+        O262's reverse path: someone who left before any run paid them has no final slip, and owes all that
+        is left of the advance. Settled without a slip once they have left, and only while no posted run
+        paid them at all; one that did is their final pay, and the settlement names it.
+        """
+        from .payroll import Payslip, PayRunStatus
+
+        person = advance.employee
+        left_on = person.termination_date
+        if left_on is None or left_on > timezone.localdate():
+            raise ValidationError({"payslip": (
+                f"{person} has not left: what is left of {advance} is recovered by their pay runs.")})
+        paid = Payslip.objects.filter(employee=person, run__status=PayRunStatus.POSTED).order_by(
+            "-run__period_end", "-pk").first()
+        if paid is not None:
+            raise ValidationError({"payslip": (
+                f"{paid.run} paid {person}: settle what is left of {advance} against their final slip.")})
+        left = advance.balance()
+        if left <= 0:
+            raise ValidationError({"advance": f"Nothing is left of {advance} to settle."})
+        return advance.receivable_account, left
+
     def _check_the_receipt(self, account):
         from apps.accounting.models import PaymentDirection
 
-        payment, employee = self.payment, self.payslip.employee
+        payment, employee = self.payment, self.person()
         if not payment.posted or payment.is_voided():
             raise ValidationError("That payment is not posted, or has been voided: nothing was paid back.")
         if payment.direction != PaymentDirection.RECEIPT:
@@ -202,8 +247,8 @@ class ShortfallSettlement(AuditModel):
             raise ValidationError("What a former employee owes is paid back in the base currency.")
         if payment.amount != self.amount:
             raise ValidationError(f"The payment is {payment.amount} and the receipt {self.amount}.")
-        correction_date(payment.payment_date, self.payslip.run.pay_date,
-                        f"{self.payslip.employee} did not pay back on", "the shortfall was owed from")
+        correction_date(payment.payment_date, self.owed_since(),
+                        f"{employee} did not pay back on", "it was owed from")
 
     def _write_off(self, account):
         from apps.accounting.models import JournalEntry, JournalLine
@@ -217,26 +262,26 @@ class ShortfallSettlement(AuditModel):
         # advances and shortfalls still owe there. Asked of the whole balance, a write-off of a 5,000 advance
         # passed against 7,860.00 that was 3,860.00 another advance's and 1,000.00 paid back unmatched.
         # Read under the person's lock, which a receipt from them holds as it posts (hold_the_payer).
-        employee = self.payslip.employee
+        employee = self.person()
         on_the_books = sum((row.debit - row.credit for row in JournalLine.objects.filter(
             account=account, party=employee.party, entry__posted=True)), Decimal("0.00")) - owed_elsewhere(
             account, employee, self.advance if self.advance_id is not None else self.payslip)
         if self.amount > on_the_books:
             raise ValidationError({"amount": (
-                f"{self.payslip.employee} has paid back what is not yet matched to {self.advance or 'this slip'}: "
+                f"{employee} has paid back what is not yet matched to {self.advance or 'this slip'}: "
                 f"the books show "
                 f"{max(on_the_books, Decimal('0.00'))} still owed, not {self.amount}. Match the payment as a "
                 "receipt first.")})
         loss = Company.get().bad_debt_account
         if loss is None:
             raise ValidationError("The company has no bad-debt account to write it off to. Set it, then write off.")
-        self.date = correction_date(self.date, self.payslip.run.pay_date,
-                                    f"{self.payslip.employee}'s shortfall is not written off on",
+        self.date = correction_date(self.date, self.owed_since(),
+                                    f"{employee}'s shortfall is not written off on",
                                     "it was owed from")
-        label = f"Written off, owed back by {self.payslip.employee}: {self.reason}"[:255]
-        entry = JournalEntry.objects.create(date=self.date, reference=self.payslip.run.number, memo=label)
+        label = f"Written off, owed back by {employee}: {self.reason}"[:255]
+        entry = JournalEntry.objects.create(date=self.date, reference=self._reference(), memo=label)
         JournalLine.objects.create(entry=entry, account=loss, debit=self.amount, description=label)
-        JournalLine.objects.create(entry=entry, account=account, party=self.payslip.employee.party,
+        JournalLine.objects.create(entry=entry, account=account, party=employee.party,
                                    credit=self.amount, description=label)
         entry.post()
         self.posted_account, self.journal_entry = loss, entry
@@ -245,13 +290,16 @@ class ShortfallSettlement(AuditModel):
     def save(self, *args, **kwargs):
         if self.pk is not None:
             raise ValidationError(f"{self} is the record of what was settled; void it and record another.")
+        if self.payslip_id is None and self.advance_id is None:
+            raise ValidationError({"payslip": "Say which final slip, or which advance, it settles."})
         slip = self.payslip
         lock_rows(*self.held_first())
-        hold_the_employee(slip.employee)
+        # The person, as a receipt from them holds them as it posts (O270), slip or none.
+        hold_the_employee(self.person())
         if self.advance_id is not None:
             account, left = self._the_advance(slip)
             if self.amount is not None and self.amount > left:
-                raise ValidationError({"amount": f"{slip.employee} owes {left} on {self.advance}, not {self.amount}."})
+                raise ValidationError({"amount": f"{self.person()} owes {left} on {self.advance}, not {self.amount}."})
         else:
             line = owed_back_line(slip)
             if line is None:
