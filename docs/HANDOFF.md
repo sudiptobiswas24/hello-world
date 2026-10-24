@@ -219,7 +219,7 @@ built.
          Bookkeeper (decided: they keep the ledger, the inventory account
          included; no other role gains it), with role tests; rerun core,
          assets, inventory, manufacturing, quality and web.
-       - fix_books3: O329 (inventory 0040 gives rows what their documents
+       - fix_books3: done, O329 in e7b400f (in g23btree; O375 left). Was: O329 (inventory 0040 gives rows what their documents
          booked; the stock-to-ledger check does not let one account's
          surplus hide another's shortfall). The "nets its drops" half is
          already fixed at 9e9d4d4: prove it with a test.
