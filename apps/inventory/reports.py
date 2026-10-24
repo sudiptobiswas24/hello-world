@@ -26,7 +26,7 @@ from django.db.models import Sum
 from django.utils import timezone
 
 from apps.accounting.models import JournalLine, round_money
-from apps.core.models import to_date
+from apps.core.models import Company, to_date
 
 from .costing import preloaded
 from .models import Item, MovementType, StockMovement, Warehouse
@@ -116,6 +116,22 @@ def reconcile_to_ledger(as_of=None):
                 by_account[account]["items"].append(stocked)
             by_account[account]["value"] += value
 
+    # Every account stock is held in, not only those a stocked item names today: an item that stopped
+    # being stocked, or a template's account, leaves its balance there, and an account never asked hid it
+    # behind the others agreeing (O329).
+    from apps.accounting.models import Account
+
+    from .variants import ItemTemplate
+
+    company = Company.objects.order_by("pk").first()
+    named = set(Item.objects.filter(inventory_account__isnull=False).values_list("inventory_account", flat=True))
+    named |= set(ItemTemplate.objects.filter(inventory_account__isnull=False).values_list("inventory_account",
+                                                                                           flat=True))
+    if company is not None and company.default_inventory_account_id:
+        named.add(company.default_inventory_account_id)
+    asked = set(Account.objects.filter(pk__in=named - {a.pk for a in by_account if a is not None}))
+    for account in asked:
+        by_account.setdefault(account, {"value": Decimal("0"), "items": []})  # asked, nothing on its shelves
     ledger = _account_balances(
         [account for account in by_account if account is not None], as_of
     )
@@ -135,6 +151,7 @@ def reconcile_to_ledger(as_of=None):
             "items": len(holding["items"]),
         })
 
+    rows = [row for row in rows if row["account"] not in asked or row["ledger_balance"]]
     total_stock = round_money(sum((row["stock_value"] for row in rows), Decimal("0")))
     total_ledger = round_money(sum((row["ledger_balance"] for row in rows), Decimal("0")))
     return {
@@ -142,7 +159,10 @@ def reconcile_to_ledger(as_of=None):
         "rows": rows,
         "total_stock_value": total_stock,
         "total_ledger_balance": total_ledger,
+        # The totals' difference nets one account against another: +0.01 on one and -0.01 on another read
+        # 0.00. What the stock is out by is each account's difference, whichever way (O329).
         "difference": round_money(total_stock - total_ledger),
+        "out_by": sum((abs(row["difference"]) for row in rows), Decimal("0.00")),
         "balanced": all(not row["difference"] for row in rows),
         "unvalued_items": unassigned["items"] if unassigned else [],
     }

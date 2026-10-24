@@ -517,6 +517,7 @@ class StockReportViewSet(viewsets.ViewSet):
             "total_stock_value": report["total_stock_value"],
             "total_ledger_balance": report["total_ledger_balance"],
             "difference": report["difference"],
+            "out_by": report["out_by"],
             "rows": [
                 {
                     "account": row["account"].code,
