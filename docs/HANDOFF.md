@@ -198,6 +198,14 @@ built.
        ledger, every derived balance foots to its account, and the
        statutory files read what was posted. Run it on PostgreSQL and in
        Asia/Kolkata. Each failure is a register row.
+   - **g23b, in flight (started 24 October): the security, crash, books and
+     race rows**, before g24. Three agents, briefs docs/handoff/g23b_*.md,
+     base 9e9d4d4, worktrees /home/user/work/fix_{sec4,books3,hrlocks},
+     integration tree /home/user/work/g23btree, gate logs
+     /home/user/gate-logs-g23b. Rows: O255, O317, O318, O348 (sec); O260,
+     O261, O350, O353, O349, O347, O329 (books); O262, O360, O270, O257, O258
+     (hr and locks). O312 and O352 wait on the owner. Register and handoff
+     commits are made in the integration tree only (g23's lesson).
    - **g23 is pushed (b344a2c gated, c34e9b0 the tip, 24 October), all six
      lanes green on one tip:** SQLite 7726, 174 skipped; PostgreSQL 7726;
      Asia/Kolkata 7726; migration-tagged 39; vitest 45. 131 commits and a
