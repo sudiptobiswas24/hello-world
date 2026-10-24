@@ -21,6 +21,37 @@ from .endpoints import may_read
 from .models import AuditModel, serialised
 
 
+
+def same_site_path(text):
+    """
+    Whether `text` is a path on this site and nothing a browser could read
+    as another host (O317). It starts with one `/`; it holds no backslash
+    and no control character, which a browser reads as a slash or drops
+    (`/\\host`, `/<tab>/host` are both `//host`); and none of that is
+    hidden in percent-encoding (`/%5chost`, `/%2f/host`). Parsed, it has
+    no scheme and no host. A follow-up's link and a saved view's screen
+    both ask this; the office application asks the same before it renders
+    one (frontend/src/lib/sitePath.ts), so a row stored before is harmless.
+    """
+    from urllib.parse import unquote, urlsplit
+
+    if not isinstance(text, str):
+        return False
+    seen, forms = text, [text]
+    for _ in range(3):  # encoded twice over is still read as the same once a server or browser unquotes it
+        seen = unquote(seen)
+        forms.append(seen)
+    for form in forms:
+        if not form.startswith("/") or form.startswith("//"):
+            return False
+        if "\\" in form or any(ord(char) < 32 or ord(char) == 127 for char in form):
+            return False
+        parts = urlsplit(form)
+        if parts.scheme or parts.netloc:
+            return False
+    return True
+
+
 class Note(AuditModel):
     content_type = models.ForeignKey(ContentType, on_delete=models.CASCADE, related_name="+")
     object_id = models.PositiveBigIntegerField()
@@ -91,8 +122,9 @@ class FollowUp(AuditModel):
         self.summary = self.summary.strip()
         if not self.summary:
             raise ValidationError({"summary": ["Say what is to be done."]})
-        if self.link and (not self.link.startswith("/") or self.link.startswith("//")):
-            raise ValidationError({"link": ["A place in the application, starting with /."]})
+        if self.link and not same_site_path(self.link):
+            raise ValidationError({"link": ["A place in the application: a path starting with a single /, "
+                                            "with no backslash and nothing that leads to another site."]})
         # Asked when it is planned or handed on: whoever it is for must be
         # able to open the record, or it would sit on a list they cannot act on.
         if (before is None or before["assigned_to_id"] != self.assigned_to_id) and self.done_on is None:
