@@ -295,6 +295,56 @@ def flag(data, name, default):
     raise DRFValidationError(f"{name} must be true or false, not {value!r}.")
 
 
+REQUIRED = object()
+POSITIVE, NOT_NEGATIVE, ANY_SIGN = "positive", "not negative", "any sign"
+
+
+def number(data, name, places, *, sign=POSITIVE, default=REQUIRED):
+    """
+    A number from a request (its body or its query), as a Decimal, or a 400
+    beside the field in words (O318).
+
+    Decimal(str(...)) took "Infinity" and "NaN" as numbers, and each site
+    that asked found its own way to fail: a 500 for proceeds of Infinity on
+    an asset's disposal, a promised date for -5 metres. This refuses what
+    is not a finite number, a sign the field does not take (`sign`:
+    POSITIVE, above nothing; NOT_NEGATIVE; ANY_SIGN), and more places than
+    the field holds (`places`; None only where the model the figure goes
+    to checks its own places, and says so). Absent or empty is `default`
+    when one is given (None, or a figure), and refused when not.
+    `audit_invariants` (numbers_read_around_the_reader) names any new
+    Decimal made straight from a request.
+    """
+    from decimal import Decimal, InvalidOperation
+
+    value = data.get(name) if hasattr(data, "get") else None
+    if value is None or (isinstance(value, str) and not value.strip()):
+        if default is REQUIRED:
+            raise DRFValidationError({name: ["Give it as a number."]})
+        if default is None:
+            return None
+        value = default
+    if isinstance(value, (bool, list, dict)):
+        raise DRFValidationError({name: [f"{value!r} is not a number."]})
+    try:
+        figure = Decimal(str(value).strip())
+    except (InvalidOperation, ValueError, TypeError):
+        figure = None
+    if figure is None or not figure.is_finite():
+        raise DRFValidationError({name: [f"{value!r} is not a number."]})
+    if sign == POSITIVE and figure <= 0:
+        raise DRFValidationError({name: ["It must be above nothing."]})
+    if sign == NOT_NEGATIVE and figure < 0:
+        raise DRFValidationError({name: ["It cannot be below nothing."]})
+    if figure.adjusted() >= 18:  # no column here holds a figure of nineteen digits before the point
+        raise DRFValidationError({name: [f"{value!r} is too large a figure."]})
+    if figure.as_tuple().exponent > 0:
+        figure = figure.quantize(Decimal(1))  # 1E+3 as 1000, as the API will show it
+    if places is not None and figure != figure.quantize(Decimal(1).scaleb(-places)):
+        raise DRFValidationError({name: [f"It holds {places} places at most." if places else "It is a whole number."]})
+    return figure + 0
+
+
 class HeaderPagination(PageNumberPagination):
     """
     Every list in pages, the body still a plain list.

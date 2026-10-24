@@ -1,5 +1,5 @@
 import datetime
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
@@ -15,7 +15,7 @@ from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from apps.core.api import plain, record_or_404
+from apps.core.api import NOT_NEGATIVE, number, plain, record_or_404
 from apps.core.audit import AuditableViewSetMixin
 from apps.core.models import Party, to_date
 from apps.core.scoping import scoped
@@ -205,10 +205,7 @@ def _effectiveness_payload(report):
 
 
 def _quantity(request, default="1"):
-    try:
-        return Decimal(str(request.query_params.get("quantity") or default))
-    except InvalidOperation:
-        raise DRFValidationError(["quantity must be a number."])
+    return number(request.query_params, "quantity", 4, default=default)  # a bill of materials' quantity, 4 places
 
 
 class OrderProfitabilityViewSet(viewsets.ViewSet):
@@ -324,11 +321,7 @@ class TapeSpecificationViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         from . import strength
 
         spec = self.get_object()
-        filler = request.query_params.get("filler")
-        try:
-            filler = Decimal(filler) if filler not in (None, "") else None
-        except InvalidOperation:
-            raise DRFValidationError(["filler is a percentage."])
+        filler = number(request.query_params, "filler", 3, sign=NOT_NEGATIVE, default=None)  # filler_percent
         rows = _run(strength.check, spec, filler)
 
         def text(value):
@@ -395,15 +388,11 @@ class BagSpecificationViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
                                                    "and add it with its whole share."]})
             kept = [*blend, (item, parts)]
             if not sack.is_laminated:
-                weight = request.data.get("lamination_gsm")
-                try:
-                    weight = Decimal(str(weight))
-                except (InvalidOperation, ValueError):
-                    weight = None
-                if weight is None or not weight.is_finite() or weight <= 0:
+                if request.data.get("lamination_gsm") in (None, ""):
                     raise DRFValidationError({"lamination_gsm": [
                         "The sack becomes laminated with this; say how heavy the coating is."]})
-                sack.lamination_gsm = weight
+                sack.lamination_gsm = number(request.data, "lamination_gsm",
+                                             type(sack)._meta.get_field("lamination_gsm").decimal_places)
         if not kept:
             sack.lamination_gsm = Decimal("0")
         sack.is_laminated = bool(kept)
@@ -1051,13 +1040,11 @@ class MaintenanceJobViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         technician = get_object_or_404(Employee, pk=data.get("technician"))
         try:
             worked_on = parse_date(str(data.get("worked_on") or ""))
-            minutes = Decimal(str(data.get("minutes")))
-        except (ValueError, InvalidOperation):
-            worked_on = minutes = None
-        if worked_on is None or minutes is None or not minutes.is_finite():
-            raise DRFValidationError(["worked_on is a date, YYYY-MM-DD, and minutes a number."])
-        if minutes <= 0:
-            raise DRFValidationError(["A fitter's time on a job is more than nothing."])
+        except ValueError:
+            worked_on = None
+        if worked_on is None:
+            raise DRFValidationError({"worked_on": ["A date, YYYY-MM-DD."]})
+        minutes = number(data, "minutes", MaintenanceLabour._meta.get_field("minutes").decimal_places)
         row = _run(MaintenanceLabour.objects.create, job=job, technician=technician,
                    worked_on=worked_on, minutes=minutes)
         return Response({"id": row.pk, "job": job.pk, "minutes": str(row.minutes),
@@ -1157,8 +1144,7 @@ class ToolViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         Tools past a share of their life, worst first — the report
         that stops a changeover happening mid-run.
         """
-        threshold = request.query_params.get("threshold") or "90"
-        rows = _run(wearing_out, Decimal(str(threshold)))
+        rows = _run(wearing_out, number(request.query_params, "threshold", 2, sign=NOT_NEGATIVE, default="90"))
         return Response([
             {
                 "tool": ToolSerializer(tool).data,
@@ -2245,10 +2231,8 @@ class OperationReportViewSet(AuditableViewSetMixin, viewsets.ReadOnlyModelViewSe
         machine = None
         if request.data.get("machine"):
             machine = get_object_or_404(Machine, pk=request.data.get("machine"))
-        try:
-            quantity = Decimal(str(request.data.get("quantity_good")))
-        except InvalidOperation:
-            raise DRFValidationError(["quantity_good is a number."])
+        quantity = number(request.data, "quantity_good",
+                          OperationReport._meta.get_field("quantity_good").decimal_places, sign=NOT_NEGATIVE)
         counted = _run(scrap.report, operation, quantity,
                        on_date=request.data.get("reported_on"), machine=machine,
                        memo=request.data.get("memo") or "")
@@ -2308,11 +2292,11 @@ class RebatchViewSet(AuditableViewSetMixin, viewsets.ReadOnlyModelViewSet):
         item = get_object_or_404(Item, pk=data.get("item"))
         warehouse = get_object_or_404(Warehouse, pk=data.get("warehouse"))
         try:
-            taken = [(get_object_or_404(Lot, pk=row.get("lot")), Decimal(str(row.get("quantity"))))
+            taken = [(get_object_or_404(Lot, pk=row.get("lot")), number(row, "quantity", 4))
                      for row in data.get("taken") or []]
-            made_rows = [(str(row.get("code") or "").strip(), Decimal(str(row.get("quantity"))))
+            made_rows = [(str(row.get("code") or "").strip(), number(row, "quantity", 4))
                          for row in data.get("made") or []]
-        except (InvalidOperation, AttributeError):
+        except AttributeError:
             raise DRFValidationError(["Each row gives a batch and a quantity."])
         if any(not code for code, _ in made_rows):
             raise DRFValidationError(["Each new batch needs a code."])

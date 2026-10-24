@@ -8,7 +8,6 @@ is recorded against the person, never against the device.
 """
 
 import datetime
-from decimal import Decimal, InvalidOperation
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.http import HttpResponse
@@ -22,6 +21,8 @@ from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.permissions import BasePermission, IsAuthenticated
 from rest_framework.response import Response
+
+from apps.core.api import ANY_SIGN, number
 
 from . import barcode
 from .rolls import FabricRoll
@@ -54,10 +55,8 @@ def _run(callable_, *args, **kwargs):
 
 
 def _decimal(data, name):
-    try:
-        return Decimal(str(data.get(name)))
-    except (InvalidOperation, TypeError, ValueError):
-        raise DRFValidationError([f"{name} must be a number."])
+    # Any sign and any places here: each station model checks its own (station_floor._positive, station_scale._kg).
+    return number(data, name, None, sign=ANY_SIGN)
 
 
 def _exact(value):
