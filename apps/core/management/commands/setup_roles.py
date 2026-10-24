@@ -46,6 +46,9 @@ HOW_IT_IS_MADE = [
 # ledger or to stock.
 ROLES = {
     "Bookkeeper": [
+        # They keep the ledger, the inventory account included, so they see the stock figures behind it:
+        # an item's standard cost, a run's costs, what stock is worth (O348, decided in g23b).
+        "inventory.view_stock_value",
         # Pays approved expense claims: one journal each, from the cash or bank account chosen.
         *view("hr", "expenseclaim", "expenseline"),
         "hr.view_every_expenseclaim", "hr.pay_expenseclaim",
@@ -73,6 +76,9 @@ ROLES = {
         # deliberately NOT accounting.post_journalentry
     ],
     "Controller": [
+        # They keep the ledger, the inventory account included, so they see the stock figures behind it:
+        # an item's standard cost, a run's costs, what stock is worth (O348, decided in g23b).
+        "inventory.view_stock_value",
         # The LUT exports are posted under, and what setup seeded for review (O239).
         *full("accounting", "letterofundertaking"),
         *crud("accounting", "seededdefault", actions=("view", "change")),
