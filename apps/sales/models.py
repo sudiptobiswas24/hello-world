@@ -6088,10 +6088,6 @@ def commission_report(date_from=None, date_to=None):
     date_from = to_date(date_from)
     date_to = to_date(date_to)
 
-    def in_period(day):
-        day = to_date(day)
-        return not ((date_from and day < date_from) or (date_to and day > date_to))
-
     def collected_up_front(invoice):
         """
         [(day, amount)] of this invoice's drawdowns that the deposit's money covers:
@@ -6156,13 +6152,20 @@ def commission_report(date_from=None, date_to=None):
                 collected = [(allocation.payment.payment_date, allocation.amount)
                              for allocation in standing_allocations(invoice)]
                 collected += collected_up_front(invoice)
-                in_it = sum((amount for day, amount in collected if in_period(day)), Decimal("0"))
-                # The net sale's share of the money, as the invoiced basis counts subtotal(): the
-                # money pays the tax too, and 1,000 + 20% paid in full at 5% paid 60.00 for 50.00
-                # (O294). Total first, divided last.
-                whole = invoice.total()
-                if not whole:
+                # TCS is not revenue nor part of the sale (O350): the money counts up to what the sale and
+                # its tax come to, and the net sale's share of that, as the invoiced basis counts
+                # subtotal(). The money pays the tax too, and 1,000 + 20% paid in full at 5% paid 60.00 for
+                # 50.00 (O294); with 12.00 of TCS in the divisor, 600 paid counted 495.05 and the 1,200 of a
+                # buyer who withheld the TCS 990.10. Through the period's end less before its start, so
+                # money past the cap counts in no period. Total first, divided last.
+                whole = invoice.total() - invoice.tcs_amount
+                if whole <= 0:
                     continue
+                before = sum((amount for day, amount in collected if date_from and to_date(day) < date_from),
+                             Decimal("0"))
+                through = sum((amount for day, amount in collected if not (date_to and to_date(day) > date_to)),
+                              Decimal("0"))
+                in_it = min(through, whole) - min(before, whole)
                 basis_amount += sign * in_it * invoice.subtotal() * (invoice.exchange_rate or Decimal("1")) / whole
 
         basis_amount = round_money(basis_amount)
