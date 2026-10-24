@@ -61,7 +61,7 @@ from django.core.exceptions import ValidationError
 from django.db import models, transaction
 from django.db.models import F, Q
 
-from apps.core.models import AuditModel, UnitOfMeasureCategory
+from apps.core.models import AuditModel, UnitOfMeasureCategory, lock_rows
 from apps.inventory.models import Item
 
 from apps.quality.models import (
@@ -752,6 +752,8 @@ class TapeSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
         self._check_strength()
         self._check_units()
         super().save(*args, **kwargs)
+        # Its own bill and plan and those of every fabric it rebuilds, held in key order first (O257).
+        hold_what_they_rebuild([self, *self.dependents()])
         self.rebuild_bom()
         self.rebuild_inspection_plan()
         self.resave_dependents()
@@ -781,11 +783,42 @@ class TapeSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
         denier puts outside its quotation refuses, and the tape change
         rolls back with it.
         """
-        fabrics = FabricSpecification.objects.filter(
-            Q(warp_tape=self) | Q(weft_tape=self)
-        ).distinct()
-        for fabric in fabrics:
-            fabric.save()
+        resave_in_key_order(self.dependents())
+
+    def dependents(self):
+        return list(FabricSpecification.objects.filter(Q(warp_tape=self) | Q(weft_tape=self)).distinct())
+
+
+def resave_in_key_order(specifications):
+    """
+    Save each specification again, each rebuilding its bill and its inspection plan: every one of those
+    held first, in key order, then the specifications saved in key order (O257). Saved in the order read,
+    two changes each rebuilding the other's sacks' bills took them in two orders.
+    """
+    specifications = sorted(specifications, key=lambda spec: spec.pk)
+    hold_what_they_rebuild(specifications)
+    for spec in specifications:
+        spec.save()
+
+
+def hold_what_they_rebuild(specifications):
+    """
+    The bills and inspection plans these specifications rebuild, and those their dependents rebuild in turn
+    (a film's liners, a liner's sacks), held in key order before any is rebuilt (O257).
+    """
+    found, waiting = {}, list(specifications)
+    while waiting:
+        spec = waiting.pop()
+        key = (spec._meta.label_lower, spec.pk)
+        if key in found:
+            continue
+        found[key] = spec
+        if hasattr(spec, "dependents"):
+            waiting.extend(spec.dependents())
+    every = list(found.values())
+    lock_rows(*[spec.bom for spec in every if getattr(spec, "bom_id", None)],
+              *[spec.inspection_plan for spec in every if getattr(spec, "inspection_plan_id", None)],
+              refresh=False)
 
 
 class FabricSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
