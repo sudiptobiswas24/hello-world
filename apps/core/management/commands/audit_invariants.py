@@ -126,6 +126,7 @@ class Command(BaseCommand):
         findings += self.allocations_counted_past_a_void(labels, sources)
         findings += self.drawdowns_from_todays_setting(labels, sources)
         findings += self.opening_kinds_brought_in_twice()
+        findings += self.numbers_read_around_the_reader(labels, sources)
 
         if not findings:
             self.stdout.write(self.style.SUCCESS("No invariant findings."))
@@ -1260,6 +1261,106 @@ class Command(BaseCommand):
     }
     # What a .date() may be taken of: a moment already at the plant, or a naive one parsed from text.
     NAIVE_OR_LOCAL = {"localtime", "strptime", "make_naive"}
+
+    # Figures from a request read with Decimal() on purpose, each with its reason; the register takes them off.
+    NUMBERS_READ_ON_PURPOSE = {
+        "hr/payroll_views.py:calculate": "hours per employee, refused when not finite or negative in place; "
+                                         "hr's own code, owned this round by the hr agent: to move onto number()",
+    }
+
+    def numbers_read_around_the_reader(self, labels, sources):
+        """
+        A Decimal made straight from what a request sent (O318).
+
+        Decimal(str(...)) takes "Infinity" and "NaN": proceeds of Infinity on
+        an asset's disposal answered 500, and a promise for -5 metres gave a
+        date. apps.core.api.number refuses what is not a finite number, a
+        sign the field does not take and more places than it holds, beside
+        the field. Read off the code: a Decimal() whose argument names the
+        request, or a name a function took from the request (`value =
+        request.data.get(...)`, a loop over it, `data = request.data`).
+        """
+        findings = []
+        for label in labels:
+            for path, text in sorted(sources[label].items()):
+                if "test" in path.name or "migrations" in path.parts:
+                    continue
+                if f"{label}/{path.name}" == "core/api.py":
+                    continue  # the reader itself
+                for function, line in self._decimals_from_a_request(ast.parse(text)):
+                    key = f"{label}/{path.name}:{function}"
+                    if key in self.NUMBERS_READ_ON_PURPOSE:
+                        continue
+                    findings.append((
+                        "number read around the reader",
+                        f"{label}/{path.name}:{line} ({function}) makes a Decimal from the request: read it "
+                        "with apps.core.api.number, which refuses NaN, Infinity, a wrong sign and extra places "
+                        "in words.",
+                    ))
+        return findings
+
+    @staticmethod
+    def _decimals_from_a_request(tree):
+        """
+        (function name, line) of each Decimal(...) in `tree` whose argument
+        is what a request sent: request.data, query_params, POST or GET, a
+        .get() or an item of them, or a name a function took from one (an
+        assignment, a loop over it), through str(), .strip() and `or`.
+        Computed from a request is not read from it: a ledger's opening
+        from a date the request gave is not asked.
+        """
+        reads = {"data", "query_params", "POST", "GET"}
+        passes = {"get", "getlist", "strip", "replace", "items", "values", "lower"}
+
+        def is_request(node):
+            return (isinstance(node, ast.Name) and node.id == "request") or (
+                isinstance(node, ast.Attribute) and node.attr == "request")
+
+        def read(node, taken):
+            if isinstance(node, ast.BoolOp):
+                return any(read(value, taken) for value in node.values)
+            if isinstance(node, ast.IfExp):
+                return read(node.body, taken) or read(node.orelse, taken)
+            if isinstance(node, ast.Name):
+                return node.id in taken
+            if isinstance(node, ast.Attribute):
+                return (node.attr in reads and is_request(node.value)) or read(node.value, taken)
+            if isinstance(node, ast.Subscript):
+                return read(node.value, taken)
+            if isinstance(node, ast.Call):
+                func = node.func
+                if isinstance(func, ast.Name) and func.id in ("str", "list", "dict"):
+                    return any(read(arg, taken) for arg in node.args)
+                if isinstance(func, ast.Attribute) and func.attr in passes:
+                    return read(func.value, taken)
+            return False
+
+        def names(node):
+            return {sub.id for sub in ast.walk(node) if isinstance(sub, ast.Name)}
+
+        def is_decimal(call):
+            func = call.func
+            return (isinstance(func, ast.Name) and func.id == "Decimal") or (
+                isinstance(func, ast.Attribute) and func.attr == "Decimal")
+
+        found = set()
+        for function in ast.walk(tree):
+            if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            taken = set()
+            for _ in range(3):  # a name taken from a name taken from the request
+                for node in ast.walk(function):
+                    if isinstance(node, ast.Assign) and read(node.value, taken):
+                        taken |= set().union(*(names(target) for target in node.targets))
+                    elif isinstance(node, (ast.AnnAssign, ast.NamedExpr)) and node.value is not None \
+                            and read(node.value, taken):
+                        taken |= names(node.target)
+                    elif isinstance(node, (ast.For, ast.comprehension)) and read(node.iter, taken):
+                        taken |= names(node.target)
+            for node in ast.walk(function):
+                if isinstance(node, ast.Call) and is_decimal(node) and any(read(arg, taken) for arg in node.args):
+                    found.add((function.name, node.lineno))
+        return sorted(found, key=lambda pair: pair[1])
 
     def greenwich_dates(self, labels, sources):
         """

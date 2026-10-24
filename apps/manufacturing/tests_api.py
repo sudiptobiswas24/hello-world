@@ -94,7 +94,8 @@ class ManufacturingApiTests(RunTestCase):
             f"/api/manufacturing/boms/{self.bom.pk}/explosion/?quantity=lots"
         )
         self.assertEqual(response.status_code, 400)
-        self.assertIn("must be a number", str(response.data))
+        # Beside the field, in the shared reader's words (O318).
+        self.assertIn("is not a number", str(response.data["quantity"]))
 
     def test_a_run_can_be_driven_from_end_to_end(self):
         order = self.order()

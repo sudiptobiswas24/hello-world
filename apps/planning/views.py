@@ -6,7 +6,7 @@ plan writes a run, and a planner who could refresh a page into a
 hundred stored plans would rightly stop using it.
 """
 
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import Count, Prefetch, Q
@@ -15,7 +15,7 @@ from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.response import Response
 
-from apps.core.api import whole_number
+from apps.core.api import number, whole_number
 from apps.core.audit import AuditableViewSetMixin
 from apps.core.models import Party, to_date
 from apps.inventory.models import Warehouse
@@ -361,10 +361,7 @@ class PromiseViewSet(viewsets.ViewSet):
         from .promise import capable_to_promise, when_can_we_promise
 
         item, warehouse, on_date = self._asked(request)
-        try:
-            quantity = Decimal(str(request.query_params.get("quantity")))
-        except (TypeError, InvalidOperation, ValueError):
-            raise DRFValidationError(["Say how much, as a number."])
+        quantity = number(request.query_params, "quantity", 4)  # a stock quantity's four places
         answer = _run(
             capable_to_promise, item, warehouse, quantity, planned_on=on_date
         )

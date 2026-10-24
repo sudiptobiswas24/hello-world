@@ -180,3 +180,26 @@ class UndoingCapitalisationOverTheApiTests(CapitalisationFixture):
         )
         self.assertEqual(undone.json()["status"], AssetStatus.CANCELLED)
         self.assertEqual(self.balance(self.plant), Decimal("0"))
+
+
+class DisposalProceedsAreANumberTests(ApiTestCase):
+    """O318 (audit2_core C6): proceeds of Infinity answered 500; now each refusal is a 400 beside the field."""
+
+    def test_proceeds_that_are_not_a_sum_are_refused_in_words(self):
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+
+        from .models import AssetStatus
+
+        call_command("setup_roles", verbosity=0)
+        controller = User.objects.create_user("books")
+        controller.groups.add(Group.objects.get(name="Controller"))
+        self.client.force_authenticate(controller)
+        asset = self.asset()
+        answers = {}
+        for bad in ("NaN", "Infinity", "-5", "1.005", "1E+30"):
+            response = self.post(f"assets/{asset.pk}/dispose/", {"on_date": "2026-04-15", "proceeds": bad})
+            answers[bad] = (response.status_code, list(response.json()))
+        self.assertEqual(answers, {bad: (400, ["proceeds"]) for bad in answers})
+        asset.refresh_from_db()
+        self.assertEqual(asset.status, AssetStatus.IN_SERVICE)

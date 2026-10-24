@@ -10,12 +10,12 @@ from rest_framework.permissions import IsAuthenticated
 from apps.core.permissions import ActionPermission, RequiredPermission
 from rest_framework.response import Response
 
-from apps.core.api import flag
+from apps.core.api import NOT_NEGATIVE, flag, number
 from apps.core.audit import AuditableViewSetMixin
 from apps.core.models import Party
 from apps.core.scoping import scoped
 
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 
 from .analytic import CostCentre
 from .budgets import Budget, BudgetLine, budget_report
@@ -309,11 +309,9 @@ class TaxViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         Compute tax on an amount without creating a document:
         {"amount": "100.00", "quantity": "1", "tax_ids": [1, 2], "party_id": 5}
         """
-        try:
-            amount = Decimal(str(request.data.get("amount")))
-            quantity = Decimal(str(request.data.get("quantity", "1")))
-        except (InvalidOperation, TypeError):
-            raise DRFValidationError("amount and quantity must be numbers.")
+        # A line's price and quantity, at their columns' places (accounting/mixins.py); a credit's line is positive too.
+        amount = number(request.data, "amount", 2, sign=NOT_NEGATIVE)
+        quantity = number(request.data, "quantity", 4, default="1")
 
         taxes = list(Tax.objects.filter(pk__in=request.data.get("tax_ids", [])))
 

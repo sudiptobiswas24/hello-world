@@ -1,5 +1,3 @@
-from decimal import Decimal, InvalidOperation
-
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from rest_framework import viewsets
@@ -7,6 +5,7 @@ from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.response import Response
 
+from apps.core.api import NOT_NEGATIVE, number
 from apps.core.audit import AuditableViewSetMixin
 from apps.core.models import day_that_has_come, to_date
 
@@ -111,10 +110,7 @@ class FixedAssetViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         category's disposal account as revenue — this banks nothing.
         """
         asset = self.get_object()
-        try:
-            proceeds = Decimal(str(request.data.get("proceeds") or "0"))
-        except InvalidOperation:
-            raise DRFValidationError(["proceeds must be a number."])
+        proceeds = number(request.data, "proceeds", 2, sign=NOT_NEGATIVE, default="0")  # money, to the paisa
         _run(
             asset.dispose, on_date=_date(request, "on_date"), proceeds=proceeds,
             memo=request.data.get("memo", ""),

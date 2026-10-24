@@ -318,3 +318,19 @@ class ThroughTheDoorTests(PromiseTestCase):
             f"&warehouse={self.plant.pk}"
         )
         self.assertEqual(response.status_code, 400)
+
+
+class PromiseQuestionTests(PlanningTestCase):
+    """O318 (audit2_core C6): ?quantity=NaN answered 500, and -5 or Infinity a promised date."""
+
+    def test_a_rep_who_mistypes_the_quantity_is_told_so_not_given_a_server_fault(self):
+        from django.contrib.auth.models import User
+        from rest_framework.test import APIClient
+
+        client = APIClient(raise_request_exception=False)
+        client.force_authenticate(User.objects.create_superuser("boss", "b@example.com", "x"))
+        when = f"/api/planning/promise/when/?item={self.fabric.pk}&warehouse={self.plant.pk}"
+        answers = {quantity: client.get(when + f"&quantity={quantity}").status_code
+                   for quantity in ("Infinity", "NaN", "-5", "0", "1.00001")}
+        self.assertEqual(answers, {quantity: 400 for quantity in answers})
+        self.assertEqual(client.get(when + "&quantity=10").status_code, 200)

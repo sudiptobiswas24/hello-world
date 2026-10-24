@@ -15,7 +15,7 @@ from rest_framework.permissions import IsAuthenticated
 from apps.core.permissions import ActionPermission, RequiredPermission
 from rest_framework.response import Response
 
-from apps.core.api import flag, money_amount, posts_its_notes, quantities_by_line, record_or_404
+from apps.core.api import NOT_NEGATIVE, flag, money_amount, number, posts_its_notes, quantities_by_line, record_or_404
 from apps.accounting.models import PartyTaxProfile
 from apps.accounting.serializers import PartyTaxProfileSerializer
 from apps.core.models import Party, PartyRole, to_date
@@ -244,14 +244,9 @@ class SalesOrderViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.Mod
         """
         order = self.get_object()
         account = chosen_or_default(request.data, "receivable_account", "receivable")
-        figures = {}
-        for name in ("amount", "percent"):
-            value = request.data.get(name)
-            if value not in (None, ""):
-                try:
-                    figures[name] = Decimal(str(value))
-                except InvalidOperation:
-                    raise DRFValidationError(f"{name} must be a number.")
+        # An amount to the paisa, or a percent to four places; the model asks that just one is given.
+        figures = {name: figure for name, places in (("amount", 2), ("percent", 4))
+                   if (figure := number(request.data, name, places, default=None)) is not None}
         try:
             invoice = order.create_down_payment_invoice(
                 account,
@@ -1082,8 +1077,8 @@ class ThirdPartyReleaseViewSet(CustomerScopedMixin, AuditableViewSetMixin, views
                 for row in rows:
                     ThirdPartyReleaseLine.objects.create(
                         release=release, lot_id=row.get("lot"),
-                        quantity_offered=Decimal(str(row.get("quantity_offered"))),
-                        quantity_released=Decimal(str(row.get("quantity_released"))),
+                        quantity_offered=number(row, "quantity_offered", 4),
+                        quantity_released=number(row, "quantity_released", 4, sign=NOT_NEGATIVE),
                         remarks=row.get("remarks") or "",
                     )
                 release.post()
