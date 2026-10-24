@@ -104,7 +104,7 @@ from apps.accounting.settlement import (
     last_of_held,
     slice_of,
     spent_undoing,
-    booked_on,
+    booked_by,
     post_drawdown,
     standing_allocations,
     standing_paid,
@@ -2477,7 +2477,7 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
             # What it booked on the receivable includes the TCS it collected, its own entry at the base
             # rate, as total() does (O243): sliced without it, 27,000 drawn on a scrap invoice of 106,992
             # read 26,800.13 booked and 199.87 of exchange on a rupee invoice.
-            document_slice=(booked_on(self.journal_entry, self.receivable_account) + self.tcs_amount,
+            document_slice=(booked_by(self, self.receivable_account),
                             self.total(), self.total() - self.amount_due()),
         )
         application = DepositApplication.objects.create(
@@ -2582,6 +2582,13 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
         settled = self._settled_otherwise()
         offset = min(self.amount_credited() - self.credit_spent_undoing(), max(self.total() - settled, Decimal("0")))
         return self.total() - settled - offset
+
+    def booked_entries(self):
+        """
+        What it booked on the receivable: its own entry and each TCS collection's, or on a credit note each
+        give-back's, which post apart at the base rate (sales.tcs) and which total() counts (O260).
+        """
+        return [self.journal_entry] + [row.journal_entry for row in self.tcs_collected.all() if row.journal_entry_id]
 
     def settled_by_entries(self):
         """Its credit notes and drawdowns, for an allocation to count at what they booked (settlement.entries_that_settled)."""

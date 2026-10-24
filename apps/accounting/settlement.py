@@ -124,6 +124,26 @@ def booked_on_together(entries, control_account):
     return abs(sum((line.debit - line.credit for line in lines), Decimal("0")))
 
 
+def entries_booked(document):
+    """
+    The entries `document` booked on its control account: its own and any it posted beside it (an
+    invoice's TCS is its own entry at the base rate, sales.tcs), as the document names them
+    (`booked_entries`). One list both readers of "what this document booked" ask (O260).
+    """
+    named = getattr(document, "booked_entries", None)
+    return list(named()) if named is not None else [document.journal_entry]
+
+
+def booked_by(document, control_account):
+    """
+    What `document` booked on its control account, with every entry it posted beside its own (O260): the
+    one reader an allocation's slice (document_slice) and a drawdown (post_drawdown's document_slice) both
+    ask. Read off the invoice's own entry alone, an invoice's TCS was left out of what it booked while its
+    total() counted it, and a foreign one would have read the TCS as exchange.
+    """
+    return booked_on_together(entries_booked(document), control_account)
+
+
 def entries_that_settled(notes, drawdowns):
     """
     [(amount, [entries])]: what settled a document other than a payment and booked its own base on the
@@ -133,7 +153,7 @@ def entries_that_settled(notes, drawdowns):
     read 44.98 cleared where it netted 43.99, and the receipt after it left 0.99 on the receivable).
     One rule for both sides: Invoice and Bill each name their notes and drawdowns.
     """
-    rows = [(note.total(), [note.journal_entry]) for note in notes
+    rows = [(note.total(), entries_booked(note)) for note in notes
             if note.posted and note.journal_entry_id and note.amount_absorbed() == note.total()]
     rows += [(drawn.amount, [drawn.journal_entry, drawn.fx_entry]) for drawn in drawdowns if drawn.journal_entry_id]
     return rows
@@ -304,7 +324,7 @@ class RealisedOnItsOwnDay:
         other than an allocation (a credit note, a drawdown, a write-off) is
         still counted at its slice of the base.
         """
-        booked = booked_on(document.journal_entry, control_account)
+        booked = booked_by(document, control_account) if document.journal_entry_id else None
         if booked is None:
             return round_money(self.amount * (document.exchange_rate or Decimal("1")))
         total = document.total()
