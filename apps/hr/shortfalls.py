@@ -71,6 +71,51 @@ def owed_back(slip):
     return slip.recoverable - settled
 
 
+def owed_elsewhere(account, employee, leaving_out):
+    """
+    What every other document of `employee`'s still owes on `account` (O270): each advance of theirs given
+    against it, by its balance(), and each final slip's shortfall owed into it, by owed_back(); `leaving_out`
+    (the advance or the slip a settlement settles) left out. The person's balance on the account less this
+    is what the books show owed on that one document.
+    """
+    from .advances import SalaryAdvance
+    from .payroll import Payslip, PayRunStatus
+
+    total = Decimal("0.00")
+    for advance in SalaryAdvance.objects.filter(employee=employee, voided_at__isnull=True,
+                                                payment__counterpart_account=account).select_related("payment"):
+        if advance != leaving_out:
+            total += advance.balance()
+    for slip in Payslip.objects.filter(employee=employee, recoverable__gt=0, run__status=PayRunStatus.POSTED,
+                                       ).select_related("run", "employee"):
+        line = owed_back_line(slip) if slip != leaving_out else None
+        if line is not None and line.account_id == account.pk:
+            total += owed_back(slip)
+    return total
+
+
+def hold_the_payer(payment):
+    """
+    A payment check (accounting.register_payment_check) that refuses nothing: money received from an
+    employee, current or former, holds them as it posts (O270), the row a write-off of what they owe
+    holds before it reads the books. Unheld, a receipt of 300.00 posting as a write-off of 300.00 read a
+    receivable of 400.00 both stood, and it read -200.00. A check is where this goes because it runs
+    inside post()'s transaction, after the payment's own row is held and before the money moves; no
+    argument of post() says "hold the payer". Money paid out to them only adds to what they owe, so a
+    write-off read beside it errs low, and is not held: a salary paid holds the slip, not the person.
+    """
+    from apps.accounting.models import PaymentDirection
+
+    from .models import Employee
+
+    if payment.direction != PaymentDirection.RECEIPT or payment.party_id is None:
+        return None
+    people = list(Employee.objects.filter(party_id=payment.party_id).order_by("pk"))
+    if people:
+        hold_the_employee(*people)
+    return None
+
+
 class ShortfallSettlement(AuditModel):
     payslip = models.ForeignKey("hr.Payslip", on_delete=models.PROTECT, related_name="settlements",
                                 help_text="The final slip whose shortfall this settles.")
@@ -139,13 +184,6 @@ class ShortfallSettlement(AuditModel):
             raise ValidationError({"advance": f"Nothing is left of {advance} to settle."})
         return advance.receivable_account, left
 
-    def owed_into(self):
-        """The account what this settles is owed on: the advance's receivable, or the slip's run entry line's."""
-        if self.advance_id is not None:
-            return self.advance.receivable_account
-        line = owed_back_line(self.payslip)
-        return line.account if line is not None else None
-
     def _check_the_receipt(self, account):
         from apps.accounting.models import PaymentDirection
 
@@ -175,11 +213,18 @@ class ShortfallSettlement(AuditModel):
         # Not past what the books still show the person owing on the account: money paid back and posted,
         # not yet matched as a receipt, is not given up on as well. Asked of the settlements alone, a
         # write-off of 300.00 stood beside a 300.00 payment, and the receivable read -200.00 (g22 gate).
+        # And on this document alone (O270): the person's balance on the account less what their other
+        # advances and shortfalls still owe there. Asked of the whole balance, a write-off of a 5,000 advance
+        # passed against 7,860.00 that was 3,860.00 another advance's and 1,000.00 paid back unmatched.
+        # Read under the person's lock, which a receipt from them holds as it posts (hold_the_payer).
+        employee = self.payslip.employee
         on_the_books = sum((row.debit - row.credit for row in JournalLine.objects.filter(
-            account=account, party=self.payslip.employee.party, entry__posted=True)), Decimal("0.00"))
+            account=account, party=employee.party, entry__posted=True)), Decimal("0.00")) - owed_elsewhere(
+            account, employee, self.advance if self.advance_id is not None else self.payslip)
         if self.amount > on_the_books:
             raise ValidationError({"amount": (
-                f"{self.payslip.employee} has paid back what is not yet matched to this slip: the books show "
+                f"{self.payslip.employee} has paid back what is not yet matched to {self.advance or 'this slip'}: "
+                f"the books show "
                 f"{max(on_the_books, Decimal('0.00'))} still owed, not {self.amount}. Match the payment as a "
                 "receipt first.")})
         loss = Company.get().bad_debt_account

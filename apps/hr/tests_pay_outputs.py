@@ -765,3 +765,31 @@ class ALeaversAdvanceLeftIsSettledTests(OutputsTestCase):
             with self.subTest(said), self.assertRaisesMessage(ValidationError, said):
                 build()
         self.assertEqual(self.advance.balance(), Decimal("3860.00"))
+
+
+class AWriteOffReadsItsOwnDocumentsFigureTests(ALeaversAdvanceLeftIsSettledTests):
+    """
+    O270. A3 owes 3,860.00 of advance X after June, and all 5,000 of advance Y, recovered from August, both
+    against 1300; 1,000.00 is paid back and not yet matched. The books show 7,860.00, of which 3,860.00 is X's:
+    Y's figure is 4,000.00. A write-off of Y's 5,000 is refused at 4,000.00; 4,000 is written off and the
+    1,000 matched to Y. Figures: calc_fix_hrlocks/o270.py.
+    """
+
+    def test_a_write_off_is_held_to_its_own_advances_figure_not_the_persons_whole_balance(self):
+        late = self.give(self.leaver)
+        late.recover_from = D(2026, 8, 1)
+        late.save()
+        payment = self.paid_back("1000.00")
+        self.assertEqual(self.owed_by(self.leaver), Decimal("7860.00"))
+        with self.assertRaisesMessage(ValidationError, "the books show 4000.00 still owed, not 5000.00"):
+            self.settle("write_off", "5000.00", advance=late)
+        self.settle("write_off", "4000.00", advance=late)
+        self.settle("receipt", "1000.00", payment=payment, advance=late)
+        late = SalaryAdvance.objects.get(pk=late.pk)
+        self.assertEqual((late.balance(), self.advance.balance(), self.owed_by(self.leaver)),
+                         (Decimal("0.00"), Decimal("3860.00"), Decimal("3860.00")))
+
+    # The parent's tests run once, there.
+    test_what_is_left_is_paid_back_then_written_off_through_the_api_and_each_voids_back = None
+    test_an_advance_never_recovered_stands_while_a_write_off_of_it_does = None
+    test_what_it_is_settled_against_and_with_is_checked = None

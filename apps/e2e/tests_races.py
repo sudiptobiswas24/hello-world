@@ -2541,3 +2541,49 @@ class TwoDunningRunsAtOnceRaceTests(RaceCase):
                         lambda: run_dunning(as_of=day, send=False))
         self.assertEqual(outcomes, ["done", "done"])
         self.assertEqual(DunningNotice.objects.filter(invoice=invoice).count(), 1)
+
+
+@tag("race")
+@unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
+class AWriteOffBesideMoneyPaidBackRaceTests(RaceCase):
+    """
+    O270. The weaver owes 400.00 back (the O215 fixture). A receipt of 300.00 from them posts while the
+    Controller writes off 300.00. The payment holds the person as it posts; the write-off holds them before it
+    reads the books. The payment is let in first, to its entry: the write-off then waits for it, reads 100.00
+    and is refused. Unheld, it read 400.00 while the payment waited at its entry, both stood, and the
+    receivable read -200.00. Figures: calc_fix_hrlocks/o270.py.
+    """
+
+    def test_a_write_off_waits_for_a_receipt_from_the_person_posting_and_reads_what_it_left(self):
+        from apps.accounting.models import Payment as Money
+        from apps.hr.shortfalls import SettlementKind, ShortfallSettlement
+        from apps.manufacturing import tests_piecework as piece_fixture
+
+        shop = fixture(self, piece_fixture.AFormerEmployeesShortfallIsSettledTests)
+        draft = Money.objects.create(party=shop.weaver.party, direction=PaymentDirection.RECEIPT,
+                                     payment_date=datetime.date(2026, 9, 30), amount=Decimal("300.00"),
+                                     bank_account=shop.bank, counterpart_account=shop.receivable)
+        paying, held = threading.local(), threading.Event()
+
+        def at_its_entry(**kwargs):
+            if getattr(paying, "on", False):
+                held.set()
+
+        pre_save.connect(at_its_entry, sender=JournalEntry, weak=False, dispatch_uid="o270-held")
+        self.addCleanup(pre_save.disconnect, sender=JournalEntry, dispatch_uid="o270-held")
+
+        def post():
+            paying.on = True
+            Money.objects.get(pk=draft.pk).post()
+
+        def write_off():
+            held.wait(timeout=3)
+            ShortfallSettlement.objects.create(payslip=shop.slip, kind=SettlementKind.WRITE_OFF,
+                                               amount=Decimal("300.00"), reason="Cannot be traced")
+
+        outcomes = race(JournalEntry, post, write_off)
+        self.assertEqual(outcomes[0], "done", outcomes)
+        self.assertIn("the books show 100.00 still owed", outcomes[1])
+        self.assertEqual(sum((line.debit - line.credit for line in JournalLine.objects.filter(
+            account=shop.receivable, party=shop.weaver.party, entry__posted=True)), Decimal("0")),
+            Decimal("100.00"))

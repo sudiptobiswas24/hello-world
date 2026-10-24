@@ -37,6 +37,13 @@ class HrConfig(AppConfig):
 
         register_void_follow_up(refuse_void_of_a_recovered_advance)
 
+        from apps.accounting.models import register_payment_check
+
+        from .shortfalls import hold_the_payer
+
+        # Money from an employee holds them as it posts, as a write-off of what they owe does (O270).
+        register_payment_check(hold_the_payer)
+
         from .bank_file import refuse_void_under_a_returned_transfer
 
         register_void_follow_up(refuse_void_under_a_returned_transfer)
