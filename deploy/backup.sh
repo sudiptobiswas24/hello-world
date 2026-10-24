@@ -12,6 +12,10 @@
 #   docker compose run --rm backup now                 a backup this minute
 #   docker compose run --rm backup restore <file>      see restore.sh
 #
+# Not in the backup: ERP_FIELD_KEYS, which seals each login's second factor
+# in the database (O255). A restore needs it as well, or every enrolled
+# login sets up its phone again; keep it off the machine, apart from these.
+#
 # A backup on the same disk as the database survives a bad import or a
 # dropped table. It does not survive the disk. Copy /backups off the
 # machine; see RUNBOOK.md.

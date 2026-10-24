@@ -49,6 +49,22 @@ if PRODUCTION and SECRET_KEY == DEV_SECRET_KEY:
         "it; the server will not start on the published development key."
     )
 
+# The keys that seal secrets kept in the database (apps/core/sealed.py: the
+# second factor's secret, O255). Comma-separated Fernet keys: the first seals,
+# every one opens, so a key is rotated by putting the new one first and running
+# `manage.py rotate_field_keys`. They live here and never in the database, so a
+# copy of the database or a backup alone opens nothing.
+DEV_FIELD_KEY = "ZGV2ZWxvcG1lbnQtb25seS1uZXZlci1wcm9kdWN0aW8="
+FIELD_KEYS = _env_list("ERP_FIELD_KEYS") or [DEV_FIELD_KEY]
+if PRODUCTION and (not _env_list("ERP_FIELD_KEYS") or DEV_FIELD_KEY in FIELD_KEYS):
+    raise ImproperlyConfigured(
+        "ERP_FIELD_KEYS is not set. Every login's second factor is sealed with it; the server "
+        "will not start on the published development key. Make one with `python -c \"from "
+        "cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\"`, keep it "
+        "beside the backups' copy of .env, and never lose it: without it every enrolled login "
+        "sets up its phone again."
+    )
+
 DEBUG = os.environ.get("DJANGO_DEBUG", "false" if PRODUCTION else "true").lower() == "true"
 
 ALLOWED_HOSTS = _env_list("DJANGO_ALLOWED_HOSTS")
