@@ -14,12 +14,15 @@ employee as O28 has it.
 
 The balance is never stored. It is the amount less what posted runs took:
 a run voided after it recovered gives its instalment back to the balance by
-being voided, and nothing else needs changing.
+being voided, and nothing else needs changing. A leaver's rest is settled by
+a receipt or a write-off (shortfalls.ShortfallSettlement naming the advance,
+O262), and what stands of those comes off the balance too.
 
 Reverses: an advance is voided only while no posted run has recovered from
 it, and voiding it voids its payment too; its payment voided on its own is
 refused the same way (a void follow-up), since what was taken back would
-otherwise be taken for money never given.
+otherwise be taken for money never given; and so is either while a receipt
+or write-off of what was left stands (O262).
 """
 
 from decimal import Decimal
@@ -97,11 +100,20 @@ class SalaryAdvance(AuditModel):
             payslip__run__period_end__lt=following).exclude(payslip__run=run).aggregate(
             total=Sum("amount"))["total"] or Decimal("0.00")
 
+    def settled(self):
+        """What a leaver paid back or the Controller wrote off of what the runs left (O262), as it stands."""
+        return sum((settlement.amount for settlement in self.settlements.select_related("payment")
+                    if settlement.stands()), Decimal("0.00"))
+
+    def standing_settlement(self):
+        return next((settlement for settlement in self.settlements.select_related("payment")
+                     if settlement.stands()), None)
+
     def balance(self):
         """What is still owed: nothing once the advance, or its payment on its own, is voided (review RP8)."""
         if not self.stands():
             return Decimal("0.00")
-        return self.amount - self.recovered()
+        return self.amount - self.recovered() - self.settled()
 
     def stands(self):
         return self.voided_at is None and not self.payment.is_voided()
@@ -188,6 +200,9 @@ class SalaryAdvance(AuditModel):
         if run is not None:
             raise ValidationError(f"{run} has recovered {self.recovered()} of {self}. Void that run first: "
                                   "until then the money was given and is being taken back.")
+        settled = self.standing_settlement()
+        if settled is not None:
+            raise ValidationError(f"{settled} settles what was left of {self}. Void it first.")
         self.voided_at = timezone.now()
         super().save(update_fields=["voided_at", "updated_at"])
         if not self.payment.is_voided():
@@ -219,3 +234,7 @@ def refuse_void_of_a_recovered_advance(payment, on_date):
     if run is not None:
         raise ValidationError(f"This payment gave {advance}, and {run} has recovered {advance.recovered()} "
                               "of it. Void that run first.")
+    settled = advance.standing_settlement()
+    if settled is not None:
+        raise ValidationError(f"This payment gave {advance}, and {settled} settles what was left of it. "
+                              "Void that first.")
