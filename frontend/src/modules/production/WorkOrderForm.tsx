@@ -40,8 +40,9 @@ interface WorkOrder {
   scheduled_start: string | null;
   scheduled_end: string | null;
   status: "draft" | "released" | "closed" | "cancelled";
-  planned_unit_cost: string | null;
-  wip_balance: string;
+  planned_unit_cost?: string | null;
+  // Left out for whoever may not see what stock is worth (O348), as are the costs.
+  wip_balance?: string;
   conversion_variance: string | null;
   components: Component[];
   operations: Operation[];
@@ -105,7 +106,7 @@ export default function WorkOrderForm() {
           <Field label="Quantity">{(fid) => <output id={fid}>{quantity(order.quantity_ordered)} ordered · {quantity(order.quantity_produced)} made</output>}</Field>
           <Field label="Where">{(fid) => <output id={fid}>{order.work_centre_code || "—"}</output>}</Field>
           <Field label="When">{(fid) => <output id={fid}>{date(order.scheduled_start)} – {date(order.scheduled_end)}</output>}</Field>
-          {order.status !== "draft" && (
+          {order.status !== "draft" && order.wip_balance != null && (
             <Field label="In progress">{(fid) => <output id={fid}>{money(order.wip_balance)}</output>}</Field>
           )}
           {order.planned_unit_cost && <Field label="Planned cost a unit">{(fid) => <output id={fid}>{money(order.planned_unit_cost, 4)}</output>}</Field>}
