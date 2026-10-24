@@ -59,6 +59,17 @@ class TheSentinelHoldsTestsToTheLockOrderTests(TestCase):
             lock_rows(self.first)
             taken(connection, "manufacturing.machine", [2])
 
+    def test_lock_rows_takes_rows_by_the_lock_orders_rank_not_by_name(self):
+        """
+        "accounting.account" sorts before "core.party" by name and after it by rank: lock_rows sorted by name
+        took the account first and the party after it, against the order it exists to keep.
+        """
+        from apps.accounting.models import Account, AccountType
+
+        account = Account.objects.create(code="1300", name="Employee advances", account_type=AccountType.ASSET)
+        with transaction.atomic():
+            lock_rows(account, self.first)
+
     def test_an_account_is_ranked_after_the_payment_and_before_the_invoice(self):
         """O258: a payment, then the account it moves money through, then a sales invoice; never the account first."""
         with transaction.atomic():

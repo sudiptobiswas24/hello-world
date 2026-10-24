@@ -144,8 +144,12 @@ def lock_rows(*instances, refresh=True):
     """
     if not transaction.get_connection().in_atomic_block:
         raise RuntimeError("lock_rows() outside a transaction locks nothing.")
+    from .lock_order import RANK
+
+    # By the lock order's rank, then key; models it ranks nowhere after those it ranks, by name. Sorted by
+    # name alone, lock_rows(payment, account) took the account first, against the rank O258 gave it.
     for instance in sorted((i for i in instances if i is not None and i.pk is not None),
-                           key=lambda i: (i._meta.label_lower, i.pk)):
+                           key=lambda i: (RANK.get(i._meta.label_lower, len(RANK)), i._meta.label_lower, i.pk)):
         list(row_lock_query(type(instance), instance.pk))
         if refresh:
             instance.refresh_from_db()
