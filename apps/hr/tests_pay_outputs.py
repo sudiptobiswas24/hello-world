@@ -642,3 +642,126 @@ class WhoReadsStatutoryNumbersTests(OutputsTestCase):
         for role in ("HR Admin", "Payroll Officer"):
             [row] = self.as_role(role).get("/api/hr/employees/").json()
             self.assertEqual((row["uan"], row["esi_number"]), ("100000000001", "2200012345"), role)
+
+
+class ALeaversAdvanceLeftIsSettledTests(OutputsTestCase):
+    """
+    O262. A3 leaves on 30 June on 3,000 with 12% tax (360.00), owing an advance of 5,000: June's final pay
+    takes 1,140.00 within the cap, and 3,860.00 stays on the advance. 1,000.00 is paid back on 10 July and the
+    Controller writes off the other 2,860.00, each against the final slip and the advance; each voids back.
+    Figures: calc_fix_hrlocks/o262.py.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from apps.core.models import Company
+
+        self.loss = Account.objects.create(code="6900", name="Bad debts", account_type=AccountType.EXPENSE)
+        Company.objects.update(bad_debt_account=self.loss)
+        self.leaver = self.employee("A3", termination_date=D(2026, 6, 30), employment_status=EmploymentStatus.TERMINATED)
+        self.pay(self.leaver, self.salary, "3000")
+        self.pay(self.leaver, self.tax, "12")
+        self.stayer = self.employee("A4")
+        self.pay(self.stayer, self.salary, "3000")
+        self.advance = self.give(self.leaver)
+        self.theirs = self.give(self.stayer)
+        self.final = self.pay_run(*JUNE, pay_date=JUNE[1])
+        self.final.calculate()
+        self.final.post()
+        self.slip = self.final.payslips.get(employee=self.leaver)
+
+    def give(self, person):
+        payment = self.money(person.party, "5000", counterpart=self.advances, day=D(2026, 5, 20))
+        return SalaryAdvance.objects.create(employee=person, payment=payment, component=self.recovery,
+                                            amount=Decimal("5000"), instalment=Decimal("2000"),
+                                            recover_from=D(2026, 6, 1))
+
+    def owed_by(self, person):
+        from apps.accounting.models import JournalLine
+
+        return sum((line.debit - line.credit for line in JournalLine.objects.filter(
+            account=self.advances, party=person.party, entry__posted=True)), Decimal("0"))
+
+    def paid_back(self, amount, day=D(2026, 7, 10), person=None, counterpart=None):
+        return self.money((person or self.leaver).party, amount, counterpart=counterpart or self.advances,
+                          direction=PaymentDirection.RECEIPT, day=day)
+
+    def settle(self, kind, amount, payment=None, slip=None, advance=None, reason="Left the state"):
+        from apps.hr.shortfalls import ShortfallSettlement
+
+        return ShortfallSettlement.objects.create(
+            payslip=slip or self.slip, advance=advance or self.advance, kind=kind, amount=Decimal(amount),
+            payment=payment, reason=reason if kind == "write_off" else "", date=D(2026, 7, 10))
+
+    def test_what_is_left_is_paid_back_then_written_off_through_the_api_and_each_voids_back(self):
+        self.assertEqual((self.advance.balance(), self.owed_by(self.leaver)), (Decimal("3860.00"), Decimal("3860.00")))
+        controller = self.as_role("Controller")
+        payment = self.paid_back("1000.00")
+        answer = controller.post("/api/hr/shortfall-settlements/", {
+            "payslip": self.slip.pk, "advance": self.advance.pk, "kind": "receipt", "amount": "1000.00",
+            "payment": payment.pk}, format="json")
+        self.assertEqual(answer.status_code, 201, answer.content)
+        self.assertEqual((answer.json()["owed_back"], self.advance.balance(), self.owed_by(self.leaver)),
+                         ("2860.00", Decimal("2860.00"), Decimal("2860.00")))
+        refused = self.as_role("Payroll Officer").post("/api/hr/shortfall-settlements/", {
+            "payslip": self.slip.pk, "advance": self.advance.pk, "kind": "write_off", "amount": "2860.00",
+            "reason": "Left the state"}, format="json")
+        self.assertEqual(refused.status_code, 403)
+        written = controller.post("/api/hr/shortfall-settlements/", {
+            "payslip": self.slip.pk, "advance": self.advance.pk, "kind": "write_off", "amount": "2860.00",
+            "reason": "Left the state", "date": "2026-07-10"}, format="json")
+        self.assertEqual(written.status_code, 201, written.content)
+        self.assertEqual((self.advance.balance(), self.owed_by(self.leaver), self.balance(self.loss)),
+                         (Decimal("0.00"), Decimal("0.00"), Decimal("2860.00")))
+        # The advance and the money that gave it stand while what settled its rest does.
+        with self.assertRaisesMessage(ValidationError, "Void that run first"):
+            self.advance.void(on_date=D(2026, 7, 10))
+        with self.assertRaisesMessage(ValidationError, "Void it before voiding the run"):
+            self.final.void(on_date=D(2026, 7, 10))
+        # Reversed: the write-off, then the receipt and its payment. Owed again, in full.
+        voided = controller.post(f"/api/hr/shortfall-settlements/{written.json()['id']}/void/",
+                                 {"on_date": "2026-07-10"}, format="json")
+        self.assertEqual(voided.status_code, 200, voided.content)
+        self.assertEqual((voided.json()["owed_back"], self.owed_by(self.leaver), self.balance(self.loss)),
+                         ("2860.00", Decimal("2860.00"), Decimal("0.00")))
+        voided = controller.post(f"/api/hr/shortfall-settlements/{answer.json()['id']}/void/",
+                                 {"on_date": "2026-07-10"}, format="json")
+        self.assertEqual(voided.status_code, 200, voided.content)
+        payment.refresh_from_db()
+        self.assertEqual((payment.is_voided(), self.advance.balance(), self.owed_by(self.leaver)),
+                         (True, Decimal("3860.00"), Decimal("3860.00")))
+
+    def test_an_advance_never_recovered_stands_while_a_write_off_of_it_does(self):
+        """Nothing recovered, so only the settlement holds the advance and its payment up."""
+        from apps.hr.shortfalls import ShortfallSettlement
+
+        late = self.give(self.leaver)
+        late.recover_from = D(2026, 8, 1)
+        late.save()
+        self.assertEqual(late.balance(), Decimal("5000.00"))
+        written = self.settle("write_off", "5000.00", advance=late)
+        with self.assertRaisesMessage(ValidationError, "settles what was left of"):
+            SalaryAdvance.objects.get(pk=late.pk).void(on_date=D(2026, 7, 10))
+        with self.assertRaisesMessage(ValidationError, "settles what was left of it"):
+            Payment.objects.get(pk=late.payment_id).void(on_date=D(2026, 7, 10))
+        ShortfallSettlement.objects.get(pk=written.pk).void(on_date=D(2026, 7, 10))
+        SalaryAdvance.objects.get(pk=late.pk).void(on_date=D(2026, 7, 10))
+        self.assertEqual(self.owed_by(self.leaver), Decimal("3860.00"))
+
+    def test_what_it_is_settled_against_and_with_is_checked(self):
+        stayers = self.final.payslips.get(employee=self.stayer)
+        other = Account.objects.create(code="1390", name="Owed by former employees", account_type=AccountType.ASSET)
+        for build, said in [
+                (lambda: self.settle("write_off", "3860.01"), "owes 3860.00 on"),
+                (lambda: self.settle("write_off", "100.00", advance=self.theirs), "was given to A4 - A4, not A3 - A3"),
+                (lambda: self.settle("write_off", "100.00", slip=stayers, advance=self.theirs), "not A4 - A4's final pay"),
+                (lambda: self.settle("receipt", "100.00", payment=self.paid_back("100.00", day=D(2026, 6, 29))),
+                 "did not pay back on 2026-06-29"),
+                (lambda: self.settle("receipt", "100.00", payment=self.paid_back("100.00", counterpart=other)),
+                 "would never meet"),
+                (lambda: self.settle("receipt", "100.00", payment=self.paid_back("100.00", person=self.stayer)),
+                 "not A3"),
+                (lambda: self.settle("write_off", "100.00", reason=" "), "says why")]:
+            with self.subTest(said), self.assertRaisesMessage(ValidationError, said):
+                build()
+        self.assertEqual(self.advance.balance(), Decimal("3860.00"))

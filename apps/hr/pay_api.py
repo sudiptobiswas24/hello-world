@@ -145,14 +145,15 @@ class ShortfallSettlementSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = ShortfallSettlement
-        fields = ["id", "payslip", "employee", "kind", "amount", "payment", "date", "reason", "posted_account",
+        fields = ["id", "payslip", "employee", "advance", "kind", "amount", "payment", "date", "reason", "posted_account",
                   "journal_entry", "voided_at", "voided_entry", "stands", "owed_back"]
 
     def get_stands(self, obj):
         return obj.stands()
 
     def get_owed_back(self, obj):
-        return owed_back(obj.payslip)
+        # What is still owed of what it settles: the advance's rest (O262), or the slip's shortfall.
+        return obj.advance.balance() if obj.advance_id is not None else owed_back(obj.payslip)
 
 
 class ShortfallSettlementViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
