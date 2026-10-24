@@ -198,6 +198,10 @@ built.
        ledger, every derived balance foots to its account, and the
        statutory files read what was posted. Run it on PostgreSQL and in
        Asia/Kolkata. Each failure is a register row.
+   - **g23b is in flight, not gated.** The whole state and the resume steps are
+     in docs/HANDOFF.md on branch claude/erp-g23b-integration (tree
+     /home/user/work/g23btree). Read that first. Integrate from there; this
+     line goes when g23b is pushed.
    - **g23 is pushed (b344a2c gated, c34e9b0 the tip, 24 October), all six
      lanes green on one tip:** SQLite 7726, 174 skipped; PostgreSQL 7726;
      Asia/Kolkata 7726; migration-tagged 39; vitest 45. 131 commits and a
