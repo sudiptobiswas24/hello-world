@@ -3280,7 +3280,13 @@ class ProductionEntry(VoidedNotDeleted, AuditModel):
         # material and leaving the material drawn would put the run's
         # whole consumption into variance for output that no longer
         # exists.
-        if self.backflush_issue_id and not self.backflush_issue.is_voided():
+        # The entries it reverses held in key order first (O257): the backflush's, posted after this
+        # entry's own, is reversed first, a later row before an earlier one.
+        backflushed = self.backflush_issue_id and not self.backflush_issue.is_voided()
+        lock_rows(self.journal_entry if self.journal_entry_id else None,
+                  self.backflush_issue.journal_entry if backflushed and self.backflush_issue.journal_entry_id else None,
+                  refresh=False)
+        if backflushed:
             self.backflush_issue.void_with(self, on_date=on_date, memo=label)
         if self.journal_entry_id:
             self.voided_entry = self.journal_entry.create_reversal(
