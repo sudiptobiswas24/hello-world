@@ -139,7 +139,7 @@ class AdvanceViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 
 class ShortfallSettlementSerializer(serializers.ModelSerializer):
-    employee = serializers.CharField(source="payslip.employee.employee_number", read_only=True)
+    employee = serializers.SerializerMethodField()
     stands = serializers.SerializerMethodField()
     owed_back = serializers.SerializerMethodField()
 
@@ -150,6 +150,10 @@ class ShortfallSettlementSerializer(serializers.ModelSerializer):
 
     def get_stands(self, obj):
         return obj.stands()
+
+    def get_employee(self, obj):
+        # The slip's person, or for a leaver no run paid, the advance's (O262).
+        return obj.person().employee_number
 
     def get_owed_back(self, obj):
         # What is still owed of what it settles: the advance's rest (O262), or the slip's shortfall.
@@ -162,7 +166,7 @@ class ShortfallSettlementViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     Posted as made: voided, never changed or deleted.
     """
 
-    queryset = ShortfallSettlement.objects.select_related("payslip__employee", "payment")
+    queryset = ShortfallSettlement.objects.select_related("payslip__employee", "advance__employee", "payment")
     serializer_class = ShortfallSettlementSerializer
     filter_fields = ["payslip", "kind"]
     date_field = "date"

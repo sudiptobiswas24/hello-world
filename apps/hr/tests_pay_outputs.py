@@ -793,3 +793,63 @@ class AWriteOffReadsItsOwnDocumentsFigureTests(ALeaversAdvanceLeftIsSettledTests
     test_what_is_left_is_paid_back_then_written_off_through_the_api_and_each_voids_back = None
     test_an_advance_never_recovered_stands_while_a_write_off_of_it_does = None
     test_what_it_is_settled_against_and_with_is_checked = None
+
+
+class ALeaverNoRunPaidSettlesTheirAdvanceTests(ALeaversAdvanceLeftIsSettledTests):
+    """
+    O262's reverse path. E5 is given 5,000 on 20 May, recovered from June, and leaves on 25 May: no run ever
+    pays them, so there is no final slip and all 5,000 is owed. 2,000.00 is paid back on 1 June and the other
+    3,000.00 written off, each naming the advance and no slip, dated no earlier than the leaving day, the
+    person held as a receipt from them holds them; each voids back. Figures: calc_fix_hrlocks/o262b.py.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.gone = self.employee("E5", termination_date=D(2026, 5, 25), employment_status=EmploymentStatus.TERMINATED)
+        self.owing = self.give(self.gone)
+
+    test_what_is_left_is_paid_back_then_written_off_through_the_api_and_each_voids_back = None
+    test_an_advance_never_recovered_stands_while_a_write_off_of_it_does = None
+    test_what_it_is_settled_against_and_with_is_checked = None
+
+    def test_paid_back_and_written_off_without_a_slip_through_the_api_and_each_voids_back(self):
+        controller = self.as_role("Controller")
+        payment = self.paid_back("2000.00", day=D(2026, 6, 1), person=self.gone)
+        answer = controller.post("/api/hr/shortfall-settlements/", {
+            "advance": self.owing.pk, "kind": "receipt", "amount": "2000.00", "payment": payment.pk}, format="json")
+        self.assertEqual(answer.status_code, 201, answer.content)
+        self.assertEqual((answer.json()["employee"], answer.json()["payslip"], answer.json()["owed_back"]),
+                         ("E5", None, "3000.00"))
+        written = controller.post("/api/hr/shortfall-settlements/", {
+            "advance": self.owing.pk, "kind": "write_off", "amount": "3000.00", "reason": "Cannot be traced",
+            "date": "2026-06-01"}, format="json")
+        self.assertEqual(written.status_code, 201, written.content)
+        self.assertEqual((self.owing.balance(), self.owed_by(self.gone), self.balance(self.loss)),
+                         (Decimal("0.00"), Decimal("0.00"), Decimal("3000.00")))
+        with self.assertRaisesMessage(ValidationError, "settles what was left of"):
+            SalaryAdvance.objects.get(pk=self.owing.pk).void(on_date=D(2026, 6, 1))
+        for made in (written, answer):
+            voided = controller.post(f"/api/hr/shortfall-settlements/{made.json()['id']}/void/",
+                                     {"on_date": "2026-06-01"}, format="json")
+            self.assertEqual(voided.status_code, 200, voided.content)
+        self.assertEqual((self.owing.balance(), self.owed_by(self.gone), self.balance(self.loss)),
+                         (Decimal("5000.00"), Decimal("5000.00"), Decimal("0.00")))
+
+    def test_without_a_slip_only_for_someone_gone_whom_no_run_paid_and_not_before_they_left(self):
+        from apps.hr.shortfalls import ShortfallSettlement
+
+        def without_a_slip(advance, kind="write_off", amount="100.00", payment=None):
+            return ShortfallSettlement.objects.create(advance=advance, kind=kind, amount=Decimal(amount),
+                                                      payment=payment, reason="Gone", date=D(2026, 6, 1))
+
+        for build, said in [
+                (lambda: without_a_slip(self.owing, kind="receipt", payment=self.paid_back(
+                    "100.00", day=D(2026, 5, 24), person=self.gone)), "did not pay back on 2026-05-24"),
+                (lambda: without_a_slip(self.owing, amount="5000.01"), "owes 5000.00 on"),
+                (lambda: without_a_slip(self.theirs), "A4 - A4 has not left"),
+                (lambda: without_a_slip(self.advance), "settle what is left of"),
+                (lambda: ShortfallSettlement.objects.create(kind="write_off", amount=Decimal("1"), reason="x"),
+                 "Say which final slip, or which advance")]:
+            with self.subTest(said), self.assertRaisesMessage(ValidationError, said):
+                build()
+        self.assertEqual(self.owing.balance(), Decimal("5000.00"))
