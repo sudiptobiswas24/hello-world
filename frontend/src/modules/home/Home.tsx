@@ -5,6 +5,7 @@ import { get, list, type Query } from "../../api/client";
 import { MODULES, offered, screenUrl } from "../../app/registry";
 import { useAccess } from "../../auth/me";
 import { count, date } from "../../lib/format";
+import { sitePath } from "../../lib/sitePath";
 import type { FollowUpRow } from "../../views/Chatter";
 import { Icon } from "../../shell/Icon";
 
@@ -81,6 +82,12 @@ function Inbox() {
   );
 }
 
+/** A follow-up's summary, a link only when its link is a place on this site (O317): an old row is harmless too. */
+export function FollowUpLink({ link, summary }: { link: string; summary: string }) {
+  const to = sitePath(link);
+  return to ? <Link to={to}>{summary}</Link> : <>{summary}</>;
+}
+
 /** The follow-ups planned for this login and not yet done, late ones first, each leading to its record. */
 function MyFollowUps() {
   const rows = useQuery({
@@ -98,7 +105,7 @@ function MyFollowUps() {
             <tr key={row.id} className={row.state === "overdue" ? "bad" : undefined}>
               <td>{date(row.due_on)}{row.state !== "planned" && <span className={`pill ${row.state === "overdue" ? "bad" : "info"}`}>{row.state === "overdue" ? "Late" : "Today"}</span>}</td>
               <td>{row.kind_label}</td>
-              <td>{row.link ? <Link to={row.link}>{row.summary}</Link> : row.summary}</td>
+              <td><FollowUpLink link={row.link} summary={row.summary} /></td>
               <td className="muted">{row.record_kind} · {row.record}</td>
             </tr>
           ))}

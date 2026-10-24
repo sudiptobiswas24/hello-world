@@ -41,8 +41,11 @@ class SavedFilter(models.Model):
         self.name = self.name.strip()
         if not self.name:
             raise ValidationError({"name": ["Give it a name."]})
-        if not self.screen.startswith("/") or self.screen.startswith("//"):
-            raise ValidationError({"screen": ["A place in the application, starting with /."]})
+        from .chatter import same_site_path
+
+        if not same_site_path(self.screen):  # one rule with a follow-up's link (O317)
+            raise ValidationError({"screen": ["A place in the application: a path starting with a single /, "
+                                              "with no backslash and nothing that leads to another site."]})
         if not isinstance(self.query, dict) or len(self.query) > MOST_KEYS or not all(
                 isinstance(key, str) and isinstance(value, str) for key, value in self.query.items()):
             raise ValidationError({"query": ["The list's narrowing: up to twenty names, each with its value as text."]})
