@@ -301,6 +301,7 @@ missing), **minor**.
 | O373 | core | lock_order's survey (apps/core/lock_order.py:139) records each pair once per process with its first site only, so a second site for the same pair is never seen (seen 2026-10-24, fix_hrlocks) | race | minor |
 | O374 | hr, core | hr.employee has no rank in LOCK_ORDER although it is taken after accounting.payment (hold_the_payer) and before accounting.account (ExpenseClaim.pay) (seen 2026-10-24, fix_hrlocks) | race | minor |
 | O375 | inventory | Inventory 0040 gives a row its document's booked figure only when it is the only movement under that reference on its inventory account; rows sharing a reference (multi-line deliveries, voids) keep the replay's figure, each named in the migration's summary (seen 2026-10-24, fix_books3) | books | minor |
+| O376 | core, inventory, manufacturing | The Controller and Bookkeeper hold inventory.view_stock_value (O348) but not view_stockmovement or view_workorder, so they reach no stock-value report and no run's costs. Decided: both roles get read-only view_stockmovement and view_workorder in setup_roles, to tie stock and work in progress to the ledger; test as the roles (seen 2026-10-24, fix_sec4) | security | open |
 
 Upgrade notes, true of data made before the 8 October fixes:
 - Landed cost allocated before the stores fix releases to cost of sales, and old inventory differences stay where they were.

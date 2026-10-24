@@ -215,7 +215,7 @@ built.
        working when the session stopped. Start one new agent per worktree
        with its brief, its report in /home/user/work/reports/, and
        `git diff HEAD`:
-       - fix_sec4: grant inventory.view_stock_value to the Controller and
+       - fix_sec4: done, 2e14f78 (in g23btree; O376 left, decided). Was: grant inventory.view_stock_value to the Controller and
          Bookkeeper (decided: they keep the ledger, the inventory account
          included; no other role gains it), with role tests; rerun core,
          assets, inventory, manufacturing, quality and web.
