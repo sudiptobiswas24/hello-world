@@ -1236,3 +1236,44 @@ class AStandardCostedAssemblyBooksWhatItsShelfMovedTests(SubcontractTestCase):
 
     def test_a_standard_below_the_actual_cost(self):
         self.check("9", "-10.00", "15.00")
+
+
+class AStandardReturnFromBeforeConsumptionWasRecordedNetsToNothingTests(SubcontractTestCase):
+    """
+    O349, the review's awkward figures (purchasing/tests_review_stores2_sub.py): frames 7 at 3.337 and 5 at
+    4.1119, motors 20 at 1.0033 at the subcontractor; 7 assemblies at a standard of 3.3333, service 0.3333;
+    consumption not recorded; returned 3, 3 and 1. 39.67 went in (frames at their average, 25.62, and motors,
+    14.05) and the receipt booked 18.65 of variance; read off its entry, the returns put back 39.67 and the
+    shelf, the inventory account and the variance return to where they were. At the last arrival rate the
+    frames came home at 4.1119 and the variance kept -3.17 (calc_fix_books3/o349.py).
+    """
+
+    def setUp(self):
+        super().setUp()
+        from apps.accounting.models import Account, AccountType
+
+        self.variance = Account.objects.create(code="5900", name="PPV", account_type=AccountType.EXPENSE)
+        Company.objects.update(purchase_price_variance_account=self.variance)
+
+    def figures(self):
+        value = sum(item.valuation_at(place)[1] for item in (self.frame, self.motor, self.assembly)
+                    for place in (self.warehouse, self.subcontractor))
+        return value, self.balance(self.inventory), self.balance(self.variance)
+
+    def test_the_returns_put_back_what_went_in(self):
+        self.assembly.costing_method = "standard"
+        self.assembly.standard_cost = Decimal("3.3333")
+        self.assembly.save()
+        self.stock(self.frame, "7", "3.337", warehouse=self.subcontractor)
+        self.stock(self.frame, "5", "4.1119", warehouse=self.subcontractor)
+        self.stock(self.motor, "20", "1.0033", warehouse=self.subcontractor)
+        before = self.figures()
+        receipt = self.receive(self.subcontract_order("7", service="0.3333"), "7")
+        StockMovement.objects.filter(notes__startswith="Consumed by subcontractor").update(notes="Consumed")
+        received = tuple(after - was for after, was in zip(self.figures(), before))
+        self.assertEqual(received, (Decimal("-16.34"), Decimal("-16.34"), Decimal("18.65")), "(shelf, books, variance)")
+        line = receipt.lines.get()
+        for part in ("3", "3", "1"):
+            receipt.create_return(quantities={line: Decimal(part)}, debit_bills=False)
+        moved = tuple(after - was for after, was in zip(self.figures(), before))
+        self.assertEqual(moved, (Decimal("0"), Decimal("0"), Decimal("0")), "(shelf, books, variance)")
