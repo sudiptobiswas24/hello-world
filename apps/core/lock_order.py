@@ -160,8 +160,6 @@ UNSEEN = {
     "core.documentsequence": "a document numbering a second document type takes that type's row after its own, "
                              "in no fixed order between types (sales.Invoice.post)",
     "core.documentsequenceyear": "the year's counter of a document type, as core.documentsequence",
-    "manufacturing.billofmaterials": "a woven bag's save rebuilds its components' BOMs in the order built",
-    "quality.inspectionplan": "a woven bag's save rebuilds its plans in the order built",
 }
 
 # How a statement took its rows: a select_for_update() names them; the rest

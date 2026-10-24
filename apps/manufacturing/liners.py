@@ -166,11 +166,17 @@ class FilmSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
     def save(self, *args, **kwargs):
         self._check()
         super().save(*args, **kwargs)
+        from .woven import hold_what_they_rebuild, resave_in_key_order
+
+        # Its bill and plan, its liners' and their sacks', held in key order first (O257).
+        hold_what_they_rebuild([self])
         self.rebuild_bom()
         self.rebuild_inspection_plan()
         # Every liner cut from it weighs what a length of it weighs.
-        for liner in self.liners.all():
-            liner.save()
+        resave_in_key_order(self.dependents())
+
+    def dependents(self):
+        return list(self.liners.all())
 
 
 class LinerSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
@@ -255,12 +261,20 @@ class LinerSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
                 f"{self.code}: liners are counted off the cut-and-seal machine, and "
                 f"{self.liner_item.sku} is measured in {self.liner_item.uom}.")
         super().save(*args, **kwargs)
+        from .woven import hold_what_they_rebuild
+
+        # Its own bill and plan and those of every sack it rebuilds, held in key order first (O257): its own
+        # rebuilt first, a later bill than a sack's, the two were taken out of order.
+        hold_what_they_rebuild([self, *self.dependents()])
         self.rebuild_bom()
         self.rebuild_inspection_plan()
         self.resave_dependents()
 
     @transaction.atomic
     def delete(self, *args, **kwargs):
+        from .woven import hold_what_they_rebuild
+
+        hold_what_they_rebuild([self, *self.dependents()])
         result = super().delete(*args, **kwargs)
         # A sack whose liner has no specification left cannot say what it
         # weighs, and refuses: the delete goes back with it.
@@ -268,10 +282,14 @@ class LinerSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
         return result
 
     def resave_dependents(self):
+        from .woven import resave_in_key_order
+
+        resave_in_key_order(self.dependents())
+
+    def dependents(self):
         from .woven import BagSpecification
 
-        for bag in BagSpecification.objects.filter(liner_item=self.liner_item):
-            bag.save()
+        return list(BagSpecification.objects.filter(liner_item=self.liner_item))
 
 
 def liner_specification_for(item, on_date):
