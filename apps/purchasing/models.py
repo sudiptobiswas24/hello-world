@@ -7758,8 +7758,8 @@ class GoodsReceipt(AuditModel):
                     money = legacy[component.pk]
                     cost = (money / quantity).quantize(Decimal("0.00000001")) if quantity else Decimal("0")
                 else:
-                    # Nothing to read it from (a standard-costed assembly shelves the standard, not
-                    # what went in): what the component last came in at there, rounded once.
+                    # Nothing to read it from (a standard-costed receipt whose entry cannot say,
+                    # _standard_went_in): what the component last came in at there, rounded once.
                     cost = _last_arrival_rate(component.item, warehouse) or _average_with_its_places(
                         component.item, warehouse) or (
                         _average_with_its_places(component.item, None)
@@ -7788,14 +7788,21 @@ class GoodsReceipt(AuditModel):
         vendor's charge, less what the recorded components took; shared between them by what they last came
         in at (their need at the last arrival rate), total first, the last taking the rest; and of each
         share, this return's part of what is still out, so the last return puts back exactly what is left.
-        Empty when the receipt cannot say (no original line, or a standard-costed assembly, which shelves
-        the standard and not what went in).
+        Empty when the receipt cannot say (no original line; a standard-costed assembly whose receipt's
+        entry cannot say, _standard_went_in).
         """
         movement = getattr(original, "stock_movement", None)
-        if movement is None or original.order_line.item.costing_method == "standard":
+        if movement is None:
             return {}
         charge = round_money(original.quantity_received * original.accrued_unit_cost)
-        pool = movement.value - charge
+        if original.order_line.item.costing_method == "standard":
+            # The shelf took the standard; what went in is that and the variance the receipt booked (O349).
+            went_in = self._standard_went_in(original, movement)
+            if went_in is None:
+                return {}
+            pool = went_in - charge
+        else:
+            pool = movement.value - charge
         legacy, weights = [], []
         for component in original.order_line.components.select_related("item"):
             if not component.item.track_inventory:
@@ -7825,6 +7832,34 @@ class GoodsReceipt(AuditModel):
 
         return {pk: part(share, back_before + line.quantity_received) - part(share, back_before)
                 for pk, share in shares.items()}
+
+    def _standard_went_in(self, original, movement):
+        """
+        What went into a standard-costed assembly's receipt line: the standard its shelf took and the price
+        variance its receipt's entry booked, read off that entry (O349). Under the standard the entry books
+        Dr inventory (the standard less the components' money, O322) and Cr the accrual (the vendor's
+        charge), the rest to variance, so the standard plus that variance is the charge and the components.
+        The variance is the entry's lines that are neither stock nor the accrual (not an asset, not a
+        liability). The entry posts one figure an item, so it says this only when the original is the
+        receipt's one standard-costed line; otherwise None, and the components come back at the rate they
+        last came in at, as before. A receipt from before O322 booked the standard alone, which reads as
+        nothing gone in, and keeps that fallback too.
+
+        Put back at the last arrival rate, 7 frames consumed at their average (25.62 of 39.67 with the
+        motors) came back at 4.1119 and left 3.17 of price variance nobody paid; average and FIFO, which
+        read what went in off the assembly's own movement, netted to 0.
+        """
+        receipt = original.receipt
+        entry = receipt.journal_entry
+        standard = [line for line in receipt.lines.select_related("order_line__item")
+                    if line.order_line.item.costing_method == "standard"]
+        if entry is None or [line.pk for line in standard] != [original.pk]:
+            return None
+        variance = sum((line.debit - line.credit for line in entry.lines.select_related("account")
+                        if line.account.account_type not in (AccountType.ASSET, AccountType.LIABILITY)),
+                       Decimal("0"))
+        went_in = movement.value + variance
+        return went_in if went_in > round_money(original.quantity_received * original.accrued_unit_cost) else None
 
     def _sent_on_the_order(self, item, warehouse):
         """
