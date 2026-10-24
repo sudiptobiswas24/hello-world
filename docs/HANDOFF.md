@@ -3,7 +3,7 @@
 This is an ERP for a woven polypropylene sack plant in India: Django 5.2,
 DRF, React, Odoo-like. The owner wants every module as deep as Odoo's,
 and correct before wide. This file says where things stand and what comes
-next. It was last brought up to date on 11 October 2026, after g18, so
+next. It was last brought up to date on 24 October 2026, after g23, so
 that a new session can start small.
 
 ## 0. Read, then verify, before doing anything
@@ -198,19 +198,49 @@ built.
        ledger, every derived balance foots to its account, and the
        statutory files read what was posted. Run it on PostgreSQL and in
        Asia/Kolkata. Each failure is a register row.
-   - **g23: the second read-only audit per module, then its fixes.**
-     Brief docs/handoff/g23_audit.md, on the pushed g22 tip, six lanes two
-     at a time (floor and stores; money and trade; people and core),
-     Sonnet, probes only. The first round found over forty defects with a
-     green suite, and nobody has read a whole module since. Every finding
-     is a register row the day it is seen; the fixes follow by module, each
-     reviewed, as g22's were. Depth waits for it: building on a module the
-     audit has not read builds on its defects.
-     First fix, alongside the audit and owned by one agent: O269, the shelf
-     and the ledger keeping money to different places (each movement's
-     money becomes the paisa its document booked). It touches the costing
-     engine and every outbound path, so nothing else in inventory/costing.py
-     moves while it is in flight.
+   - **g23 is pushed (b344a2c gated, c34e9b0 the tip, 24 October), all six
+     lanes green on one tip:** SQLite 7726, 174 skipped; PostgreSQL 7726;
+     Asia/Kolkata 7726; migration-tagged 39; vitest 45. 131 commits and a
+     docs-only merge. It holds:
+     - the second read-only audit of every module (floor, stores, money,
+       trade, people, core), Sonnet, probes only; every finding a row
+       (O271 to O368). Reports: docs/handoff/reports/g23_*.md;
+     - O269: each StockMovement keeps the paisa its document booked
+       (`value`); the replay sums it, cost_of_removing answers in paisa,
+       and `audit_invariants` names a movement written without its money;
+     - the fixes by module, each round reviewed once, blockers fixed at
+       once: 60 rows closed. 59 rows are open, 24 of them minor, two
+       waiting on the owner (O312 timesheets, O352 whether the Controller
+       approves orders).
+     - Shared rules built here, use them: `takes_back` (the explicit
+       correction marker), `moment_that_has_come` (five minutes of portal
+       skew), `settlement.in_base`, `once_only()` for imports,
+       `login_ended`/`check_login_acts` for leavers, `posts_its_notes`,
+       `recurrence.run_date`, `batch_code()`, `HidesStockMoney`,
+       `AdjustmentReason.check_account_if_chosen()`.
+     - What the gate found, every one a test encoding something a fix now
+       refuses, none in the product: two adjustment reasons on an asset
+       account (O324), an e-invoice acknowledgement ahead of the story's
+       clock and with no offset (O289), an e-way bill number thirteen digits
+       once PostgreSQL's ids passed 99, a recurring test dated ahead of
+       today (O284), the 0065 seed test reading the latest before 0080, and
+       three PF tests expecting one run's file where O301 files the month.
+     - Lessons for the next gate:
+       - Never change the tree under a running lane: a fix committed while
+         pg-b ran made its result belong to neither tip. Stop the lanes,
+         commit, rerun.
+       - lane.sh prints a lane's verdict and exits 0 whatever it says; a
+         runner reads `^OK` and `^FAILED` from the log, not the exit code.
+       - The container restarted twice mid-gate. Every lane counts once it
+         printed OK on the tip, so after a restart run only the lanes that
+         had not finished (check each log's HEAD line first).
+       - Docs commits made in the main checkout while a tree is gated mean
+         the push is not a fast-forward: finalize from the merge base, then
+         a docs-only merge (the tree's register, the branch's reports).
+         Better: make register commits in the gated tree only.
+       - pip needs tblib, or the parallel runner dies silently on the first
+         failure ("tracebacks cannot be pickled"); it is pinned now.
+       - Agents never `git stash`: worktrees share one stash.
    - **g24, stores and purchasing for a polymer buyer:**
      - L16 polymer against price circulars;
      - L17 weighbridge, gross, tare and net on receipts and dispatches;
