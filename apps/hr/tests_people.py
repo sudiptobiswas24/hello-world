@@ -620,3 +620,47 @@ class ADeletedRecordsHistoryIsReadAsTheRecordWasTests(PeopleTestCase):
             "/api/hr/appraisals/", lambda a: {"model": "hr.appraisal", "id": a.pk}, make)
         self.assertEqual((standing, gone.status_code, hr), (404, 404, 200),
                          f"standing {standing}; after delete the inspector reads: {gone.content[:200]}")
+
+
+class AClaimIsChargedToExpenseAccountsOnlyTests(PeopleTestCase):
+    """
+    O360, decided: an expense claim line goes to an active expense account only, never an asset. Riley's
+    drill of 2,000 is refused against Tools and equipment (an asset) over the API; charged to Tools, an
+    expense account re-typed as an asset after the line named it (nothing posted to it yet), the claim is
+    neither submitted nor paid, and nothing is debited to the asset.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.equipment = Account.objects.create(code="1500", name="Tools and equipment", account_type=AccountType.ASSET)
+        self.tools = Account.objects.create(code="6300", name="Tools", account_type=AccountType.EXPENSE)
+
+    def test_a_line_to_an_asset_account_is_refused_over_the_api_as_the_claimant(self):
+        riley = self.as_(self.riley.user)
+        claim_id = riley.post("/api/hr/expense-claims/", {"purpose": "Drill"}, format="json").json()["id"]
+        line = riley.post("/api/hr/expense-lines/", {
+            "claim": claim_id, "spent_on": "2026-06-01", "expense_account": self.equipment.pk,
+            "description": "Drill", "amount": "2000"}, format="json")
+        self.assertEqual(line.status_code, 400, line.content)
+        self.assertIn("1500 Tools and equipment is not an active expense account", str(line.json()["expense_account"]))
+        self.assertFalse(ExpenseLine.objects.filter(claim_id=claim_id).exists())
+
+    def test_an_account_re_typed_as_an_asset_after_the_line_is_neither_submitted_nor_paid(self):
+        claim = self.claim(lines=(("Drill", "tools", "2000"),))
+        self.tools.account_type = AccountType.ASSET
+        self.tools.save()
+        with self.assertRaisesMessage(ValidationError, "6300 Tools is not an active expense account"):
+            claim.submit()
+        self.tools.account_type = AccountType.EXPENSE
+        self.tools.save()
+        claim.submit()
+        claim.approve(self.manager)
+        self.tools.account_type = AccountType.ASSET
+        self.tools.save()
+        paid = self.as_(self.books).post(f"/api/hr/expense-claims/{claim.pk}/pay/", {
+            "paid_from": self.cash.pk, "on_date": "2026-06-01"}, format="json")
+        self.assertEqual(paid.status_code, 400, paid.content)
+        self.assertIn("6300 Tools is not an active expense account", str(paid.json()))
+        claim.refresh_from_db()
+        self.assertEqual((claim.status, claim.journal_entry_id), (ClaimStatus.APPROVED, None))
+        self.assertFalse(JournalLine.objects.filter(account=self.tools).exists())
