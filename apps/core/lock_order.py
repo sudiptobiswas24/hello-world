@@ -160,8 +160,6 @@ UNSEEN = {
     "core.documentsequence": "a document numbering a second document type takes that type's row after its own, "
                              "in no fixed order between types (sales.Invoice.post)",
     "core.documentsequenceyear": "the year's counter of a document type, as core.documentsequence",
-    "accounting.journalentry": "a work order's void reverses its documents' entries in the order it voids them "
-                               "(manufacturing/orders.py WorkOrder.void)",
     "assets.fixedasset": "depreciate_all() holds each asset in the order it charges them, not key order",
     "inventory.item": "publishing a cost writes each item's standard in the order rolled up (costing.publish)",
     "manufacturing.billofmaterials": "a woven bag's save rebuilds its components' BOMs in the order built",
