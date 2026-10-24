@@ -21,6 +21,13 @@ cheque that bounced) leaves the receipt standing for nothing, so it is owed
 again either way. A write-off's void reverses its entry. The run that left
 the shortfall is not voided while a settlement of it stands (PayRun.void):
 voided under one, the receivable would read below nothing.
+
+An advance or loan the final pay could not take all of (O262) is settled
+the same two ways, a settlement naming the advance beside the final slip:
+what is left of it, against the account it was given against, the
+advance's own receivable. What is left is the advance's balance(), which
+counts the settlements that stand. The advance, and the payment that gave
+it, are not voided while one does (SalaryAdvance.void).
 """
 
 from decimal import Decimal
@@ -59,8 +66,8 @@ def owed_back(slip):
     """What the former employee still owes of `slip`'s shortfall: nothing unless its run stands posted."""
     if owed_back_line(slip) is None:
         return Decimal("0.00")
-    settled = sum((settlement.amount for settlement in slip.settlements.all() if settlement.stands()),
-                  Decimal("0.00"))
+    settled = sum((settlement.amount for settlement in slip.settlements.all()
+                   if settlement.advance_id is None and settlement.stands()), Decimal("0.00"))
     return slip.recoverable - settled
 
 
@@ -69,6 +76,10 @@ class ShortfallSettlement(AuditModel):
                                 help_text="The final slip whose shortfall this settles.")
     kind = models.CharField(max_length=16, choices=SettlementKind.choices)
     amount = models.DecimalField(max_digits=18, decimal_places=2)
+    advance = models.ForeignKey(
+        "hr.SalaryAdvance", null=True, blank=True, on_delete=models.PROTECT, related_name="settlements",
+        help_text="An advance or loan the final pay could not take all of: this settles what is left of it, "
+                  "not the slip's shortfall (O262).")
     payment = models.OneToOneField(
         "accounting.Payment", null=True, blank=True, on_delete=models.PROTECT, related_name="shortfall_settlement",
         help_text="A receipt: the money paid back, posted, from the former employee, against the account the "
@@ -111,7 +122,31 @@ class ShortfallSettlement(AuditModel):
         """The run, then the person: the order PayRun.post and PayRun.void take them in."""
         return [self.payslip.run]
 
-    def _check_the_receipt(self, line):
+    def _the_advance(self, slip):
+        """What is left of the advance, and the account it was given against: read under the person's lock."""
+        from .advances import SalaryAdvance
+        from .payroll import PayRunStatus
+
+        advance = SalaryAdvance.objects.select_related("payment").get(pk=self.advance_id)
+        if advance.employee_id != slip.employee_id:
+            raise ValidationError({"advance": f"{advance} was given to {advance.employee}, not {slip.employee}."})
+        if slip.run.status != PayRunStatus.POSTED or not slip.is_final():
+            raise ValidationError({"payslip": (
+                f"That slip is not {slip.employee}'s final pay, posted: what is left of an advance is recovered "
+                "by the runs until then.")})
+        left = advance.balance()
+        if left <= 0:
+            raise ValidationError({"advance": f"Nothing is left of {advance} to settle."})
+        return advance.receivable_account, left
+
+    def owed_into(self):
+        """The account what this settles is owed on: the advance's receivable, or the slip's run entry line's."""
+        if self.advance_id is not None:
+            return self.advance.receivable_account
+        line = owed_back_line(self.payslip)
+        return line.account if line is not None else None
+
+    def _check_the_receipt(self, account):
         from apps.accounting.models import PaymentDirection
 
         payment, employee = self.payment, self.payslip.employee
@@ -121,10 +156,10 @@ class ShortfallSettlement(AuditModel):
             raise ValidationError("Paying back is money received, not money paid out.")
         if payment.party_id != employee.party_id:
             raise ValidationError(f"That payment came from {payment.party}, not {employee}.")
-        if payment.counterpart_account_id != line.account_id:
+        if payment.counterpart_account_id != account.pk:
             raise ValidationError(
                 f"That payment was booked against {payment.counterpart_account}; {employee} owes into "
-                f"{line.account}, so the two would never meet.")
+                f"{account}, so the two would never meet.")
         if payment.currency_id not in (None, Company.get().base_currency_id):
             raise ValidationError("What a former employee owes is paid back in the base currency.")
         if payment.amount != self.amount:
@@ -132,7 +167,7 @@ class ShortfallSettlement(AuditModel):
         correction_date(payment.payment_date, self.payslip.run.pay_date,
                         f"{self.payslip.employee} did not pay back on", "the shortfall was owed from")
 
-    def _write_off(self, line):
+    def _write_off(self, account):
         from apps.accounting.models import JournalEntry, JournalLine
 
         if not self.reason.strip():
@@ -141,7 +176,7 @@ class ShortfallSettlement(AuditModel):
         # not yet matched as a receipt, is not given up on as well. Asked of the settlements alone, a
         # write-off of 300.00 stood beside a 300.00 payment, and the receivable read -200.00 (g22 gate).
         on_the_books = sum((row.debit - row.credit for row in JournalLine.objects.filter(
-            account=line.account, party=self.payslip.employee.party, entry__posted=True)), Decimal("0.00"))
+            account=account, party=self.payslip.employee.party, entry__posted=True)), Decimal("0.00"))
         if self.amount > on_the_books:
             raise ValidationError({"amount": (
                 f"{self.payslip.employee} has paid back what is not yet matched to this slip: the books show "
@@ -156,7 +191,7 @@ class ShortfallSettlement(AuditModel):
         label = f"Written off, owed back by {self.payslip.employee}: {self.reason}"[:255]
         entry = JournalEntry.objects.create(date=self.date, reference=self.payslip.run.number, memo=label)
         JournalLine.objects.create(entry=entry, account=loss, debit=self.amount, description=label)
-        JournalLine.objects.create(entry=entry, account=line.account, party=self.payslip.employee.party,
+        JournalLine.objects.create(entry=entry, account=account, party=self.payslip.employee.party,
                                    credit=self.amount, description=label)
         entry.post()
         self.posted_account, self.journal_entry = loss, entry
@@ -168,22 +203,27 @@ class ShortfallSettlement(AuditModel):
         slip = self.payslip
         lock_rows(*self.held_first())
         hold_the_employee(slip.employee)
-        line = owed_back_line(slip)
-        if line is None:
-            raise ValidationError(f"{slip.employee} owes nothing back on that slip: its run left no shortfall, "
-                                  "or has been voided.")
-        left = owed_back(slip)
-        if self.amount is not None and self.amount > left:
-            raise ValidationError({"amount": f"{slip.employee} owes {left} back on that slip, not {self.amount}."})
+        if self.advance_id is not None:
+            account, left = self._the_advance(slip)
+            if self.amount is not None and self.amount > left:
+                raise ValidationError({"amount": f"{slip.employee} owes {left} on {self.advance}, not {self.amount}."})
+        else:
+            line = owed_back_line(slip)
+            if line is None:
+                raise ValidationError(f"{slip.employee} owes nothing back on that slip: its run left no shortfall, "
+                                      "or has been voided.")
+            account, left = line.account, owed_back(slip)
+            if self.amount is not None and self.amount > left:
+                raise ValidationError({"amount": f"{slip.employee} owes {left} back on that slip, not {self.amount}."})
         if self.kind == SettlementKind.RECEIPT:
             if self.payment_id is None:
                 raise ValidationError({"payment": "A receipt is the payment that brought the money back."})
-            self._check_the_receipt(line)
+            self._check_the_receipt(account)
             self.date = self.payment.payment_date
         elif self.kind == SettlementKind.WRITE_OFF:
             if self.payment_id is not None:
                 raise ValidationError({"payment": "A write-off is money not received; it has no payment."})
-            self._write_off(line)
+            self._write_off(account)
         else:
             raise ValidationError({"kind": "Paid back or written off."})
         super().save(*args, **kwargs)
