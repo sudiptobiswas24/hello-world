@@ -1142,14 +1142,23 @@ export const MODULES: Module[] = [
       },
       {
         path: "value", label: "Stock value", permission: "inventory.view_stock_value",
+        // The server reads these from the stock ledger too (StockReportViewSet.required_permission): a holder of
+        // the right alone (the Controller, the Bookkeeper: O348) is not offered a screen it cannot read.
+        also: ["inventory.view_stockmovement"],
         keywords: "valuation inventory value report", load: () => import("../modules/stores/Valuation"),
       },
       {
         path: "against-books", label: "Stock against the books", permission: "inventory.view_stock_value",
+        // The server reads these from the stock ledger too (StockReportViewSet.required_permission): a holder of
+        // the right alone (the Controller, the Bookkeeper: O348) is not offered a screen it cannot read.
+        also: ["inventory.view_stockmovement"],
         keywords: "reconciliation ledger inventory account", load: () => import("../modules/stores/Reconciliation"),
       },
       {
         path: "slow-moving", label: "Slow-moving stock", permission: "inventory.view_stock_value",
+        // The server reads these from the stock ledger too (StockReportViewSet.required_permission): a holder of
+        // the right alone (the Controller, the Bookkeeper: O348) is not offered a screen it cannot read.
+        also: ["inventory.view_stockmovement"],
         keywords: "dead stock non moving aging", load: () => import("../modules/stores/SlowMoving"),
       },
       {

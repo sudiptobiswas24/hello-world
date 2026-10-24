@@ -93,3 +93,40 @@ class StockMoneyByRoleTests(RunTestCase):
         self.assertEqual(body["planned_unit_cost"], str(self.run_.planned_unit_cost))
         self.assertEqual(supervisor.get(f"{RUNS}{self.run_.pk}/variance/").status_code, 200)
         self.assertIn("cost", supervisor.get(f"{RUNS}{self.run_.pk}/energy/").json())
+
+
+class TheLedgerKeepersSeeTheStockFiguresTests(StockMoneyByRoleTests):
+    """
+    Decided in g23b (O348): the Controller and the Bookkeeper keep the ledger, the inventory account included,
+    so they hold inventory.view_stock_value; no other office or floor role gains it.
+    """
+
+    def test_the_controller_and_the_bookkeeper_read_an_items_standard_cost_on_the_list_and_the_detail(self):
+        from apps.inventory.models import Item
+
+        # A figure on file, so the field carries one (the fixture's tape has none); the column holds 4 places.
+        Item.objects.filter(pk=self.tape.pk).update(standard_cost="12.5000")
+        for role in ("Controller", "Bookkeeper"):
+            rows = self.item_rows(self.as_(role))
+            self.assertTrue(all("standard_cost" in row for row in rows), role)
+            self.assertEqual(rows[-1]["standard_cost"], "12.5000", role)
+            self.assertIn("12.5000", [row["standard_cost"] for row in rows[:-1]], role)
+
+    def test_they_do_not_read_runs_at_all_so_the_right_shows_them_no_run(self):
+        # Neither role reads work orders (no manufacturing.view_workorder): the right adds no run to read.
+        for role in ("Controller", "Bookkeeper"):
+            client = self.as_(role)
+            self.assertEqual(client.get(RUNS).status_code, 403, role)
+            self.assertEqual(client.get(f"{RUNS}{self.run_.pk}/").status_code, 403, role)
+
+    def test_the_roles_left_without_it_read_neither(self):
+        stay = ("Process Engineer", "AP Manager", "Purchasing Clerk", "Sales Rep", "AR Manager", "Warehouse Staff",
+                "Quality Inspector")
+        self.assertEqual([role for role in stay if holds(role, "inventory.view_stock_value")], [])
+        for role in stay:
+            client = self.as_(role)
+            self.assertEqual([row for row in self.item_rows(client) if "standard_cost" in row], [], role)
+            if holds(role, "manufacturing.view_workorder"):
+                listed, detail = client.get(RUNS).json(), client.get(f"{RUNS}{self.run_.pk}/").json()
+                self.assertEqual([field for row in [*listed, detail] for field in WORK_ORDER_MONEY if field in row],
+                                 [], role)
