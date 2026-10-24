@@ -23,7 +23,11 @@ enrol. Everyone else signs in with a password alone.
 - A login switched off loses its factor; switched on again, it enrols
   afresh.
 
-The secret is kept as it is: checking a code needs it. The recovery codes
+The secret is kept sealed (apps/core/sealed.py, O255): checking a code
+needs it back, so it cannot be hashed, and a copy of the database or a
+backup must not hand over every login's second factor. The key lives in
+the environment (ERP_FIELD_KEYS). A secret no key opens signs nobody in
+and says so: the login is reset and enrols again. The recovery codes
 are random enough (50 bits each) that a SHA-256 digest is as good as a
 slow hash, and needs no salt to look one up.
 """
@@ -75,7 +79,8 @@ class SecondFactor(models.Model):
     """One login's authenticator: confirmed once a code from it was given."""
 
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="second_factor")
-    secret = models.CharField(max_length=64)
+    # The authenticator's secret, sealed (O255): read and set it through `secret`.
+    sealed_secret = models.TextField(editable=False)
     confirmed_at = models.DateTimeField(null=True, blank=True)
     # The 30-second step of the last code taken: a code signs in once, never again by whoever saw it typed.
     last_step = models.BigIntegerField(null=True, blank=True)
@@ -86,6 +91,34 @@ class SecondFactor(models.Model):
 
     def __str__(self):
         return f"{self.user}'s second factor"
+
+    @property
+    def secret(self):
+        """The secret in clear; sealed.Unreadable when no key the server holds opens it."""
+        from .sealed import unseal
+
+        return unseal(self.sealed_secret)
+
+    @secret.setter
+    def secret(self, value):
+        from .sealed import seal
+
+        self.sealed_secret = seal(value)
+
+    @property
+    def readable(self):
+        from .sealed import Unreadable
+
+        try:
+            self.secret
+        except Unreadable:
+            return False
+        return True
+
+
+UNREADABLE = ("This login's second factor can no longer be read on this server: it was sealed with a key the "
+              "server does not hold. Ask whoever keeps logins to reset your second factor, then set up your "
+              "phone again.")
 
 
 class RecoveryCode(models.Model):
@@ -184,7 +217,9 @@ class PasswordOnlyBasicAuthentication(BasicAuthentication):
 
 
 def _code_step(factor, code):
-    """The step `code` belongs to, if it is one of the three around now; None otherwise."""
+    """The step `code` belongs to, if it is one of the three around now; None otherwise (an unreadable secret too)."""
+    if not factor.readable:
+        return None
     totp = pyotp.TOTP(factor.secret)
     now = totp.timecode(timezone.now())
     code = "".join(code.split())
@@ -237,6 +272,8 @@ def check(factor, code):
     factor.refresh_from_db()
     if locked(factor):
         return False
+    if not factor.readable:
+        return False  # no code can be checked, and no guess is counted against the person: reset it (UNREADABLE)
     code = (code or "").strip()
     digits = code.isascii() and code.isdigit()
     step = _code_step(factor, code) if digits else None
@@ -404,6 +441,9 @@ def step(request):
     context = {"next": wanted, "user": user}
     if factor is not None:
         context["mode"] = "code"
+        if not factor.readable:
+            context["error"] = UNREADABLE
+            return render(request, "second_factor.html", context)
         if request.method == "POST":
             if locked(factor):
                 context["error"] = "Five wrong codes: the code step is locked for a while. Try again later."
@@ -417,6 +457,10 @@ def step(request):
                                     if locked(factor) else "That code did not match. Try the one your app shows now.")
         return render(request, "second_factor.html", context)
     factor, _ = SecondFactor.objects.get_or_create(user=user, defaults={"secret": pyotp.random_base32()})
+    if not factor.readable:
+        # Not yet confirmed, so no phone holds it: a new secret to scan costs nobody anything.
+        factor.secret = pyotp.random_base32()
+        factor.save(update_fields=["sealed_secret"])
     context.update(mode="enrol", qr=_qr(factor), secret=factor.secret)
     if request.method == "POST":
         if locked(factor):

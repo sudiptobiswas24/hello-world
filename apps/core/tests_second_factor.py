@@ -360,3 +360,131 @@ class ASoleAdministratorsWayBackTests(SecondFactorCase):
 
         with self.assertRaises(CommandError):
             call_command("reset_second_factor", "root")
+
+
+OLD_KEY = base64.urlsafe_b64encode(b"o" * 32).decode()
+NEW_KEY = base64.urlsafe_b64encode(b"n" * 32).decode()
+
+
+class TheSecretIsSealedAtRestTests(SecondFactorCase):
+    """O255: a copy of the database, a backup included, held every login's second factor in clear."""
+
+    def test_the_database_holds_the_secret_sealed_not_in_clear(self):
+        from django.db import connection
+
+        from .sealed import unseal
+
+        factor = self.enrolled(self.person("ctl", "Controller"))
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT * FROM core_secondfactor WHERE id = %s", [factor.pk])
+            row = " ".join(str(value) for value in cursor.fetchone())
+        self.assertNotIn(factor.secret, row)
+        stored = SecondFactor.objects.values_list("sealed_secret", flat=True).get(pk=factor.pk)
+        self.assertEqual(unseal(stored), factor.secret)
+        # And the code from that secret still signs in.
+        web, step = self.password("ctl")
+        self.assertEqual(web.post(step, {"code": self.code(factor)}).status_code, 302)
+
+    def test_a_secret_no_key_opens_says_re_enrol_and_signs_nobody_in(self):
+        """A restore without its key: never a server error, never a sign-in, never a guess counted."""
+        with self.settings(FIELD_KEYS=[OLD_KEY]):
+            factor = self.enrolled(self.person("ctl", "Controller"))
+            right = self.code(factor)
+        with self.settings(FIELD_KEYS=[NEW_KEY]):
+            web, step = self.password("ctl")
+            page = web.get(step)
+            self.assertEqual(page.status_code, 200)
+            self.assertIn("reset your second factor", page.content.decode())
+            answer = web.post(step, {"code": right})
+            self.assertEqual(answer.status_code, 200)
+            self.assertIn("reset your second factor", answer.content.decode())
+            self.assertEqual(web.get(ME).status_code, 403)
+            self.assertFalse(second_factor.check(factor, right))
+            factor.refresh_from_db()
+            self.assertEqual((factor.failures, factor.locked_until), (0, None))
+
+    def test_an_unconfirmed_secret_no_key_opens_is_replaced_at_enrolment(self):
+        with self.settings(FIELD_KEYS=[OLD_KEY]):
+            officer = self.person("pay", "Payroll Officer")
+            SecondFactor.objects.create(user=officer, secret=pyotp.random_base32())
+        with self.settings(FIELD_KEYS=[NEW_KEY]):
+            web, step = self.password("pay")
+            page = web.get(step).content.decode()
+            secret = re.search(r'<code id="secret">([A-Z2-7]+)</code>', page).group(1)
+            done = web.post(step, {"code": pyotp.TOTP(secret).now(), "password": PW})
+            self.assertEqual(done.status_code, 200)
+            self.assertIsNotNone(second_factor.confirmed(officer))
+
+    def test_rotate_field_keys_seals_again_under_the_first_key(self):
+        from io import StringIO
+
+        from django.core.management.base import CommandError
+
+        from .sealed import Unreadable, unseal
+
+        with self.settings(FIELD_KEYS=[OLD_KEY]):
+            factor = self.enrolled(self.person("ctl", "Controller"))
+            secret = factor.secret
+        with self.settings(FIELD_KEYS=[NEW_KEY, OLD_KEY]):
+            out = StringIO()
+            call_command("rotate_field_keys", stdout=out)
+            self.assertIn("1 sealed again", out.getvalue())
+        stored = SecondFactor.objects.values_list("sealed_secret", flat=True).get(pk=factor.pk)
+        with self.settings(FIELD_KEYS=[NEW_KEY]):
+            self.assertEqual(unseal(stored), secret)
+        with self.settings(FIELD_KEYS=[OLD_KEY]), self.assertRaises(Unreadable):
+            unseal(stored)
+        # A value no key opens is named, left as it is, and the command fails so a script sees it.
+        with self.settings(FIELD_KEYS=[OLD_KEY]):
+            with self.assertRaisesMessage(CommandError, "no key opens"):
+                call_command("rotate_field_keys", stdout=StringIO())
+        self.assertEqual(SecondFactor.objects.values_list("sealed_secret", flat=True).get(pk=factor.pk), stored)
+
+
+class TheSecretIsSealedByTheMigrationTests(TransactionTestCase):
+    """O255: core 0041 seals every secret on file; backwards it opens them, and one no key opens is no sign-in."""
+
+    tags = {"migration"}
+
+    def test_sealed_forward_and_opened_backward(self):
+        from django.db import connection
+        from django.db.migrations.executor import MigrationExecutor
+
+        from .sealed import seal, unseal
+
+        before, after = [("core", "0040_apikeyuse_prefix_apikeyuse_refused_and_more")], [
+            ("core", "0041_secondfactor_sealed_secret")]
+        executor = MigrationExecutor(connection)
+        executor.migrate(before)
+        state = executor.loader.project_state(before[0]).apps
+        user = state.get_model("auth", "User").objects.create(username="ctl")
+        clear = pyotp.random_base32()
+        state.get_model("core", "SecondFactor").objects.create(user_id=user.pk, secret=clear)
+
+        executor = MigrationExecutor(connection)
+        executor.migrate(after)
+        state = executor.loader.project_state(after[0]).apps
+        row = state.get_model("core", "SecondFactor").objects.get(user_id=user.pk)
+        self.assertNotIn(clear, row.sealed_secret)
+        self.assertEqual(unseal(row.sealed_secret), clear)
+
+        executor = MigrationExecutor(connection)
+        executor.migrate(before)
+        state = executor.loader.project_state(before[0]).apps
+        self.assertEqual(state.get_model("core", "SecondFactor").objects.get(user_id=user.pk).secret, clear)
+
+        # Backwards, a secret no key opens becomes one no phone holds: no server error, no sign-in.
+        executor = MigrationExecutor(connection)
+        executor.migrate(after)
+        state = executor.loader.project_state(after[0]).apps
+        with self.settings(FIELD_KEYS=[OLD_KEY]):
+            state.get_model("core", "SecondFactor").objects.filter(user_id=user.pk).update(sealed_secret=seal(clear))
+        executor = MigrationExecutor(connection)
+        executor.migrate(before)
+        state = executor.loader.project_state(before[0]).apps
+        reopened = state.get_model("core", "SecondFactor").objects.get(user_id=user.pk).secret
+        self.assertNotEqual(reopened, clear)
+        self.assertRegex(reopened, r"^[A-Z2-7]{32}$")
+
+        executor = MigrationExecutor(connection)
+        executor.migrate(executor.loader.graph.leaf_nodes())

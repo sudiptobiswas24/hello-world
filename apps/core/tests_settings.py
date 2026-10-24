@@ -33,11 +33,14 @@ print(json.dumps({
 """
 
 SECRET = "f" * 64
+FIELD_KEY = "a2V5LWZvci10aGUtc2V0dGluZ3MtdGVzdHMtb25seS0="
 
 
 def read(**env):
     clean = {key: value for key, value in os.environ.items()
-             if not key.startswith(("DJANGO_", "DATABASE_"))}
+             if not key.startswith(("DJANGO_", "DATABASE_", "ERP_FIELD_KEYS"))}
+    # A server's own field key, unless a case is about that key (TheFieldKeysTests).
+    clean["ERP_FIELD_KEYS"] = FIELD_KEY
     clean.update(env)
     done = subprocess.run([sys.executable, "-c", READ], env=clean, capture_output=True,
                           text=True, cwd=settings.BASE_DIR)
@@ -116,3 +119,25 @@ class TheDatabaseTests(SimpleTestCase):
     def test_nothing_else(self):
         self.assertIn("DATABASE_URL must be postgres://",
                       read(DATABASE_URL="mysql://erp:erp@db/plant"))
+
+
+class TheFieldKeysTests(SimpleTestCase):
+    """O255: the key that seals the second factor's secret comes from the environment, never the database."""
+
+    def production(self, **env):
+        return read(**{"DJANGO_ENV": "production", "DJANGO_SECRET_KEY": SECRET,
+                       "DJANGO_ALLOWED_HOSTS": "erp.example.in", **env})
+
+    def test_the_server_refuses_to_start_without_one(self):
+        self.assertIn("ERP_FIELD_KEYS is not set", self.production(ERP_FIELD_KEYS=""))
+
+    def test_nor_on_the_published_development_key(self):
+        from config.settings import DEV_FIELD_KEY
+
+        self.assertIn("ERP_FIELD_KEYS is not set", self.production(ERP_FIELD_KEYS=f"{SECRET[:4]},{DEV_FIELD_KEY}"))
+
+    def test_starts_with_its_own(self):
+        import base64
+
+        found = self.production(ERP_FIELD_KEYS=base64.urlsafe_b64encode(b"k" * 32).decode())
+        self.assertIsInstance(found, dict, found)
