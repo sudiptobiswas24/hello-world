@@ -160,7 +160,6 @@ UNSEEN = {
     "core.documentsequence": "a document numbering a second document type takes that type's row after its own, "
                              "in no fixed order between types (sales.Invoice.post)",
     "core.documentsequenceyear": "the year's counter of a document type, as core.documentsequence",
-    "inventory.item": "publishing a cost writes each item's standard in the order rolled up (costing.publish)",
     "manufacturing.billofmaterials": "a woven bag's save rebuilds its components' BOMs in the order built",
     "manufacturing.standardcost": "roll_up() holds each component's cost in the order the tree is walked",
     "quality.inspectionplan": "a woven bag's save rebuilds its plans in the order built",

@@ -39,7 +39,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from apps.accounting.models import round_money
-from apps.core.models import AuditModel, serialised, to_date
+from apps.core.models import AuditModel, lock_rows, serialised, to_date
 
 ZERO = Decimal("0")
 RATE = Decimal("0.000001")
@@ -362,6 +362,8 @@ class CostVersion(AuditModel):
                 memo or f"Standard cost revaluation, {self}",
                 postings, balance_to=account,
             )
+        # The items held in key order first (O257), then written in the order rolled up.
+        lock_rows(*[item for item, _was, _now in changes], refresh=False)
         for item, _was, now in changes:
             item.standard_cost = now
             item.save(update_fields=["standard_cost", "updated_at"])
