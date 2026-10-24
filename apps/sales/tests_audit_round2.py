@@ -440,6 +440,62 @@ class CommissionOnCollectedCashLeavesTheTaxOutTests(SalesTestCase):
         self.assertEqual((row["basis_amount"], row["commission"]), (Decimal("500.00"), Decimal("25.00")))
 
 
+class CommissionLeavesTcsOutTests(SalesTestCase):
+    """
+    O350 (decided): TCS is not revenue. 10 x 100 + 20% VAT = 1,200 and 12.00 of TCS: 1,212. The collected basis
+    counts money up to the 1,200 the sale and its tax come to, at the net share 1,000 / 1,200
+    (calc_fix_books3/o350.py). TCS in the divisor, 600 paid counted 495.05 and a buyer who withheld the TCS
+    and paid 1,200 counted 990.10. The TCS is planted on the invoice: the plan reads only its amount.
+    """
+
+    def invoice_with_tcs(self):
+        from apps.accounting.models import Tax, TaxGroup
+        from .models import CommissionBasis, CommissionPlan, Invoice, SalesRep
+
+        group = TaxGroup.objects.create(code="VAT", name="VAT")
+        vat_account = Account.objects.create(code="2100", name="VAT Payable", account_type=AccountType.LIABILITY)
+        vat = Tax.objects.create(code="VAT20", name="VAT 20%", rate=Decimal("20"), group=group,
+                                 collected_account=vat_account, paid_account=vat_account)
+        plan = CommissionPlan.objects.create(code="P", name="5% collected", percent=Decimal("5"),
+                                             basis=CommissionBasis.PAID)
+        SalesRep.objects.create(party=self.rep, plan=plan)
+        order = self.make_order("10", "100", rep=self.rep)
+        for line in order.lines.all():
+            line.taxes.set([vat])
+        invoice = self.bill(order)
+        Invoice.objects.filter(pk=invoice.pk).update(tcs_amount=Decimal("12.00"))
+        invoice.refresh_from_db()
+        self.assertEqual(invoice.total(), Decimal("1212.00"))
+        return invoice
+
+    def basis(self, **period):
+        from .models import commission_report
+
+        row = commission_report(**period)[0]
+        return row["basis_amount"], row["commission"]
+
+    def test_paid_in_part_the_tcs_is_not_in_the_divisor(self):
+        invoice = self.invoice_with_tcs()
+        self.allocate(self.receipt("600"), invoice, "600")
+        self.assertEqual(self.basis(), (Decimal("500.00"), Decimal("25.00")))
+
+    def test_the_sale_and_its_tax_paid_without_the_tcs_pays_the_whole_net_sale(self):
+        invoice = self.invoice_with_tcs()
+        self.allocate(self.receipt("1200"), invoice, "1200")
+        self.assertEqual(self.basis(), (Decimal("1000.00"), Decimal("50.00")))
+
+    def test_paid_in_full_across_two_months(self):
+        # 600 in March, 612 in April: 500.00 each; the 12.00 past the sale's value counts in no month.
+        invoice = self.invoice_with_tcs()
+        self.allocate(self.receipt("600"), invoice, "600")
+        self.allocate(self.receipt("612", on=datetime.date(2026, 4, 10)), invoice, "612")
+        march = self.basis(date_from=datetime.date(2026, 3, 1), date_to=datetime.date(2026, 3, 31))
+        april = self.basis(date_from=datetime.date(2026, 4, 1), date_to=datetime.date(2026, 4, 30))
+        self.assertEqual((march, april, self.basis()),
+                         ((Decimal("500.00"), Decimal("25.00")), (Decimal("500.00"), Decimal("25.00")),
+                          (Decimal("1000.00"), Decimal("50.00"))))
+
+
 class ADunningReminderOnlyGoesUpTests(SalesTestCase):
     """O295 (probe S7)."""
 
