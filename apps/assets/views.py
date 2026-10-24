@@ -7,7 +7,7 @@ from rest_framework.response import Response
 
 from apps.core.api import NOT_NEGATIVE, number
 from apps.core.audit import AuditableViewSetMixin
-from apps.core.models import day_that_has_come, to_date
+from apps.core.models import day_that_has_come, lock_rows, to_date
 
 from .models import (
     AssetCategory,
@@ -150,7 +150,13 @@ class FixedAssetViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
             _run(day_that_has_come, through, "Depreciation is not run through")
         charged = []
         with transaction.atomic():
-            for asset in FixedAsset.objects.filter(status=AssetStatus.IN_SERVICE):
+            # Every asset in service held in key order first, then charged in the register's order (O257):
+            # held one by one as charged, two runs at once could each hold one the other wanted next.
+            assets = list(FixedAsset.objects.filter(status=AssetStatus.IN_SERVICE))
+            lock_rows(*assets)
+            for asset in assets:
+                if asset.status != AssetStatus.IN_SERVICE:
+                    continue  # disposed of while this run waited for it
                 for row in _run(asset.depreciate, through=through):
                     charged.append({
                         "asset": asset.number, "period_end": row.period_end,
