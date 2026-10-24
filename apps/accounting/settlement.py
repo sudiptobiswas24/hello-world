@@ -144,6 +144,68 @@ def booked_by(document, control_account):
     return booked_on_together(entries_booked(document), control_account)
 
 
+def base_of_the_part(document, control_account, booked, amount, others):
+    """
+    The base the last `amount` of what has settled `document` clears: what the document booked for all of
+    it settled so far, less what the rest cleared. `others`, the allocations standing besides this part, as
+    each recorded it (O209); its notes wholly absorbed and its drawdowns at what they booked; a note partly
+    absorbed, on the note's side, at what its document had left for it (absorbed_base); the rest of it
+    (write-offs, tax deducted) at its slice.
+    """
+    total = document.total()
+    if not total:
+        return Decimal("0")
+    after = total - document.amount_due()
+    if any(row.document_base is None for row in others):
+        # Made before the base was kept: the slice, as it was then.
+        return slice_of(booked, total, after - amount, amount)
+    applied = sum((row.amount for row in others), Decimal("0"))
+    # What else settled it and booked its own base on the control account (a credit note, a drawdown,
+    # as the document lists them: settled_by_entries) counts at what it booked; the rest at its slice.
+    known = [(part, booked_on_together(entries, control_account))
+             for part, entries in getattr(document, "settled_by_entries", lambda: [])()]
+    if any(base is None for _, base in known):
+        known = []
+    known += absorbed_part(document, control_account)
+    known_amount = sum((part for part, _ in known), Decimal("0"))
+    cleared = (sum((row.document_base for row in others), Decimal("0"))
+               + sum((base for _, base in known), Decimal("0"))
+               + slice_of(booked, total, applied + known_amount, after - amount - applied - known_amount))
+    return round_money(booked * min(after, total) / total) - cleared
+
+
+def absorbed_base(document, control_account, amount):
+    """
+    The base the last `amount` settling `document` clears when that part is a note absorbed into it (O261):
+    what the document booked, less what its allocations recorded, its notes and drawdowns booked, and the
+    rest of what settled it took as its slice. A note partly absorbed always takes the last of its document
+    (amount_absorbed: capacity is what the rest left), so this is what the document has left for it, and
+    the note's refund clears the rest of what the note booked. Counted on the note at its own slice, a
+    receipt of 48.73 of 66.33 EUR applied first left 19.77 on the invoice where the note's slice read 19.78,
+    and the receivable kept -0.01 with every document settled.
+    """
+    booked = booked_by(document, control_account) if document.journal_entry_id else None
+    if booked is None:
+        return round_money(Decimal(amount) * (document.exchange_rate or Decimal("1")))
+    return base_of_the_part(document, control_account, booked, amount, standing_allocations(document))
+
+
+def absorbed_part(note, control_account):
+    """
+    [(amount, base)] for a note partly absorbed into its document, on the note's own side: the part
+    absorbed, at what its document had left for it (absorbed_base). A note wholly absorbed has nothing
+    else to settle; a document that is not a note, nothing. Both sides name it (`absorbed_into`).
+    """
+    named = getattr(note, "absorbed_into", None)
+    taken = named() if named is not None else None
+    if not taken:
+        return []
+    document, amount = taken
+    if not amount or amount == note.total():
+        return []
+    return [(amount, absorbed_base(document, control_account, amount))]
+
+
 def entries_that_settled(notes, drawdowns):
     """
     [(amount, [entries])]: what settled a document other than a payment and booked its own base on the
@@ -321,30 +383,13 @@ class RealisedOnItsOwnDay:
         no longer held: 100.09 EUR booked at 112.45, applied 30 + 30 + 40.09,
         the middle 30 deleted and applied again, cleared 33.70 + 45.04 +
         33.70 = 112.44 and left a paisa on the receivable. What settled it
-        other than an allocation (a credit note, a drawdown, a write-off) is
-        still counted at its slice of the base.
+        other than an allocation counts as base_of_the_part says.
         """
         booked = booked_by(document, control_account) if document.journal_entry_id else None
         if booked is None:
             return round_money(self.amount * (document.exchange_rate or Decimal("1")))
-        total = document.total()
-        after = total - document.amount_due()
         others = [row for row in standing_allocations(document) if row.pk != self.pk]
-        if any(row.document_base is None for row in others):
-            # Made before the base was kept: the slice, as it was then.
-            return slice_of(booked, total, after - self.amount, self.amount)
-        applied = sum((row.amount for row in others), Decimal("0"))
-        # What else settled it and booked its own base on the control account (a credit note, a drawdown,
-        # as the document lists them: settled_by_entries) counts at what it booked; the rest at its slice.
-        known = [(amount, booked_on_together(entries, control_account))
-                 for amount, entries in getattr(document, "settled_by_entries", lambda: [])()]
-        if any(base is None for _, base in known):
-            known = []
-        known_amount = sum((amount for amount, _ in known), Decimal("0"))
-        cleared = (sum((row.document_base for row in others), Decimal("0"))
-                   + sum((base for _, base in known), Decimal("0"))
-                   + slice_of(booked, total, applied + known_amount, after - self.amount - applied - known_amount))
-        return round_money(booked * min(after, total) / total) - cleared if total else Decimal("0")
+        return base_of_the_part(document, control_account, booked, self.amount, others)
 
     def payment_slice(self, control_account):
         """
