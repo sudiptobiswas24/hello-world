@@ -209,9 +209,10 @@ built.
        (`value`); the replay sums it, cost_of_removing answers in paisa,
        and `audit_invariants` names a movement written without its money;
      - the fixes by module, each round reviewed once, blockers fixed at
-       once: 60 rows closed. 59 rows are open, 24 of them minor, two
-       waiting on the owner (O312 timesheets, O352 whether the Controller
-       approves orders).
+       once: 60 rows closed. 59 rows are open, 24 of them minor; two of
+       those wait on the owner (O312 timesheets, O352 whether the
+       Controller approves orders) and two others on the tax adviser
+       (O153, O166).
      - Shared rules built here, use them: `takes_back` (the explicit
        correction marker), `moment_that_has_come` (five minutes of portal
        skew), `settlement.in_base`, `once_only()` for imports,
