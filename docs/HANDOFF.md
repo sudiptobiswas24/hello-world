@@ -228,7 +228,7 @@ built.
          consecutive invoice numbers, so no gaps); lock_rows sorts by
          LOCK_ORDER rank, not model name (root cause; take off the
          statutory remittance's local fix); a leaver with no final slip can
-         settle an advance (O262's reverse path).
+         settle an advance (O262's reverse path): done, c5717eb, in g23btree. Numbering and lock_rows (now O371) were not done.
      - Then cherry-pick each worktree's new commits beyond its
        claude/erp-g23b-<name> tip into g23btree, one review per agent, and
        the six-lane gate (gate logs /home/user/gate-logs-g23b), finalize

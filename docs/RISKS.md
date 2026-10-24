@@ -297,6 +297,10 @@ missing), **minor**.
 | O366 | sales, purchasing | A return after a goodwill credit of the whole invoice or bill is now refused outright, so the goods cannot come back either. Decided: the stock comes back and nothing more is credited (seen 2026-10-23, fix_trade2) | rule | open |
 | O367 | hr | ESI coverage from the monthly rate (O358) reads a piece-rate or hourly member's rate as 0, so they always count as covered. Decided: their coverage comes from the month's wages so far at each run; pay cycles not on the calendar month are not in use (seen 2026-10-23, fix_people2 round 2) | statutory | open |
 | O368 | hr | `_is_covered` in apps/hr/payroll.py sums the earlier posted lines of the deciding components whatever their kind, so a take-back counts as ESI coverage wages. Reached only when a whole-month run follows another posted run in the same month (seen 2026-10-23, fix_people2 round 3) | statutory | open |
+| O371 | core | lock_rows (apps/core/models.py:147) sorts by model label, not LOCK_ORDER rank: lock_rows(payment, account) took the account first, against O258's rank. Fixed in StatutoryRemittance only; the helper must order by rank, then key, for every caller (seen 2026-10-24, fix_hrlocks) | race | open |
+| O372 | hr | owed_elsewhere (apps/hr/shortfalls.py) counts debits on the receivable that no advance or slip carries, so 500 paid out against 1300 unrecorded lets 500 more be written off than the documents owe (seen 2026-10-24, fix_hrlocks) | books | minor |
+| O373 | core | lock_order's survey (apps/core/lock_order.py:139) records each pair once per process with its first site only, so a second site for the same pair is never seen (seen 2026-10-24, fix_hrlocks) | race | minor |
+| O374 | hr, core | hr.employee has no rank in LOCK_ORDER although it is taken after accounting.payment (hold_the_payer) and before accounting.account (ExpenseClaim.pay) (seen 2026-10-24, fix_hrlocks) | race | minor |
 
 Upgrade notes, true of data made before the 8 October fixes:
 - Landed cost allocated before the stores fix releases to cost of sales, and old inventory differences stay where they were.
