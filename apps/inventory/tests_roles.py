@@ -257,6 +257,65 @@ class AnInventoryAccountIsAStockAccount(StoresFixture):
             company.save()
 
 
+class ACostOfSalesAccountIsKeptForIt(StoresFixture):
+    """
+    O347 (decided): an item's cogs_account is asked the same rule as its inventory account. A Stores Manager
+    could point it at the payables, and every delivery of the item debited them. It is an expense account kept
+    for cost of sales, choosing one needs the accounting permission, and one set before the rule is refused
+    with a sentence where it is used.
+    """
+
+    def test_a_stores_manager_cannot_choose_it_at_all(self):
+        fresh = Item.objects.create(sku="F", name="Fresh", uom=self.kg)
+        stores = self.as_("Stores Manager")
+        for account in (self.payable, self.bank, self.inventory, self.cogs):
+            response = stores.patch(f"/api/inventory/items/{fresh.pk}/", {"cogs_account": account.pk}, format="json")
+            self.assertEqual(response.status_code, 400, f"{account.name}: {response.status_code}")
+        fresh.refresh_from_db()
+        self.assertIsNone(fresh.cogs_account)
+
+    def test_the_controller_chooses_an_expense_account_kept_for_cost_of_sales(self):
+        fresh = Item.objects.create(sku="F", name="Fresh", uom=self.kg)
+        controller = self.as_("Controller", "Stores Manager")
+        variance = Account.objects.create(code="5950", name="Price variance", account_type=AccountType.EXPENSE)
+        from apps.core.models import Company as TheCompany
+
+        TheCompany.objects.update(purchase_price_variance_account=variance)
+        for account in (self.payable, self.inventory, variance):
+            response = controller.patch(f"/api/inventory/items/{fresh.pk}/", {"cogs_account": account.pk},
+                                        format="json")
+            self.assertEqual(response.status_code, 400, f"{account.name}: {response.status_code}")
+        spares = Account.objects.create(code="5110", name="Cost of sales, spares", account_type=AccountType.EXPENSE)
+        self.assertEqual(controller.patch(f"/api/inventory/items/{fresh.pk}/", {"cogs_account": spares.pk},
+                                          format="json").status_code, 200)
+
+    def test_one_set_before_the_rule_is_refused_where_it_is_used(self):
+        from .valuation import cogs_account_for
+
+        fresh = Item.objects.create(sku="F", name="Fresh", uom=self.kg)
+        Item.objects.filter(pk=fresh.pk).update(cogs_account=self.payable)
+        fresh.refresh_from_db()
+        with self.assertRaisesMessage(ValidationError, "is a liability account. Cost of sales is booked to an "
+                                                       "expense account kept for it"):
+            cogs_account_for(fresh)
+
+    def test_a_template_and_the_company_default_too(self):
+        from apps.core.models import Company as TheCompany
+
+        from .variants import ItemTemplate
+
+        with self.assertRaises(ValidationError):
+            ItemTemplate.objects.create(code="T", name="T", uom=self.kg, cogs_account=self.payable)
+        stores = self.as_("Stores Manager")
+        template = ItemTemplate.objects.create(code="T2", name="T2", uom=self.kg)
+        self.assertEqual(stores.patch(f"/api/inventory/item-templates/{template.pk}/",
+                                      {"cogs_account": self.cogs.pk}, format="json").status_code, 400)
+        company = TheCompany.get()
+        company.default_cogs_account = self.payable
+        with self.assertRaises(ValidationError):
+            company.save()
+
+
 class ATemplatesCostingMethodIsFrozenUnderItsVariantsStock(StoresFixture):
     """The review of O330: PATCH an item template to FIFO while a variant holds 10 kg: refused, not 200."""
 
