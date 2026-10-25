@@ -2587,3 +2587,38 @@ class AWriteOffBesideMoneyPaidBackRaceTests(RaceCase):
         self.assertEqual(sum((line.debit - line.credit for line in JournalLine.objects.filter(
             account=shop.receivable, party=shop.weaver.party, entry__posted=True)), Decimal("0")),
             Decimal("100.00"))
+
+
+@tag("race")
+@unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
+class TwoDocumentsNumberingEachOthersTypeRaceTests(RaceCase):
+    """
+    O257: a document numbering a second type inside its own transaction (an invoice posting its delivery's
+    number series, a return its note's) took that type's sequence after its own. Two such at once, each
+    numbering the other's type second, held one sequence each and waited for the other's: PostgreSQL ended
+    one as a deadlock. Behind the company's one numbering row the second waits at that row for the first to
+    end, then numbers both types after it; no number is taken twice and none is skipped.
+    """
+
+    def test_neither_deadlocks_and_each_type_counts_on_without_a_gap(self):
+        from apps.core.models import DocumentSequence, DocumentSequenceYear
+
+        day = datetime.date(2026, 10, 1)
+        for code, prefix in (("sales.invoice", "INV-"), ("sales.delivery", "DEL-")):
+            sequence = DocumentSequence.objects.create(code=code, name=code, prefix=prefix)
+            # The year's counter already stands, so each first number pauses at an update of it, its sequence held.
+            DocumentSequenceYear.objects.create(sequence=sequence, year=2026, next_number=1)
+        taken = {}
+
+        def numbering(first, second):
+            def call():
+                taken[first] = [DocumentSequence.next_for(first, day), DocumentSequence.next_for(second, day)]
+            return call
+
+        outcomes = race(DocumentSequenceYear, numbering("sales.invoice", "sales.delivery"),
+                        numbering("sales.delivery", "sales.invoice"))
+        self.assertEqual(outcomes, ["done", "done"], outcomes)
+        self.assertEqual(sorted(number for pair in taken.values() for number in pair),
+                         ["DEL-2026-00001", "DEL-2026-00002", "INV-2026-00001", "INV-2026-00002"])
+        self.assertEqual(sorted(DocumentSequenceYear.objects.values_list("sequence__code", "next_number")),
+                         [("sales.delivery", 3), ("sales.invoice", 3)])

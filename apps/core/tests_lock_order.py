@@ -274,3 +274,68 @@ class TheSentinelSeesAShareUpgradedAndASchemaNamedTableTests(TestCase):
             with transaction.atomic():
                 self.share('SELECT 1 FROM "public"."sales_invoice" WHERE id = %s FOR SHARE', [3])
                 taken(connection, "sales.salesorder", [7])
+
+
+class NumberingIsHeldBehindTheCompanysOneRowTests(TestCase):
+    """
+    O257: a document numbering a second type inside its own transaction took that type's row after its own,
+    and two transactions numbering the two types the other way round deadlocked. Every number is taken behind
+    the company's one numbering row now (DocumentSequence.next_value), so the order between types decides
+    nothing; the sentinel holds the shape: sequence rows out of key order without that row, or the row
+    taken after a sequence, are refused.
+    """
+
+    def setUp(self):
+        from .models import DocumentSequence
+
+        self.first = DocumentSequence.objects.create(code="test.first", name="First", prefix="F-")
+        self.second = DocumentSequence.objects.create(code="test.second", name="Second", prefix="S-")
+        self.assertLess(self.first.pk, self.second.pk)
+
+    def test_two_types_numbered_against_key_order_in_one_transaction_pass(self):
+        from .models import DocumentSequence
+
+        with transaction.atomic():
+            later = DocumentSequence.next_for("test.second", "2026-10-01")
+            earlier = DocumentSequence.next_for("test.first", "2026-10-01")
+            made = DocumentSequence.next_for("test.third", "2026-10-01", name="Third", prefix="T-")
+        self.assertEqual((later, earlier, made), ("S-2026-00001", "F-2026-00001", "T-2026-00001"))
+
+    def test_sequences_taken_against_key_order_without_the_numbering_row_are_refused(self):
+        # Put core.documentsequence back on UNSEEN and this passes unseen: the shape O257 deadlocked on.
+        with self.assertRaisesMessage(LockOrderViolation,
+                                      f"core.documentsequence {self.first.pk} locked after core.documentsequence "
+                                      f"{self.second.pk}"):
+            with transaction.atomic():
+                lock_rows(self.second, refresh=False)
+                lock_rows(self.first, refresh=False)
+
+    def test_the_numbering_row_taken_after_a_sequence_is_refused(self):
+        from .models import DocumentNumbering
+
+        with self.assertRaisesMessage(LockOrderViolation,
+                                      "core.documentnumbering 1 locked after core.documentsequence"):
+            with transaction.atomic():
+                lock_rows(self.first, refresh=False)
+                DocumentNumbering.hold()
+
+    def test_a_year_counter_is_behind_the_row_too(self):
+        from .models import DocumentSequenceYear
+
+        early = DocumentSequenceYear.objects.create(sequence=self.first, year=2026, next_number=4)
+        late = DocumentSequenceYear.objects.create(sequence=self.second, year=2026, next_number=9)
+        with self.assertRaises(LockOrderViolation):
+            with transaction.atomic():
+                lock_rows(late, refresh=False)
+                lock_rows(early, refresh=False)
+        from .models import DocumentSequence
+
+        with transaction.atomic():
+            self.assertEqual(DocumentSequence.next_for("test.second", "2026-10-01"), "S-2026-00009")
+            self.assertEqual(DocumentSequence.next_for("test.first", "2026-10-01"), "F-2026-00004")
+
+    def test_a_number_is_not_taken_outside_a_transaction_the_numbering_opened(self):
+        from .models import DocumentNumbering
+
+        with self.assertRaisesMessage(RuntimeError, "outside a transaction"):
+            DocumentNumbering.hold()

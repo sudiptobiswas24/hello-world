@@ -345,3 +345,24 @@ class AReturnAfterAClaimGivesBackWhatIsLeftTests(_SalesTestCase):  # O185
                  for line in (first, second)}
         self.assertEqual(given, {first.pk: Decimal("1000"), second.pk: Decimal("1000")})
         self.assertEqual(self.balance(self.ar), Decimal("0"))
+
+
+class APostingThatRollsBackGivesItsNumberBackTests(SalesTestCase):
+    """
+    O257, decided: numbers are taken inside the posting's own transaction, behind the company's numbering row,
+    and never in one of their own. GST Rule 46(b) wants invoice numbers consecutive: a posting that failed after
+    its number was taken leaves no gap, and the next invoice takes the number it would have taken.
+    """
+
+    def test_the_next_invoice_takes_the_number_the_failed_posting_gave_back(self):
+        from unittest import mock
+
+        failing, next_one = self.make_invoice(), self.make_invoice()
+        with mock.patch.object(Invoice, "_rate_for_posting", side_effect=RuntimeError("the rate service is down")):
+            with self.assertRaisesMessage(RuntimeError, "the rate service is down"):
+                failing.post()
+        failing = Invoice.objects.get(pk=failing.pk)
+        self.assertEqual((failing.number, failing.posted), ("", False))
+        next_one.post()
+        failing.post()
+        self.assertEqual((next_one.number, failing.number), ("INV-2026-00001", "INV-2026-00002"))

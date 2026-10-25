@@ -129,6 +129,16 @@ def gauged_batch(station, operator, machine, order, plan, gauge, readings, noun,
             raise ValidationError(f"Say why {noun} off its {gauge} is taken.")
     lab_to_finish = len(lines) > 1
     lot = Lot.objects.create(item=order.item, code=code, manufactured_on=shift_date)
+    # Made before the inspection takes its number, and its shelves held: the company's numbering row
+    # is held after every shelf the entry posted below moves (O257).
+    entry = ProductionEntry.objects.create(
+        work_order=order, entry_date=shift_date, warehouse=station.warehouse,
+        quantity_produced=net, uom=order.item.uom, lot=lot, work_centre=machine.work_centre,
+        machine=machine, memo=memo[:255],
+    )
+    from apps.inventory.locking import lock_positions
+
+    lock_positions(entry.shelves())
     inspection = floor_inspection(lot, plan, operator, shift_date, passed, station, supervisor,
                                   reason, f"off its {gauge}")
     for number, value in enumerate(values, start=1):
@@ -136,11 +146,6 @@ def gauged_batch(station, operator, machine, order, plan, gauge, readings, noun,
                                sample_reference=f"{prefix}{number}", instrument=instrument)
     if not lab_to_finish:
         inspection.post()
-    entry = ProductionEntry.objects.create(
-        work_order=order, entry_date=shift_date, warehouse=station.warehouse,
-        quantity_produced=net, uom=order.item.uom, lot=lot, work_centre=machine.work_centre,
-        machine=machine, memo=memo[:255],
-    )
     entry.post()
     return mean, passed, reason, lot, inspection, entry
 

@@ -3053,6 +3053,19 @@ class ProductionEntry(VoidedNotDeleted, AuditModel):
                 continue
             ToolUsage.objects.create(tool=tool, entry=self, quantity=quantity)
 
+    def shelves(self, byproducts=None):
+        """
+        Every shelf posting this entry moves: its output, its by-products, and the components a backflush
+        draws. All before its number, and before the number of any document posted with it in one
+        transaction (a floor inspection): the company's numbering row is held after every shelf (O257).
+        """
+        order = self.work_order
+        byproducts = list(self.byproducts.select_related("item")) if byproducts is None else byproducts
+        drawn = order.backflush_for(order.item.to_stock_quantity(self.consumed_output(), self.uom)) or ()
+        return ([(order.item, self.warehouse)]
+                + [(row.item, self.warehouse) for row in byproducts]
+                + [(component.item, self.warehouse) for component, _wanted in drawn])
+
     def _backflush(self, label):
         """
         Draw what this output consumed, as its own issue.
@@ -3148,10 +3161,7 @@ class ProductionEntry(VoidedNotDeleted, AuditModel):
         # into stock against the run that made them.
         if not (self.quantity_produced > 0 or self.quantity_scrapped > 0 or byproducts):
             raise ValidationError(f"{self} books nothing: no output, no scrap, no waste.")
-        lock_positions(
-            [(order.item, self.warehouse)]
-            + [(row.item, self.warehouse) for row in byproducts]
-        )
+        lock_positions(self.shelves(byproducts))
         order.check_output(
             self.stock_quantity() + self.scrapped_stock_quantity()
         )
@@ -3253,9 +3263,13 @@ class ProductionEntry(VoidedNotDeleted, AuditModel):
         occurred_at = timezone.now()
         label = memo or f"Void of {self.number}"
         byproducts = list(self.byproducts.select_related("item", "uom"))
+        # With the shelves its backflush drew from, which the issue's void puts the material back on: one
+        # call, in key order. Since the post holds them with its own (O257), they can stand before the output's.
         lock_positions(
             [(self.work_order.item, self.warehouse)]
             + [(row.item, self.warehouse) for row in byproducts]
+            + ([(line.item, self.backflush_issue.warehouse) for line in self.backflush_issue.lines.select_related("item")]
+               if self.backflush_issue_id else [])
         )
         # After the shelf is held, as packing holds it before it reads what
         # is baled: asked before, a bale sealed meanwhile over these bags
