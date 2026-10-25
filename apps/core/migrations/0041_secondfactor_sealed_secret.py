@@ -4,9 +4,10 @@ O255: the second factor's secret sealed at rest (apps/core/sealed.py).
 Written by hand: the copy has to run between adding the sealed column and
 removing the clear one, and the autodetector puts the removal first.
 Backwards, each secret is opened into the clear column again; one that no
-key opens is given a fresh random secret, which no phone holds, so that
-login signs in with no code at all until it is reset and enrols again
-(never a server error, never a sign-in on a guess).
+key opens is given a fresh random secret, which no phone holds: that
+login's phone no longer gives a code that matches, so it signs in only
+with a recovery code, or after it is reset and enrols again (never a
+server error, never a sign-in on a guess).
 """
 
 from django.db import migrations, models
