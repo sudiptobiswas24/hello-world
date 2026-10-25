@@ -1,13 +1,11 @@
 """The office's own endpoints: reports that read across every module at once."""
 
-from decimal import Decimal, InvalidOperation
-
 from rest_framework import viewsets
 from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from apps.core.api import flag
+from apps.core.api import NOT_NEGATIVE, flag, number
 from apps.core.permissions import RequiredPermission
 
 from django.utils import timezone
@@ -20,11 +18,9 @@ from .summary import groupings, list_view, summarise
 
 
 def _margin(params, name, default):
-    try:
-        value = Decimal(params.get(name) or default)
-    except InvalidOperation:
-        raise ValidationError({name: ["A margin is a percentage."]}) from None
-    if not 0 <= value <= 100:
+    # A percentage to two places, read by the one reader (O318): NaN here answered 500 (review_sechr F2).
+    value = number(params, name, 2, digits=5, sign=NOT_NEGATIVE, default=default)
+    if value > 100:
         raise ValidationError({name: ["A margin is from 0 to 100 percent."]})
     return value
 

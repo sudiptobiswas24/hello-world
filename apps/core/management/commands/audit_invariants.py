@@ -126,7 +126,13 @@ class Command(BaseCommand):
         findings += self.allocations_counted_past_a_void(labels, sources)
         findings += self.drawdowns_from_todays_setting(labels, sources)
         findings += self.opening_kinds_brought_in_twice()
-        findings += self.numbers_read_around_the_reader(labels, sources)
+        # Every app answers requests, not only those the other checks read: the office's own reports (apps/web)
+        # read a margin from the query unseen (review_sechr F2).
+        others = [] if options["apps"] else sorted(
+            path.name for path in Path("apps").iterdir()
+            if path.is_dir() and (path / "__init__.py").exists() and path.name not in OUR_APPS)
+        findings += self.numbers_read_around_the_reader(
+            [*labels, *others], {**sources, **{label: source_of(label) for label in others}})
 
         if not findings:
             self.stdout.write(self.style.SUCCESS("No invariant findings."))
@@ -1343,11 +1349,14 @@ class Command(BaseCommand):
             return (isinstance(func, ast.Name) and func.id == "Decimal") or (
                 isinstance(func, ast.Attribute) and func.attr == "Decimal")
 
-        found = set()
-        for function in ast.walk(tree):
-            if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
-            taken = set()
+        functions = [node for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
+        by_name = {function.name: function for function in functions}
+
+        def parameters(function):
+            return [arg.arg for arg in [*function.args.posonlyargs, *function.args.args]]
+
+        def taken_in(function, seeded):
+            taken = set(seeded)
             for _ in range(3):  # a name taken from a name taken from the request
                 for node in ast.walk(function):
                     if isinstance(node, ast.Assign) and read(node.value, taken):
@@ -1357,6 +1366,30 @@ class Command(BaseCommand):
                         taken |= names(node.target)
                     elif isinstance(node, (ast.For, ast.comprehension)) and read(node.iter, taken):
                         taken |= names(node.target)
+            return taken
+
+        # A helper handed what the request sent (review_sechr F2: `_margin(params, ...)` with `params =
+        # request.query_params`): its parameter is the request's too. Followed through calls by name in the module.
+        seeds = {function.name: set() for function in functions}
+        for _ in range(3):
+            for function in functions:
+                taken = taken_in(function, seeds[function.name])
+                for node in ast.walk(function):
+                    if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                            and node.func.id in by_name):
+                        continue
+                    callee = by_name[node.func.id]
+                    names_of = parameters(callee)
+                    for position, arg in enumerate(node.args):
+                        if position < len(names_of) and read(arg, taken):
+                            seeds[callee.name].add(names_of[position])
+                    for keyword in node.keywords:
+                        if keyword.arg and read(keyword.value, taken):
+                            seeds[callee.name].add(keyword.arg)
+
+        found = set()
+        for function in functions:
+            taken = taken_in(function, seeds[function.name])
             for node in ast.walk(function):
                 if isinstance(node, ast.Call) and is_decimal(node) and any(read(arg, taken) for arg in node.args):
                     found.add((function.name, node.lineno))

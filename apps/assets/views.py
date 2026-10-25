@@ -5,6 +5,7 @@ from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.response import Response
 
+from apps.accounting.models import JournalLine
 from apps.core.api import NOT_NEGATIVE, number
 from apps.core.audit import AuditableViewSetMixin
 from apps.core.models import day_that_has_come, lock_rows, to_date
@@ -110,7 +111,9 @@ class FixedAssetViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         category's disposal account as revenue — this banks nothing.
         """
         asset = self.get_object()
-        proceeds = number(request.data, "proceeds", 2, sign=NOT_NEGATIVE, default="0")  # money, to the paisa
+        # Money, to the paisa, at the column the entry books it in: a journal line holds 18 digits, 2 of them places.
+        proceeds = number(request.data, "proceeds", field=JournalLine._meta.get_field("debit"), sign=NOT_NEGATIVE,
+                          default="0")
         _run(
             asset.dispose, on_date=_date(request, "on_date"), proceeds=proceeds,
             memo=request.data.get("memo", ""),
