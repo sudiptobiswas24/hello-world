@@ -221,7 +221,15 @@ def _stock(day):
     rows = [{"label": f"{row['account'].code} {row['account'].name}: stock {_money(row['stock_value'])}, "
                       f"ledger {_money(row['ledger_balance'])}, difference {_money(row['difference'])}",
              "href": "/stores/value"} for row in off[:SHOW]]
+    # Accounts the rule refuses, set before it: posting through them refuses, so name them before a dispatch does.
+    from apps.inventory.valuation import accounts_the_rule_refuses
+
+    refused = accounts_the_rule_refuses()
+    rows += [{"label": f"{what}: {refusal}", "href": "/stores/items"} for what, refusal in refused[:SHOW]]
     unvalued = report["unvalued_items"]
+    if refused and not off:
+        return _finding(False, len(refused), f"{len(refused)} account setting(s) the account rule refuses; posting "
+                        "through them is refused until each is changed.", rows, "/stores/items")
     if off:
         detail = (f"{len(off)} inventory account(s) differ from the stock on the shelves, out by "
                   f"{_money(report['out_by'])} account by account.")
@@ -230,7 +238,10 @@ def _stock(day):
                   + ", ".join(str(item) for item in unvalued[:SHOW]))
     else:
         detail = "The stock's value is the inventory accounts' balance."
-    return _finding(False if off else (None if unvalued else True), len(off), detail, rows, "/stores/value")
+    if refused:
+        detail += f" And {len(refused)} account setting(s) the account rule refuses."
+    return _finding(False if off else (None if unvalued else True), len(off) + len(refused), detail, rows,
+                    "/stores/value")
 
 
 def _fixed_assets(day):

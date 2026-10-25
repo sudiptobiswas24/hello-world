@@ -80,10 +80,10 @@ class ItemTemplate(AuditModel):
     code = models.CharField(max_length=64, unique=True)
 
     def save(self, *args, **kwargs):
-        from .valuation import check_cogs_account, check_stock_account
+        from .valuation import check_cogs_account_if_chosen, check_stock_account
 
         check_stock_account(self.inventory_account)
-        check_cogs_account(self.cogs_account)
+        check_cogs_account_if_chosen(self)
         self._check_costing_frozen()
         super().save(*args, **kwargs)
 
