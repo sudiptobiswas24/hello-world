@@ -49,6 +49,10 @@ ROLES = {
         # They keep the ledger, the inventory account included, so they see the stock figures behind it:
         # an item's standard cost, a run's costs, what stock is worth (O348, decided in g23b).
         "inventory.view_stock_value",
+        # And read the stock ledger and the runs, to tie stock and work in progress to the ledger: the
+        # stock-value reports read the ledger, a run's costs are on the run (O376, decided in g23b).
+        # Read only: no movement, run or posting of either is theirs.
+        "inventory.view_stockmovement", "manufacturing.view_workorder",
         # Pays approved expense claims: one journal each, from the cash or bank account chosen.
         *view("hr", "expenseclaim", "expenseline"),
         "hr.view_every_expenseclaim", "hr.pay_expenseclaim",
@@ -79,6 +83,10 @@ ROLES = {
         # They keep the ledger, the inventory account included, so they see the stock figures behind it:
         # an item's standard cost, a run's costs, what stock is worth (O348, decided in g23b).
         "inventory.view_stock_value",
+        # And read the stock ledger and the runs, to tie stock and work in progress to the ledger: the
+        # stock-value reports read the ledger, a run's costs are on the run (O376, decided in g23b).
+        # Read only: no movement, run or posting of either is theirs.
+        "inventory.view_stockmovement", "manufacturing.view_workorder",
         # The LUT exports are posted under, and what setup seeded for review (O239).
         *full("accounting", "letterofundertaking"),
         *crud("accounting", "seededdefault", actions=("view", "change")),
