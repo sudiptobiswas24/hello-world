@@ -272,6 +272,23 @@ class TheVendorsWorkGoesIntoTheRunTests(OutsideTestCase):
             self.back(order, "100", "200")
 
 
+
+class InAnOpenPeriodTheNumberComesFirstTests(OutsideTestCase):
+    """
+    The company's numbering row is held before an accounting period (apps.core.lock_order). Vendor work
+    asked the period, then took its number, against that order; no test had a period at all, so nothing
+    saw it until the job-work challan's ITC-04 test reopened May (the g23b gate).
+    """
+
+    def test_vendor_work_is_booked_in_an_open_period(self):
+        from apps.accounting.models import AccountingPeriod
+
+        AccountingPeriod.objects.create(name="Open", start_date=TODAY.replace(day=1),
+                                        end_date=TODAY.replace(day=28) if TODAY.day <= 28 else TODAY)
+        order = self.released()
+        self.back(order, "1000", "2000")
+        self.assertEqual(self.balance(self.wip), Decimal("2000"))
+
 class AMistakenMovementIsVoidedTests(OutsideTestCase):
     def test_voiding_takes_the_value_back_out(self):
         order = self.released()

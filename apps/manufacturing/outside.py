@@ -189,12 +189,15 @@ class OutsideMovement(VoidedNotDeleted, AuditModel):
         # ITC-04 reports it by its date whether or not it posts an entry, and
         # at no value it posts none (`_post_entry` drops zero rows), so it
         # asks the period itself, as a challan does (O158).
-        _refuse_closed(self.movement_date, f"vendor work is not booked on {self.movement_date}")
+        # Asked after the number, as an entry's period is: the company's
+        # numbering row is held before the period (apps.core.lock_order), and
+        # a refusal rolls the number back.
         if not self.number:
             self.number = DocumentSequence.next_for(
                 "manufacturing.outside", self.movement_date,
                 name="Outside Processing", prefix="OUT-",
             )
+        _refuse_closed(self.movement_date, f"vendor work is not booked on {self.movement_date}")
         label = memo or (
             f"{'Returned to vendor' if self.is_return else 'Back from vendor'}"
             f": {operation.name} on {order.number}, {self.number}"
