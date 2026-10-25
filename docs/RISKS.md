@@ -304,6 +304,7 @@ missing), **minor**.
 | O379 | core | Django's update_or_create() (6 calls in apps/) still takes a plain FOR UPDATE, which the commit-time key-share check waits on (the O257 shape); the new audit check does not see it. Each wants select_for_update(no_key=True) then update, or a helper (seen 2026-10-25, fix_g23b2) | race | minor |
 | O380 | core, sales | A rolled-back post gives its object the old number back only through @serialised; a post that numbers without it keeps the number in hand, and a retry answers an IntegrityError (seen 2026-10-25, fix_g23b2) | rule | minor |
 | O381 | core, inventory | Unproven, from review_numbering: a race on a shelf row that does not exist yet, and two first numbers taken while the company's numbering row is missing. Each wants a race() probe on PostgreSQL (seen 2026-10-25, review_numbering) | race | minor |
+| O382 | core | The lock-order sentinel sees a path's order only where a test gives it the rows: the job-work challan's period-then-number was seen only once a test had an open period. A suite fixture (or a sentinel lane) that runs every posting path with an open period and stock already on the shelf would show the rest (seen 2026-10-25, g23b gate) | race | minor |
 
 Upgrade notes, true of data made before the 8 October fixes:
 - Landed cost allocated before the stores fix releases to cost of sales, and old inventory differences stay where they were.
