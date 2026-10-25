@@ -115,7 +115,7 @@ def record_coating(station, operator, machine, metres, samples, supervisor=None,
     at = at or timezone.now()
     if station.kind != LineKind.COATING:
         raise ValidationError(f"{station} is not a coater's station.")
-    machine = Machine.objects.select_for_update().get(pk=machine.pk)
+    machine = Machine.objects.select_for_update(no_key=True).get(pk=machine.pk)
     shift, shift_date = _context(station, operator, machine, at)
     metres = _number(metres, "The metres coated")
     disc = _number(disc_sq_cm, "The disc's area")

@@ -555,7 +555,7 @@ class LeavePolicy(AuditModel):
         """
         with transaction.atomic():
             if self.pk:
-                before = LeavePolicy.objects.select_for_update().filter(pk=self.pk).values_list(
+                before = LeavePolicy.objects.select_for_update(no_key=True).filter(pk=self.pk).values_list(
                     "annual_days", flat=True).first()
                 if before is not None and before != self.annual_days:
                     last_year = timezone.localdate().year - 1

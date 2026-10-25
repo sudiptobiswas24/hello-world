@@ -345,7 +345,7 @@ class MaintenanceJob(AuditModel):
         if self.pk and not getattr(self, "_saving_state", False):
             # Under the lock: an edit read before a completion committed
             # would otherwise write the job back open over it.
-            stored = type(self).objects.select_for_update().filter(pk=self.pk).values(
+            stored = type(self).objects.select_for_update(no_key=True).filter(pk=self.pk).values(
                 "done_on", "cancelled_at", "schedule_id", "work_centre_id", "machine_id").first()
             if stored and stored["done_on"] is not None:
                 raise ValidationError(f"{self} is done; it is as it was done.")
@@ -659,7 +659,7 @@ def raise_breakdown(downtime, fault, technician=None, planned_minutes=None):
     """A job on a stoppage that was a failure."""
     from .shifts import Downtime
 
-    downtime = Downtime.objects.select_for_update().get(pk=downtime.pk)
+    downtime = Downtime.objects.select_for_update(no_key=True).get(pk=downtime.pk)
     if downtime.voided_at is not None:
         raise ValidationError(f"{downtime} was withdrawn; there is nothing to repair.")
     if downtime.reason.is_planned:
@@ -755,7 +755,7 @@ def issue_spares(job, warehouse, lines, on_date=None, issued_to=None, reason=Non
 
     from .orders import ManufacturingSettings
 
-    job = MaintenanceJob.objects.select_for_update().get(pk=job.pk)
+    job = MaintenanceJob.objects.select_for_update(no_key=True).get(pk=job.pk)
     if not job.is_open():
         raise ValidationError(f"{job} is not open; spares go to a job being worked on.")
     reason = reason or ManufacturingSettings.get().spares_reason

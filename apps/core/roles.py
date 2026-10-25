@@ -415,7 +415,7 @@ def lapse_on_giving(user):
         # lapse rewrites the email row and then the login's own, which out
         # of order is a deadlock with a second lapse at the same moment
         # (seen once the sentinel saw update(); g21).
-        held = list(KeptCredential.objects.select_for_update().filter(user=user).order_by("pk"))
+        held = list(KeptCredential.objects.select_for_update(no_key=True).filter(user=user).order_by("pk"))
         for kept in held:
             kept.refresh_from_db()  # a lapse before it may have rewritten this row
             if kept.lapsed or kept.set_by_id is None:

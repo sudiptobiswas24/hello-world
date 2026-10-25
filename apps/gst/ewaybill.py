@@ -582,7 +582,7 @@ def prepare(document, mode=TransportMode.ROAD, distance_km=0, transporter_id="",
     payload |= _transport_payload(transport)
     key = ({"invoice": document} if is_invoice else {"delivery": document} if is_delivery
            else {"challan": document})
-    existing = EwayBill.objects.select_for_update().filter(
+    existing = EwayBill.objects.select_for_update(no_key=True).filter(
         cancelled_at__isnull=True, **key).first()
     if existing is not None and existing.number:
         raise ValidationError(

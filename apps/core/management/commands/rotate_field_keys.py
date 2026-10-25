@@ -23,7 +23,7 @@ class Command(BaseCommand):
         for label, field in SEALED_FIELDS:
             model = apps.get_model(label)
             with transaction.atomic():
-                for row in model.objects.select_for_update().order_by("pk"):
+                for row in model.objects.select_for_update(no_key=True).order_by("pk"):
                     try:
                         value = reseal(getattr(row, field))
                     except Unreadable:

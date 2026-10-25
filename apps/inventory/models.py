@@ -383,7 +383,7 @@ class Item(Extensible, AuditModel):
         # The row held before anything is asked (the review of O330): a first receipt inserting its movement
         # holds a key share on this row, which FOR UPDATE waits for, so the question below sees it; asked
         # unlocked, a switch to FIFO and the first receipt both went through, the receipt booked under average.
-        before = Item.objects.select_for_update().filter(pk=self.pk).values(
+        before = Item.objects.select_for_update(no_key=True).filter(pk=self.pk).values(
             "inventory_account_id", *(name for name, _ in self.COUNTED_AS)).first()
         if before is None:
             return

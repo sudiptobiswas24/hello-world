@@ -82,7 +82,7 @@ def load_tape(station, operator, machine, code, kg, side, at=None):
         raise ValidationError(f"{station} is not a loom station.")
     if side not in CreelSide.values:
         raise ValidationError(f"{side!r} is not warp or weft.")
-    machine = Machine.objects.select_for_update().get(pk=machine.pk)
+    machine = Machine.objects.select_for_update(no_key=True).get(pk=machine.pk)
     if not station.machines.filter(pk=machine.pk).exists():
         raise ValidationError(f"{station} does not load {machine.code}.")
     _shift, shift_date = _context(station, operator, machine, at)

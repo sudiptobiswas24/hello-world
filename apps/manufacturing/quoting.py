@@ -574,7 +574,7 @@ def quote(sheet, quotation, taxes):
     """
     from apps.sales.models import QuotationLine, QuotationStatus
 
-    sheet = CostSheet.objects.select_for_update().get(pk=sheet.pk)
+    sheet = CostSheet.objects.select_for_update(no_key=True).get(pk=sheet.pk)
     if sheet.quotation_line_id is not None:
         raise ValidationError(
             f"This cost sheet is already quoted on {sheet.quotation_line.quotation}. "

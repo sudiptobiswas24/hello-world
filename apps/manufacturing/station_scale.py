@@ -125,7 +125,7 @@ def post_reading(scale_code, gross_kg, stable, at=None, net_kg=None, key=None):
 
 def latest(station, at=None):
     at = at or timezone.now()
-    return (ScaleReading.objects.select_for_update()
+    return (ScaleReading.objects.select_for_update(no_key=True)
             .filter(scale_code=station.scale_code, read_at__lte=at).first())
 
 

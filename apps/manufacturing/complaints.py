@@ -32,6 +32,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from apps.core.models import (
+    numbered_in_one_transaction,
     AuditModel,
     DocumentSequence,
     answer_to_its_document,
@@ -106,6 +107,7 @@ class Complaint(AuditModel):
     def is_open(self):
         return self.status == ComplaintStatus.OPEN
 
+    @numbered_in_one_transaction
     def save(self, *args, **kwargs):
         if self.pk and not getattr(self, "_deciding", False):
             stored = type(self).objects.filter(pk=self.pk).values("status").first()

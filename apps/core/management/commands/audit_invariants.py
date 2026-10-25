@@ -116,6 +116,7 @@ class Command(BaseCommand):
         findings += self.corrections_dated_without_the_rule(labels, sources)
         findings += self.reported_without_the_period(labels, sources)
         findings += self.bank_movements_unregistered(labels, sources)
+        findings += self.plain_for_update(labels, sources)
         findings += self.posted_as_calculated(labels, sources)
         findings += self.shelf_read_before_lock(labels, sources)
         findings += self.per_unit_withdrawal_rates(labels, sources)
@@ -2366,6 +2367,51 @@ class Command(BaseCommand):
         return findings
 
     # -- shape 1: money through a bank that a statement cannot be matched to --
+    def plain_for_update(self, labels, sources):
+        """
+        A row lock that is FOR UPDATE where FOR NO KEY UPDATE serves (O257).
+
+        PostgreSQL checks a deferred foreign key at COMMIT by FOR KEY SHARE on the row it names, and
+        FOR UPDATE makes that wait. A quote accepted holding the company's numbering row until it
+        committed, its order naming a revenue account, deadlocked with an invoice posting that held
+        the account FOR UPDATE and then asked for a number. A lock that serialises a decision takes
+        select_for_update(no_key=True), and lock_rows() does; FOR UPDATE stays only for a row about to
+        be deleted, in a delete() (lock_rows(..., deleting=True), row_lock_query(..., no_key=False)).
+        """
+        findings = []
+        for label in labels:
+            for path, text in sorted(sources.get(label, {}).items()):
+                if "test" in path.name or "migrations" in path.parts:
+                    continue
+                tree = ast.parse(text)
+                for function in (node for node in ast.walk(tree)
+                                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))):
+                    if function.name in ("delete", "row_lock_query", "lock_rows"):
+                        continue
+                    for call in (node for node in ast.walk(function) if isinstance(node, ast.Call)):
+                        name = getattr(call.func, "attr", getattr(call.func, "id", None))
+                        keywords = {k.arg: k.value for k in call.keywords}
+                        plain = None
+                        if name == "select_for_update":
+                            value = keywords.get("no_key")
+                            if not (isinstance(value, ast.Constant) and value.value is True):
+                                plain = "select_for_update() without no_key=True"
+                        elif name == "row_lock_query" and isinstance(keywords.get("no_key"), ast.Constant) \
+                                and keywords["no_key"].value is False:
+                            plain = "row_lock_query(..., no_key=False)"
+                        elif name == "lock_rows" and isinstance(keywords.get("deleting"), ast.Constant) \
+                                and keywords["deleting"].value is True:
+                            plain = "lock_rows(..., deleting=True)"
+                        if plain:
+                            findings.append((
+                                "plain FOR UPDATE",
+                                f"{label} {path.name}:{call.lineno} {function.name}() takes {plain}, outside a "
+                                "delete(): FOR UPDATE makes a deferred foreign-key check of a row inserted "
+                                "elsewhere wait, which deadlocked against the numbering row (O257). Take FOR NO "
+                                "KEY UPDATE, or lock in the delete() that deletes the row.",
+                            ))
+        return findings
+
     def bank_movements_unregistered(self, labels, sources):
         """
         A document that pays from a bank or cash account by an entry of its own, never registered.

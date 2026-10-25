@@ -162,7 +162,7 @@ def record_bags(station, operator, machine, bags, sample_grams, supervisor=None,
         raise ValidationError(f"{station} is not in use.")
     if operator is None:
         raise ValidationError("Nobody is signed in at this station.")
-    machine = Machine.objects.select_for_update().get(pk=machine.pk)
+    machine = Machine.objects.select_for_update(no_key=True).get(pk=machine.pk)
     if not station.machines.filter(pk=machine.pk).exists():
         raise ValidationError(f"{station} does not count for {machine.code}.")
     try:

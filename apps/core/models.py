@@ -75,7 +75,7 @@ def prefetched(instance, relation):
 _COMPANY = contextvars.ContextVar("company_for_this_request", default=None)
 
 
-def row_lock_query(model, pk, no_key=False):
+def row_lock_query(model, pk, no_key=True):
     """
     The query that locks one row, and only that row.
 
@@ -87,7 +87,14 @@ def row_lock_query(model, pk, no_key=False):
 
     `no_key`: FOR NO KEY UPDATE, the lock the row's own UPDATE takes. It
     keeps out another change of the row, and not a row elsewhere that is
-    being written with a key pointing at this one.
+    being written with a key pointing at this one. The default (O257): a
+    lock that only serialises a decision takes it, because PostgreSQL's
+    deferred foreign-key checks take FOR KEY SHARE on every row an insert
+    references at COMMIT, which FOR UPDATE makes wait. A transaction that
+    held the numbering row to its commit and referenced an account then
+    deadlocked with a posting that held that account FOR UPDATE and asked
+    for a number. FOR UPDATE (no_key=False) only where the row is deleted
+    or its key changes: lock_rows(..., deleting=True).
     """
     return model._base_manager.select_for_update(no_key=no_key).filter(pk=pk).order_by().values_list(
         "pk", flat=True)
@@ -129,7 +136,7 @@ def row_lock_query(model, pk, no_key=False):
 # money through it, and an invoice ("sales.invoice") before its order.
 
 
-def lock_rows(*instances, refresh=True):
+def lock_rows(*instances, refresh=True, deleting=False):
     """
     Hold these rows until the transaction ends, in one fixed order, and
     re-read them.
@@ -143,6 +150,10 @@ def lock_rows(*instances, refresh=True):
     Re-read, because the object in hand was read before the lock: a
     material issue waiting on its work order while the order closed
     still held "released", and posted into a closed run.
+
+    FOR NO KEY UPDATE, which a foreign-key check of a row inserted
+    elsewhere does not wait on (row_lock_query); `deleting=True` takes FOR
+    UPDATE, for a row about to be deleted, which such a check must wait on.
     """
     if not transaction.get_connection().in_atomic_block:
         raise RuntimeError("lock_rows() outside a transaction locks nothing.")
@@ -152,7 +163,7 @@ def lock_rows(*instances, refresh=True):
     # name alone, lock_rows(payment, account) took the account first, against the rank O258 gave it.
     for instance in sorted((i for i in instances if i is not None and i.pk is not None),
                            key=lambda i: (RANK.get(i._meta.label_lower, len(RANK)), i._meta.label_lower, i.pk)):
-        list(row_lock_query(type(instance), instance.pk))
+        list(row_lock_query(type(instance), instance.pk, no_key=not deleting))
         if refresh:
             instance.refresh_from_db()
 
@@ -221,7 +232,7 @@ def _named(rows):
     return {(type(row)._meta.label_lower, row.pk) for row in rows if row is not None and row.pk is not None}
 
 
-def hold_what_it_names_first(instance, method="locked_before_it", incoming=None, no_key=False):
+def hold_what_it_names_first(instance, method="locked_before_it", incoming=None, no_key=True):
     """
     Hold the rows `instance`'s `method` names, in turn, then its own row;
     then ask the row as held what it names now, and refuse if that is a
@@ -311,17 +322,53 @@ def serialised(*state, held_first=False):
     def wrap(method):
         @functools.wraps(method)
         def inner(self, *args, **kwargs):
-            with transaction.atomic():
-                if self.pk is not None:
-                    if held_first:
-                        hold_what_it_names_first(
-                            self, held_first if isinstance(held_first, str) else "locked_before_it")
-                    lock_rows(self, refresh=False)
-                    if state:
-                        self.refresh_from_db(fields=list(state))
-                return method(self, *args, **kwargs)
+            with gives_back_its_number(self):
+                with transaction.atomic():
+                    if self.pk is not None:
+                        if held_first:
+                            hold_what_it_names_first(
+                                self, held_first if isinstance(held_first, str) else "locked_before_it")
+                        lock_rows(self, refresh=False)
+                        if state:
+                            self.refresh_from_db(fields=list(state))
+                    return method(self, *args, **kwargs)
         return inner
     return wrap
+
+
+@contextlib.contextmanager
+def gives_back_its_number(instance):
+    """
+    A number taken inside the block and rolled back with it is given back on the object in hand too (O257).
+
+    The sequence rolls back with the posting that failed, so the next document takes that number; the object
+    still carrying it, retried, saved a second document under a number another had taken since (a refused
+    UNIQUE number). What it held before the block is put back, so a retry takes a fresh one.
+    """
+    numbered = any(field.name == "number" for field in type(instance)._meta.concrete_fields)
+    held = instance.number if numbered else None
+    try:
+        yield
+    except BaseException:
+        if numbered:
+            instance.number = held
+        raise
+
+
+def numbered_in_one_transaction(method):
+    """
+    A save() that takes a document number takes it and saves in one transaction it opens (O257): a number
+    taken in a transaction of its own, then a save refused, was a gap in the series. Rolled back, the
+    number is given back on the object too (gives_back_its_number).
+    """
+    import functools
+
+    @functools.wraps(method)
+    def inner(self, *args, **kwargs):
+        with gives_back_its_number(self):
+            with transaction.atomic():
+                return method(self, *args, **kwargs)
+    return inner
 
 
 def to_date(value):
@@ -1512,7 +1559,7 @@ class DocumentSequence(AuditModel):
             # already. Not a number in a transaction of its own: GST Rule 46(b) wants invoice numbers
             # consecutive, and a number taken apart from a posting that then rolled back is a gap.
             DocumentNumbering.hold()
-            sequence = DocumentSequence.objects.select_for_update().get(pk=self.pk)
+            sequence = DocumentSequence.objects.select_for_update(no_key=True).get(pk=self.pk)
             if sequence.reset_yearly:
                 # Under the sequence's lock, so two first numbers of a year
                 # cannot both create the year's counter.
