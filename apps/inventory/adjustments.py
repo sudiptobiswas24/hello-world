@@ -805,11 +805,6 @@ class StockCount(AuditModel):
             raise ValidationError("Cannot post a count with no lines.")
 
         self.count_date = to_date(self.count_date)
-        if not self.number:
-            self.number = DocumentSequence.next_for(
-                "inventory.count", self.count_date,
-                name="Stock Counts", prefix="CNT-",
-            )
 
         # Asked again here for a sheet written before it was asked as lines
         # were added: the whole warehouse at eight and its only bin at eight
@@ -820,6 +815,14 @@ class StockCount(AuditModel):
         # The shelves held before they are read: asked first, a movement landing between the question and
         # adjustment.post()'s lock passed the stale check and the count posted over it (O252).
         lock_positions((line.item, self.warehouse) for line in lines)
+        # Its number after the shelves: the company's numbering row is held after every shelf (O257). Taken
+        # before them, the count held the numbering while an adjustment of the same shelf, holding the shelf,
+        # waited for it: a deadlock the race test met on PostgreSQL.
+        if not self.number:
+            self.number = DocumentSequence.next_for(
+                "inventory.count", self.count_date,
+                name="Stock Counts", prefix="CNT-",
+            )
         stale = [
             line for line in lines if line.current_system_quantity() != line.system_quantity
         ]
