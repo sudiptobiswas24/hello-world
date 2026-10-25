@@ -348,7 +348,7 @@ def asks_its_policy_when_taxes_change(line_model):
         if before is None:
             return
         with transaction.atomic():
-            order = type(instance.order).objects.select_for_update().get(pk=instance.order_id)
+            order = type(instance.order).objects.select_for_update(no_key=True).get(pk=instance.order_id)
             order.refuse_going_past_the_policy(before)
 
     m2m_changed.connect(changed, sender=line_model.taxes.through, weak=False,

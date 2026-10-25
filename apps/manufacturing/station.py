@@ -374,7 +374,7 @@ def record_roll(station, operator, machine, gross_kg, core_type, declared_m,
         raise ValidationError("Nobody is signed in at this station.")
     # One roll at a time per loom, so two confirmations cannot take the
     # same roll number.
-    machine = Machine.objects.select_for_update().get(pk=machine.pk)
+    machine = Machine.objects.select_for_update(no_key=True).get(pk=machine.pk)
     if not station.machines.filter(pk=machine.pk).exists():
         raise ValidationError(f"{station} does not weigh for {machine.code}.")
     if weaver is not None and machine.contractor_id is not None:

@@ -268,7 +268,7 @@ def bill_variation(order, start, end, receivable_account, invoice_date=None, by=
     """Write a bill for the window, and draft its invoice and credit note."""
     from .models import Invoice, InvoiceLine, SalesOrder
 
-    order = SalesOrder.objects.select_for_update().get(pk=order.pk)
+    order = SalesOrder.objects.select_for_update(no_key=True).get(pk=order.pk)
     rows = rows_for(order, start, end)
     if not rows:
         raise ValidationError(f"Nothing dispatched on {order} between {start} and {end} "

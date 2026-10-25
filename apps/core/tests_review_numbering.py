@@ -82,12 +82,21 @@ class NumberingProbes(TransactionTestCase):
         self.assertEqual(DocumentSequence.next_for("t.new", datetime.date(2026, 5, 1), name="New", prefix="N-"),
                          "N-2026-00001")
 
-    def test_p5_a_number_outside_any_transaction_refuses(self):
-        # GST Rule 46(b): a number taken in a transaction of its own commits whatever the document does next.
-        self.mk("t.a", "A-")
-        with self.assertRaises(Exception, msg="next_for outside a transaction took a number and committed it"):
-            DocumentSequence.next_for("t.a", datetime.date(2026, 5, 1))
-        self.assertEqual(DocumentSequenceYear.objects.filter(next_number__gt=1).count(), 0)
+    def test_p5_a_save_that_numbers_and_fails_leaves_no_gap(self):
+        # Changed by fix_g23b3 (decided by the coordinator): next_for opens its own transaction, as every method
+        # that locks does, so a number asked for outside one is taken, not refused. What GST Rule 46(b) needs is
+        # that the caller numbers and saves in one transaction: a lead refused after its number leaves no gap.
+        from django.core.exceptions import ValidationError
+
+        from apps.sales.crm import Lead, LeadStatus
+
+        refused = Lead(company_name="Acme", status=LeadStatus.LOST)
+        with self.assertRaises(ValidationError):
+            refused.save()
+        self.assertEqual(refused.number, "", "the number the refused save took was left on the object")
+        made = Lead(company_name="Acme")
+        made.save()
+        self.assertTrue(made.number.endswith("-00001"), made.number)
 
     def test_p5b_hold_outside_a_transaction_refuses(self):
         with self.assertRaises(RuntimeError):

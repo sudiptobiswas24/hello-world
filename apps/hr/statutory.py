@@ -82,7 +82,8 @@ class StatutoryFigure(AuditModel):
 
     @transaction.atomic
     def delete(self, *args, **kwargs):
-        lock_rows(self, refresh=False)
+        # FOR UPDATE: the row is deleted, and a row being inserted that names it must wait (O257).
+        lock_rows(self, refresh=False, deleting=True)
         refuse_if_kept(self.kind, self.pk, f"{self}", "deleted")
         return super().delete(*args, **kwargs)
 

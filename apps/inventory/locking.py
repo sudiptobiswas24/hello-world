@@ -84,7 +84,7 @@ def lock_position(item, warehouse):
     # pair is every time. get_or_create() first would spend a SELECT and
     # sometimes an INSERT on every posting for the life of the system.
     held = (
-        StockPosition.objects.select_for_update()
+        StockPosition.objects.select_for_update(no_key=True)
         .filter(item=item, warehouse=warehouse)
         .first()
     )
@@ -99,7 +99,7 @@ def lock_position(item, warehouse):
         # lock.
         pass
     return (
-        StockPosition.objects.select_for_update()
+        StockPosition.objects.select_for_update(no_key=True)
         .filter(item=item, warehouse=warehouse)
         .first()
     )

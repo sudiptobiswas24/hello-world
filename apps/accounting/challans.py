@@ -40,7 +40,7 @@ def pay_over(section, waiting, live, bank_account, date, challan_number, what, m
         refuse_as_money_account(bank_account)
         lock_rows(section)
         model = waiting.model
-        list(model.objects.select_for_update().filter(pk__in=list(waiting.values_list("pk", flat=True)))
+        list(model.objects.select_for_update(no_key=True).filter(pk__in=list(waiting.values_list("pk", flat=True)))
              .order_by("pk").values_list("pk", flat=True))
         owed = list(live(waiting))
         if not owed:

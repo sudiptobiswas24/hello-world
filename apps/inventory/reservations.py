@@ -120,7 +120,7 @@ class ReservationManager(models.Manager.from_queryset(ReservationQuerySet)):
             # source is not locked first because its callers take the customer before
             # the line (sales.salesorderline after core.party), and the lock order puts
             # the line first.
-            existing = self.for_source(source).open().select_for_update().get()
+            existing = self.for_source(source).open().select_for_update(no_key=True).get()
             existing.quantity = existing.consumed + taken
             existing.warehouse = warehouse
             super(StockReservation, existing).save(update_fields=["quantity", "warehouse", "updated_at"])
