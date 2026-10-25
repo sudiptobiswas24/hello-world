@@ -74,4 +74,11 @@ class BoardTests(RunTestCase):
         self.assertEqual((seen.status_code, [column["key"] for column in seen.json()]),
                          (200, ["draft", "waiting", "running", "to_close", "closed"]), seen.content)
         self.assertEqual(len(seen.json()[0]["cards"]), 1)
-        self.assertEqual(as_("Bookkeeper").get("/api/manufacturing/work-orders/board/").status_code, 403)
+        # The books read the runs since O376 (read only, to tie work in progress to the ledger); a role
+        # that reads no run is refused the board.
+        from apps.core.management.commands.setup_roles import ROLES
+
+        self.assertEqual(as_("Bookkeeper").get("/api/manufacturing/work-orders/board/").status_code, 200)
+        blind = next(role for role in ("AP Manager", "Purchasing Clerk", "Sales Rep", "AR Manager")
+                     if "manufacturing.view_workorder" not in ROLES[role])
+        self.assertEqual(as_(blind).get("/api/manufacturing/work-orders/board/").status_code, 403, blind)
