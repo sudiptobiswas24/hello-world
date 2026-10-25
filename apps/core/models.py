@@ -1413,7 +1413,9 @@ class DocumentSequence(AuditModel):
     """
     Generates human-facing document numbers (INV-2026-00001) instead of
     leaking database primary keys onto paperwork. Numbers are handed out
-    under a row lock so two concurrent posts can't take the same one.
+    under a row lock so two concurrent posts can't take the same one, and
+    behind the company's numbering row (DocumentNumbering), so two posts
+    numbering two types in either order never wait on each other (O257).
 
     Note: the lock relies on SELECT ... FOR UPDATE, which is a no-op on
     SQLite. Run PostgreSQL if concurrent numbering matters.
@@ -1473,10 +1475,14 @@ class DocumentSequence(AuditModel):
         Issue the next number for `code`, creating the sequence on first use
         so posting a document never fails on missing configuration.
         """
-        sequence, _ = cls.objects.get_or_create(
-            code=code, defaults={"name": defaults.pop("name", code), **defaults}
-        )
-        return sequence.next_value(on_date)
+        with transaction.atomic():
+            # The numbering row before the sequence is made, too: a first number of a type inserts its
+            # sequence, and another transaction making the same one waits on that insert (O257).
+            DocumentNumbering.hold()
+            sequence, _ = cls.objects.get_or_create(
+                code=code, defaults={"name": defaults.pop("name", code), **defaults}
+            )
+            return sequence.next_value(on_date)
 
     def peek(self, on_date=None):
         """The number that would be issued next, without consuming it."""
@@ -1499,6 +1505,13 @@ class DocumentSequence(AuditModel):
         """
         year = (to_date(on_date) or timezone.localdate()).year
         with transaction.atomic():
+            # The company's numbering first, then this type's row (O257): a document numbering a second
+            # type inside its own transaction took the second type's row after its own, and two such of
+            # the other types the other way round deadlocked. Behind the one row, every transaction that
+            # numbers waits for the one before it to end; a number nested in the same transaction holds it
+            # already. Not a number in a transaction of its own: GST Rule 46(b) wants invoice numbers
+            # consecutive, and a number taken apart from a posting that then rolled back is a gap.
+            DocumentNumbering.hold()
             sequence = DocumentSequence.objects.select_for_update().get(pk=self.pk)
             if sequence.reset_yearly:
                 # Under the sequence's lock, so two first numbers of a year
@@ -1522,6 +1535,36 @@ class DocumentSequence(AuditModel):
                 super(DocumentSequence, sequence).save(update_fields=["next_number", "updated_at"])
         self.refresh_from_db()
         return self._format(number, year)
+
+
+class DocumentNumbering(models.Model):
+    """
+    The company's one numbering row (O257), held by every transaction that takes a document number,
+    before the sequence row it numbers from, until that transaction ends (DocumentSequence.next_value).
+
+    One row for the company, which is a singleton (Company): every sequence is behind it, so two
+    transactions each numbering two document types, in either order, take their sequences one after
+    the other instead of each holding one and waiting for the other. A number is never taken in a
+    transaction of its own: a posting that rolls back gives its number back, and the next document
+    takes it, so invoice numbers stay consecutive (GST Rule 46(b)).
+    """
+
+    ROW = 1
+
+    class Meta:
+        verbose_name = "document numbering"
+
+    def __str__(self):
+        return "Document numbering"
+
+    @classmethod
+    def hold(cls):
+        """Hold the numbering row until the transaction ends; inside a transaction the caller opened."""
+        if not in_a_transaction_it_opened():
+            raise RuntimeError("DocumentNumbering.hold() outside a transaction holds nothing.")
+        row, _ = cls.objects.get_or_create(pk=cls.ROW)
+        lock_rows(row, refresh=False)
+        return row
 
 
 class LoginFailure(models.Model):

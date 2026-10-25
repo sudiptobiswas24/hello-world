@@ -47,6 +47,7 @@ from apps.core.models import (
     documents_it_answers_to,
     hold_with_what_they_draw,
     lock_in_turn,
+    in_a_transaction_it_opened,
     lock_rows,
     only_one,
     prefetched,
@@ -1027,6 +1028,10 @@ class SalesOrder(PlacedWhereTheGoodsGo, Extensible, TaxedDocumentMixin, ChangesW
             (line.item, (), self.order_date) for line in self.lines.select_related("item")
             if line.item_id is not None
         ])
+        # The shelves its reservations claim, before its number: the company's numbering row is held
+        # after every shelf (O257), and reserve_stock() below claims them.
+        lock_positions((line.item, line.warehouse) for line in self.lines.select_related("item", "warehouse")
+                       if not line.is_charge() and line.warehouse_id is not None and line.item.track_inventory)
         if not self.number:
             self.number = DocumentSequence.next_for(
                 "sales.order", self.order_date, name="Sales Orders", prefix="SO-"
@@ -2908,6 +2913,9 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
                     f"shipped and {plain(already)} is already invoiced, so {plain(going[order_line.pk])} "
                     "cannot be invoiced."
                 )
+        # Its lines before its number: the taxes are written back onto them once the entry has posted, and
+        # the company's numbering row is held after every document's lines (O257).
+        lock_rows(*self.lines.order_by("pk"), refresh=False)
         if not self.number:
             if self.is_credit_note() and self.credits.is_down_payment:
                 # An advance given back is a refund voucher (Rule 51), in its own series (review F3).
@@ -5398,7 +5406,14 @@ def run_dunning(as_of=None, send=True):
         not_paid_in_full(Invoice.objects.filter(posted=True, credits__isnull=True))
         .select_related("customer", "currency", "payment_terms")
         .prefetch_related(*INVOICE_FIGURES, "dunning_notices__level")
+        .order_by("pk")
     )
+    if in_a_transaction_it_opened():
+        # Run inside a caller's transaction, each notice's hold lasts until that one ends: every invoice
+        # first, in key order, or the second invoice is taken after the first notice's number, and the
+        # company's numbering row is held after every document (O257). In a transaction of its own
+        # each invoice is held only while its notice is written, as below.
+        lock_rows(*invoices, refresh=False)
     for invoice in invoices:
         days = invoice.days_overdue(as_of)
         if days <= 0 or invoice.amount_due() <= 0:
@@ -5878,7 +5893,6 @@ class Quotation(PlacedWhereTheGoodsGo, TaxedDocumentMixin, AuditModel):
         # Asked again under the lock: two accepts at once both passed accept()'s checks and made two orders.
         if self.status in (QuotationStatus.ACCEPTED, QuotationStatus.DECLINED, QuotationStatus.SUPERSEDED):
             raise ValidationError(f"This quotation is already {self.get_status_display().lower()}.")
-        self._assign_number()
         order = SalesOrder.objects.create(
             customer=self.customer,
             order_date=order_date or timezone.localdate(),
@@ -5905,6 +5919,10 @@ class Quotation(PlacedWhereTheGoodsGo, TaxedDocumentMixin, AuditModel):
         if approve_as is not None and order.requires_approval():
             order.approve(by=approve_as, note="Approved on quotation acceptance")
         order.confirm()
+        # Its number after the order's confirmation, which holds the customer and the shelves it reserves:
+        # the company's numbering row is held after both (O257). Taken first, both of two accepts at once
+        # were refused, holding the numbering before the customer.
+        self._assign_number()
 
         self.sales_order = order
         self.status = QuotationStatus.ACCEPTED

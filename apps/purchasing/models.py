@@ -4350,6 +4350,29 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             from .tds import refuse_posting_without_a_rate
 
             refuse_posting_without_a_rate(self)
+        # Its lines, and the lines a note gives back, in one call in key order, before the shelves a
+        # charge lands on: each line is written again as the entry is built, and a document's lines
+        # are taken before the stock (O182), and before the number (O257): the numbering row
+        # is held after every line and shelf.
+        held = list(self.lines.select_related("debits_line"))
+        lock_rows(*held, *(line.debits_line for line in held if line.debits_line_id), refresh=False)
+        if not self.is_debit_note():
+            # The shelves its charges land on, as land_on_goods() takes them, before its number.
+            lock_positions((receipt_line.order_line.item, place)
+                           for _charge, receipt_line, _amount in self._landed_on_receipt_lines()
+                           for place, _there in receipt_line.positions())
+        else:
+            # The shelves the landed cost it gives back is on now, as take_back_landed() takes them.
+            shelves = set()
+            for line in held:
+                if not line.debits_line_id:
+                    continue
+                for landing in line.debits_line.landings.select_related("receipt_line__order_line__item"):
+                    item = landing.receipt_line.order_line.item
+                    for movement in landing.movements.select_related("warehouse", "adjusts", "lot", "bin"):
+                        shelves.add((item, movement.warehouse))
+                        shelves.update((item, row.warehouse) for _kind, row, _value in where_value_is(movement))
+            lock_positions(shelves)
         if not self.number:
             if self.is_debit_note():
                 self.number = DocumentSequence.next_for(
@@ -4376,11 +4399,6 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             profile = PartyTaxProfile.objects.filter(party_id=self.vendor_id).first()
             self.msme_category = profile.msme_category if profile else ""
 
-        # Its lines, and the lines a note gives back, in one call in key order, before the shelves a
-        # charge lands on: each line is written again as the entry is built, and a document's lines
-        # are taken before the stock (O182).
-        held = list(self.lines.select_related("debits_line"))
-        lock_rows(*held, *(line.debits_line for line in held if line.debits_line_id), refresh=False)
         if self.is_debit_note():
             original = self.debits
             if not original.posted or not original.journal_entry_id:
@@ -7020,18 +7038,21 @@ class GoodsReceipt(AuditModel):
                 f"{self.purchase_order} is {self.purchase_order.get_status_display().lower()}; "
                 "confirm it before receiving goods against it."
             )
-        if not self.number:
-            self.number = (
-                DocumentSequence.next_for(
-                    "purchasing.receipt_return", self.receipt_date,
-                    name="Purchase Returns", prefix="PRTN-",
+        def take_its_number():
+            # After the shelves, and on a drop-ship after the deliveries it reverses: the company's
+            # numbering row is held after every document, line and shelf (O257).
+            if not self.number:
+                self.number = (
+                    DocumentSequence.next_for(
+                        "purchasing.receipt_return", self.receipt_date,
+                        name="Purchase Returns", prefix="PRTN-",
+                    )
+                    if is_return
+                    else DocumentSequence.next_for(
+                        "purchasing.receipt", self.receipt_date,
+                        name="Goods Receipts", prefix="GRN-",
+                    )
                 )
-                if is_return
-                else DocumentSequence.next_for(
-                    "purchasing.receipt", self.receipt_date,
-                    name="Goods Receipts", prefix="GRN-",
-                )
-            )
 
         if not is_return:
             for line in lines:
@@ -7048,6 +7069,19 @@ class GoodsReceipt(AuditModel):
                     )
 
         if self.purchase_order.is_drop_ship():
+            if is_return:
+                from apps.sales.models import Delivery
+
+                # The deliveries a return takes back, before its number (O257).
+                lock_rows(*Delivery.objects.filter(
+                    sales_order=self.purchase_order.drop_ship_for, is_drop_ship=True, posted=True,
+                    reverses__isnull=True).order_by("pk"), refresh=False)
+            # And the shelves the delivery it makes, or the return it takes, moves (O257).
+            lock_positions(
+                (line.order_line.sales_order_line.item, line.warehouse) for line in lines
+                if line.order_line.sales_order_line_id and line.order_line.sales_order_line.item_id
+                and line.order_line.sales_order_line.item.track_inventory)
+            take_its_number()
             return self._post_drop_ship(lines, is_return=is_return)
 
         # Every shelf this receipt touches. Subcontract lines read the
@@ -7067,6 +7101,7 @@ class GoodsReceipt(AuditModel):
                 ),
             )
         )
+        take_its_number()
 
         valued = []
         received = {}

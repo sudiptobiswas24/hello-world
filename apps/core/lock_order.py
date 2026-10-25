@@ -82,6 +82,14 @@ LOCK_ORDER = (
     #    corrects before the goods come back. Rows in key order, so two
     #    landed costs onto the same two receipt lines take them alike.
     "inventory.stockposition",
+    # 6a. the company's numbering row (O257), held by every transaction that takes a document number,
+    #     before the type's sequence (GUARDED): one numbering at a time, so two documents each numbering
+    #     the other's type second no longer deadlock. The survey of 25 October over core, accounting,
+    #     sales, purchasing, hr, inventory, manufacturing, assets, quality and e2e saw it taken after
+    #     every document, line and stock position above, and after it only the period an entry posts
+    #     into and rows ranked nowhere, once the paths that numbered before holding their lines, the
+    #     shelves or a second document hold those first.
+    "core.documentnumbering",
     # 7. the period an entry is posted into, read under lock as the entry
     #    posts: after the stock the document moved
     "accounting.accountingperiod",
@@ -98,7 +106,8 @@ UNRANKED = {
     "accounting.journalentry": "a row the posting makes in the same transaction, then locked; a reversal takes its "
                                "own. Seen both ways round sales.invoice (14 October), not ranked",
     "core.documentsequence": "one row per document type, taken by the document numbering it, before and after "
-                             "documents and lines alike (14 October); ranks by type, not by document",
+                             "documents and lines alike (14 October); ranks by type, not by document. Taken "
+                             "only behind core.documentnumbering (GUARDED), which is ranked",
 }
 
 
@@ -163,9 +172,18 @@ UNSEEN = {
                     "out of key order; harmless, because every write of a party's addresses holds the party "
                     "first (locked_before_it, take_primary), so two never overlap (review F9)",
     "core.contact": "take_primary(), as core.address",
-    "core.documentsequence": "a document numbering a second document type takes that type's row after its own, "
-                             "in no fixed order between types (sales.Invoice.post)",
-    "core.documentsequenceyear": "the year's counter of a document type, as core.documentsequence",
+}
+
+# Rows taken only behind one row of another model, which every transaction taking them holds first: two
+# transactions never hold two of them each, so the order they are taken in among themselves decides
+# nothing. Without the guard held, they are taken in key order as any unranked model's; and the guard
+# taken after one of them is refused, as a row of an earlier rank after a later one is (O257).
+GUARDED = {
+    # A document numbering a second document type inside its own transaction takes that type's row
+    # after its own, in no fixed order between types (sales.Invoice.post): behind the company's
+    # numbering row (DocumentSequence.next_value), one transaction numbers at a time.
+    "core.documentsequence": "core.documentnumbering",
+    "core.documentsequenceyear": "core.documentnumbering",
 }
 
 # How a statement took its rows: a select_for_update() names them; the rest
@@ -207,6 +225,7 @@ def taken(connection, label, pks, how=SELECTED):
             continue
         if how == SHARED and pk is not None:
             state.setdefault("shared", set()).add((label, pk))
+        _guard_first(state, label, pk, how)
         rank = RANK.get(label)
         if _SURVEY:
             for earlier in dict.fromkeys(state["taken"]):
@@ -219,7 +238,8 @@ def taken(connection, label, pks, how=SELECTED):
             # Ranked against nothing, but its own rows in key order (O182). Shared rows wait for no
             # other share, so a share is not held to key order (a transfer from bank 5 to bank 3).
             last = state["keys"].get(label)
-            if pk is not None and last is not None and pk < last and how != SHARED:
+            if pk is not None and last is not None and pk < last and how != SHARED and \
+                    not (label in GUARDED and _holds(state, GUARDED[label])):
                 message = (f"{label} {pk} locked after {label} {last} ({how}): rows of one model are "
                            f"taken in key order (apps.core.lock_order)")
                 if _SURVEY:
@@ -241,6 +261,29 @@ def taken(connection, label, pks, how=SELECTED):
             raise LockOrderViolation(message)
         if top is None or mine > top:
             state["top"] = mine
+
+
+_GUARDS = frozenset(GUARDED.values())
+
+
+def _guard_first(state, label, pk, how):
+    """Refuse a guard taken, or made, after a row it guards: the guard is held first, or it guards nothing."""
+    if label not in _GUARDS or _holds(state, label):
+        return
+    behind = sorted({held for held, _pk in state["held"] if GUARDED.get(held) == label})
+    if not behind:
+        return
+    message = (f"{label} {pk} locked after {behind[0]} ({how}), a row taken only behind it: "
+               f"hold {label} first (apps.core.lock_order GUARDED)")
+    if _SURVEY:
+        _survey("violation", behind[0], label, how)
+        return
+    raise LockOrderViolation(message)
+
+
+def _holds(state, label):
+    """Whether this transaction holds a row of `label`."""
+    return any(held == label for held, _pk in state["held"])
 
 
 def raw_shared_lock(execute, sql, params, many, context):
@@ -282,7 +325,13 @@ def _snapshot(connection):
 def made(connection, label, pks):
     """Rows this transaction made: no other can see them until it commits, so taking them waits for nothing."""
     if connection.in_atomic_block and _in_a_transaction_of_its_own(connection):
-        _state(connection)["held"].update((label, pk) for pk in pks if pk is not None)
+        state = _state(connection)
+        for pk in pks:
+            if pk is not None and (label, pk) not in state["held"]:
+                # Made is held, and another making the same key waits on it: a guard made after a row it
+                # guards is that row's lock first (O257).
+                _guard_first(state, label, pk, "insert")
+                state["held"].add((label, pk))
 
 
 def forget(connection):

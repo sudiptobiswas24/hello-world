@@ -551,7 +551,19 @@ class ADunningRunReadsTheInvoiceUnderItsHoldTests(SalesTestCase):
             # The customer's 1,000 is allocated after the run read the invoice, before it is held.
             if not paid and any(isinstance(row, models.Invoice) for row in rows):
                 paid.append(True)
-                self.allocate(self.receipt("1000"), invoice, "1000")
+                # Another person's transaction, which on SQLite cannot run beside this one: the lock-order
+                # sentinel counts it apart, or its receipt's number reads as this run's (O257).
+                from django.db import connection
+
+                def apart(step):
+                    held, connection._lock_order_state = getattr(connection, "_lock_order_state", None), None
+                    try:
+                        return step()
+                    finally:
+                        connection._lock_order_state = held
+
+                money = apart(lambda: self.receipt("1000"))
+                apart(lambda: self.allocate(money, invoice, "1000"))
             return real(*rows, **kwargs)
 
         with mock.patch.object(models, "lock_rows", paid_first):
