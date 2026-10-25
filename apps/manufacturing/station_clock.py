@@ -69,7 +69,7 @@ class MachineClock(AuditModel):
 
 
 def _open(machine):
-    return MachineClock.objects.select_for_update().filter(
+    return MachineClock.objects.select_for_update(no_key=True).filter(
         machine=machine, stopped_at__isnull=True).first()
 
 

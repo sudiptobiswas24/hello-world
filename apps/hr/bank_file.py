@@ -137,7 +137,8 @@ class SalaryTransferFile(AuditModel):
 
     @transaction.atomic
     def delete(self, *args, **kwargs):
-        lock_rows(self, refresh=False)
+        # FOR UPDATE: the row is deleted, and a row being inserted that names it must wait (O257).
+        lock_rows(self, refresh=False, deleting=True)
         if SalaryTransferFile.objects.filter(pk=self.pk, payment__isnull=False).exists():
             raise ValidationError(f"{self} has been paid; a transfer sent back is returned, the file stays.")
         return super().delete(*args, **kwargs)

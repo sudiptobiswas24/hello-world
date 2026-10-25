@@ -22,7 +22,8 @@ from django.db import models, transaction
 from django.db.models import Count, F, Q, Sum
 from django.utils import timezone
 
-from apps.core.models import (AuditModel, DocumentSequence, Party, PartyRole, PartyRoleAssignment, lock_rows,
+from apps.core.models import (
+    numbered_in_one_transaction,AuditModel, DocumentSequence, Party, PartyRole, PartyRoleAssignment, lock_rows,
                               serialised, to_date)
 
 ZERO = Decimal("0")
@@ -177,6 +178,7 @@ class Lead(AuditModel):
     def is_open(self):
         return self.status in (LeadStatus.NEW, LeadStatus.WORKING)
 
+    @numbered_in_one_transaction
     def save(self, *args, **kwargs):
         if not self.company_name.strip():
             raise ValidationError({"company_name": "Who asked?"})
@@ -361,6 +363,7 @@ class Opportunity(AuditModel):
     def weighted_value(self):
         return (self.value * self.chance() / 100).quantize(PAISA)
 
+    @numbered_in_one_transaction
     def save(self, *args, **kwargs):
         if not self.title.strip():
             raise ValidationError({"title": "Say what the business is."})

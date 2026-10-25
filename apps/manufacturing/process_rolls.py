@@ -185,7 +185,7 @@ class ProcessRoll(AuditModel):
 
 
 def _open_mount(machine):
-    return RollMount.objects.select_for_update().filter(
+    return RollMount.objects.select_for_update(no_key=True).filter(
         machine=machine, finished_at__isnull=True, voided_at__isnull=True).first()
 
 
@@ -226,7 +226,7 @@ def mount_roll(station, operator, machine, code, at=None):
     at = at or timezone.now()
     _check_kind(station, (LineKind.COATING, LineKind.PRINTING, LineKind.CONVERSION),
                 "mounts rolls")
-    machine = Machine.objects.select_for_update().get(pk=machine.pk)
+    machine = Machine.objects.select_for_update(no_key=True).get(pk=machine.pk)
     _shift, shift_date = _context(station, operator, machine, at)
     run, step = _step(machine)
     code = (code or "").strip()
@@ -351,7 +351,7 @@ def weigh_roll(station, operator, machine, gross_kg, core_type, metres, supervis
 
     at = at or timezone.now()
     _check_kind(station, (LineKind.COATING, LineKind.PRINTING), "weighs rolls off")
-    machine = Machine.objects.select_for_update().get(pk=machine.pk)
+    machine = Machine.objects.select_for_update(no_key=True).get(pk=machine.pk)
     shift, shift_date = _context(station, operator, machine, at)
     mount = _open_mount(machine)
     if mount is None:

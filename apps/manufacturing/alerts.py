@@ -16,7 +16,7 @@ from django.db import models
 from django.db.models import Q
 from django.utils import timezone
 
-from apps.core.models import AuditModel, DocumentSequence, serialised, to_date
+from apps.core.models import numbered_in_one_transaction, AuditModel, DocumentSequence, serialised, to_date
 
 from .complaints import ActionKind, _text
 
@@ -77,6 +77,7 @@ class QualityAlert(AuditModel):
     def where(self):
         return self.machine.code if self.machine_id else (self.work_centre.code if self.work_centre_id else "")
 
+    @numbered_in_one_transaction
     def save(self, *args, **kwargs):
         if self.pk and not getattr(self, "_deciding", False):
             stored = type(self).objects.filter(pk=self.pk).values("status").first()

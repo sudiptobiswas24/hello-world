@@ -480,7 +480,7 @@ def build(invoice):
 def prepare(invoice):
     """Build the payload and keep it. Built again until the portal has answered."""
     payload = build(invoice)
-    existing = EInvoice.objects.select_for_update().filter(invoice=invoice).first()
+    existing = EInvoice.objects.select_for_update(no_key=True).filter(invoice=invoice).first()
     if existing is None:
         return EInvoice.objects.create(invoice=invoice, payload=payload)
     if existing.irn:

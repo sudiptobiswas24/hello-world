@@ -125,7 +125,7 @@ def record_tape(station, operator, machine, gross_kg, bobbins, core_type, denier
     at = at or timezone.now()
     if station.kind != LineKind.EXTRUSION:
         raise ValidationError(f"{station} is not a tape line's station.")
-    machine = Machine.objects.select_for_update().get(pk=machine.pk)
+    machine = Machine.objects.select_for_update(no_key=True).get(pk=machine.pk)
     shift, shift_date = _context(station, operator, machine, at)
     # Counted before the scale is asked (O279): the net frame's tare ran
     # int(bobbins) first, so "eight" was a 500 and 2.7 became 2 unsaid.

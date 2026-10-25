@@ -184,7 +184,7 @@ class OperationReport(AuditModel):
 
 
 def _lock(order):
-    type(order).objects.select_for_update().filter(pk=order.pk).first()
+    type(order).objects.select_for_update(no_key=True).filter(pk=order.pk).first()
 
 
 def _steps(order):

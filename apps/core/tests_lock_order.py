@@ -339,3 +339,40 @@ class NumberingIsHeldBehindTheCompanysOneRowTests(TestCase):
 
         with self.assertRaisesMessage(RuntimeError, "outside a transaction"):
             DocumentNumbering.hold()
+
+
+class APlainForUpdateIsReportedTests(TestCase):
+    """
+    O257: a lock that only serialises a decision is FOR NO KEY UPDATE, which a deferred foreign-key check (FOR KEY
+    SHARE at COMMIT) does not wait on; audit_invariants reports a plain FOR UPDATE outside a delete().
+    """
+
+    def found(self, text):
+        from pathlib import Path
+
+        from apps.core.management.commands.audit_invariants import Command
+
+        return [detail for _kind, detail in Command().plain_for_update(["core"], {"core": {Path("apps/core/planted.py"): text}})]
+
+    def test_a_planted_plain_lock_is_reported_and_the_no_key_one_and_a_delete_are_not(self):
+        planted = (
+            "def decide(order):\n"
+            "    Order.objects.select_for_update().get(pk=order.pk)\n"
+            "    Order.objects.select_for_update(no_key=True).get(pk=order.pk)\n"
+            "    lock_rows(order, deleting=True)\n"
+            "def delete(self):\n"
+            "    lock_rows(self, deleting=True)\n"
+            "    Order.objects.select_for_update().get(pk=self.pk)\n"
+        )
+        found = sorted(self.found(planted))
+        self.assertEqual(len(found), 2, found)
+        self.assertIn("planted.py:2 decide() takes select_for_update() without no_key=True", found[0])
+        self.assertIn("planted.py:4 decide() takes lock_rows(..., deleting=True)", found[1])
+
+    def test_lock_rows_takes_for_no_key_update_and_for_update_only_to_delete(self):
+        from .models import row_lock_query
+
+        self.assertIn("FOR NO KEY UPDATE", str(row_lock_query(Party, 1).query)
+                      if connection.vendor == "postgresql" else "FOR NO KEY UPDATE")
+        self.assertTrue(row_lock_query(Party, 1).query.select_for_no_key_update)
+        self.assertFalse(row_lock_query(Party, 1, no_key=False).query.select_for_no_key_update)

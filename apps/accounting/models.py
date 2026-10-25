@@ -246,7 +246,7 @@ class AccountingPeriod(AuditModel):
             return None
         covering = cls.objects.filter(start_date__lte=on_date, end_date__gte=on_date)
         if lock:
-            covering = covering.select_for_update()
+            covering = covering.select_for_update(no_key=True)
         return next((period for period in covering.order_by("pk") if period.closed), None)
 
     @classmethod
@@ -1921,7 +1921,7 @@ class BooksOpening(AuditModel):
                     f"{self.opened_on}: the books cannot open on a day after what is already in them. "
                     "Open them on an earlier day, or reverse what was posted.")
         if self.pk is not None:
-            before = BooksOpening.objects.select_for_update().get(pk=self.pk)
+            before = BooksOpening.objects.select_for_update(no_key=True).get(pk=self.pk)
             if (before.opened_on, before.opening_account_id) != (self.opened_on, self.opening_account_id):
                 last = max(before.opened_on, self.opened_on)
                 posted = JournalEntry.objects.filter(posted=True, date__lte=last).order_by("date", "pk").first()

@@ -255,7 +255,7 @@ def load(delivery, bales, order_line=None):
     if delivery.is_return():
         raise ValidationError(f"{delivery} is goods coming back.")
     for bale in bales:
-        bale = Bale.objects.select_for_update().get(pk=bale.pk)
+        bale = Bale.objects.select_for_update(no_key=True).get(pk=bale.pk)
         if bale.broken_at is not None:
             raise ValidationError(f"{bale} was broken.")
         if bale.delivery_id is not None:
@@ -284,7 +284,7 @@ def load(delivery, bales, order_line=None):
 @transaction.atomic
 def unload(bale):
     """Take a bale off a delivery that has not shipped."""
-    bale = Bale.objects.select_for_update().get(pk=bale.pk)
+    bale = Bale.objects.select_for_update(no_key=True).get(pk=bale.pk)
     if bale.delivery_id is None:
         raise ValidationError(f"{bale} is on no delivery.")
     if bale.delivery.posted:
