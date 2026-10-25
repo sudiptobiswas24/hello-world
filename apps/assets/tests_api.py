@@ -203,3 +203,23 @@ class DisposalProceedsAreANumberTests(ApiTestCase):
         self.assertEqual(answers, {bad: (400, ["proceeds"]) for bad in answers})
         asset.refresh_from_db()
         self.assertEqual(asset.status, AssetStatus.IN_SERVICE)
+
+
+class ReviewSechrProceedsPlacesProbe(ApiTestCase):
+    """review_sechr: proceeds the reader lets through that no column holds must be a 400, not a 500 (PostgreSQL)."""
+
+    def test_proceeds_of_seventeen_digits_are_refused_in_words(self):
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        call_command("setup_roles", verbosity=0)
+        controller = User.objects.create_user("books")
+        controller.groups.add(Group.objects.get(name="Controller"))
+        self.client.force_authenticate(controller)
+        asset = self.asset()
+        self.client.raise_request_exception = False
+        import traceback
+        answers = {}
+        for big in ("99999999999999999.00", "10000000000000000"):
+            r = self.post(f"assets/{asset.pk}/dispose/", {"on_date": "2026-04-15", "proceeds": big})
+            answers[big] = r.status_code
+        self.assertEqual(answers, {big: 400 for big in answers})
