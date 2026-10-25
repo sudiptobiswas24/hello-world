@@ -198,6 +198,15 @@ built.
        ledger, every derived balance foots to its account, and the
        statutory files read what was posted. Run it on PostgreSQL and in
        Asia/Kolkata. Each failure is a register row.
+   - **g23b status, 25 October: all fixing and reviews done; the six-lane gate
+     runs on this tree's tip** (runner /home/user/work/run_gate_g23b.sh, logs
+     /home/user/gate-logs-g23b, progress in its `progress` file). Closed: all
+     16 rows (O255, O317, O318, O348, O260, O261, O350, O353, O349, O347, O329,
+     O262, O360, O270, O258, O257) plus O371 and O376; each round reviewed and
+     its findings fixed. Left: O372 to O375, O377 to O381. If the gate stopped,
+     rerun only the lanes whose log's HEAD is not the tip or that printed no OK,
+     then finalize from the pushed tip and push (the steps below are the record
+     of how it got here).
    - **g23b, in flight: the security, crash, books and race rows.** Briefs
      docs/handoff/g23b_*.md. Stopped on 24 October by the session's limit,
      before the gate. To resume:
