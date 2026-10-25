@@ -299,24 +299,39 @@ REQUIRED = object()
 POSITIVE, NOT_NEGATIVE, ANY_SIGN = "positive", "not negative", "any sign"
 
 
-def number(data, name, places, *, sign=POSITIVE, default=REQUIRED):
+# A figure as a person or a screen writes it: ASCII digits, one point, an exponent at most; nothing around it.
+NUMBER_TEXT = re.compile(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?", re.ASCII)
+WIDEST_COLUMN = 18  # max_digits of the widest decimal column in the schema (money and quantities)
+
+
+def number(data, name, places=None, *, field=None, digits=WIDEST_COLUMN, sign=POSITIVE, default=REQUIRED):
     """
     A number from a request (its body or its query), as a Decimal, or a 400
     beside the field in words (O318).
 
     Decimal(str(...)) took "Infinity" and "NaN" as numbers, and each site
     that asked found its own way to fail: a 500 for proceeds of Infinity on
-    an asset's disposal, a promised date for -5 metres. This refuses what
-    is not a finite number, a sign the field does not take (`sign`:
-    POSITIVE, above nothing; NOT_NEGATIVE; ANY_SIGN), and more places than
-    the field holds (`places`; None only where the model the figure goes
-    to checks its own places, and says so). Absent or empty is `default`
-    when one is given (None, or a figure), and refused when not.
-    `audit_invariants` (numbers_read_around_the_reader) names any new
-    Decimal made straight from a request.
+    an asset's disposal, a promised date for -5 metres. This refuses:
+    - what is not a figure written in ASCII digits, with nothing around it
+      (NaN, Infinity, `1_0`, Arabic-Indic digits, a figure in spaces);
+    - a sign the field does not take (`sign`: POSITIVE, above nothing;
+      NOT_NEGATIVE; ANY_SIGN);
+    - more places than the column holds, and more digits before the point
+      than it holds: the column is `field` (a model's DecimalField, whose
+      decimal_places and max_digits are taken), or `places` and `digits`
+      (its max_digits, the widest column's when not said). Proceeds of 17
+      digits passed a fixed cap of 18 and failed at the database, a 500 on
+      PostgreSQL, since a journal line holds 18 digits with 2 of them places
+      (review_sechr F3). `places` None only where the model the figure goes
+      to checks its own places, and says so.
+    Absent or empty is `default` when one is given (None, or a figure), and
+    refused when not. `audit_invariants` (numbers_read_around_the_reader)
+    names any new Decimal made straight from a request.
     """
-    from decimal import Decimal, InvalidOperation
+    from decimal import Decimal
 
+    if field is not None:
+        places, digits = field.decimal_places, field.max_digits
     value = data.get(name) if hasattr(data, "get") else None
     if value is None or (isinstance(value, str) and not value.strip()):
         if default is REQUIRED:
@@ -324,20 +339,20 @@ def number(data, name, places, *, sign=POSITIVE, default=REQUIRED):
         if default is None:
             return None
         value = default
-    if isinstance(value, (bool, list, dict)):
+    if isinstance(value, bool) or not isinstance(value, (str, int, float, Decimal)):
         raise DRFValidationError({name: [f"{value!r} is not a number."]})
-    try:
-        figure = Decimal(str(value).strip())
-    except (InvalidOperation, ValueError, TypeError):
-        figure = None
-    if figure is None or not figure.is_finite():
+    text = str(value)
+    if not NUMBER_TEXT.fullmatch(text):
         raise DRFValidationError({name: [f"{value!r} is not a number."]})
+    figure = Decimal(text)
     if sign == POSITIVE and figure <= 0:
         raise DRFValidationError({name: ["It must be above nothing."]})
     if sign == NOT_NEGATIVE and figure < 0:
         raise DRFValidationError({name: ["It cannot be below nothing."]})
-    if figure.adjusted() >= 18:  # no column here holds a figure of nineteen digits before the point
-        raise DRFValidationError({name: [f"{value!r} is too large a figure."]})
+    whole_digits = digits - (places or 0)
+    if figure and figure.adjusted() >= whole_digits:
+        raise DRFValidationError({name: [f"{value!r} is too large a figure: it holds {whole_digits} digits before "
+                                         "the point at most."]})
     if figure.as_tuple().exponent > 0:
         figure = figure.quantize(Decimal(1))  # 1E+3 as 1000, as the API will show it
     if places is not None and figure != figure.quantize(Decimal(1).scaleb(-places)):

@@ -35,6 +35,28 @@ class ANumberFromARequestTests(SimpleTestCase):
         self.assertEqual(number({"x": "1.50"}, "x", 2), Decimal("1.50"))
         self.assertEqual(str(number({"x": "1E+3"}, "x", 2)), "1000")
 
+    def test_only_a_figure_as_a_screen_writes_it(self):
+        """review_sechr F4: Decimal() also took 1_0, Arabic-Indic digits and a figure in spaces."""
+        for value in ("1_0", "\u0661\u0662", " 7", "7 ", "7\n", "1,000", "0x10", "+-1", "1e", "."):
+            self.assertIn("is not a number", self.refused(value, sign=ANY_SIGN), repr(value))
+        self.assertEqual(number({"x": 7}, "x", 2), Decimal("7"))
+        self.assertEqual(number({"x": 0.25}, "x", 2), Decimal("0.25"))
+        self.assertEqual(number({"x": "-.5"}, "x", 2, sign=ANY_SIGN), Decimal("-0.5"))
+
+    def test_the_cap_is_the_columns(self):
+        """review_sechr F3: a journal line holds 18 digits, 2 of them places: 16 before the point, not 18."""
+        from apps.accounting.models import JournalLine
+
+        debit = JournalLine._meta.get_field("debit")
+        self.assertEqual((debit.max_digits, debit.decimal_places), (18, 2))
+        for big in ("99999999999999999.00", "10000000000000000"):  # 17 digits before the point
+            with self.assertRaises(ValidationError) as caught:
+                number({"x": big}, "x", field=debit)
+            self.assertIn("16 digits before the point", str(caught.exception.detail["x"][0]))
+        self.assertEqual(number({"x": "9999999999999999.99"}, "x", field=debit), Decimal("9999999999999999.99"))
+        self.assertIn("too large", self.refused("1000", places=2, digits=5))  # a percentage column, 999.99 at most
+        self.assertEqual(number({"x": "999.99"}, "x", 2, digits=5), Decimal("999.99"))
+
     def test_absent_is_the_default_or_refused(self):
         self.assertEqual(self.refused(None), "Give it as a number.")
         self.assertEqual(self.refused("  "), "Give it as a number.")
@@ -58,6 +80,12 @@ class TheAuditNamesADecimalMadeFromARequestTests(SimpleTestCase):
             "def labour(self, request):\n    data = request.data\n    return Decimal(str(data.get('minutes')))\n": 3,
             "def rows(self, request):\n    return [Decimal(str(row.get('quantity'))) for row in "
             "request.data.get('made') or []]\n": 2,
+            # review_sechr F2, as apps/web/api.py had it: the request's query handed to a helper.
+            "def _margin(params, name, default):\n    try:\n        value = Decimal(params.get(name) or default)\n"
+            "    except InvalidOperation:\n        raise ValidationError({name: ['A margin is a percentage.']})\n"
+            "    return value\n\n\nclass BankStockStatementView(viewsets.ViewSet):\n"
+            "    def list(self, request):\n        params = request.query_params\n"
+            "        return Response(stock_statement(stock_margin=_margin(params, 'stock_margin', '25')))\n": 3,
         }
         for text, line in planted.items():
             self.assertEqual(self.findings(text), [f"assets/views.py:{line}"], text)
@@ -71,7 +99,11 @@ class TheAuditNamesADecimalMadeFromARequestTests(SimpleTestCase):
             self.assertEqual(self.findings(passes), [], passes)
 
     def test_the_code_as_it_stands_reads_every_number_with_the_reader(self):
-        from apps.core.management.commands.audit_invariants import OUR_APPS, Command, app_sources
+        from apps.core.management.commands.audit_invariants import Command, source_of
 
-        self.assertEqual(Command().numbers_read_around_the_reader(list(OUR_APPS), app_sources()), [])
+        # Every app, the office's own reports (apps/web) included: the check read only OUR_APPS (review_sechr F2).
+        every = sorted(path.name for path in Path("apps").iterdir() if (path / "__init__.py").exists())
+        self.assertIn("web", every)
+        self.assertEqual(Command().numbers_read_around_the_reader(every, {label: source_of(label) for label in every}),
+                         [])
         self.assertEqual(sorted(Command.NUMBERS_READ_ON_PURPOSE), ["hr/payroll_views.py:calculate"])

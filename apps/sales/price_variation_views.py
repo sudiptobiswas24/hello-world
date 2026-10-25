@@ -100,7 +100,7 @@ class PriceIndexViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
             valid_from = parse_date(str(request.data.get("valid_from") or ""))
             if valid_from is None:
                 raise DRFValidationError({"valid_from": ["A date, YYYY-MM-DD."]})
-            value = number(request.data, "value", PriceIndexValue._meta.get_field("value").decimal_places)
+            value = number(request.data, "value", field=PriceIndexValue._meta.get_field("value"))
             _run(PriceIndexValue.objects.create, index=index, valid_from=valid_from,
                  value=value)
         return Response([{"valid_from": row.valid_from, "value": str(row.value)}
