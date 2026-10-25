@@ -136,6 +136,13 @@ class TheFieldKeysTests(SimpleTestCase):
 
         self.assertIn("ERP_FIELD_KEYS is not set", self.production(ERP_FIELD_KEYS=f"{SECRET[:4]},{DEV_FIELD_KEY}"))
 
+    def test_nor_on_a_key_that_is_not_a_fernet_key(self):
+        """review_sechr: a malformed key failed at the first sign-in, not at the start."""
+        import base64
+
+        good = base64.urlsafe_b64encode(b"k" * 32).decode()
+        self.assertIn("ERP_FIELD_KEYS key 2 is not a Fernet key", self.production(ERP_FIELD_KEYS=f"{good},not-a-key"))
+
     def test_starts_with_its_own(self):
         import base64
 
