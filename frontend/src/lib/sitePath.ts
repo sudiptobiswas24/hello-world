@@ -1,7 +1,7 @@
 /**
  * A link read from a stored row, as a path on this site, or null (O317).
  *
- * The server refuses to keep anything else (apps/core/chatter.py,
+ * The server refuses to keep anything else (apps/core/site_paths.py,
  * same_site_path), and this asks the same before a screen renders one, so
  * a row stored before that rule is harmless too. A browser reads a
  * backslash as a slash and drops tabs and line breaks, so `/\host` and
@@ -36,5 +36,9 @@ export function sitePath(link: string | null | undefined): string | null {
     return null;
   }
   if (parsed.origin !== base) return null;
+  // The parser resolves dot segments as the browser will: `/.//host` and `/x/..//host` come out as `//host`,
+  // which a link follows to another site (review_sechr F1). What is kept is the resolved path, and only if it
+  // still starts with a single slash.
+  if (parsed.pathname.startsWith("//")) return null;
   return parsed.pathname + parsed.search + parsed.hash;
 }
