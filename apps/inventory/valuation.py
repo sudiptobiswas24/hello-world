@@ -20,6 +20,7 @@ from collections import defaultdict
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
+from django.db import models
 
 from apps.accounting.models import AccountType, JournalEntry, JournalLine, round_money
 from apps.core.models import Company
@@ -75,9 +76,55 @@ def check_cogs_account(account, field="cogs_account"):
         raise ValidationError({field: refusal})
 
 
+def chosen(instance, field):
+    """Whether `instance`'s account `field` is being chosen or changed now: set on a new row, or not what is stored."""
+    picked = getattr(instance, f"{field}_id")
+    if picked is None:
+        return False
+    if not instance.pk:
+        return True
+    return type(instance).objects.filter(pk=instance.pk).values_list(f"{field}_id", flat=True).first() != picked
+
+
+def check_cogs_account_if_chosen(instance, field="cogs_account"):
+    """
+    The cost-of-sales rule, asked when the account is chosen or changed (O347, as
+    AdjustmentReason.check_account_if_chosen): a company or an item already on an account the rule refuses can
+    still save its other settings, posting asks again and refuses with a sentence, and the stock health check
+    names it (accounts_the_rule_refuses). The admin's form (clean) and save() ask this one question.
+    """
+    if chosen(instance, field):
+        check_cogs_account(getattr(instance, field), field)
+
+
 def refuse_a_default_cogs_account_that_is_not_one(company):
-    """A company check: the default cost-of-sales account is an expense account kept for it (O347)."""
-    check_cogs_account(company.default_cogs_account, "default_cogs_account")
+    """A company check: the default cost-of-sales account, as it is chosen, is an expense account kept for it (O347)."""
+    check_cogs_account_if_chosen(company, "default_cogs_account")
+
+
+def accounts_the_rule_refuses():
+    """
+    [(what, refusal)]: every company setting and item whose inventory or cost-of-sales account the account rule
+    refuses, set before the rule or retyped since. Posting refuses them; the stock health check names them first.
+    """
+    from .models import Item
+
+    found = []
+    company = Company.objects.order_by("pk").first()
+    if company is not None:
+        for field, refusal_of in (("default_inventory_account", stock_account_refusal),
+                                  ("default_cogs_account", cogs_account_refusal)):
+            refusal = refusal_of(getattr(company, field))
+            if refusal:
+                found.append((f"The company's {company._meta.get_field(field).verbose_name}", refusal))
+    items = Item.objects.filter(models.Q(inventory_account__isnull=False) | models.Q(cogs_account__isnull=False)
+                                ).select_related("inventory_account", "cogs_account").order_by("sku")
+    for item in items:
+        for field, refusal_of in (("inventory_account", stock_account_refusal), ("cogs_account", cogs_account_refusal)):
+            refusal = refusal_of(getattr(item, field))
+            if refusal:
+                found.append((f"{item.sku}'s {Item._meta.get_field(field).verbose_name}", refusal))
+    return found
 
 
 def check_stock_account(account, field="inventory_account"):
@@ -132,7 +179,13 @@ def cogs_account_for(item):
             f"{item} has no cost-of-sales account and the company has no default."
         )
     # Asked again where it is used: one set before the rule, or retyped since, books nothing (O347).
-    check_cogs_account(account)
+    refusal = cogs_account_refusal(account)
+    if refusal:
+        where = (f"{item}'s cost-of-sales account" if item.cogs_account_id
+                 else "the company's default cost-of-sales account, which it takes,")
+        raise ValidationError(
+            f"{item} cannot post its cost of sales: {refusal} Change {where} to an expense account kept for "
+            "cost of sales.")
     return account
 
 

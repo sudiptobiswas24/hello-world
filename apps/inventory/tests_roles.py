@@ -316,6 +316,82 @@ class ACostOfSalesAccountIsKeptForIt(StoresFixture):
             company.save()
 
 
+class ACostOfSalesAccountIsAskedWhenChosenTests(StoresFixture):
+    """
+    O347, decided on the review: the rule is asked when the account is chosen or changed, as
+    AdjustmentReason.check_account_if_chosen. A company or an item already on an account it refuses still
+    saves its other settings; posting refuses with a sentence saying what to change; the stock health check
+    names every one of them first. The admin's form asks in clean(), so the refusal is a field error, not a 500.
+    """
+
+    def doubled(self):
+        from apps.core.models import Company as TheCompany
+
+        variance = Account.objects.create(code="5950", name="Price variance", account_type=AccountType.EXPENSE)
+        TheCompany.objects.update(purchase_price_variance_account=variance, default_cogs_account=variance)
+        return TheCompany.get(), variance
+
+    def test_a_company_on_a_doubled_account_saves_its_other_settings(self):
+        company, variance = self.doubled()
+        company.name = "Renamed"
+        company.save()
+        company.default_cogs_account = self.payable
+        with self.assertRaisesMessage(ValidationError, "is a liability account"):
+            company.save()
+
+    def test_an_item_on_a_refused_account_saves_its_other_settings_and_posting_says_what_to_change(self):
+        from .valuation import cogs_account_for
+
+        fresh = Item.objects.create(sku="F", name="Fresh", uom=self.kg)
+        Item.objects.filter(pk=fresh.pk).update(cogs_account=self.payable)
+        fresh.refresh_from_db()
+        fresh.name = "Fresh, renamed"
+        fresh.save()
+        with self.assertRaisesMessage(ValidationError, "Change F - Fresh, renamed's cost-of-sales account to an "
+                                                       "expense account kept for cost of sales"):
+            cogs_account_for(fresh)
+        fresh.cogs_account = self.bank
+        with self.assertRaises(ValidationError):
+            fresh.save()
+
+    def test_posting_through_the_companys_doubled_default_names_the_default(self):
+        from .valuation import cogs_account_for
+
+        self.doubled()
+        fresh = Item.objects.create(sku="G", name="Goods", uom=self.kg)
+        with self.assertRaisesMessage(ValidationError, "Change the company's default cost-of-sales account"):
+            cogs_account_for(fresh)
+
+    def test_the_stock_health_check_names_each_one(self):
+        from apps.web.health import _stock
+
+        self.doubled()
+        fresh = Item.objects.create(sku="F", name="Fresh", uom=self.kg)
+        Item.objects.filter(pk=fresh.pk).update(cogs_account=self.payable)
+        finding = _stock(None)
+        labels = [row["label"] for row in finding["rows"]]
+        self.assertEqual(finding["ok"], False, finding)
+        self.assertTrue(any(label.startswith("The company's default cogs account") for label in labels), labels)
+        self.assertTrue(any(label.startswith("F's cogs account") for label in labels), labels)
+
+    def test_the_admin_says_it_beside_the_field(self):
+        from django.contrib import admin
+        from django.contrib.auth.models import User
+        from django.forms.models import model_to_dict
+        from django.test import RequestFactory
+
+        fresh = Item.objects.create(sku="F", name="Fresh", uom=self.kg)
+        request = RequestFactory().get("/")
+        request.user = User.objects.create_superuser("admin")
+        form_class = admin.site._registry[Item].get_form(request, fresh, change=True)
+        data = {key: ("" if value is None else value) for key, value in model_to_dict(fresh).items()
+                if key in form_class.base_fields}
+        data["cogs_account"] = self.payable.pk
+        form = form_class(data, instance=fresh)
+        self.assertFalse(form.is_valid())
+        self.assertIn("cogs_account", form.errors)
+
+
 class ATemplatesCostingMethodIsFrozenUnderItsVariantsStock(StoresFixture):
     """The review of O330: PATCH an item template to FIFO while a variant holds 10 kg: refused, not 200."""
 

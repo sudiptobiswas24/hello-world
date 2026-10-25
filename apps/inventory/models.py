@@ -405,7 +405,19 @@ class Item(Extensible, AuditModel):
                 f"{' and '.join(changed)} cannot change. Make a new item and move the stock to it."
             )
 
+    def check_cogs_account_if_chosen(self):
+        """The cost-of-sales rule, asked when the account is chosen or changed (O347; valuation.check_cogs_account_if_chosen)."""
+        from .valuation import check_cogs_account_if_chosen
+
+        check_cogs_account_if_chosen(self)
+
+    def clean(self):
+        # The admin's form asks here, so an account the rule refuses is a field error there, not a 500 (O347):
+        # the one question save() asks.
+        self.check_cogs_account_if_chosen()
+
     def save(self, *args, **kwargs):
+        self.check_cogs_account_if_chosen()
         # A save that locks opens its own transaction (_check_counting_frozen holds the row).
         with transaction.atomic():
             self._save(*args, **kwargs)
@@ -417,10 +429,9 @@ class Item(Extensible, AuditModel):
         self._check_matches_template()
         self._check_variant_key_frozen()
         self._check_counting_frozen()
-        from .valuation import check_cogs_account, check_stock_account
+        from .valuation import check_stock_account
 
         check_stock_account(self.inventory_account)
-        check_cogs_account(self.cogs_account)
         self.hsn_code = validate_hsn(self.hsn_code)
         super().save(*args, **kwargs)
 
