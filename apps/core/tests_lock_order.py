@@ -70,6 +70,29 @@ class TheSentinelHoldsTestsToTheLockOrderTests(TestCase):
         with transaction.atomic():
             lock_rows(account, self.first)
 
+    def test_lock_rows_takes_a_payment_before_the_account_it_moves_money_through(self):
+        """
+        O371: "accounting.account" sorts before "accounting.payment" by name and after it by rank (O258). Sorted
+        by name, lock_rows(payment, account) took the account first, and every caller handing it both had to
+        split the call, as the statutory remittance did. One call takes the payment first, whichever is named
+        first.
+        """
+        import datetime
+        from decimal import Decimal
+
+        from apps.accounting.models import Account, AccountType, Payment, PaymentDirection
+
+        bank = Account.objects.create(code="1010", name="Bank", account_type=AccountType.ASSET, holds_money=True)
+        payable = Account.objects.create(code="2010", name="Payable", account_type=AccountType.LIABILITY)
+        payment = Payment.objects.create(party=self.first, direction=PaymentDirection.DISBURSEMENT,
+                                         payment_date=datetime.date(2026, 10, 1), amount=Decimal("100.00"),
+                                         bank_account=bank, counterpart_account=payable)
+        with transaction.atomic():
+            lock_rows(payment, payable)
+            taken(connection, "sales.invoice", [1])
+        with transaction.atomic():
+            lock_rows(payable, payment)
+
     def test_an_account_is_ranked_after_the_payment_and_before_the_invoice(self):
         """O258: a payment, then the account it moves money through, then a sales invoice; never the account first."""
         with transaction.atomic():

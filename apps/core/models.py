@@ -122,9 +122,11 @@ def row_lock_query(model, pk, no_key=False):
 # @serialised(..., held_first=True), which takes them before the document,
 # and an edit through the API takes them the same way (lock_for_change).
 # An order line names its order(s) the same way. locked_before_it() lists
-# its rows in this order and they are taken in turn (lock_in_turn):
-# lock_rows() sorts what one call takes by model and key, and would take
-# an invoice ("sales.invoice") before its order ("sales.salesorder").
+# its rows in this order and they are taken in turn (lock_in_turn).
+# lock_rows() sorts what one call takes by the lock order's rank, then key
+# (O371): models ranked nowhere come after the ranked ones, by name. Sorted
+# by name, as it once was, it took an account before the payment that moves
+# money through it, and an invoice ("sales.invoice") before its order.
 
 
 def lock_rows(*instances, refresh=True):
@@ -134,9 +136,9 @@ def lock_rows(*instances, refresh=True):
 
     For a decision that reads two documents and writes a third: an
     allocation reads what is left on the payment and what is due on the
-    invoice. Ordered by model and key, so two transactions that need the
-    same rows take them in the same sequence instead of each holding
-    one and waiting for the other.
+    invoice. Ordered by the lock order's rank, then key, so two
+    transactions that need the same rows take them in the same sequence
+    instead of each holding one and waiting for the other.
 
     Re-read, because the object in hand was read before the lock: a
     material issue waiting on its work order while the order closed
