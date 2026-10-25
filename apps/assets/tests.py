@@ -464,6 +464,45 @@ class ADraftDebitNoteWaitingIsNotCapitalisedTests(CapitalisationFixture):
             line.bill.create_debit_note(quantities={line: Decimal("1")}, post=False)
 
 
+class ADraftCountedAtCapitalisingAndUndoneTests(CapitalisationFixture):
+    """
+    O353's reverse path: 3 machines at 1,000.01, a draft for one waiting, two capitalised (2,000.02), purchases
+    keeping 1,000.01 for the draft. The draft deleted, or its line cut to nothing kept, gives that back: the
+    third machine can be capitalised at 1,000.01 and purchases returns to 0.00. The mirror: the draft edited up
+    to two after the capitalising is refused, since the account holds only the one it was counted at.
+    """
+
+    def counted(self):
+        line = self.bill_line("3", "1000.01")
+        note = line.bill.create_debit_note(quantities={line: Decimal("1")}, post=False)
+        line.capitalise_as_asset(self.category)
+        return line, note
+
+    def test_the_draft_deleted_lets_the_third_be_capitalised(self):
+        line, note = self.counted()
+        note.delete()
+        third = line.capitalise_as_asset(self.category)
+        self.assertEqual(([asset.cost for asset in third], self.balance(self.plant), self.balance(self.expense)),
+                         ([Decimal("1000.01")], Decimal("3000.03"), Decimal("0")))
+        with self.assertRaisesMessage(ValidationError, "already been capitalised"):
+            line.capitalise_as_asset(self.category)
+
+    def test_the_drafts_line_removed_lets_the_third_be_capitalised(self):
+        line, note = self.counted()
+        note.lines.all().delete()
+        line.capitalise_as_asset(self.category)
+        self.assertEqual((self.balance(self.plant), self.balance(self.expense)), (Decimal("3000.03"), Decimal("0")))
+
+    def test_the_draft_edited_up_after_the_capitalising_is_refused(self):
+        line, note = self.counted()
+        draft = note.lines.get()
+        draft.quantity = Decimal("2")
+        with self.assertRaises(ValidationError):
+            draft.save()
+        note.post()
+        self.assertEqual((self.balance(self.plant), self.balance(self.expense)), (Decimal("2000.02"), Decimal("0")))
+
+
 class APeriodClosesWithItsDepreciationTests(AssetTestCase):
     """
     O29: January closed with the lathe's January uncharged, and every
