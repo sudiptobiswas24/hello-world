@@ -5153,14 +5153,17 @@ class BillLine(PostedLineMixin, TaxedLineMixin, AuditModel):
         return sum((line.booked_amount() for line in self.debit_lines.filter(bill__posted=True).select_related("bill")),
                    Decimal("0"))
 
-    def amount_waiting_to_be_given_back(self):
+    def amount_waiting_to_be_given_back(self, but=None):
         """
         What draft debit notes waiting on this line will give back of it, in base: at the rate its bill was
         booked at, which a debit note posts at (Bill.post). Capitalising leaves it in the line's account.
+        `but`, a draft line left out: the one being saved.
         """
         rate = self.bill.exchange_rate or Decimal("1")
-        return sum((round_money(line.net_amount() * rate) for line in self.debit_lines.filter(bill__posted=False)),
-                   Decimal("0"))
+        drafts = self.debit_lines.filter(bill__posted=False)
+        if but is not None and but.pk:
+            drafts = drafts.exclude(pk=but.pk)
+        return sum((round_money(line.net_amount() * rate) for line in drafts), Decimal("0"))
 
     def amount_in_its_account(self):
         """
@@ -5310,7 +5313,10 @@ class BillLine(PostedLineMixin, TaxedLineMixin, AuditModel):
             raise ValidationError("Only a posted bill can be capitalised.")
         # One un-capitalised stands for nothing: its entry was reversed and the cost is back in the
         # line's account. Counted, it refused the undo's own way forward, capitalising again.
-        if self.assets.exclude(status=AssetStatus.CANCELLED).exists():
+        # Those standing count against the units: a draft counted when they were made and since deleted or
+        # cut gave its share back to the line's account, and that unit can be capitalised now (O353).
+        standing = self.assets.exclude(status=AssetStatus.CANCELLED).count()
+        if standing and self.quantity - given_back_or_waiting(self, "debits_line") - standing <= 0:
             raise ValidationError("This line has already been capitalised.")
         undone_on = JournalEntry.objects.filter(
             reverses__in=self.assets.filter(status=AssetStatus.CANCELLED).values("capitalisation_entry"),
@@ -5337,7 +5343,7 @@ class BillLine(PostedLineMixin, TaxedLineMixin, AuditModel):
         # What debit notes gave back is not capitalised: a refunded line made an asset of nothing. Nor
         # what a draft waiting will give back (O353, given_back_or_waiting): counted once posted, a draft
         # of one of three machines saw all three capitalised, and could then never post.
-        units = self.quantity - given_back_or_waiting(self, "debits_line")
+        units = self.quantity - given_back_or_waiting(self, "debits_line") - standing
         if units <= 0:
             raise ValidationError("This line has been given back in full, or a draft debit note waiting gives "
                                   "back the rest; there is nothing to capitalise.")
@@ -5351,7 +5357,8 @@ class BillLine(PostedLineMixin, TaxedLineMixin, AuditModel):
         # bill's own figures a foreign machine went onto the asset
         # account at its euro price and left the difference behind.
         # A draft waiting leaves its share where the bill put it, for it to take back as it posts.
-        total = self.booked_amount() - self.amount_given_back() - self.amount_waiting_to_be_given_back()
+        # What is still in the line's account (less what stands capitalised), less the drafts' share.
+        total = self.amount_in_its_account() - self.amount_waiting_to_be_given_back()
         unit_cost = round_money(total / units)
         memo = f"Capitalised from {self.bill.number}"
         source = self.posted_account or self.expense_account
@@ -5705,7 +5712,9 @@ class BillLine(PostedLineMixin, TaxedLineMixin, AuditModel):
         original = self.debits_line
         # A draft counted when the line was capitalised (O353) left its share in the account: it takes that.
         takes = round_money(self.net_amount() * (original.bill.exchange_rate or Decimal("1")))
-        if original.assets.exclude(status="cancelled").exists() and original.amount_in_its_account() < takes:
+        # Less what the other drafts waiting hold there: edited up, one took another's share (O353).
+        held = original.amount_in_its_account() - original.amount_waiting_to_be_given_back(but=self)
+        if original.assets.exclude(status="cancelled").exists() and held < takes:
             # The line's cost has moved onto the asset account, so a
             # debit note crediting the line's own account would take it
             # out of an account that no longer holds it — below nothing —
