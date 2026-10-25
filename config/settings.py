@@ -65,6 +65,20 @@ if PRODUCTION and (not _env_list("ERP_FIELD_KEYS") or DEV_FIELD_KEY in FIELD_KEY
         "sets up its phone again."
     )
 
+if PRODUCTION:
+    # A key that is there but is no Fernet key stops the start too, not the first sign-in (review_sechr).
+    from cryptography.fernet import Fernet
+
+    for _position, _key in enumerate(FIELD_KEYS, start=1):
+        try:
+            Fernet(_key)
+        except (ValueError, TypeError):
+            raise ImproperlyConfigured(
+                f"ERP_FIELD_KEYS key {_position} is not a Fernet key (32 bytes in url-safe base64, as "
+                "Fernet.generate_key() prints). The server will not start on it: the second factors could not "
+                "be opened."
+            ) from None
+
 DEBUG = os.environ.get("DJANGO_DEBUG", "false" if PRODUCTION else "true").lower() == "true"
 
 ALLOWED_HOSTS = _env_list("DJANGO_ALLOWED_HOSTS")
