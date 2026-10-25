@@ -29,14 +29,20 @@ class RefundVersusAbsorption(r.RaceCase):
         refund = Payment.objects.create(party=self.customer, direction=PaymentDirection.DISBURSEMENT, payment_date=datetime.date(2026, 3, 7),
                                         amount=D("600"), currency=self.usd, bank_account=self.bank, counterpart_account=self.ar)
         refund.post()
-        extra = self.payment("50", on=datetime.date(2026, 3, 8))
-        outcomes = r.race((JournalEntry, InvoicePayment), *make_calls(inv, note, a, refund, extra))
+        outcomes = r.race((JournalEntry, InvoicePayment), *make_calls(inv, note, a, refund))
         book, docs = self.foots(inv.pk, note.pk)
         say(book == docs, f"{name}: AR {book} == invoice due - note due {docs}", outcomes)
         self.assertEqual(book, docs, outcomes)
 
     def test_refund_allocation_while_the_receipt_is_voided(self):
         self.scenario("refund vs void of the receipt the note absorbed around",
-                      lambda inv, note, a, refund, extra: [
+                      lambda inv, note, a, refund: [
                           lambda: InvoicePayment.objects.create(invoice_id=note.pk, payment_id=refund.pk, amount=D("600")),
                           lambda: Payment.objects.get(pk=a.pk).void()])
+
+    def test_refund_while_a_second_receipt_arrives(self):
+        # a note posted on an unpaid-in-part invoice; the refund is allocated while another receipt tops the invoice up
+        self.scenario("refund vs a top-up receipt",
+                      lambda inv, note, a, refund: [
+                          lambda: InvoicePayment.objects.create(invoice_id=note.pk, payment_id=refund.pk, amount=D("600")),
+                          lambda: InvoicePayment.objects.create(invoice_id=inv.pk, payment_id=self.payment("100", on=datetime.date(2026, 3, 8)).pk, amount=D("100"))])
