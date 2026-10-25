@@ -18,38 +18,8 @@ from django.db.models import Q
 from django.utils import timezone
 
 from .endpoints import may_read
+from .site_paths import same_site_path  # the one rule for a stored same-site path (O317)
 from .models import AuditModel, serialised
-
-
-
-def same_site_path(text):
-    """
-    Whether `text` is a path on this site and nothing a browser could read
-    as another host (O317). It starts with one `/`; it holds no backslash
-    and no control character, which a browser reads as a slash or drops
-    (`/\\host`, `/<tab>/host` are both `//host`); and none of that is
-    hidden in percent-encoding (`/%5chost`, `/%2f/host`). Parsed, it has
-    no scheme and no host. A follow-up's link and a saved view's screen
-    both ask this; the office application asks the same before it renders
-    one (frontend/src/lib/sitePath.ts), so a row stored before is harmless.
-    """
-    from urllib.parse import unquote, urlsplit
-
-    if not isinstance(text, str):
-        return False
-    seen, forms = text, [text]
-    for _ in range(3):  # encoded twice over is still read as the same once a server or browser unquotes it
-        seen = unquote(seen)
-        forms.append(seen)
-    for form in forms:
-        if not form.startswith("/") or form.startswith("//"):
-            return False
-        if "\\" in form or any(ord(char) < 32 or ord(char) == 127 for char in form):
-            return False
-        parts = urlsplit(form)
-        if parts.scheme or parts.netloc:
-            return False
-    return True
 
 
 class Note(AuditModel):

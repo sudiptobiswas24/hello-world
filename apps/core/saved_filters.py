@@ -41,7 +41,7 @@ class SavedFilter(models.Model):
         self.name = self.name.strip()
         if not self.name:
             raise ValidationError({"name": ["Give it a name."]})
-        from .chatter import same_site_path
+        from .site_paths import same_site_path
 
         if not same_site_path(self.screen):  # one rule with a follow-up's link (O317)
             raise ValidationError({"screen": ["A place in the application: a path starting with a single /, "
