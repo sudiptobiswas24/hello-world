@@ -183,7 +183,11 @@ class TheDecisionOfferedIsTheServersTests(BrowserMixin, QualityTestCase, StaticL
         page = self.sign_in(person, f"/app/quality/inspections/{inspection.pk}", page=self.new_page())
         box = page.get_by_label("Decision", exact=True)
         expect(box).to_be_visible()
-        return [text.strip() for text in box.locator("option").all_inner_texts()]
+        offered = [text.strip() for text in box.locator("option").all_inner_texts()]
+        # Closed before the test deletes what it showed: a page left open went on asking for the deleted
+        # inspection's attachments, a 404 that only the machine's speed decided (the g23b gate).
+        page.context.close()
+        return offered
 
     def test_each_is_offered_what_the_server_allows(self):
         plan = self.plan(mandatory=True)
