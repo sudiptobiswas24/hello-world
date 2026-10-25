@@ -321,7 +321,7 @@ class TapeSpecificationViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         from . import strength
 
         spec = self.get_object()
-        filler = number(request.query_params, "filler", 3, sign=NOT_NEGATIVE, default=None)  # filler_percent
+        filler = number(request.query_params, "filler", 3, digits=6, sign=NOT_NEGATIVE, default=None)  # filler_percent
         rows = _run(strength.check, spec, filler)
 
         def text(value):
@@ -392,7 +392,7 @@ class BagSpecificationViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
                     raise DRFValidationError({"lamination_gsm": [
                         "The sack becomes laminated with this; say how heavy the coating is."]})
                 sack.lamination_gsm = number(request.data, "lamination_gsm",
-                                             type(sack)._meta.get_field("lamination_gsm").decimal_places)
+                                             field=type(sack)._meta.get_field("lamination_gsm"))
         if not kept:
             sack.lamination_gsm = Decimal("0")
         sack.is_laminated = bool(kept)
@@ -1044,7 +1044,7 @@ class MaintenanceJobViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
             worked_on = None
         if worked_on is None:
             raise DRFValidationError({"worked_on": ["A date, YYYY-MM-DD."]})
-        minutes = number(data, "minutes", MaintenanceLabour._meta.get_field("minutes").decimal_places)
+        minutes = number(data, "minutes", field=MaintenanceLabour._meta.get_field("minutes"))
         row = _run(MaintenanceLabour.objects.create, job=job, technician=technician,
                    worked_on=worked_on, minutes=minutes)
         return Response({"id": row.pk, "job": job.pk, "minutes": str(row.minutes),
@@ -2238,8 +2238,8 @@ class OperationReportViewSet(AuditableViewSetMixin, viewsets.ReadOnlyModelViewSe
         machine = None
         if request.data.get("machine"):
             machine = get_object_or_404(Machine, pk=request.data.get("machine"))
-        quantity = number(request.data, "quantity_good",
-                          OperationReport._meta.get_field("quantity_good").decimal_places, sign=NOT_NEGATIVE)
+        quantity = number(request.data, "quantity_good", field=OperationReport._meta.get_field("quantity_good"),
+                          sign=NOT_NEGATIVE)
         counted = _run(scrap.report, operation, quantity,
                        on_date=request.data.get("reported_on"), machine=machine,
                        memo=request.data.get("memo") or "")
