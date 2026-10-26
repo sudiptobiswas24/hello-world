@@ -316,6 +316,13 @@ built.
        - pip needs tblib, or the parallel runner dies silently on the first
          failure ("tracebacks cannot be pickled"); it is pinned now.
        - Agents never `git stash`: worktrees share one stash.
+   - **g24, in flight (started 26 October):** three agents, briefs
+     docs/handoff/g24_{audit,statutory,rcm}.md, base d76ef6f, worktrees
+     /home/user/work/fix_{audit,statutory,rcm}, integration tree
+     /home/user/work/g24tree, gate logs /home/user/gate-logs-g24. The year-end
+     items (closing-rate restatement, tax depreciation at written-down value)
+     follow as a second round, once the audit trail is in. Register and
+     handoff commits are made in the integration tree only.
    - **g24, go-live statutory and the audit trail (decided 26 October, from
      docs/handoff/reports/odoo19_gap_analysis_oct26.md).** The re-done Odoo 19
      comparison found the 16 go-live build items of 14 October 12 built and 4
