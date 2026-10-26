@@ -13,7 +13,7 @@ from .tds import TdsRate, TdsSection
 class TdsSectionSerializer(serializers.ModelSerializer):
     class Meta:
         model = TdsSection
-        fields = ["id", "code", "name", "mode", "single_threshold",
+        fields = ["id", "code", "name", "section_1961", "section_2025", "mode", "single_threshold",
                   "annual_threshold", "payable_account", "receivable_account", "is_active"]
 
 
@@ -27,7 +27,8 @@ class TdsSectionViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 class TcsSectionSerializer(serializers.ModelSerializer):
     class Meta:
         model = TcsSection
-        fields = ["id", "code", "name", "form_code", "base_includes_gst", "payable_account", "is_active"]
+        fields = ["id", "code", "name", "section_1961", "section_2025", "form_code", "base_includes_gst",
+                  "payable_account", "is_active"]
 
 
 class TcsSectionViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):

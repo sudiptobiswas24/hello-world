@@ -180,7 +180,7 @@ class Month:
         ExchangeRate.objects.create(currency=self.usd, rate=D("84.00"), valid_from=OCT(1))
         ExchangeRate.objects.create(currency=self.usd, rate=D("84.50"), valid_from=OCT(30))
         Company.objects.create(
-            name="Bengal Polysacks", base_currency=self.inr,
+            name="Bengal Polysacks", base_currency=self.inr, tan="CALB01234E",
             default_inventory_account=acct["1300"], default_cogs_account=acct["5010"],
             grni_account=acct["2150"], customer_deposit_account=acct["2300"],
             purchase_price_variance_account=acct["5150"], fx_gain_account=acct["4900"],
@@ -723,9 +723,9 @@ class Month:
         self.gstr1 = self.get("GST Officer", "/api/gst/gstr1/", {"period": "2026-10"})
         self.gstr3b = self.get("GST Officer", "/api/gst/gstr3b/", {"period": "2026-10"})
         self.tds_return = self.get(controller, "/api/purchasing/tds-deductions/quarter/",
-                                   {"from": "2026-10-01", "to": "2026-12-31"})
+                                   {"from": "2026-10-01", "to": "2026-12-31"})["rows"]
         self.tcs_return = self.get(controller, "/api/sales/tcs-collections/quarter/",
-                                   {"from": "2026-10-01", "to": "2026-12-31"})
+                                   {"from": "2026-10-01", "to": "2026-12-31"})["rows"]
         self.ar_aging = self.get("AR Manager", "/api/sales/invoices/aging/", {"as_of": "2026-10-31"})
         self.ap_aging = self.get("AP Manager", "/api/purchasing/purchasing-reports/aging/", {"as_of": "2026-10-31"})
         period = self.post(controller, "/api/accounting/periods/", {

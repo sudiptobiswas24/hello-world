@@ -19,6 +19,7 @@ export default function CompanyForm() {
         { key: "name", label: "Name" },
         { key: "legal_name", label: "Legal name" },
         { key: "tax_id", label: "GSTIN" },
+        { key: "tan", label: "TAN", hint: "Four letters, five digits and a letter: printed on TDS and TCS challans and returns" },
         { key: "email", label: "Email" },
         { key: "phone", label: "Phone" },
         { key: "website", label: "Website" },

@@ -894,12 +894,12 @@ export const MODULES: Module[] = [
       {
         path: "tds-challans", label: "TDS challans", permission: "purchasing.view_tdschallan",
         create: "purchasing.add_tdschallan",
-        keywords: "tds challan 281 pay over bsr", load: () => import("../modules/accounts/TdsChallans"),
+        keywords: "tds challan itns pay over bsr", load: () => import("../modules/accounts/TdsChallans"),
         detail: () => import("../modules/accounts/TdsChallanForm"),
       },
       {
         path: "tds-return", label: "TDS return", permission: "purchasing.view_tdsdeduction",
-        keywords: "26q quarterly tds return", load: () => import("../modules/accounts/TdsReturn"),
+        keywords: "quarterly tds return statement form", load: () => import("../modules/accounts/TdsReturn"),
       },
       {
         path: "tcs-collected", label: "TCS collected", permission: "sales.view_tcscollection",
@@ -913,7 +913,7 @@ export const MODULES: Module[] = [
       },
       {
         path: "tcs-return", label: "TCS return", permission: "sales.view_tcscollection",
-        keywords: "143 27eq quarterly tcs return", load: () => import("../modules/accounts/TcsReturn"),
+        keywords: "quarterly tcs return statement form", load: () => import("../modules/accounts/TcsReturn"),
       },
       {
         path: "tcs-declarations", label: "TCS declarations", permission: "accounting.view_tcsdeclaration",

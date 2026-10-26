@@ -1,20 +1,23 @@
 import { ReportView, type ParamDef } from "../../views/ReportView";
 
 type Row = Record<string, unknown> & { deduction: number };
+/** The return as the API makes it: the TAN and the names standing at the period's end, above its rows. */
+type Return = { tan: string; act: string; form: string; challan_form: string; rows: Row[] };
 
 const PARAMS: ParamDef[] = [
   { key: "from", label: "From", kind: "date", required: true, initial: "-90" },
   { key: "to", label: "To", kind: "date", required: true, initial: "today" },
 ];
 
-/** The quarter's deductions as the return (26Q) lists them, with the challan that paid each over. */
+/** The quarter's deductions as the return lists them, with the challan that paid each over; the form is named by the API for the period. */
 export default function TdsReturn() {
   return (
-    <ReportView<Row[], Row>
+    <ReportView<Return, Row>
       title="TDS return"
       endpoint="/api/purchasing/tds-deductions/quarter/"
       params={PARAMS}
-      rows={(data) => data.map((row) => ({ ...row, id: row.deduction }))}
+      above={(data) => <p className="muted">{data.form} under the {data.act}, TAN {data.tan}; paid over by {data.challan_form}</p>}
+      rows={(data) => data.rows.map((row) => ({ ...row, id: row.deduction }))}
       columns={[
         { key: "date", label: "Date", kind: "date", width: "8rem" },
         { key: "section", label: "Section", width: "6rem" },
