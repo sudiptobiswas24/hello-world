@@ -461,8 +461,8 @@ class TcsChallan(AuditModel):
     voided_entry = models.ForeignKey(
         JournalEntry, null=True, blank=True, on_delete=models.PROTECT, related_name="+", editable=False)
     # Facts of the payment, as on the TDS challan: the company's TAN and the challan's name on its day.
-    tan = models.CharField(max_length=10, blank=True, editable=False, verbose_name="TAN")
-    form = models.CharField(max_length=32, blank=True, editable=False, help_text="The challan's name on its day.")
+    tan = models.CharField(max_length=10, blank=True, default="", db_default="", editable=False, verbose_name="TAN")
+    form = models.CharField(max_length=32, blank=True, default="", db_default="", editable=False, help_text="The challan's name on its day.")
 
     class Meta:
         ordering = ["-date", "-id"]

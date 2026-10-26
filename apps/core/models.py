@@ -1712,9 +1712,10 @@ class Company(AuditModel):
     bank_name = models.CharField(max_length=255, blank=True, help_text="The bank and branch customers pay into.")
     bank_account_number = models.CharField(max_length=64, blank=True)
     bank_ifsc = models.CharField(max_length=11, blank=True)
+    # db_default too: a row written by a migration's older model, which knows no TAN, still gets "".
     # The tax deduction and collection account number: required before a TDS or TCS challan is paid or a return
     # is made, and printed on both (accounting.challans.company_tan).
-    tan = models.CharField(max_length=10, blank=True, verbose_name="TAN",
+    tan = models.CharField(max_length=10, blank=True, default="", db_default="", verbose_name="TAN",
                            help_text="Four letters, five digits and a letter. Required before a TDS or TCS challan "
                                      "or return is made.")
     base_currency = models.ForeignKey(

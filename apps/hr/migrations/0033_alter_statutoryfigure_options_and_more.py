@@ -31,6 +31,8 @@ class Migration(migrations.Migration):
             name="scheduled_employment",
             field=models.CharField(
                 blank=True,
+                db_default="",
+                default="",
                 help_text="The scheduled employment the State's minimum wages name their work under, as the notification names it.",
                 max_length=128,
             ),
@@ -40,6 +42,8 @@ class Migration(migrations.Migration):
             name="skill",
             field=models.CharField(
                 blank=True,
+                db_default="",
+                default="",
                 choices=[
                     ("unskilled", "Unskilled"),
                     ("semi_skilled", "Semi-skilled"),
@@ -55,6 +59,8 @@ class Migration(migrations.Migration):
             name="wage_zone",
             field=models.CharField(
                 blank=True,
+                db_default="",
+                default="",
                 help_text="The zone the notification places the workplace in; blank where it has none.",
                 max_length=32,
             ),
