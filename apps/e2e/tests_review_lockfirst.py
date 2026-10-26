@@ -20,7 +20,8 @@ from apps.core.models import DocumentNumbering, lock_rows
 from apps.e2e.tests_races import fixture
 from apps.sales import tests_base as sales_fixture
 
-HOLD = 4  # seconds a long posting holds the numbering row
+HOLD = 30  # seconds at most a long posting holds the numbering row (the test lets go sooner)
+PAY_RUN_PAUSE = 4  # seconds P5's pay run pauses inside its posting, the numbering row held
 
 
 def numbering_is_free():
@@ -44,10 +45,15 @@ def numbering_is_free():
 
 
 class Holder:
-    """A long posting: a transaction that takes the numbering row and keeps it for `seconds`."""
+    """
+    A long posting: a transaction that takes the numbering row and keeps it until the test lets go, or for
+    `seconds` at most. A call made inside `with Holder() as hold:` that waits on the numbering row cannot finish
+    while the row is held, so `hold.holding()` read straight after it says whether it waited, whatever the
+    machine's speed: a slow password hasher no longer reads as a wait, nor a fast wait as none.
+    """
 
     def __init__(self, seconds=HOLD):
-        self.seconds, self.started = seconds, threading.Event()
+        self.seconds, self.started, self.release = seconds, threading.Event(), threading.Event()
         self.thread = threading.Thread(target=self.run_it)
 
     def run_it(self):
@@ -55,9 +61,13 @@ class Holder:
             with transaction.atomic():
                 DocumentNumbering.hold()
                 self.started.set()
-                time.sleep(self.seconds)
+                self.release.wait(self.seconds)
         finally:
             connection.close()
+
+    def holding(self):
+        """Still holding the row: the test has not let go and the most it holds for has not run out."""
+        return self.thread.is_alive() and not self.release.is_set()
 
     def __enter__(self):
         self.thread.start()
@@ -65,6 +75,7 @@ class Holder:
         return self
 
     def __exit__(self, *exc):
+        self.release.set()
         self.thread.join(30)
 
 
@@ -83,11 +94,12 @@ class SignInAndReadWaitOnNothing(TransactionTestCase):
         from apps.core.tests_second_factor import staff_session
 
         c = staff_session(Client(), self.user)
-        with Holder():
+        with Holder() as hold:
             took, response = timed(lambda: c.get("/api/inventory/items/"))
+            waited = not hold.holding()
         print(f"\nP2a GET behind a {HOLD}s hold: {took:.2f}s status {response.status_code}")
         self.assertEqual(response.status_code, 200)
-        self.assertLess(took, 1.5)
+        self.assertFalse(waited, f"finished only once the hold let go ({took:.2f}s)")
 
     def test_p2b_a_sign_in_with_a_session_already_open_does_not_wait(self):
         c = Client()
@@ -95,38 +107,38 @@ class SignInAndReadWaitOnNothing(TransactionTestCase):
         session["seen"] = 1
         session.save()
         c.cookies["sessionid"] = session.session_key
-        with Holder():
+        with Holder() as hold:
             took, response = timed(lambda: c.post("/accounts/login/", {"username": "pat", "password": "pw-12345-xyz"}))
+            waited = not hold.holding()
         print(f"\nP2b sign-in (open session) behind a {HOLD}s hold: {took:.2f}s status {response.status_code}")
-        # A wait for the hold takes the hold's length (4.35 s on the tip). The default password hasher took 1.9 s on
-        # a machine under a gate's load (fix_g23b5), so the line sits below the hold, not at a fast hasher's time.
-        self.assertLess(took, HOLD - 1.0)
+        self.assertFalse(waited, f"finished only once the hold let go ({took:.2f}s)")
 
     def test_p2c_a_fresh_sign_in_does_not_wait(self):
         c = Client()
-        with Holder():
+        with Holder() as hold:
             took, response = timed(lambda: c.post("/accounts/login/", {"username": "pat", "password": "pw-12345-xyz"}))
+            waited = not hold.holding()
         print(f"\nP2c sign-in (no session) behind a {HOLD}s hold: {took:.2f}s status {response.status_code}")
-        # A wait for the hold takes the hold's length (4.35 s on the tip). The default password hasher took 1.9 s on
-        # a machine under a gate's load (fix_g23b5), so the line sits below the hold, not at a fast hasher's time.
-        self.assertLess(took, HOLD - 1.0)
+        self.assertFalse(waited, f"finished only once the hold let go ({took:.2f}s)")
 
     def test_p2d_a_sign_out_does_not_wait(self):
         c = Client()
         c.force_login(self.user)
-        with Holder():
+        with Holder() as hold:
             took, response = timed(lambda: c.post("/accounts/logout/"))
+            waited = not hold.holding()
         print(f"\nP2d sign-out behind a {HOLD}s hold: {took:.2f}s status {response.status_code}")
-        self.assertLess(took, 1.5)
+        self.assertFalse(waited, f"finished only once the hold let go ({took:.2f}s)")
 
     def test_p2e_a_session_delete_by_the_password_change_does_not_wait(self):
         from apps.core.second_factor import end_sessions
 
         Client().force_login(self.user)
-        with Holder():
+        with Holder() as hold:
             took, _ = timed(lambda: end_sessions(self.user))
+            waited = not hold.holding()
         print(f"\nP2e end_sessions behind a {HOLD}s hold: {took:.2f}s")
-        self.assertLess(took, 1.5)
+        self.assertFalse(waited, f"finished only once the hold let go ({took:.2f}s)")
 
 
 @unittest.skipUnless(connection.vendor == "postgresql", "needs PostgreSQL")
@@ -276,7 +288,7 @@ class ALongPostingAndASecondUsersInvoice(TransactionTestCase):
             if getattr(mine, "slow", False):
                 mine.slow = False
                 long_one.set()
-                time.sleep(HOLD)
+                time.sleep(PAY_RUN_PAUSE)
 
         pre_save.connect(slow, sender=JournalEntry, weak=False, dispatch_uid="slow-lf")
 
