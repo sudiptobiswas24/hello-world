@@ -1684,6 +1684,17 @@ class DocumentSequenceYear(models.Model):
         return f"{self.sequence.code} {self.year}: next {self.next_number}"
 
 
+TAN = re.compile(r"^[A-Z]{4}[0-9]{5}[A-Z]$")
+
+
+def check_tan(value):
+    """A TAN as stored: upper case, four letters, five digits and a letter; blank stays blank."""
+    tan = (value or "").strip().upper()
+    if tan and not TAN.match(tan):
+        raise ValidationError({"tan": [f"{value!r} is not a TAN: four letters, five digits and a letter."]})
+    return tan
+
+
 class Company(AuditModel):
     """
     Single-company profile. Deliberately a singleton: multi-entity support
@@ -1701,6 +1712,11 @@ class Company(AuditModel):
     bank_name = models.CharField(max_length=255, blank=True, help_text="The bank and branch customers pay into.")
     bank_account_number = models.CharField(max_length=64, blank=True)
     bank_ifsc = models.CharField(max_length=11, blank=True)
+    # The tax deduction and collection account number: required before a TDS or TCS challan is paid or a return
+    # is made, and printed on both (accounting.challans.company_tan).
+    tan = models.CharField(max_length=10, blank=True, verbose_name="TAN",
+                           help_text="Four letters, five digits and a letter. Required before a TDS or TCS challan "
+                                     "or return is made.")
     base_currency = models.ForeignKey(
         Currency, null=True, blank=True, on_delete=models.PROTECT, related_name="+"
     )
@@ -1846,6 +1862,7 @@ class Company(AuditModel):
     def save(self, *args, **kwargs):
         self._check_base_currency()
         self.bank_ifsc = check_ifsc(self.bank_ifsc)
+        self.tan = check_tan(self.tan)
         for check in _COMPANY_CHECKS:
             check(self)
         existing = Company.objects.first()

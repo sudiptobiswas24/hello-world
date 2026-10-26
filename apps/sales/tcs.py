@@ -460,6 +460,9 @@ class TcsChallan(AuditModel):
     journal_entry = models.ForeignKey(JournalEntry, on_delete=models.PROTECT, related_name="+", editable=False)
     voided_entry = models.ForeignKey(
         JournalEntry, null=True, blank=True, on_delete=models.PROTECT, related_name="+", editable=False)
+    # Facts of the payment, as on the TDS challan: the company's TAN and the challan's name on its day.
+    tan = models.CharField(max_length=10, blank=True, editable=False, verbose_name="TAN")
+    form = models.CharField(max_length=32, blank=True, editable=False, help_text="The challan's name on its day.")
 
     class Meta:
         ordering = ["-date", "-id"]
@@ -497,11 +500,11 @@ class TcsChallan(AuditModel):
             section, waiting, _live, bank_account, date, challan_number,
             what=f"collected under {section.code} to the end of {month:%B %Y}",
             memo=f"TCS {section.code} for {month:%B %Y}, challan {challan_number}",
-            make_challan=lambda total, entry: cls.objects.create(
-                section=section, month=month, date=to_date(date), bank_account=bank_account,
+            make_challan=lambda total, entry, **kept: cls.objects.create(
+                **kept, section=section, month=month, date=to_date(date), bank_account=bank_account,
                 challan_number=challan_number, bsr_code=bsr_code, amount=total, journal_entry=entry,
                 section_code=section.code_on(to_date(date))),
-            signed=TcsCollection.signed)
+            signed=TcsCollection.signed, tax="tcs")
 
     @serialised("voided_entry")
     @takes_back

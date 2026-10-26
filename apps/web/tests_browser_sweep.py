@@ -42,6 +42,13 @@ class SweepMixin:
         if not GstSettings.objects.exists():
             GstSettings.objects.create(gstin="27AABCD1234E1Z8", interstate_position=FiscalPosition.objects.create(
                 code="INTER", name="Inter-state"))
+        # Without a TAN the TDS and TCS returns answer 400 "The company has no TAN", which is right
+        # (purchasing.tests_tds_names holds it) and opens nothing.
+        from apps.core.models import Company
+
+        company = Company.get()
+        if not company.tan:
+            Company.objects.filter(pk=company.pk).update(tan="CALA12345B")
         opened = {}
         for role in roles or list(ROLES):
             with self.subTest(role=role):

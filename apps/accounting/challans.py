@@ -18,16 +18,30 @@ from .models import JournalEntry, JournalLine
 
 from apps.core.models import takes_back  # noqa: E402  (O354: a correction step)
 
+def company_tan(doing):
+    """The company's TAN, for `doing` ("a TDS challan"); refused in words while it has none."""
+    from apps.core.models import Company
+
+    company = Company.get()
+    tan = company.tan if company is not None else ""
+    if not tan:
+        raise ValidationError(f"The company has no TAN, and {doing} carries it: enter it under Settings > Company "
+                              "(four letters, five digits and a letter).")
+    return tan
+
+
 def pay_over(section, waiting, live, bank_account, date, challan_number, what, memo, make_challan,
-             signed=lambda row: row.amount):
+             signed=lambda row: row.amount, tax="tds"):
     """
     Pay over the rows of `waiting` (a queryset of one model, each with an
     `amount`, a `challan` and the `posted_account` it was owed into) that
     `live` keeps, under `section`: Dr each row's kept payable account / Cr
     bank. Never the section's account as it stands: moved after a row
     posted, the challan cleared an account that never held the tax (review
-    F3). `make_challan(amount, entry)` creates the challan the rows are then
-    marked paid by.
+    F3). `make_challan(amount, entry, tan=, form=)` creates the challan the
+    rows are then marked paid by, keeping the company's TAN (refused without
+    one) and the challan's name on its day (statutory_names): facts of the
+    payment, not read again from today's settings.
 
     The bank is held as money inside the transaction that moves it; the
     section is locked first, then the rows in key order, and they are read
@@ -35,7 +49,10 @@ def pay_over(section, waiting, live, bank_account, date, challan_number, what, m
     challan paid it over, and 700 was paid for nothing (O64).
     """
     from .money import refuse_as_money_account
+    from .statutory_names import name_on
 
+    tan = company_tan(f"a {tax.upper()} challan")
+    form = name_on(f"{tax}_challan", date)
     with transaction.atomic():
         refuse_as_money_account(bank_account)
         lock_rows(section)
@@ -66,7 +83,7 @@ def pay_over(section, waiting, live, bank_account, date, challan_number, what, m
                                            credit=max(-amount, Decimal("0")), description=memo)
         JournalLine.objects.create(entry=entry, account=bank_account, credit=total, description=memo)
         entry.post()
-        challan = make_challan(total, entry)
+        challan = make_challan(total, entry, tan=tan, form=form)
         model.objects.filter(pk__in=[row.pk for row in owed]).update(challan=challan)
         return challan
 

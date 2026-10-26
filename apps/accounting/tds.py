@@ -61,8 +61,14 @@ class ThresholdMode(models.TextChoices):
 
 
 class TdsSection(AuditModel):
-    code = models.CharField(max_length=16, unique=True, help_text="194Q, 194C, 194J")
+    code = models.CharField(max_length=16, unique=True, help_text="The plant's code for it: 194Q, 194C, 194J")
     name = models.CharField(max_length=128)
+    # The section of each Act it is under: the return, the challan and the screens name the 1961 Act's for a
+    # period before 1 April 2026 and the 2025 Act's from it (statutory_names.section_on).
+    section_1961 = models.CharField(max_length=32, blank=True,
+                                    help_text="Its section of the Income-tax Act 1961: 194C.")
+    section_2025 = models.CharField(max_length=32, blank=True,
+                                    help_text="Its section of the Income-tax Act 2025: 393(1).")
     # The rates are dated rows (TdsRate), confirmed by the accountant, as TCS's are (O233).
     mode = models.CharField(max_length=8, choices=ThresholdMode.choices, default=ThresholdMode.WHOLE)
     single_threshold = models.DecimalField(

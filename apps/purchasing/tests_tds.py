@@ -44,6 +44,10 @@ def confirmed_rate(section, rate, no_pan, day=datetime.date(2000, 4, 1)):
 class TdsTestCase(PurchasingLifecycleTestCase):
     def setUp(self):
         super().setUp()
+        # The company's TAN: a challan and a return carry it, and are refused without it (g24 decision 3).
+        from apps.core.models import Company
+
+        Company.objects.filter(pk=Company.get().pk).update(tan="CALA12345B")
         self.tds_payable = Account.objects.create(code="2250", name="TDS payable", account_type=AccountType.LIABILITY)
         self.bank = Account.objects.create(code="1010", name="Bank", account_type=AccountType.ASSET, holds_money=True)
         self.goods = TdsSection.objects.create(
@@ -343,8 +347,8 @@ class QuarterlyReturnTests(TdsTestCase):
         client = APIClient()
         client.force_authenticate(user)
         url = "/api/purchasing/tds-deductions/quarter/"
-        [q1] = client.get(url, {"from": "2026-04-01", "to": "2026-06-30"}).json()
-        [q2] = client.get(url, {"from": "2026-07-01", "to": "2026-09-30"}).json()
+        [q1] = client.get(url, {"from": "2026-04-01", "to": "2026-06-30"}).json()["rows"]
+        [q2] = client.get(url, {"from": "2026-07-01", "to": "2026-09-30"}).json()["rows"]
         self.assertEqual((q1["amount"], q2["amount"], q2["reverses"]), ("700.00", "-700.00", "2026-06-10"))
 
     def test_reversed_within_its_quarter_it_is_in_neither(self):
@@ -391,7 +395,7 @@ class ApiTests(TdsTestCase):
 
         controller = self.as_("Controller")
         [row] = controller.get("/api/purchasing/tds-deductions/quarter/",
-                               {"from": "2026-04-01", "to": "2026-06-30"}).json()
+                               {"from": "2026-04-01", "to": "2026-06-30"}).json()["rows"]
         self.assertEqual((row["section"], row["pan"], row["base"], row["amount"], row["challan"]),
                          ("194Q", "AAACG1234F", "1000000.00", "1000.00", "0510308/00042"))
         [listed] = controller.get("/api/purchasing/tds-deductions/", {"bill": bill.pk}).json()

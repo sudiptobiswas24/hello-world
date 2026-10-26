@@ -54,22 +54,32 @@ class TdsDeductionViewSet(viewsets.ReadOnlyModelViewSet):
 
     @action(detail=False, methods=["get"])
     def quarter(self, request):
-        """The return's rows for ?from=&to= (the quarter's first and last days)."""
+        """
+        The return for ?from=&to= (the quarter's first and last days): the TAN
+        and the form standing then (statutory_names.heading, refused without
+        a TAN) above its rows.
+        """
+        from apps.accounting.statutory_names import heading
+
         start, end = to_date(request.query_params.get("from")), to_date(request.query_params.get("to"))
         if not start or not end:
             raise DRFValidationError({"from": ["Give the quarter's first and last days."]})
-        return Response(tds_return(start, end))
+        return Response({**heading("tds", start, end), "rows": tds_return(start, end)})
 
 
 class TdsChallanSerializer(serializers.ModelSerializer):
-    section_code = serializers.CharField(source="section.code", read_only=True)
+    section_code = serializers.SerializerMethodField()
     voided = serializers.BooleanField(source="voided_entry_id", read_only=True)
 
     class Meta:
         model = TdsChallan
         fields = ["id", "section", "section_code", "month", "date", "bank_account", "challan_number", "bsr_code",
-                  "amount", "journal_entry", "voided_entry", "voided"]
+                  "amount", "journal_entry", "voided_entry", "voided", "tan", "form"]
         read_only_fields = fields
+
+    def get_section_code(self, row):
+        """The section of the Act kept on the challan; the section's own code on one paid before it was kept."""
+        return row.section_code or row.section.code
 
 
 class TdsChallanViewSet(viewsets.ReadOnlyModelViewSet):

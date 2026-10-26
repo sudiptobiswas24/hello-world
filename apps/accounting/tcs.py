@@ -33,9 +33,13 @@ from .dated_rates import DatedRate, rate_standing
 class TcsSection(AuditModel):
     code = models.CharField(max_length=16, unique=True, help_text="206C(1), or 394 from April 2026")
     name = models.CharField(max_length=128, help_text="What it is collected on: scrap.")
+    section_1961 = models.CharField(max_length=32, blank=True,
+                                    help_text="Its section of the Income-tax Act 1961: 206C(1).")
+    section_2025 = models.CharField(max_length=32, blank=True,
+                                    help_text="Its section of the Income-tax Act 2025: 394(1).")
     form_code = models.CharField(
         max_length=8, blank=True,
-        help_text="The collection code the quarterly return (Form 143, was 27EQ) files it under.")
+        help_text="The collection code the quarterly TCS return files it under.")
     base_includes_gst = models.BooleanField(
         default=True, help_text="Collected on the sale value with the GST charged on it, as the accountant reads "
                                 "the section; off, on the taxable value alone.")
@@ -59,8 +63,10 @@ class TcsSection(AuditModel):
 
     def code_on(self, day):
         """The section the law names on `day` (TcsRate.section_code), whether or not its rate is confirmed."""
+        from .statutory_names import section_on
+
         rate = self.rates.filter(applies_from__lte=day).order_by("-applies_from", "-pk").first()
-        return (rate.section_code if rate else "") or self.code
+        return (rate.section_code if rate else "") or section_on(self, day)
 
     def rate_on(self, day):
         """The rate row that applies on `day`, confirmed by the accountant; refused in words otherwise."""

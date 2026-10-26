@@ -42,11 +42,13 @@ class TcsCollectionViewSet(viewsets.ReadOnlyModelViewSet):
 
     @action(detail=False, methods=["get"])
     def quarter(self, request):
-        """The return's rows (Form 143, was 27EQ) for ?from=&to= (the quarter's first and last days)."""
+        """The return for ?from=&to=: the TAN and the form standing then above its rows (statutory_names.heading)."""
+        from apps.accounting.statutory_names import heading
+
         start, end = to_date(request.query_params.get("from")), to_date(request.query_params.get("to"))
         if not start or not end:
             raise DRFValidationError({"from": ["Give the quarter's first and last days."]})
-        return Response(tcs_return(start, end))
+        return Response({**heading("tcs", start, end), "rows": tcs_return(start, end)})
 
 
 class TcsChallanSerializer(serializers.ModelSerializer):
@@ -55,7 +57,7 @@ class TcsChallanSerializer(serializers.ModelSerializer):
     class Meta:
         model = TcsChallan
         fields = ["id", "section", "section_code", "month", "date", "bank_account", "challan_number", "bsr_code",
-                  "amount", "journal_entry", "voided_entry", "voided"]
+                  "amount", "journal_entry", "voided_entry", "voided", "tan", "form"]
         read_only_fields = fields
 
 
