@@ -206,16 +206,32 @@ built.
      refuses any row before it. Taken because numbering rows held to commit
      met every other lock nested inside a document (a note's refund through
      the bank), and site-by-site holds kept missing paths.
-   - **g23b status, 25 October: all fixing and reviews done; the six-lane gate
-     runs on this tree's tip** (runner /home/user/work/run_gate_g23b.sh, logs
-     /home/user/gate-logs-g23b, progress in its `progress` file). Closed: all
-     16 rows (O255, O317, O318, O348, O260, O261, O350, O353, O349, O347, O329,
-     O262, O360, O270, O258, O257) plus O371 and O376; each round reviewed and
-     its findings fixed. Left: O372 to O375, O377 to O381. If the gate stopped,
-     rerun only the lanes whose log's HEAD is not the tip or that printed no OK,
-     then finalize from the pushed tip and push (the steps below are the record
-     of how it got here).
-   - **g23b, in flight: the security, crash, books and race rows.** Briefs
+   - **g23b is pushed (6018079 gated, 26 October), all six lanes green on one
+     tip:** SQLite 7902, 205 skipped; PostgreSQL 7902; Asia/Kolkata 7902;
+     migration-tagged 44; vitest 55. 59 commits. It holds:
+     - the 16 security, crash, books and race rows (O255, O317, O318, O348,
+       O260, O261, O350, O353, O349, O347, O329, O262, O360, O270, O258,
+       O257), plus O371 and O376; every round reviewed, every blocker fixed;
+     - O257's decision: every transaction that locks a row takes the
+       company's numbering row first (below);
+     - left as rows: O372 to O375, O377 to O384.
+     - What the gate found, each fixed with a test that fails without it: a
+       job-work challan and vendor work asking the period before their number;
+       a browser test that left a page open on a record it deleted; a credit
+       note's refund locking the bank after the numbering row, seen only on
+       PostgreSQL, which led to the numbering-first rule; sign-out and
+       password change waiting behind a long posting; races whose tests knew
+       only one winner (race_in_order() now runs both orders).
+     - Lessons for the next gate:
+       - A runner that goes on after a failed lane runs later lanes on a tree
+         being edited. run_gate_g23b.sh stops at the first FAIL.
+       - A timing threshold under a lock decides by the machine's speed. Ask
+         whether the call finished while the lock was held instead.
+       - Taking a global lock first changes who wins every race. Make each
+         race test run both orders and assert each order's books.
+       - The PostgreSQL lanes may run 9000 s (lane.sh); pg-b took 5766 s.
+       - Do not run agents' PostgreSQL tests beside a gate; pg-b hit its cap.
+   - **g23b, how it ran: the security, crash, books and race rows.** Briefs
      docs/handoff/g23b_*.md. Stopped on 24 October by the session's limit,
      before the gate. To resume:
      - Integration tree /home/user/work/g23btree (snapshot
