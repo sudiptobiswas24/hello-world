@@ -15,6 +15,8 @@ class Migration(migrations.Migration):
             name="form",
             field=models.CharField(
                 blank=True,
+                db_default="",
+                default="",
                 editable=False,
                 help_text="The challan's name on its day.",
                 max_length=32,
@@ -25,6 +27,8 @@ class Migration(migrations.Migration):
             name="section_code",
             field=models.CharField(
                 blank=True,
+                db_default="",
+                default="",
                 editable=False,
                 help_text="The section of the Act the deductions were made under.",
                 max_length=32,
@@ -34,7 +38,8 @@ class Migration(migrations.Migration):
             model_name="tdschallan",
             name="tan",
             field=models.CharField(
-                blank=True, editable=False, max_length=10, verbose_name="TAN"
+                blank=True,
+                db_default="", default="", editable=False, max_length=10, verbose_name="TAN"
             ),
         ),
     ]
