@@ -44,3 +44,37 @@ class Gstr2bStatementSerializer(serializers.ModelSerializer):
     def get_kept_by(self, row):
         user = row.created_by
         return (user.get_full_name() or user.username) if user else ""
+
+
+from .reverse_charge import GstCashPayment, PaymentVoucher, SelfInvoice  # noqa: E402
+
+
+class SelfInvoiceSerializer(serializers.ModelSerializer):
+    bill_number = serializers.CharField(source="bill.number", read_only=True)
+
+    class Meta:
+        model = SelfInvoice
+        fields = ["id", "number", "bill", "bill_number", "date", "received_on", "supplier_name", "place_of_supply",
+                  "taxable", "igst", "cgst", "sgst", "cess", "cancelled_on", "cancellation_reason"]
+        read_only_fields = fields
+
+
+class PaymentVoucherSerializer(serializers.ModelSerializer):
+    bill_number = serializers.CharField(source="bill.number", read_only=True)
+    payment_number = serializers.CharField(source="payment.number", read_only=True)
+
+    class Meta:
+        model = PaymentVoucher
+        fields = ["id", "number", "payment", "payment_number", "bill", "bill_number", "date", "amount",
+                  "igst", "cgst", "sgst", "cess", "cancelled_on"]
+        read_only_fields = fields
+
+
+class GstCashPaymentSerializer(serializers.ModelSerializer):
+    voided = serializers.BooleanField(source="voided_entry_id", read_only=True)
+
+    class Meta:
+        model = GstCashPayment
+        fields = ["id", "month", "date", "cpin", "bank_account", "cash_ledger_account", "igst", "cgst", "sgst",
+                  "cess", "journal_entry", "voided_entry", "voided"]
+        read_only_fields = fields

@@ -249,3 +249,105 @@ class EwayBillViewSet(RowHeldViewSetMixin, mixins.ListModelMixin, mixins.Retriev
         bill = self.get_object()
         bill.cancel(str(request.data.get("reason", "")), str(request.data.get("remarks", "")))
         return Response(EwayBillSerializer(bill).data)
+
+
+# -- Reverse charge: the self-invoice, the payment voucher, the tax paid in cash ------------------------
+
+from apps.accounting.models import Account, Payment  # noqa: E402
+from apps.core.api import record_or_404, required  # noqa: E402
+from apps.purchasing.models import Bill  # noqa: E402
+
+from . import reverse_charge  # noqa: E402
+from .serializers import GstCashPaymentSerializer, PaymentVoucherSerializer, SelfInvoiceSerializer  # noqa: E402
+
+
+class SelfInvoiceViewSet(viewsets.ReadOnlyModelViewSet):
+    """POST {bill, date} issues one (s.31(3)(f), Rule 47A); cancel/ {reason, date} takes it back."""
+
+    queryset = reverse_charge.SelfInvoice.objects.select_related("bill")
+    serializer_class = SelfInvoiceSerializer
+    filter_fields = ["bill", "cancelled_on__isnull"]
+    search_fields = ["number", "bill__number", "supplier_name"]
+    date_field = "date"
+    action_permission_map = {"cancel": "gst.change_selfinvoice", "awaiting": "gst.view_selfinvoice"}
+
+    def create(self, request):
+        bill = record_or_404(Bill, request.data.get("bill"), "bill")
+        made = reverse_charge.SelfInvoice.issue(bill, on_date=request.data.get("date") or None)
+        return Response(SelfInvoiceSerializer(made).data, status=201)
+
+    @action(detail=True, methods=["post"])
+    def cancel(self, request, pk=None):
+        record = self.get_object()
+        record.cancel(str(request.data.get("reason", "")), on_date=request.data.get("date") or None)
+        return Response(SelfInvoiceSerializer(record).data)
+
+    @action(detail=False, methods=["get"])
+    def awaiting(self, request):
+        """The reverse-charge supplies from unregistered suppliers with no self-invoice standing."""
+        return Response([{"bill": bill.pk, "bill_number": bill.number, "vendor": bill.vendor.name,
+                          "received_on": received, "due_by": last}
+                         for bill, received, last in reverse_charge.awaiting_self_invoice()])
+
+
+class PaymentVoucherViewSet(viewsets.ReadOnlyModelViewSet):
+    """POST {payment}: a voucher for each reverse-charge bill it settles (s.31(3)(g), Rule 52)."""
+
+    queryset = reverse_charge.PaymentVoucher.objects.select_related("bill", "payment")
+    serializer_class = PaymentVoucherSerializer
+    filter_fields = ["payment", "bill", "cancelled_on__isnull"]
+    search_fields = ["number", "bill__number", "payment__number"]
+    date_field = "date"
+
+    action_permission_map = {"awaiting": "gst.view_paymentvoucher"}
+
+    @action(detail=False, methods=["get"])
+    def awaiting(self, request):
+        """Payments for a reverse-charge supply with no voucher standing."""
+        return Response([{"payment": row.payment_id, "payment_number": row.payment.number, "bill": row.bill_id,
+                          "bill_number": row.bill.number, "amount": row.amount}
+                         for row in reverse_charge.awaiting_payment_voucher()])
+
+    def create(self, request):
+        payment = record_or_404(Payment, request.data.get("payment"), "payment")
+        made = reverse_charge.PaymentVoucher.issue_for(payment)
+        return Response(PaymentVoucherSerializer(made, many=True).data, status=201)
+
+
+class GstCashPaymentViewSet(viewsets.ReadOnlyModelViewSet):
+    """pay/ {month, date, bank_account, cash_ledger_account, cpin}; void/ {date}; cash_ledger/ ?account=."""
+
+    queryset = reverse_charge.GstCashPayment.objects.all()
+    serializer_class = GstCashPaymentSerializer
+    filter_fields = ["month", "voided_entry__isnull"]
+    search_fields = ["cpin"]
+    date_field = "date"
+    # Voiding a challan reverses money through the bank: the bill poster's decision, as a TDS challan's (O128).
+    action_permission_map = {"pay": "gst.add_gstcashpayment", "void": "purchasing.post_bill",
+                             "cash_ledger": "gst.view_gstcashpayment"}
+
+    @action(detail=False, methods=["post"])
+    def pay(self, request):
+        data = request.data
+        bank = record_or_404(Account, data.get("bank_account"), "bank_account")
+        ledger = record_or_404(Account, data.get("cash_ledger_account"), "cash_ledger_account")
+        required(data, "month", "date", "cpin")
+        payment = reverse_charge.GstCashPayment.pay(str(data["month"]), data["date"], bank, ledger, data["cpin"])
+        return Response(self.get_serializer(payment).data, status=201)
+
+    @action(detail=True, methods=["post"])
+    def void(self, request, pk=None):
+        payment = self.get_object()
+        payment.void(on_date=request.data.get("date") or None)
+        return Response(self.get_serializer(payment).data)
+
+    @action(detail=False, methods=["get"])
+    def cash_ledger(self, request):
+        """?account= for one; without it, every account a challan used as the cash ledger."""
+        if not request.query_params.get("account"):
+            return Response([dict(ledger, account=ledger["account"].pk) for ledger in
+                             map(reverse_charge.cash_ledger, reverse_charge.cash_ledger_accounts())])
+        account = record_or_404(Account, request.query_params.get("account"), "account")
+        ledger = reverse_charge.cash_ledger(account)
+        ledger["account"] = account.pk
+        return Response(ledger)

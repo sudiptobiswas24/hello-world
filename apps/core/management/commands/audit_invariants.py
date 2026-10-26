@@ -2010,6 +2010,7 @@ class Command(BaseCommand):
         "inventory.StockValuationSnapshot.quantity": (
             "a fold of movements that may have gone below zero"
         ),
+        "gst.GstCashPaymentRow.amount": "negative is a debit note's reverse charge set against its month's",
     }
 
     def unsigned_money(self, labels):
@@ -2533,6 +2534,8 @@ class Command(BaseCommand):
         "purchasing.Bill": "post() refuses a bill of no value and always writes its entry",
         "accounting.Payment": "a check constraint keeps its amount above nothing; posting writes its entry",
         "sales.Delivery": "read by the e-way bill, which is made for a delivery already posted; no return lists it",
+        "purchasing.GoodsReceipt": "read only for the day a reverse-charge supply was received (Rule 47A's thirty "
+                                   "days); the self-invoice keeps that day as issued, and no return reads it",
     }
 
     # -- shape 1: a document reported without an entry, dated into a closed month --
