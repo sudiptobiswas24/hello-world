@@ -4291,10 +4291,11 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
                     raise ValidationError(f"Tax {tax.code} has no paid account.")
                 tax_totals[account] += amount
                 if tax.reverse_charge:
-                    # Claimed as credit like any input tax, and owed by the
-                    # company rather than the vendor: the two net to
-                    # nothing on what the vendor is paid.
-                    tax_totals[tax.reverse_charge_account] -= amount
+                    # Claimed as credit like any input tax, and owed by the company rather than the vendor:
+                    # the two net to nothing on what the vendor is paid. Owed into the account the line's tax
+                    # is kept at (owed_account_at_posting): a debit note gives back into its bill's, never into
+                    # the tax's account as it stands now (mistake 4).
+                    tax_totals[owed_account_at_posting(line, tax)] -= amount
         for account, amount in tax_totals.items():
             debits.append((account, round_money(amount * rate), "Tax", None))
         if self.tcs_amount:
@@ -5765,14 +5766,29 @@ class BillLineTax(RecordedLineTax):
                   "(mistake 4): moved after the bill posted, the payment would clear an account that never held "
                   "the tax.")
 
+    # Kept from the tax as the line posts; read through the tax only by the posting itself
+    # (audit_invariants, kept_settings_read_live).
+    KEPT_FROM = {"tax": ("reverse_charge_account",)}
+    KEPT_BY = ("owed_account_at_posting",)
+
     def save(self, *args, **kwargs):
         if self._state.adding and self.reverse_charge and self.owed_account_id is None:
-            # A debit note owes back into the account its bill owed into; a bill, the tax's at posting.
-            original = getattr(self.line, "debits_line", None)
-            kept = (original.recorded_taxes.filter(tax_id=self.tax_id).values_list("owed_account", flat=True)
-                    .first() if original is not None else None)
-            self.owed_account_id = kept or self.tax.reverse_charge_account_id
+            self.owed_account = owed_account_at_posting(self.line, self.tax)
         super().save(*args, **kwargs)
+
+
+def owed_account_at_posting(line, tax):
+    """
+    Where a line's reverse-charge tax is owed: on a debit note, into the account its bill's line kept; on a
+    bill, the tax's account as the bill posts, which the line then keeps (BillLineTax.owed_account). The entry
+    and the kept row both ask here, so they cannot disagree.
+    """
+    original = getattr(line, "debits_line", None)
+    if original is not None:
+        kept = original.recorded_taxes.filter(tax_id=tax.pk).values_list("owed_account", flat=True).first()
+        if kept is not None:
+            return Account.objects.get(pk=kept)
+    return tax.reverse_charge_account
 
 
 class PrepaymentApplication(AuditModel):
