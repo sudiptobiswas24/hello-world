@@ -90,7 +90,7 @@ class StatutoryTestCase(TestCase):
         for above, up_to, amount, month in [("7500", "10000", "175", None),
                                             ("10000", None, "200", None),
                                             ("10000", None, "300", 2)]:
-            PayComponentSlab.objects.create(
+            PayComponentSlab.objects.create(confirmed_on=datetime.date(2000, 1, 1), 
                 component=self.pt, above=Decimal(above),
                 up_to=Decimal(up_to) if up_to else None, amount=Decimal(amount), month=month)
         self.a = self.person("A", basic="12000", special="3000", hra="4800", ot="2500")
@@ -538,15 +538,15 @@ class SlabBandsDoNotOverlapTests(StatutoryTestCase):
 
     def test_an_overlapping_band_is_refused(self):
         with self.assertRaisesMessage(ValidationError, "overlaps"):
-            PayComponentSlab.objects.create(component=self.pt, above=Decimal("9000"),
+            PayComponentSlab.objects.create(confirmed_on=datetime.date(2000, 1, 1), component=self.pt, above=Decimal("9000"),
                                             up_to=Decimal("12000"), amount=Decimal("150"))
         with self.assertRaisesMessage(ValidationError, "overlaps"):
-            PayComponentSlab.objects.create(component=self.pt, above=Decimal("0"), amount=Decimal("0"))
+            PayComponentSlab.objects.create(confirmed_on=datetime.date(2000, 1, 1), component=self.pt, above=Decimal("0"), amount=Decimal("0"))
 
     def test_touching_bands_and_a_months_own_band_are_not_overlaps(self):
-        PayComponentSlab.objects.create(component=self.pt, above=Decimal("0"),
+        PayComponentSlab.objects.create(confirmed_on=datetime.date(2000, 1, 1), component=self.pt, above=Decimal("0"),
                                         up_to=Decimal("7500"), amount=Decimal("0"))
-        PayComponentSlab.objects.create(component=self.pt, above=Decimal("7500"),
+        PayComponentSlab.objects.create(confirmed_on=datetime.date(2000, 1, 1), component=self.pt, above=Decimal("7500"),
                                         up_to=Decimal("10000"), amount=Decimal("190"), month=3)
         self.assertEqual(self.pt.slab_for(Decimal("9000"), 3), Decimal("190"))
         self.assertEqual(self.pt.slab_for(Decimal("9000"), 4), Decimal("175"))

@@ -692,7 +692,7 @@ class ARateChangedInsideThePeriodTests(PayrollTestCase):
             code="PT", name="Professional tax", kind=ComponentKind.DEDUCTION,
             basis=ComponentBasis.SLAB, liability_account=self.tax_payable, sequence=90,
         )
-        PayComponentSlab.objects.create(component=professional_tax, above=Decimal("0"), amount=Decimal("200"))
+        PayComponentSlab.objects.create(confirmed_on=datetime.date(2000, 1, 1), component=professional_tax, above=Decimal("0"), amount=Decimal("200"))
         person = self.employee("R6")
         self.pay(person, self.salary, "4400")
         self.changed(person, professional_tax, "1", "2")

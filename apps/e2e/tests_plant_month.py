@@ -563,7 +563,7 @@ class Month:
         return made["id"]
 
     def slab(self, code, amount, above="0", up_to=None, month=None):
-        self.post("Payroll Officer", "/api/hr/pay-component-slabs/", {
+        return self.post("Payroll Officer", "/api/hr/pay-component-slabs/", {
             "component": self.components[code], "above": above, "up_to": up_to, "amount": amount, "month": month,
             "state": "WB"})
 
@@ -597,6 +597,10 @@ class Month:
             self.slab(code, "0")
             self.slab(code, share, month=6)
             self.slab(code, share, month=12)
+        # The Controller's word that each schedule is the law's (g24): no run deducts at one before it.
+        for code in ("PT", "LWF", "LWF-ER"):
+            [band, *_] = self.get("Controller", "/api/hr/pay-component-slabs/", {"component": self.components[code]})
+            self.post("Controller", f"/api/hr/pay-component-slabs/{band['id']}/confirm/")
         self.pay_component("ADV", "deduction", "fixed", 99, liability_account=a["1400"].pk)
 
     def hire(self, number, name, hired, born, pay, uan, esi=None, **more):
@@ -884,7 +888,7 @@ class PlantMonthTests(TestCase):
         return made["id"]
 
     def slab(self, code, amount, above="0", up_to=None, month=None):
-        self.post("Payroll Officer", "/api/hr/pay-component-slabs/", {
+        return self.post("Payroll Officer", "/api/hr/pay-component-slabs/", {
             "component": self.components[code], "above": above, "up_to": up_to, "amount": amount, "month": month,
             "state": "WB"})
 
@@ -918,6 +922,10 @@ class PlantMonthTests(TestCase):
             self.slab(code, "0")
             self.slab(code, share, month=6)
             self.slab(code, share, month=12)
+        # The Controller's word that each schedule is the law's (g24): no run deducts at one before it.
+        for code in ("PT", "LWF", "LWF-ER"):
+            [band, *_] = self.get("Controller", "/api/hr/pay-component-slabs/", {"component": self.components[code]})
+            self.post("Controller", f"/api/hr/pay-component-slabs/{band['id']}/confirm/")
         self.pay_component("ADV", "deduction", "fixed", 99, liability_account=a["1400"].pk)
 
     def hire(self, number, name, hired, born, pay, uan, esi=None, **more):

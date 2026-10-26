@@ -56,7 +56,18 @@ from apps.core.models import (
 
 from .calendars import working_days
 from .models import Employee, EmploymentStatus, LeaveRequest, LeaveStatus, hold_the_employee
-from .statutory import CEILINGS, FigureKind, figure_as_of, pension_stops, refuse_if_kept
+from .statutory import (
+    BONUS_CEILING,
+    BONUS_CEILING_LABEL,
+    CEILINGS,
+    Confirmed,
+    FigureKind,
+    bonus_ceiling,
+    figure_as_of,
+    pension_stops,
+    refuse_if_kept,
+    refuse_unconfirmed,
+)
 
 
 from apps.core.models import takes_back  # noqa: E402  (O354: a correction step)
@@ -98,6 +109,8 @@ class Statutory(models.TextChoices):
 
 
 PF_KINDS = (Statutory.PF, Statutory.PF_EMPLOYER, Statutory.EPS)
+# The levies whose schedules are the law's slabs: read only once the Controller confirms them.
+SLAB_LEVIES = (Statutory.PT, Statutory.LWF, Statutory.LWF_EMPLOYER)
 
 
 # What piece work can be counted in, registered by the modules that record
@@ -172,9 +185,12 @@ class PayComponent(AuditModel):
                   "allowance, not bonus, overtime or reimbursement. Fixed, hourly and piece earnings.",
     )
     ceiling_figure = models.CharField(
-        max_length=32, blank=True, choices=[("", "Its own ceiling, if any")] + [(k.value, k.label) for k in CEILINGS],
+        max_length=32, blank=True,
+        choices=[("", "Its own ceiling, if any")] + [(k.value, k.label) for k in CEILINGS]
+        + [(BONUS_CEILING, BONUS_CEILING_LABEL)],
         help_text="Cap the base at this dated figure, as it stood on the last day of the run's period, "
-                  "instead of a ceiling of its own.",
+                  "instead of a ceiling of its own. The bonus rule also pays it only while a month's wages "
+                  "are within the dated eligibility ceiling.",
     )
 
     # Statutory contributions are not a percentage of everything paid.
@@ -247,6 +263,9 @@ class PayComponent(AuditModel):
                                   f"{self.get_ceiling_figure_display()}, not both.")
         if self.ceiling_figure and self.basis not in (ComponentBasis.PERCENT_OF_GROSS, ComponentBasis.SLAB):
             raise ValidationError(f"{self.code}: only what is taken of a base has a ceiling.")
+        if self.ceiling_figure == BONUS_CEILING and self.coverage_ceiling is not None:
+            raise ValidationError(f"{self.code}: the bonus rule's eligibility is the dated ceiling, not one of "
+                                  "its own.")
         if self.is_ordinary_wages and (self.kind != ComponentKind.EARNING or self.basis not in (
                 ComponentBasis.FIXED, ComponentBasis.PER_HOUR, ComponentBasis.PER_UNIT)):
             raise ValidationError(f"{self.code}: the ordinary rate of wages is made of fixed, hourly and piece "
@@ -294,6 +313,25 @@ class PayComponent(AuditModel):
         Slabs for one state only serve a person whose state is not set;
         for several, the person's state decides, and it must be said.
         """
+        schedule = self.schedule_on(day, state, who)
+        if not schedule:
+            return Decimal("0"), None
+        day = to_date(day)
+        rows = [slab for slab in schedule if slab.above < base and (slab.up_to is None or base <= slab.up_to)]
+        dated = [slab for slab in rows if slab.month == day.month]
+        general = [slab for slab in rows if slab.month is None]
+        chosen = (dated or general or [None])[0]
+        if chosen is None:
+            return Decimal("0"), None
+        since = schedule[0].effective_from
+        return chosen.amount, [chosen.pk, since.isoformat() if since else None, chosen.state]
+
+    def schedule_on(self, day, state="", who=None):
+        """
+        The bands of the schedule standing on `day` for `state` (slab_on's
+        rule), empty when none stands; refused while a levy's schedule waits
+        for the Controller's confirmation.
+        """
         slabs = list(self.slabs.all())
         states = sorted({slab.state for slab in slabs if slab.state})
         mine = [slab for slab in slabs if state and slab.state == state] or [
@@ -309,15 +347,15 @@ class PayComponent(AuditModel):
                         if slab.effective_from is None or slab.effective_from <= day},
                        key=lambda when: (when is not None, when))
         if not stood:
-            return Decimal("0"), None
+            return []
         schedule = [slab for slab in mine if slab.effective_from == stood[-1]]
-        rows = [slab for slab in schedule if slab.above < base and (slab.up_to is None or base <= slab.up_to)]
-        dated = [slab for slab in rows if slab.month == day.month]
-        general = [slab for slab in rows if slab.month is None]
-        chosen = (dated or general or [None])[0]
-        if chosen is None:
-            return Decimal("0"), None
-        return chosen.amount, [chosen.pk, stood[-1].isoformat() if stood[-1] else None, chosen.state]
+        if self.statutory in SLAB_LEVIES and any(slab.confirmed_on is None for slab in schedule):
+            # The schedule is the law's: none of it is deducted at until the Controller confirms it.
+            first = schedule[0]
+            refuse_unconfirmed(f"{self.get_statutory_display()} ({self.code}), the schedule"
+                               + (f" of {first.state}" if first.state else ""),
+                               first.effective_from, "People > Pay components")
+        return schedule
 
     def slab_for(self, base, month):
         """The slab amount for `base` in `month` of every state's undated schedule (the slabs as they were)."""
@@ -329,12 +367,18 @@ class PayComponent(AuditModel):
 DEDUCTION_CAP = Decimal("0.5")
 
 
-class PayComponentSlab(AuditModel):
+class PayComponentSlab(Confirmed, AuditModel):
     """
     One band of a slab component: over `above` and up to `up_to`, this
     amount; in `month` only, when it is set. Professional tax is the
     usual case — Maharashtra's 200 a month is 300 in February.
+
+    A band of professional tax or the labour welfare fund is the law's:
+    confirmed by the Controller (confirm_schedule, every band of one
+    schedule at once) before any run deducts at it.
     """
+
+    FIGURES = ("component_id", "above", "up_to", "month", "amount", "state", "effective_from")
 
     component = models.ForeignKey(PayComponent, on_delete=models.CASCADE, related_name="slabs")
     above = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0"))
@@ -371,6 +415,7 @@ class PayComponentSlab(AuditModel):
                     getattr(self, f) for f in ("component_id", "above", "up_to", "month", "amount", "state",
                                                "effective_from")]:
                 refuse_if_kept("slab", stored.pk, str(stored), "changed")
+            self.clear_if_changed(stored)
         # Two bands over one wage: slab_for took the first, and tax was
         # under-deducted with nothing said. Bands of one component for one
         # month (or for every month) may touch, not overlap.
@@ -393,6 +438,23 @@ class PayComponentSlab(AuditModel):
         lock_rows(self, refresh=False, deleting=True)
         refuse_if_kept("slab", self.pk, str(self), "deleted")
         return super().delete(*args, **kwargs)
+
+    def schedule(self):
+        """Every band of the schedule this band is of: its component, state and day."""
+        return PayComponentSlab.objects.filter(component_id=self.component_id, state=self.state,
+                                               effective_from=self.effective_from).order_by("month", "above", "pk")
+
+    def confirm_schedule(self, user):
+        """The Controller's word that this band's whole schedule is the law's: each band confirmed as it stands."""
+        with transaction.atomic():
+            bands = list(self.schedule())
+            lock_rows(*bands, refresh=False)
+            waiting = [band for band in bands if band.confirmed_on is None]
+            if not waiting:
+                raise ValidationError(f"The schedule {self} is of is already confirmed.")
+            for band in waiting:
+                band.confirm(user)
+        return bands
 
     def __str__(self):
         top = self.up_to if self.up_to is not None else "and over"
@@ -1647,6 +1709,12 @@ class Payslip(AuditModel):
         """The cap on `component`'s base this period: its own, or the dated figure on the period's last day (O222)."""
         if not component.ceiling_figure:
             return component.base_ceiling
+        if component.ceiling_figure == BONUS_CEILING:
+            value, terms = bonus_ceiling(self.employee, self.run.period_end)
+            kept = self._terms(component.pk)
+            for name, term in terms.items():
+                kept[name] = term
+            return round_money(value)
         value, term = figure_as_of(component.ceiling_figure, self.run.period_end, self.employee.work_state)
         self._terms(component.pk)[component.ceiling_figure] = term
         return round_money(value)
@@ -1780,7 +1848,8 @@ class Payslip(AuditModel):
         the whole period they were covered at the start of, and a rise in
         July does not end it until October.
         """
-        if component.coverage_ceiling is None:
+        ceiling = self._coverage_ceiling(component)
+        if ceiling is None:
             return True
         deciding = list(component.coverage_components.all()) or list(
             component.base_components.all())
@@ -1806,7 +1875,7 @@ class Payslip(AuditModel):
         opening = min(month_runs, key=lambda run: (run.period_start, run.pk or 0), default=None)
         if opening is not None and (opening.period_start > month
                                     or opening.period_end < following - datetime.timedelta(days=1)):
-            return self._monthly_rate(deciding, opening, month, following) <= component.coverage_ceiling
+            return self._monthly_rate(deciding, opening, month, following) <= ceiling
         lines = PayslipLine.objects.filter(
             payslip__employee=self.employee, payslip__run__status=PayRunStatus.POSTED,
             payslip__run__period_end__gte=month, payslip__run__period_end__lt=following,
@@ -1816,7 +1885,15 @@ class Payslip(AuditModel):
             Decimal("0"))
         if month <= self.run.period_end < following:
             wages += self._sum_of(component, deciding, computed, running_taxable)
-        return wages <= component.coverage_ceiling
+        return wages <= ceiling
+
+    def _coverage_ceiling(self, component):
+        """What a month's wages may be for `component` to apply: its own, or the bonus rule's dated eligibility."""
+        if component.ceiling_figure != BONUS_CEILING:
+            return component.coverage_ceiling
+        value, term = figure_as_of(FigureKind.BONUS_ELIGIBILITY, self.run.period_end, self.employee.work_state)
+        self._terms(component.pk)[FigureKind.BONUS_ELIGIBILITY.value] = term
+        return value
 
     def _monthly_rate(self, deciding, opening, month, following):
         """

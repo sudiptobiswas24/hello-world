@@ -19,7 +19,6 @@ The slabs are those from 22 September 2025 (0, 5, 18 and 40 per cent);
 cess, which varies by good, is not seeded.
 """
 
-import datetime
 from decimal import Decimal
 
 from django.core.management.base import BaseCommand
@@ -33,9 +32,8 @@ from apps.accounting.models import (
     SeededDefault,
     Tax,
     TaxGroup,
-    TcsRate,
-    TcsSection,
 )
+from apps.accounting.statutory_load import Loader, load_tcs
 
 WAITING = "1319"
 A, L, E, I, X = (AccountType.ASSET, AccountType.LIABILITY, AccountType.EQUITY, AccountType.INCOME,
@@ -57,20 +55,10 @@ ACCOUNTS = [
     ("5000", "Purchases", X, False), ("5100", "Freight inward", X, False), ("5900", "Round off", X, False),
 ]
 SLABS = [Decimal("0"), Decimal("5"), Decimal("18"), Decimal("40")]
-# The goods TCS is collected on, named by the law of each day: section 206C(1) of the 1961 Act until 31 March
-# 2026, section 394(1) of the 2025 Act (Sl. 4, scrap) from 1 April 2026 (review F13). Both rates seeded
-# unconfirmed: nothing is collected at either until the accountant confirms it.
-TCS_SCRAP = {"code": "SCRAP", "name": "Scrap", "form_code": "6CE"}
-TCS_SCRAP_RATES = [
-    {"from": datetime.date(2025, 4, 1), "law": "206C(1)", "rate": Decimal("1"), "no_pan_rate": Decimal("5"),
-     "authority": "s.206C(1) Income-tax Act 1961",
-     "question": "1% under 206C(1) to 31 March 2026: confirm it, or correct it."},
-    {"from": datetime.date(2026, 4, 1), "law": "394(1)", "rate": Decimal("2"), "no_pan_rate": Decimal("5"),
-     "authority": "s.394(1) Sl. 4 Income-tax Act 2025, as amended by the Finance Act 2026",
-     "question": ("1% or 2% under 394(1) from 1 April 2026? Seeded at 2%, which the research notes weigh "
-                  "(Finance Act 2026; a Railway Board order of 17 June 2026); other sources say 1%. Decide the "
-                  "rate and the section before confirming.")},
-]
+# The goods TCS is collected on and its rates, named by the law of each day (206C(1) of the 1961 Act until 31 March
+# 2026, 394(1) of the 2025 Act from 1 April 2026), are rows of statutory/tcs_rates.csv, loaded by the loader
+# setup_statutory shares (accounting.statutory_load), unconfirmed: nothing is collected at either until the
+# accountant confirms it.
 # What each account a tax or section is wired into must be, by type and by what its name says (review F12).
 PURPOSES = {"1311": ("cgst",), "1312": ("sgst",), "1313": ("igst",), "2201": ("cgst",), "2202": ("sgst",),
             "2203": ("igst",), "2250": ("tds",), "2260": ("tcs",)}
@@ -114,17 +102,10 @@ class Command(BaseCommand):
                     cgst, sgst = intra[slab]
                     self.mapping(position, cgst, targets[slab])
                     self.mapping(position, sgst, None)
-            section = self.one(TcsSection, TCS_SCRAP["code"], name=TCS_SCRAP["name"],
-                               form_code=TCS_SCRAP["form_code"], payable_account=accounts["2260"])
-            for seeded in TCS_SCRAP_RATES:
-                if section.rates.filter(applies_from=seeded["from"]).exists():
-                    self.kept.append(f"TCS rate from {seeded['from']:%d %b %Y}")
-                    continue
-                rate = TcsRate.objects.create(section=section, applies_from=seeded["from"], section_code=seeded["law"],
-                                              rate_percent=seeded["rate"], no_pan_rate_percent=seeded["no_pan_rate"],
-                                              authority=seeded["authority"])
-                self.seeded(rate, f"TCS rate {seeded['law']} from {seeded['from']:%d %b %Y}, unconfirmed: "
-                                  f"{seeded['question']}")
+            loader = Loader()
+            load_tcs(loader, payable_account=accounts["2260"])
+            self.made += loader.made
+            self.kept += loader.kept
             # Every reverse-charge tax waits its credit in that account unless it names one already (F2 cutover).
             for tax in Tax.objects.filter(reverse_charge=True, reverse_charge_waiting_account__isnull=True):
                 Tax.objects.filter(pk=tax.pk).update(reverse_charge_waiting_account=accounts[WAITING])

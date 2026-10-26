@@ -21,6 +21,9 @@ export default function PayDetailsForm() {
         { key: "ifsc", label: "IFSC", hint: "Four letters, a 0, six letters or digits" },
         { key: "pan", label: "PAN" },
         { key: "date_of_birth", label: "Date of birth", kind: "date" },
+        { key: "scheduled_employment", label: "Scheduled employment", hint: "As the State's minimum wage notification names their work" },
+        { key: "wage_zone", label: "Minimum wage zone", hint: "Blank where the notification has none" },
+        { key: "skill", label: "Skill", kind: "choice", choices: [["", "Not set"], ["unskilled", "Unskilled"], ["semi_skilled", "Semi-skilled"], ["skilled", "Skilled"], ["highly_skilled", "Highly skilled"]] },
       ]}
     />
   );

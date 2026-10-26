@@ -292,7 +292,7 @@ class TheLawsFigures(DatedFiguresTestCase):
                 expense_account=self.employer if kind == ComponentKind.EMPLOYER_COST else None,
                 sequence=97, statutory=statutory)
             for when in (6, 12):
-                PayComponentSlab.objects.create(component=component, state="WB", month=when, amount=Decimal(amount))
+                PayComponentSlab.objects.create(confirmed_on=datetime.date(2000, 1, 1), component=component, state="WB", month=when, amount=Decimal(amount))
             setattr(self, code.replace("-", "_").lower(), component)
 
     def test_L1_the_welfare_fund_is_taken_once_in_june_when_june_is_paid_in_two_runs(self):
@@ -321,7 +321,7 @@ class TheLawsFigures(DatedFiguresTestCase):
         AttendanceDay.objects.create(employee=c, on=D(2026, 10, 8), status=AttendanceStatus.PRESENT,
                                      overtime_hours=Decimal("4"))
         run = self.month_run(2026, 10, post=False, employees=[c])
-        StatutoryFigure.objects.create(kind=FigureKind.OVERTIME_MULTIPLIER, effective_from=D(2026, 11, 1),
+        StatutoryFigure.objects.create(confirmed_on=datetime.date(2000, 1, 1), kind=FigureKind.OVERTIME_MULTIPLIER, effective_from=D(2026, 11, 1),
                                        value=Decimal("2.5"))
         run.post()   # dated after the period: nothing moved, so the post goes through
         self.assertEqual(run.status, "posted")
@@ -342,9 +342,9 @@ class TheLawsFigures(DatedFiguresTestCase):
         Details.objects.create(employee=c, date_of_birth=D(1990, 1, 1))
         september = self.month_run(2026, 9, employees=[c])
         before = ecr_rows(september)
-        StatutoryFigure.objects.create(kind=FigureKind.EPF_WAGE_CEILING, effective_from=D(2026, 9, 1),
+        StatutoryFigure.objects.create(confirmed_on=datetime.date(2000, 1, 1), kind=FigureKind.EPF_WAGE_CEILING, effective_from=D(2026, 9, 1),
                                        value=Decimal("25000"))
-        StatutoryFigure.objects.create(kind=FigureKind.EPS_WAGE_CEILING, effective_from=D(2026, 9, 1),
+        StatutoryFigure.objects.create(confirmed_on=datetime.date(2000, 1, 1), kind=FigureKind.EPS_WAGE_CEILING, effective_from=D(2026, 9, 1),
                                        value=Decimal("25000"))
         self.assertEqual(ecr_rows(september), before)
 
@@ -353,7 +353,7 @@ class TheLawsFigures(DatedFiguresTestCase):
                                          basis=ComponentBasis.SLAB, liability_account=self.pt_payable,
                                          sequence=95, statutory=Statutory.PT)
         wb.base_components.set([self.basic])
-        PayComponentSlab.objects.create(component=wb, state="WB", above=Decimal("0"), amount=Decimal("110"))
+        PayComponentSlab.objects.create(confirmed_on=datetime.date(2000, 1, 1), component=wb, state="WB", above=Decimal("0"), amount=Decimal("110"))
         person = self.worker("K", work_state="Karnataka")
         self.paid(person, self.basic, "12000")
         self.paid(person, wb, "1")

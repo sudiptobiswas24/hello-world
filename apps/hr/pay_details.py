@@ -23,6 +23,7 @@ from django.db import models, transaction
 from apps.core.models import AuditModel, documents_it_answers_to, to_date
 
 from .models import Employee, hold_the_employee
+from .statutory import Skill
 
 IFSC = re.compile(r"^[A-Z]{4}0[A-Z0-9]{6}$")
 PAN = re.compile(r"^[A-Z]{5}[0-9]{4}[A-Z]$")
@@ -36,6 +37,15 @@ class EmployeePayDetails(AuditModel):
     ifsc = models.CharField(max_length=11, blank=True, verbose_name="IFSC")
     pan = models.CharField(max_length=10, blank=True, verbose_name="PAN")
     date_of_birth = models.DateField(null=True, blank=True)
+    # What the minimum wage they are owed is read by (statutory.MinimumWage): the bonus ceiling is the higher of
+    # the dated floor and that wage.
+    scheduled_employment = models.CharField(
+        max_length=128, blank=True, help_text="The scheduled employment the State's minimum wages name their work "
+                                              "under, as the notification names it.")
+    wage_zone = models.CharField(max_length=32, blank=True,
+                                 help_text="The zone the notification places the workplace in; blank where it has none.")
+    skill = models.CharField(max_length=16, blank=True, choices=Skill.choices,
+                             help_text="Their skill category under the notification.")
 
     class Meta:
         verbose_name_plural = "employee pay details"

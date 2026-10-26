@@ -8,6 +8,7 @@ const columns: Column<Row>[] = [
   { key: "effective_from", label: "From", kind: "date", width: "8rem" },
   { key: "value", label: "Value", kind: "quantity", width: "9rem" },
   { key: "source", label: "Source" },
+  { key: "confirmed_on", label: "Confirmed", kind: "date", width: "8rem" },
 ];
 
 /** The figures the law sets, dated: a run keeps the one that stood on its last day. */

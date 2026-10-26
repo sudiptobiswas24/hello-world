@@ -30,7 +30,7 @@ from .bank_file import SalaryTransfer, SalaryTransferFile
 from .pay_details import EmployeePayDetails
 from .payroll import SLIP_PAYMENT_READS, PayRunStatus, Payslip
 from .payroll_views import _run, _slip
-from .statutory import StatutoryFigure
+from .statutory import MinimumWage, StatutoryFigure
 
 
 class PayDetailsSerializer(serializers.ModelSerializer):
@@ -39,7 +39,7 @@ class PayDetailsSerializer(serializers.ModelSerializer):
     class Meta:
         model = EmployeePayDetails
         fields = ["id", "employee", "employee_number", "account_holder", "account_number", "ifsc", "pan",
-                  "date_of_birth"]
+                  "date_of_birth", "scheduled_employment", "wage_zone", "skill"]
 
 
 class PayDetailsViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
@@ -58,14 +58,61 @@ class PayDetailsViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 class FigureSerializer(serializers.ModelSerializer):
     class Meta:
         model = StatutoryFigure
-        fields = ["id", "kind", "state", "effective_from", "value", "source"]
+        fields = ["id", "kind", "state", "effective_from", "value", "source", "confirmed_by", "confirmed_on"]
+        read_only_fields = ["confirmed_by", "confirmed_on"]
 
 
-class FigureViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+class ConfirmAction:
+    """confirm/: the Controller's word that the figures read (the request's, as the screen showed them) are the law's."""
+
+    @action(detail=True, methods=["post"])
+    def confirm(self, request, pk=None):
+        from django.core.exceptions import ValidationError as DjangoValidationError
+        from rest_framework.exceptions import ValidationError as DRFValidationError
+
+        row = self.get_object()
+        seen = {name: request.data.get(name.removesuffix("_id"), request.data.get(name)) for name in row.FIGURES}
+        try:
+            row.confirm(request.user, seen=seen)
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.messages)
+        return Response(self.get_serializer(type(row).objects.get(pk=row.pk)).data)
+
+
+class FigureViewSet(ConfirmAction, AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = StatutoryFigure.objects.all()
     serializer_class = FigureSerializer
     filter_fields = ["kind", "state"]
     date_field = "effective_from"
+    action_permission_map = {"confirm": "hr.confirm_statutoryfigure"}
+
+    def perform_create(self, serializer):
+        _run(super().perform_create, serializer)
+
+    def perform_update(self, serializer):
+        _run(super().perform_update, serializer)
+
+    def perform_destroy(self, instance):
+        _run(super().perform_destroy, instance)
+
+
+class MinimumWageSerializer(serializers.ModelSerializer):
+    monthly = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
+
+    class Meta:
+        model = MinimumWage
+        fields = ["id", "state", "employment", "zone", "skill", "effective_from", "basic", "vda", "monthly",
+                  "source", "confirmed_by", "confirmed_on"]
+        read_only_fields = ["confirmed_by", "confirmed_on"]
+
+
+class MinimumWageViewSet(ConfirmAction, AuditableViewSetMixin, viewsets.ModelViewSet):
+    queryset = MinimumWage.objects.all()
+    serializer_class = MinimumWageSerializer
+    filter_fields = ["state", "skill"]
+    search_fields = ["employment", "zone"]
+    date_field = "effective_from"
+    action_permission_map = {"confirm": "hr.confirm_minimumwage"}
 
     def perform_create(self, serializer):
         _run(super().perform_create, serializer)

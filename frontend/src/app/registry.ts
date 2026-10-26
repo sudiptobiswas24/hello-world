@@ -1037,6 +1037,12 @@ export const MODULES: Module[] = [
         detail: () => import("../modules/payroll/StatutoryFigureForm"),
       },
       {
+        path: "minimum-wages", label: "Minimum wages", permission: "hr.view_minimumwage",
+        create: "hr.add_minimumwage",
+        keywords: "minimum wage vda scheduled employment skill zone bonus ceiling", load: () => import("../modules/payroll/MinimumWages"),
+        detail: () => import("../modules/payroll/MinimumWageForm"),
+      },
+      {
         path: "dues", label: "Statutory dues", permission: "hr.view_statutoryremittance",
         keywords: "pf esi tds professional tax remittance", load: () => import("../modules/payroll/Liabilities"),
       },

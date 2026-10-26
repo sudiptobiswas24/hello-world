@@ -1,0 +1,5 @@
+kind,state,effective_from,value,source,confirmed_by
+bonus_minimum_percent,,2025-11-21,8.33,"Code on Wages 2019 s.26(1): 8.33% of wages or 100 rupees, the higher (Taxmann, LawSikho). In force from 21 November 2025",
+bonus_maximum_percent,,2025-11-21,20,"Code on Wages 2019 s.26(3): at most 20% of wages (secondary sources)",
+bonus_floor,,2025-11-21,7000,"S.O. of 25 August 2026 under s.26(1) of the Code on Wages 2019, deemed in force from 21 November 2025: bonus calculated on 7,000 or the minimum wage, the higher (SCC Online 26 August 2026; TeamLease RegTech). Reported for the Central sphere; whether a West Bengal factory takes the State's notification is UNSETTLED",
+bonus_eligibility,,2025-11-21,21000,"S.O. 4711(E) of 25 August 2026 under s.26(1) of the Code on Wages 2019, deemed in force from 21 November 2025: wages up to 21,000 a month (TeamLease RegTech, SCC Online, AscentHR). Central sphere; the State's notification not found",

@@ -78,6 +78,7 @@ def checks():
 
     _gst(add)
     _people(add)
+    _statutory(add)
     _books(add)
     _settings(add)
     return found
@@ -105,6 +106,23 @@ def _gst(add):
     if not gst.job_work_sac and SalesOrder.objects.filter(is_job_work=True).exists():
         add(FAIL, "GST: job-work SAC", "Job-work orders exist and the SAC for conversion is not set; "
             "their invoices will be refused.")
+
+
+def _statutory(add):
+    """A line per statutory engine the plant uses: a confirmed figure must cover today, or it fails."""
+    from django.utils import timezone
+
+    from apps.hr.statutory_check import statutory_gaps
+
+    for engine, used, missing in statutory_gaps(timezone.localdate()):
+        if not used:
+            continue
+        if missing:
+            add(FAIL, f"Statutory: {engine}",
+                f"No confirmed figure covers today for {', '.join(missing)}. Load them (python manage.py "
+                "setup_statutory) and have the Controller confirm each, or nothing under it can post.")
+        else:
+            add(OK, f"Statutory: {engine}", "confirmed figures cover today")
 
 
 def _people(add):
