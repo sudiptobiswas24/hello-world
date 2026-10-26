@@ -105,3 +105,5 @@ class CoreConfig(AppConfig):
 
         history.install()
         ledger_log.install()
+        # The application's role given rows to read and write and nothing more, at every migrate (as the owner).
+        post_migrate.connect(ledger_log.grant_after_migrate, sender=self, dispatch_uid="apps.core.grant_app_role")

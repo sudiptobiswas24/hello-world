@@ -201,7 +201,29 @@ def _database(url):
     }
 
 
-DATABASES = {"default": _database(os.environ.get("DATABASE_URL", ""))}
+# Two database roles (the audit trail, Companies (Accounts) Rules 2014 rule 3(1): it cannot be disabled).
+# DATABASE_URL is the application's role, which owns nothing: it reads and writes rows and cannot alter a table,
+# disable a trigger, truncate, or change the books' change log (apps/core/ledger_log.py). DATABASE_OWNER_URL is
+# the role that owns the tables, the triggers and the log: migrations run as it (ERP_DATABASE_AS_OWNER=1, set by
+# deploy/entrypoint.sh), and so do backup and restore. Without it there is one role (a laptop, the test lanes).
+_APP_URL = os.environ.get("DATABASE_URL", "")
+_OWNER_URL = os.environ.get("DATABASE_OWNER_URL", "")
+if PRODUCTION and _APP_URL and not _OWNER_URL:
+    raise ImproperlyConfigured(
+        "DATABASE_OWNER_URL is not set: the plant's server connects as a role that owns nothing (DATABASE_URL) and "
+        "migrates as the role that owns the tables, so the audit trail cannot be switched off from the application.")
+DATABASE_APP_ROLE = DATABASE_APP_PASSWORD = ""
+if _OWNER_URL:
+    _app, _owner = _database(_APP_URL), _database(_OWNER_URL)
+    if not _APP_URL or _app.get("USER") == _owner.get("USER"):
+        raise ImproperlyConfigured(
+            "DATABASE_URL and DATABASE_OWNER_URL name the same role: the application's must be a role of its own, "
+            "which owns nothing.")
+    DATABASE_APP_ROLE, DATABASE_APP_PASSWORD = _app["USER"], _app["PASSWORD"]
+AS_OWNER = os.environ.get("ERP_DATABASE_AS_OWNER", "") == "1"
+if AS_OWNER and not _OWNER_URL:
+    raise ImproperlyConfigured("ERP_DATABASE_AS_OWNER=1 needs DATABASE_OWNER_URL: name the role that owns the tables.")
+DATABASES = {"default": _database(_OWNER_URL if AS_OWNER else _APP_URL)}
 
 
 # Password validation

@@ -30,7 +30,11 @@ services:
         condition: service_healthy
     environment:
       DJANGO_ENV: production
-      DATABASE_URL: postgres://erp:${POSTGRES_PASSWORD}@db:5432/erp
+      # Two roles (the audit trail cannot be disabled, Companies (Accounts) Rules 2014 rule 3(1)): the
+      # application connects as erp_app, which owns nothing; migrations run as erp, which owns the tables,
+      # the triggers and the change log. The first migrate makes erp_app with POSTGRES_APP_PASSWORD.
+      DATABASE_URL: postgres://erp_app:${POSTGRES_APP_PASSWORD:?set POSTGRES_APP_PASSWORD in .env}@db:5432/erp
+      DATABASE_OWNER_URL: postgres://erp:${POSTGRES_PASSWORD}@db:5432/erp
       DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?set DJANGO_SECRET_KEY in .env}
       ERP_FIELD_KEYS: ${ERP_FIELD_KEYS:?set ERP_FIELD_KEYS in .env}
       DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:?set DJANGO_ALLOWED_HOSTS in .env}
@@ -85,6 +89,7 @@ services:
         condition: service_healthy
     entrypoint: ["/deploy/backup.sh"]
     environment:
+      # As the owner: a dump reads every table and the change log; a restore drops and makes the schema.
       DATABASE_URL: postgres://erp:${POSTGRES_PASSWORD}@db:5432/erp
       BACKUP_AT: ${BACKUP_AT:-02:00}
       BACKUP_KEEP_DAYS: ${BACKUP_KEEP_DAYS:-30}

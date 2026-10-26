@@ -11,6 +11,11 @@ an edit log of each change, which cannot be disabled.
   (set_config(..., true), which is SET LOCAL), as "<user id>|<through>" (apps.core.history.acting). A change made
   with none set (psql, a script on its own connection) is recorded as through "unattributed"; the health check
   counts those, and names a books table that has lost its trigger.
+- Two roles (migration web 0002, grant_app()): the owner, which migrations, backup and restore connect as, owns
+  the tables, the triggers, the log and the trigger function, which writes the log as the owner (SECURITY
+  DEFINER, fixed search_path). The application's role (settings.DATABASE_APP_ROLE) owns nothing: rows of the
+  product tables to read and write, the sequences, the log to read only; no ALTER, TRUNCATE or TRIGGER, so it
+  cannot disable a trigger or touch the log. Tables a later migration makes are granted by default privileges.
 - Made by migration web 0001 (create(), idempotent; its reverse drop() removes the triggers and functions, and
   the log table only while it holds no row). SQLite has no such layer.
 
@@ -91,7 +96,8 @@ CREATE TABLE IF NOT EXISTS {LOG} (
 CREATE INDEX IF NOT EXISTS {LOG}_at ON {LOG} (at);
 CREATE INDEX IF NOT EXISTS {LOG}_row ON {LOG} (table_name, row_id);
 
-CREATE OR REPLACE FUNCTION {TRIGGER}() RETURNS trigger LANGUAGE plpgsql AS $$
+CREATE OR REPLACE FUNCTION {TRIGGER}() RETURNS trigger LANGUAGE plpgsql
+    SECURITY DEFINER SET search_path = public, pg_temp AS $$
 DECLARE
     actor text := coalesce(current_setting('erp.actor', true), '');
     who text := split_part(actor, '|', 1);
@@ -153,6 +159,56 @@ def drop(connection, tables=BOOKS_TABLES):
             if not cursor.fetchone()[0]:
                 cursor.execute(f"DROP TABLE {LOG}")
                 cursor.execute(f"DROP FUNCTION IF EXISTS {TRIGGER}_kept() CASCADE")
+
+
+def grant_app(connection, role, password=""):
+    """
+    The application's role made (if absent, with `password`) and given rows to read and write and nothing more:
+    no table of its own, no TRUNCATE or TRIGGER, the log only to read. Run as the owner, at every migrate
+    (apps.core.apps), so a restored or rebuilt database is put right again; idempotent.
+    """
+    if connection.vendor != "postgresql" or not role:
+        return
+    quote = connection.ops.quote_name
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT current_user, EXISTS (SELECT 1 FROM pg_roles WHERE rolname = %s)", [role])
+        owner, exists = cursor.fetchone()
+        if owner == role:
+            raise RuntimeError(f"The application's role {role} is the role migrating: it would own the tables. "
+                               f"Migrate as DATABASE_OWNER_URL's role.")
+        if not exists:
+            if not password:
+                raise RuntimeError(f"No database role {role}: create it, or give its password in DATABASE_URL.")
+            cursor.execute("SELECT format('CREATE ROLE %%I LOGIN PASSWORD %%L', %s::text, %s::text)", [role, password])
+            cursor.execute(cursor.fetchone()[0])
+        app = quote(role)
+        cursor.execute("SELECT EXISTS (SELECT 1 FROM pg_class c JOIN pg_roles r ON r.oid = c.relowner "
+                       "WHERE r.rolname = %s AND c.relnamespace = 'public'::regnamespace)", [role])
+        if cursor.fetchone()[0]:
+            raise RuntimeError(f"The application's role {role} owns tables: give them to {owner} (REASSIGN OWNED).")
+        for statement in (
+            f"GRANT CONNECT ON DATABASE {quote(connection.settings_dict['NAME'])} TO {app}",
+            f"GRANT USAGE ON SCHEMA public TO {app}",
+            f"REVOKE ALL ON ALL TABLES IN SCHEMA public FROM {app}",
+            f"GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO {app}",
+            f"GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO {app}",
+            f"ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO {app}",
+            f"ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO {app}",
+        ):
+            cursor.execute(statement)
+        cursor.execute(f"SELECT to_regclass('{LOG}') IS NOT NULL")
+        if cursor.fetchone()[0]:
+            cursor.execute(f"REVOKE ALL ON {LOG} FROM {app}")
+            cursor.execute(f"GRANT SELECT ON {LOG} TO {app}")
+
+
+def grant_after_migrate(sender, using="default", **kwargs):
+    """At the end of every migrate, as the owner: the application's role given what it may do, and no more."""
+    from django.conf import settings
+    from django.db import connections
+
+    grant_app(connections[using], getattr(settings, "DATABASE_APP_ROLE", ""),
+              getattr(settings, "DATABASE_APP_PASSWORD", ""))
 
 
 def present(connection):
