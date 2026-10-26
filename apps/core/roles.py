@@ -321,6 +321,9 @@ class KeptCredential(models.Model):
     confirmer, never lapsed.
     """
 
+    # Not a business record: the company's numbering row is not taken for it (O257, apps.core.apps).
+    numbering_exempt = "kept as a password is set or a session ends"
+
     PASSWORD, EMAIL, LOGIN = "password", "email", "login"
 
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="kept_credentials")

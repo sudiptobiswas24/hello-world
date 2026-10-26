@@ -39,6 +39,9 @@ TOLD = ("Something went wrong on the server. It has been logged as {ref}; tell w
 class ServerError(models.Model):
     """One unhandled exception, as the person saw it and as the keeper needs it."""
 
+    # Not a business record: the company's numbering row is not taken for it (O257, apps.core.apps).
+    numbering_exempt = "written by any request that failed, whatever it was doing"
+
     ref = models.CharField(max_length=12, unique=True, editable=False)
     happened_at = models.DateTimeField(default=timezone.now, editable=False)
     path = models.CharField(max_length=255, blank=True, editable=False)

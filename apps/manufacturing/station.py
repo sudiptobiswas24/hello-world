@@ -164,6 +164,9 @@ class LoomStation(AuditModel):
 class StationAttempt(models.Model):
     """One PIN typed at a station, right or wrong."""
 
+    # Not a business record: the company's numbering row is not taken for it (O257, apps.core.apps).
+    numbering_exempt = "a PIN typed at a station, its sign-in"
+
     station = models.ForeignKey(LoomStation, on_delete=models.CASCADE, related_name="attempts")
     at = models.DateTimeField()
     succeeded = models.BooleanField()

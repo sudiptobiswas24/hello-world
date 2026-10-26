@@ -396,3 +396,27 @@ class TheNumberingRowIsTheFirstLockTests(TestCase):
             DocumentNumbering.hold()
             taken(connection, "manufacturing.machine", [3])
             lock_rows(Party.objects.create(code="P9", name="P9"))
+
+
+class ASignInWritesOnlyRowsThatTakeNoNumberingTests(TestCase):
+    """
+    O257, review_lockfirst F1: audit_invariants drives a sign-in, a session refresh, a sign-out and end_sessions,
+    and reports a model they write (a row saved with its key, deleted, or linked) that is not numbering_exempt.
+    """
+
+    def test_a_business_record_written_at_sign_in_is_reported_and_the_marked_ones_are_not(self):
+        from django.contrib.auth.signals import user_logged_in
+
+        from apps.core.management.commands.audit_invariants import Command
+
+        self.assertEqual(Command().sign_in_writes_unmarked(), [])
+        party = Party.objects.create(code="SIGNED", name="Signed in")
+
+        def planted(sender, user, **kwargs):
+            Party.objects.filter(pk=party.pk).first().save()
+
+        user_logged_in.connect(planted, weak=False, dispatch_uid="planted-sign-in-write")
+        self.addCleanup(user_logged_in.disconnect, dispatch_uid="planted-sign-in-write")
+        found = Command().sign_in_writes_unmarked()
+        self.assertEqual([kind for kind, _detail in found], ["sign-in writes a business record"], found)
+        self.assertIn("core.Party is written by a sign-in", found[0][1])
