@@ -15,6 +15,8 @@ export default function TcsSectionForm() {
       fields={[
         { key: "code", label: "Code", hint: "206C(1), or 394 from April 2026" },
         { key: "name", label: "Collected on", hint: "Scrap" },
+        { key: "section_1961", label: "Section, Income-tax Act 1961", hint: "206C(1): named on periods before 1 April 2026" },
+        { key: "section_2025", label: "Section, Income-tax Act 2025", hint: "394(1): named on periods from 1 April 2026" },
         { key: "form_code", label: "Return code", hint: "The code the quarterly return files it under" },
         { key: "base_includes_gst", label: "On the value with its GST", kind: "bool", initial: true },
         { key: "payable_account", label: "Payable account", kind: "pick", pick: KEPT_ACCOUNT, hint: "Where tax collected is owed until a challan pays it over" },

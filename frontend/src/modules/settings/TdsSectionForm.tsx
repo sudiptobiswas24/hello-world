@@ -15,6 +15,8 @@ export default function TdsSectionForm() {
       fields={[
         { key: "code", label: "Code", hint: "194Q, 194C, 194J" },
         { key: "name", label: "Name" },
+        { key: "section_1961", label: "Section, Income-tax Act 1961", hint: "194C: named on periods before 1 April 2026" },
+        { key: "section_2025", label: "Section, Income-tax Act 2025", hint: "393(1): named on periods from 1 April 2026" },
         { key: "mode", label: "Taxed on", kind: "choice", choices: [["excess", "On what the year passes the threshold by (194Q)"], ["whole", "On the whole year once a limit is passed (194C, 194J)"]], initial: "whole" },
         { key: "single_threshold", label: "One bill above", kind: "money", hint: "One bill above this is taxed" },
         { key: "annual_threshold", label: "The year above", kind: "money", hint: "The year's bills from one party above this are taxed" },

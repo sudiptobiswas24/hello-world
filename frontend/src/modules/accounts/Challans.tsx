@@ -38,8 +38,10 @@ const columns: Column<Row>[] = [
   { key: "date", label: "Paid", kind: "date", width: "8rem" },
   { key: "section_code", label: "Section", width: "6rem" },
   { key: "month", label: "For", width: "8rem", render: (row) => String(row.month ?? "").slice(0, 7) },
-  { key: "challan_number", label: "Challan", width: "9rem" },
+  { key: "form", label: "Challan", width: "9rem" },
+  { key: "challan_number", label: "Number", width: "9rem" },
   { key: "bsr_code", label: "BSR", width: "8rem" },
+  { key: "tan", label: "TAN", width: "8rem" },
   { key: "amount", label: "Amount", kind: "money", width: "10rem" },
   { key: "voided", label: "", width: "6rem", render: (row) => (row.voided ? "Voided" : "") },
 ];
@@ -84,6 +86,8 @@ export function ChallanForm({ kind }: { kind: ChallanKind }) {
         { key: "challan_number", label: "Challan number" },
         { key: "bsr_code", label: "BSR code", hint: "The bank branch's seven digits" },
         { key: "amount", label: "Amount", kind: "money", existingOnly: true, readOnly: true },
+        { key: "form", label: "Challan", existingOnly: true, readOnly: true },
+        { key: "tan", label: "TAN", existingOnly: true, readOnly: true },
       ]}
       actions={[
         { label: "Void", path: "void", permission: kind.voids, danger: true, when: (row) => !row.voided,

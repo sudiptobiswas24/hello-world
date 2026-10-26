@@ -20,6 +20,7 @@ from django.db import models, transaction
 from django.db.models import Q
 
 from apps.accounting.models import Account, JournalEntry, JournalLine, TdsSection
+from apps.accounting.statutory_names import section_on
 from apps.accounting.tds import deduction_terms, financial_year
 from apps.core.models import AuditModel, Company, correction_date, lock_rows, serialised, to_date
 
@@ -256,6 +257,12 @@ class TdsChallan(AuditModel):
     journal_entry = models.ForeignKey(JournalEntry, on_delete=models.PROTECT, related_name="+", editable=False)
     voided_entry = models.ForeignKey(
         JournalEntry, null=True, blank=True, on_delete=models.PROTECT, related_name="+", editable=False)
+    # Facts of the payment, kept as they stood on it: the company's TAN, the challan's name and the section of
+    # the Act the deductions were made under, on their month (accounting.statutory_names).
+    tan = models.CharField(max_length=10, blank=True, editable=False, verbose_name="TAN")
+    form = models.CharField(max_length=32, blank=True, editable=False, help_text="The challan's name on its day.")
+    section_code = models.CharField(max_length=32, blank=True, editable=False,
+                                    help_text="The section of the Act the deductions were made under.")
 
     class Meta:
         ordering = ["-date", "-id"]
@@ -290,9 +297,10 @@ class TdsChallan(AuditModel):
             section, waiting, _live, bank_account, date, challan_number,
             what=f"deducted under {section.code} in {month:%B %Y}",
             memo=f"TDS {section.code} for {month:%B %Y}, challan {challan_number}",
-            make_challan=lambda total, entry: cls.objects.create(
-                section=section, month=month, date=to_date(date), bank_account=bank_account,
-                challan_number=challan_number, bsr_code=bsr_code, amount=total, journal_entry=entry))
+            make_challan=lambda total, entry, **kept: cls.objects.create(
+                **kept, section=section, month=month, date=to_date(date), bank_account=bank_account,
+                challan_number=challan_number, bsr_code=bsr_code, amount=total, journal_entry=entry,
+                section_code=section_on(section, month)))
 
     @serialised("voided_entry")
     @takes_back
@@ -337,7 +345,7 @@ def tds_return(start, end):
         paid = sign > 0 and row.is_paid_over()
         rows.append({
             "deduction": row.pk, "date": row.date if sign > 0 else row.reversed_entry.date,
-            "section": row.section.code, "vendor": row.bill.vendor.name,
+            "section": section_on(row.section, row.date), "vendor": row.bill.vendor.name,
             "pan": row.pan or "PANNOTAVBL", "bill": row.bill.number, "base": sign * row.base,
             "rate_percent": row.rate_percent, "amount": sign * row.amount,
             "challan": f"{row.challan.bsr_code}/{row.challan.challan_number}" if paid else "",

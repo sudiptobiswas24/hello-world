@@ -43,6 +43,10 @@ OCTOBER = datetime.date(2026, 10, 5)
 class TcsTestCase(EInvoiceTestCase):
     def setUp(self):
         super().setUp()
+        # The company's TAN: a challan and a return carry it, and are refused without it (g24 decision 3).
+        from apps.core.models import Company
+
+        Company.objects.filter(pk=Company.get().pk).update(tan="CALA12345B")
         self.tcs_payable = Account.objects.create(code="2290", name="TCS payable", account_type=AccountType.LIABILITY)
         self.bank = Account.objects.create(code="1010", name="Bank", account_type=AccountType.ASSET,
                                            holds_money=True)
@@ -255,7 +259,8 @@ class ThroughTheApiTests(TcsTestCase):
             "challan_number": "00123", "bsr_code": "0510308"}, format="json")
         self.assertEqual((paid.status_code, paid.json()["amount"]), (201, "1062.00"))
         quarter = client.get("/api/sales/tcs-collections/quarter/", {"from": "2026-07-01", "to": "2026-09-30"})
-        self.assertEqual((quarter.status_code, quarter.json()[0]["amount"]), (200, "1062.00"))
+        self.assertEqual((quarter.status_code, quarter.json()["rows"][0]["amount"]), (200, "1062.00"))
+        self.assertEqual((quarter.json()["form"], quarter.json()["tan"]), ("Form 143", "CALA12345B"))
 
 
 class TheAuditSeesAPayableAccountReadLiveTests(TcsTestCase):
