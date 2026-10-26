@@ -4278,7 +4278,7 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         # than buried in the expense. A vendor the fiscal position
         # zero-rates or reverse-charges contributes nothing here, which is
         # the whole point of running the taxes through effective_taxes().
-        tax_totals = defaultdict(Decimal)
+        tax_totals, reverse_totals = defaultdict(Decimal), defaultdict(Decimal)
         line_taxes = self.line_tax_amounts()
         for line in lines:
             for tax, amount in line_taxes.get(line, ()):
@@ -4289,15 +4289,23 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
                 account = tax.account_for(is_sale=False)
                 if account is None:
                     raise ValidationError(f"Tax {tax.code} has no paid account.")
-                tax_totals[account] += amount
                 if tax.reverse_charge:
                     # Claimed as credit like any input tax, and owed by the company rather than the vendor:
-                    # the two net to nothing on what the vendor is paid. Owed into the account the line's tax
-                    # is kept at (owed_account_at_posting): a debit note gives back into its bill's, never into
-                    # the tax's account as it stands now (mistake 4).
-                    tax_totals[owed_account_at_posting(line, tax)] -= amount
+                    # the two net to nothing on what the vendor is paid. Each tax in base on its own, rounded,
+                    # as the return and the GST cash payment read the row it records: summed in the bill's
+                    # currency and rounded once, 0.37 + 0.37 USD at 83.3367 booked 61.67 owed against two rows of
+                    # 30.83, and the challan left a paisa on the payable for good. Owed into the account the
+                    # line's tax is kept at (owed_account_at_posting): a debit note gives back into its bill's,
+                    # never into the tax's account as it stands now (mistake 4).
+                    base = round_money(amount * rate)
+                    reverse_totals[account] += base
+                    reverse_totals[owed_account_at_posting(line, tax)] -= base
+                    continue
+                tax_totals[account] += amount
         for account, amount in tax_totals.items():
             debits.append((account, round_money(amount * rate), "Tax", None))
+        for account, amount in reverse_totals.items():
+            debits.append((account, amount, "Tax under reverse charge", None))
         if self.tcs_amount:
             # What the supplier collected is owed to it with the bill and claimed back by the plant:
             # Dr TCS receivable / Cr Payables, and a debit note the reverse (O234). In rupees (_check_tcs).

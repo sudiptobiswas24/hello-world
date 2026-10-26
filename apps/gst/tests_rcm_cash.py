@@ -329,6 +329,25 @@ class KeptAccountAndRoundingTests(ReverseChargeCashTestCase):
         self.assertEqual((self.ledger("2291"), self.ledger("2299"), self.ledger("1395")),
                          (D("0.00"), D("0.00"), D("0.00")))
 
+    def test_a_rate_that_does_not_come_out_even_foots_to_the_paisa(self):
+        from apps.core.models import ExchangeRate
+
+        ExchangeRate.objects.create(currency=self.usd, rate=D("83.3367"), valid_from=datetime.date(2026, 9, 1))
+        abroad = self.party("ABROAD", role=PartyRole.VENDOR, currency=self.usd, gst_registration="overseas")
+        bill = Bill.objects.create(vendor=abroad, bill_date=DAY, payable_account=self.ap, currency=self.usd)
+        for _ in range(2):
+            line = BillLine.objects.create(bill=bill, charge=self.freight, quantity=D("1"), unit_price=D("7.40"),
+                                           expense_account=self.expense)
+            line.taxes.set([self.igst5])
+        bill.post()
+        self.assertEqual((self.ledger("2291"), self.ledger("2000")), (D("61.66"), D("1233.38")))
+        self.assertEqual(gstr3b(*SEPTEMBER)["3.1d"]["igst"], D("61.66"))
+        payment = self.pay()
+        self.assertEqual(payment.igst, D("61.66"))
+        self.assertEqual((self.ledger("2291"), self.ledger("1395"), self.ledger("1010")),
+                         (D("0.00"), D("0.00"), D("61.66")))
+        self.assertTrue(_gst_cash_ledger(DAY)["ok"])
+
     def test_the_audit_sees_the_account_read_through_the_tax(self):
         from apps.core.management.commands.audit_invariants import Command, app_sources
 
@@ -340,8 +359,8 @@ class KeptAccountAndRoundingTests(ReverseChargeCashTestCase):
                     if "reverse_charge_account" in text]
 
         self.assertEqual(findings("", ""), [])
-        planted = findings("tax_totals[owed_account_at_posting(line, tax)] -= amount",
-                           "tax_totals[tax.reverse_charge_account] -= amount")
+        planted = findings("reverse_totals[owed_account_at_posting(line, tax)] -= base",
+                           "reverse_totals[tax.reverse_charge_account] -= base")
         self.assertEqual(len(planted), 1)
         self.assertIn("_build_journal_entry reads `tax.reverse_charge_account`", planted[0])
         keyed = findings("self.owed_account = owed_account_at_posting(self.line, self.tax)",
