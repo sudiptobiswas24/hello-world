@@ -228,7 +228,8 @@ def taken(connection, label, pks, how=SELECTED):
             state.setdefault("shared", set()).add((label, pk))
         _guard_first(state, label, pk, how)
         if label == FIRST:
-            before = [taken_label for taken_label in dict.fromkeys(state["taken"]) if taken_label != FIRST]
+            before = [taken_label for taken_label in dict.fromkeys(state["taken"])
+                      if taken_label != FIRST and not _exempt(taken_label)]
             if before:
                 # Ranked or not, nothing comes before it: the numbering row is held to commit, and a row taken
                 # first is held while every other numbering waits on it. A lot taken before it, ranked nowhere,
@@ -277,6 +278,17 @@ def taken(connection, label, pks, how=SELECTED):
 
 
 _GUARDS = frozenset(GUARDED.values())
+
+
+def _exempt(label):
+    """A model that is not a business record (numbering_exempt): taken before the numbering row, it waits for none."""
+    from django.apps import apps
+
+    try:
+        app_label, model_name = label.split(".")
+        return bool(getattr(apps.get_model(app_label, model_name), "numbering_exempt", None))
+    except (LookupError, ValueError):
+        return False
 
 
 def _guard_first(state, label, pk, how):

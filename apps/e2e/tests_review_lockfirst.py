@@ -98,14 +98,18 @@ class SignInAndReadWaitOnNothing(TransactionTestCase):
         with Holder():
             took, response = timed(lambda: c.post("/accounts/login/", {"username": "pat", "password": "pw-12345-xyz"}))
         print(f"\nP2b sign-in (open session) behind a {HOLD}s hold: {took:.2f}s status {response.status_code}")
-        self.assertLess(took, 1.5)
+        # A wait for the hold takes the hold's length (4.35 s on the tip). The default password hasher took 1.9 s on
+        # a machine under a gate's load (fix_g23b5), so the line sits below the hold, not at a fast hasher's time.
+        self.assertLess(took, HOLD - 1.0)
 
     def test_p2c_a_fresh_sign_in_does_not_wait(self):
         c = Client()
         with Holder():
             took, response = timed(lambda: c.post("/accounts/login/", {"username": "pat", "password": "pw-12345-xyz"}))
         print(f"\nP2c sign-in (no session) behind a {HOLD}s hold: {took:.2f}s status {response.status_code}")
-        self.assertLess(took, 1.5)
+        # A wait for the hold takes the hold's length (4.35 s on the tip). The default password hasher took 1.9 s on
+        # a machine under a gate's load (fix_g23b5), so the line sits below the hold, not at a fast hasher's time.
+        self.assertLess(took, HOLD - 1.0)
 
     def test_p2d_a_sign_out_does_not_wait(self):
         c = Client()

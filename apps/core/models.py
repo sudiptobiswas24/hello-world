@@ -96,7 +96,7 @@ def row_lock_query(model, pk, no_key=True):
     for a number. FOR UPDATE (no_key=False) only where the row is deleted
     or its key changes: lock_rows(..., deleting=True).
     """
-    if model is not DocumentNumbering and in_a_transaction_it_opened():
+    if model is not DocumentNumbering and not getattr(model, "numbering_exempt", None) and in_a_transaction_it_opened():
         # Every row lock comes after the company's numbering row (O257), whatever the model: it is held to
         # commit by whatever takes a number, and taken after any other row a transaction holds, it waited for
         # a row whose holder then wanted it. lock_rows(), lock_in_turn(), @serialised, lock_for_change() and
@@ -1652,6 +1652,9 @@ class DocumentNumbering(models.Model):
 
 class LoginFailure(models.Model):
     """One wrong password, kept long enough to count (apps.core.auth)."""
+
+    # Not a business record: the company's numbering row is not taken for it (O257, apps.core.apps).
+    numbering_exempt = "a wrong password counted at sign-in"
 
     username = models.CharField(max_length=150, db_index=True)
     address = models.GenericIPAddressField(null=True, blank=True, db_index=True)

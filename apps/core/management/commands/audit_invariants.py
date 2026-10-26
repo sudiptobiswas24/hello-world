@@ -117,6 +117,7 @@ class Command(BaseCommand):
         findings += self.reported_without_the_period(labels, sources)
         findings += self.bank_movements_unregistered(labels, sources)
         findings += self.plain_for_update(labels, sources)
+        findings += self.sign_in_writes_unmarked()
         findings += self.posted_as_calculated(labels, sources)
         findings += self.shelf_read_before_lock(labels, sources)
         findings += self.per_unit_withdrawal_rates(labels, sources)
@@ -2367,6 +2368,84 @@ class Command(BaseCommand):
         return findings
 
     # -- shape 1: money through a bank that a statement cannot be matched to --
+    def sign_in_writes_unmarked(self):
+        """
+        A model a sign-in, a sign-out or a session's refresh writes that does not say it is no business record
+        (O257, review_lockfirst F1). Every save of a row that stood and every delete takes the company's numbering
+        row first unless the model is numbering_exempt: signing out waited the whole of a pay run on the session's
+        delete. Driven for real, in a transaction rolled back: a login made, signed in over an open session,
+        a page read, signed out, its password changed (end_sessions).
+        """
+        import uuid
+
+        from django.contrib.auth import get_user_model
+        from django.db import transaction
+        from django.db.models.signals import m2m_changed, pre_delete, pre_save
+        from django.test import Client
+
+        from apps.core.apps import numbering_exempt
+
+        from django.db import connection
+
+        if "auth_user" not in connection.introspection.table_names():
+            # No database built here (the gate's audit lane): drive it on a throwaway one, its tables made
+            # straight from the models, as the fast test settings make them.
+            settings_dict = connection.settings_dict
+            test = settings_dict.setdefault("TEST", {})
+            before = test.get("MIGRATE", True)
+            test["MIGRATE"] = False
+            name = connection.creation.create_test_db(verbosity=0, autoclobber=True, serialize=False)
+            try:
+                return self.sign_in_writes_unmarked()
+            finally:
+                connection.creation.destroy_test_db(name, verbosity=0)
+                test["MIGRATE"] = before
+        written = set()
+
+        def note(sender, **kwargs):
+            # What the hook holds for (apps.core.apps): a row with its key saved, a delete, a link changed. A fresh
+            # insert takes no hold, so a first sign-in waits for nothing.
+            instance, action = kwargs.get("instance"), kwargs.get("action")
+            if action is not None and action not in ("pre_add", "pre_remove", "pre_clear"):
+                return
+            if action is None and kwargs.get("signal") is pre_save and getattr(instance, "pk", None) is None:
+                return
+            written.add(sender)
+
+        class Rollback(Exception):
+            pass
+
+        password = uuid.uuid4().hex + "Aa1!"
+        try:
+            with transaction.atomic():
+                user = get_user_model().objects.create_user(username=f"audit-{uuid.uuid4().hex[:12]}",
+                                                            password=password)
+                for signal in (pre_save, pre_delete, m2m_changed):
+                    signal.connect(note, weak=False, dispatch_uid=("audit-sign-in", signal))
+                try:
+                    client = Client(HTTP_HOST="localhost")
+                    session = client.session
+                    session["seen"] = 1
+                    session.save()
+                    client.cookies["sessionid"] = session.session_key
+                    client.post("/accounts/login/", {"username": user.username, "password": password})
+                    client.get("/api/core/me/")
+                    client.post("/accounts/logout/")
+                    from apps.core.second_factor import end_sessions
+
+                    end_sessions(user)
+                finally:
+                    for signal in (pre_save, pre_delete, m2m_changed):
+                        signal.disconnect(dispatch_uid=("audit-sign-in", signal))
+                raise Rollback
+        except Rollback:
+            pass
+        return [("sign-in writes a business record",
+                 f"{model._meta.label} is written by a sign-in, a sign-out or a session's refresh and is not "
+                 "numbering_exempt: each waits behind the company's numbering row for the whole of a posting "
+                 "(O257). Give the class a numbering_exempt reason, or keep the write off the sign-in path.")
+                for model in sorted(written, key=lambda m: m._meta.label) if not numbering_exempt(model)]
+
     def plain_for_update(self, labels, sources):
         """
         A row lock that is FOR UPDATE where FOR NO KEY UPDATE serves (O257).
