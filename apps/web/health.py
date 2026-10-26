@@ -325,6 +325,46 @@ def _invoice_numbers(day):
                     else f"{len(missing)} number(s) were taken and never issued.", rows, "/sales/invoices")
 
 
+def _self_invoices(day):
+    """Every reverse-charge supply from a supplier not registered when billed, with no self-invoice yet."""
+    from apps.gst.reverse_charge import awaiting_self_invoice
+
+    found = awaiting_self_invoice(day)
+    rows = [{"label": f"{bill.number} from {bill.vendor}, received {received:%d %b %Y}: due by {last:%d %b %Y}"
+                      + (" (overdue)" if last < day else ""),
+             "href": f"/purchasing/bills/{bill.pk}"} for bill, received, last in found[:SHOW]]
+    return _finding(not found, len(found),
+                    "Every reverse-charge supply from an unregistered supplier has its self-invoice." if not found
+                    else f"{len(found)} reverse-charge supply(ies) from an unregistered supplier have no "
+                         "self-invoice.", rows, "/accounts/gst")
+
+
+def _payment_vouchers(day):
+    """Every payment to the supplier of a reverse-charge supply has its voucher (s.31(3)(g))."""
+    from apps.gst.reverse_charge import awaiting_payment_voucher
+
+    found = awaiting_payment_voucher()
+    rows = [{"label": f"Payment {allocation.payment.number} of {_money(allocation.amount)} for {allocation.bill.number}",
+             "href": f"/purchasing/payments/{allocation.payment_id}"} for allocation in found[:SHOW]]
+    return _finding(not found, len(found),
+                    "Every payment for a reverse-charge supply has its payment voucher." if not found
+                    else f"{len(found)} payment(s) for a reverse-charge supply have no payment voucher.",
+                    rows, "/accounts/gst")
+
+
+def _gst_cash_ledger(day):
+    """The electronic cash ledger by head foots to the account that stands for it."""
+    from apps.gst.reverse_charge import cash_ledger, cash_ledger_accounts
+
+    off = [ledger for ledger in map(cash_ledger, cash_ledger_accounts()) if ledger["difference"]]
+    rows = [{"label": f"{ledger['account'].code} {ledger['account'].name}: challans {_money(ledger['balance'])}, "
+                      f"ledger {_money(ledger['ledger'])}", "href": "/accounts/gst"} for ledger in off[:SHOW]]
+    return _finding(not off, len(off),
+                    "The GST cash ledger is what its challans deposited and set off." if not off
+                    else f"{len(off)} GST cash ledger account(s) hold what no challan put there.",
+                    rows, "/accounts/gst")
+
+
 PROBES = [
     Probe("trial_balance", "Trial balance", _trial_balance),
     Probe("entries_balanced", "Every posted entry balances", _entries_balanced),
@@ -335,6 +375,9 @@ PROBES = [
     Probe("fixed_assets", "Fixed assets agree with the ledger", _fixed_assets),
     Probe("closed_periods", "Closed months stayed closed", _closed_periods),
     Probe("invoice_numbers", "Invoice numbers run without a gap", _invoice_numbers),
+    Probe("self_invoices", "Reverse-charge supplies have their self-invoices", _self_invoices),
+    Probe("payment_vouchers", "Reverse-charge payments have their vouchers", _payment_vouchers),
+    Probe("gst_cash_ledger", "The GST cash ledger agrees with its challans", _gst_cash_ledger),
 ]
 
 

@@ -2710,3 +2710,47 @@ class ANoteRefundedThroughTheBankBesideAPaymentRaceTests(RaceCase):
         self.assertEqual(len(numbers), 3)  # the receipt for the invoice, its note's refund, the other receipt
         self.assertEqual(len(set(numbers)), 3, numbers)
         self.assertEqual(Invoice.objects.filter(credits__isnull=False, posted=True).count(), 1)
+
+
+@tag("race")
+@unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
+class ReverseChargeRaceTests(RaceCase):
+    """Self-invoices numbered at once, and a month's reverse charge paid by two challans at once (g24)."""
+
+    def books(self):
+        from apps.gst import tests_rcm_cash as rcm_fixture
+
+        return fixture(self, rcm_fixture.ReverseChargeCashTestCase)
+
+    def test_two_self_invoices_at_once_take_consecutive_numbers(self):
+        from apps.gst.reverse_charge import SelfInvoice
+        from apps.gst.tests import DAY
+
+        books = self.books()
+        first, second = books.freight_bill(), books.local_bill()
+        outcomes = race(SelfInvoice, lambda: SelfInvoice.issue(first, on_date=DAY),
+                        lambda: SelfInvoice.issue(second, on_date=DAY))
+        self.assertEqual(outcomes, ["done", "done"])
+        self.assertEqual(sorted(SelfInvoice.objects.values_list("number", flat=True)),
+                         ["SI-2026-00001", "SI-2026-00002"])
+
+    def test_one_bill_self_invoiced_twice_at_once_is_invoiced_once_and_refused_in_words(self):
+        from apps.gst.reverse_charge import SelfInvoice
+        from apps.gst.tests import DAY
+
+        bill = self.books().freight_bill()
+        outcomes = race(SelfInvoice, lambda: SelfInvoice.issue(bill, on_date=DAY),
+                        lambda: SelfInvoice.issue(bill, on_date=DAY))
+        self.once(outcomes)
+        self.assertIn("has a self-invoice standing", [o for o in outcomes if o != "done"][0])
+        self.assertEqual(SelfInvoice.objects.count(), 1)
+
+    def test_two_challans_at_once_pay_the_month_once(self):
+        from apps.gst.reverse_charge import GstCashPayment
+
+        books = self.books()
+        books.freight_bill()
+        outcomes = race(GstCashPayment, lambda: books.pay(cpin="12345678901234"),
+                        lambda: books.pay(cpin="12345678901235"))
+        self.once(outcomes)
+        self.assertEqual((books.ledger("1010"), books.ledger("2291")), (Decimal("500.00"), Decimal("0.00")))

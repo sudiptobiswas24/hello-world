@@ -4,18 +4,24 @@ from rest_framework.routers import DefaultRouter
 from .views import (
     EInvoiceViewSet,
     EwayBillViewSet,
+    GstCashPaymentViewSet,
     Gstr1JsonView,
     Gstr1View,
     Gstr2bMatchView,
     Gstr2bStatementViewSet,
     Gstr3bView,
     Itc04View,
+    PaymentVoucherViewSet,
+    SelfInvoiceViewSet,
 )
 
 router = DefaultRouter()
 router.register("e-invoices", EInvoiceViewSet)
 router.register("eway-bills", EwayBillViewSet)
 router.register("gstr2b", Gstr2bStatementViewSet)
+router.register("self-invoices", SelfInvoiceViewSet)
+router.register("payment-vouchers", PaymentVoucherViewSet)
+router.register("cash-payments", GstCashPaymentViewSet)
 
 urlpatterns = [
     path("gstr1/", Gstr1View.as_view()),

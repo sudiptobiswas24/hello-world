@@ -19,11 +19,15 @@ Built:
   non-GST, the HSN summary split B2B and B2C, documents issued, and
   advances (table 11: 11A received and not invoiced in the period, 11B
   adjusted against an invoice or refunded).
-- GSTR-3B: 3.1(a), (b), (c), (d), (e); 3.2; 4(A)(3), 4(A)(5); 5.
+- GSTR-3B: 3.1(a), (b), (c), (d), (e); 3.2; 4(A)(3), 4(A)(5); 5; and
+  6.1's reverse-charge row: the tax owed and what challans paid of it in
+  cash (reverse_charge.GstCashPayment). 4(A)(3) is what was paid, not what
+  was owed: credit on reverse charge waits for the payment (Rule 36(1)(b)).
 
 Not built, and returned as `not_built` rather than left looking
 complete: imports (4(A)(1), (2)),
-blocked and reversed credit (4(B), 4(D)), amendments, e-commerce operators, and the set-off in table 6.
+blocked and reversed credit (4(B), 4(D)), amendments, e-commerce operators, and table 6's set-off of
+tax other than reverse charge, interest and late fee.
 
 Nothing is filed. Filing needs GSTN credentials through a GST Suvidha
 Provider, which this system does not hold. `gstr1_json` gives the
@@ -52,7 +56,7 @@ NOT_BUILT = [
     "4(B), 4(D): credit reversed or ineligible",
     "Amendments to earlier periods",
     "Supplies through e-commerce operators",
-    "GSTR-3B table 6: payment and set-off",
+    "GSTR-3B table 6.1 (A): set-off of tax other than reverse charge, interest and late fee",
 ]
 # The portal refuses a document number longer than this.
 NUMBER_LIMIT = 16
@@ -558,6 +562,7 @@ def gstr3b(start, end):
         "gstin": settings.gstin, "period": (start, end),
         "3.1a": _money(), "3.1b": _money(), "3.1c": _money(), "3.1d": _money(), "3.1e": _money(),
         "3.2": [], "4A3": _money(), "4A5": _money(), "5": {"inter": ZERO, "intra": ZERO},
+        "6.1": {},
         "5_non_gst": {"inter": ZERO, "intra": ZERO},
         "warnings": [], "not_built": NOT_BUILT,
     }
@@ -590,13 +595,11 @@ def gstr3b(start, end):
         claimable = document.registered and document.registration == "regular"
         for line in document.lines:
             if line.reverse_charge:
-                # Owed by the company and claimed back, whoever the
-                # supplier is: the credit rests on the company's payment,
-                # not on the supplier's registration.
+                # Owed by the company whoever the supplier is; claimed back
+                # in 4(A)(3) once paid in cash, below.
                 result["3.1d"]["taxable"] += sign * line.taxable
                 for head, amount in line.reverse_charge.items():
                     result["3.1d"][head] += sign * amount
-                    result["4A3"][head] += sign * amount
                 continue
             if line.nature in ("nil", "exempt"):
                 result["5"]["inter" if document.inter else "intra"] += sign * line.taxable
@@ -611,7 +614,20 @@ def gstr3b(start, end):
                     "claimed as credit."
                 )
     result["4A5"].pop("taxable")
-    result["4A3"].pop("taxable")
+    # Reverse charge is paid in cash, never from credit (s.2(82), s.49(4)), and its credit is taken once
+    # paid (Rule 36(1)(b)): 6.1 and 4(A)(3) read the challans standing for the period, not the bills (mistake 4).
+    from .reverse_charge import paid_in_cash
+
+    paid = paid_in_cash(start, end)
+    payable = {head: result["3.1d"][head] for head in HEADS}
+    result["4A3"] = dict(paid)
+    result["6.1"] = {"reverse_charge": {"payable": payable, "paid_through_itc": {head: ZERO for head in HEADS},
+                                        "paid_in_cash": dict(paid)}}
+    for head in HEADS:
+        if payable[head] != paid[head]:
+            result["warnings"].append(
+                f"Reverse charge {head.upper()}: {payable[head]} owed for the period, {paid[head]} paid in cash; "
+                "the credit is claimed only on what is paid.")
     result["warnings"] = sorted(set(result["warnings"]))
     return result
 
