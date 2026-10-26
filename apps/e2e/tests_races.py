@@ -113,6 +113,29 @@ def race(sender, *calls, atomic=True):
     return outcomes
 
 
+def race_in_order(sender, first, second, atomic=True):
+    """
+    `first` and `second` at once, `first` deterministically ahead: it takes the company's numbering row, the first
+    lock of every transaction that locks (O257), and only then lets `second` start, which waits on that row. Since
+    the numbering row came first, which thread won a race was the thread start order; run a race both ways round,
+    swapping the two, and assert each order's books. Outcomes are in (first, second) order.
+    """
+    from apps.core.models import DocumentNumbering
+
+    holding = threading.Event()
+
+    def ahead():
+        DocumentNumbering.hold()
+        holding.set()
+        first()
+
+    def behind():
+        holding.wait(5)
+        second()
+
+    return race(sender, ahead, behind, atomic=atomic)
+
+
 def fixture(test, cls):
     """
     `cls`'s own setUp, run as a `cls`: its helpers and what it builds, for
@@ -718,11 +741,12 @@ class StockAndPlantRaceTests(RaceCase):
             lambda: StockAdjustment.objects.get(pk=draft.pk).post()] * 2))
         self.assertEqual(self.item.on_hand_at(self.warehouse), Decimal("90"))
 
-    def test_a_count_is_not_posted_over_a_movement_that_landed_after_its_check(self):
+    def _count_and_adjustment(self, count_first):
         # O252: 100 on the shelf, a sheet counting 96, and an adjustment of -2 posted at once. The count asked
         # whether the books still read 100 before it held the shelf: the -2 landed between, and the count
-        # posted its -4 over it. Held first, either the count goes first or it is refused as stale.
-        from apps.inventory.models import StockCount, StockMovement
+        # posted its -4 over it. Held first, either the count goes first or it is refused as stale. Each order
+        # run (race_in_order): with the numbering row taken first, thread start order decided the winner.
+        from apps.inventory.models import StockCount
 
         stock_fixture.AdjustmentTestCase.setUp(self)
         stock_fixture.AdjustmentTestCase.stock(self)
@@ -730,17 +754,26 @@ class StockAndPlantRaceTests(RaceCase):
                                           reason=self.recount)
         count.add(self.item, "96")
         other = stock_fixture.AdjustmentTestCase.adjust(self, "-2", post=False)
-        outcomes = race(StockAdjustment, lambda: StockCount.objects.get(pk=count.pk).post(),
-                        lambda: StockAdjustment.objects.get(pk=other.pk).post())
-        other.refresh_from_db()
-        counted = StockAdjustment.objects.filter(count=count).first()
-        if outcomes[0] == "done":
-            first = StockMovement.objects.filter(reference=counted.number).order_by("pk").first()
-            second = StockMovement.objects.filter(reference=other.number).order_by("pk").first()
-            self.assertTrue(second is None or first.pk < second.pk, (outcomes, first.pk, second and second.pk))
+        post_count = lambda: StockCount.objects.get(pk=count.pk).post()  # noqa: E731
+        post_other = lambda: StockAdjustment.objects.get(pk=other.pk).post()  # noqa: E731
+        if count_first:
+            counted_outcome, other_outcome = race_in_order(StockAdjustment, post_count, post_other)
         else:
-            self.assertIn("Stock moved after this sheet was written", outcomes[0])
-        self.assertEqual(outcomes[1], "done", outcomes)
+            other_outcome, counted_outcome = race_in_order(StockAdjustment, post_other, post_count)
+        return count, other, counted_outcome, other_outcome
+
+    def test_a_count_is_not_posted_over_a_movement_that_landed_after_its_check_the_count_first(self):
+        # The count posts its -4 (100 to 96), then the adjustment its -2: 94 on the shelf.
+        count, other, counted_outcome, other_outcome = self._count_and_adjustment(count_first=True)
+        self.assertEqual((counted_outcome, other_outcome), ("done", "done"))
+        self.assertEqual(self.item.on_hand_at(self.warehouse), Decimal("94"))
+
+    def test_a_count_is_not_posted_over_a_movement_that_landed_after_its_check_the_adjustment_first(self):
+        # The -2 lands first (98): the sheet written against 100 is refused as stale, and 98 stands.
+        count, other, counted_outcome, other_outcome = self._count_and_adjustment(count_first=False)
+        self.assertEqual(other_outcome, "done")
+        self.assertIn("Stock moved after this sheet was written", counted_outcome)
+        self.assertEqual(self.item.on_hand_at(self.warehouse), Decimal("98"))
 
     def test_two_dispatch_commits_of_the_same_runs_in_opposite_orders_both_go_through(self):
         # O226 (dispatch commit's operations) and O254: each commit wrote its operations in the order it
