@@ -198,6 +198,14 @@ built.
        ledger, every derived balance foots to its account, and the
        statutory files read what was posted. Run it on PostgreSQL and in
        Asia/Kolkata. Each failure is a register row.
+   - **Decided in g23b (O257): every transaction that locks a row takes the
+     company's numbering row first**, so locking transactions run one at a
+     time across the plant: no deadlock among them, at the cost that two
+     postings at once wait for each other and a long one (a pay run, the demo
+     load) holds the rest. Ranked first in apps.core.lock_order; the sentinel
+     refuses any row before it. Taken because numbering rows held to commit
+     met every other lock nested inside a document (a note's refund through
+     the bank), and site-by-site holds kept missing paths.
    - **g23b status, 25 October: all fixing and reviews done; the six-lane gate
      runs on this tree's tip** (runner /home/user/work/run_gate_g23b.sh, logs
      /home/user/gate-logs-g23b, progress in its `progress` file). Closed: all
