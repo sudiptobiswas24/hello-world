@@ -41,6 +41,7 @@ class ServerError(models.Model):
 
     # Not a business record: the company's numbering row is not taken for it (O257, apps.core.apps).
     numbering_exempt = "written by any request that failed, whatever it was doing"
+    not_edit_logged = "itself a log of what failed; dealing with one is an action in its history"
 
     ref = models.CharField(max_length=12, unique=True, editable=False)
     happened_at = models.DateTimeField(default=timezone.now, editable=False)

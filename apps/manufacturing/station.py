@@ -166,6 +166,7 @@ class StationAttempt(models.Model):
 
     # Not a business record: the company's numbering row is not taken for it (O257, apps.core.apps).
     numbering_exempt = "a PIN typed at a station, its sign-in"
+    not_edit_logged = "itself a log: one PIN typed at a station"
 
     station = models.ForeignKey(LoomStation, on_delete=models.CASCADE, related_name="attempts")
     at = models.DateTimeField()
