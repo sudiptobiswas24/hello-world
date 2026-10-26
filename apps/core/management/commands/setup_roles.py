@@ -341,6 +341,8 @@ ROLES = {
         *crud("purchasing", "tdsdeduction", actions=("add", "view")),
         *crud("purchasing", "tdschallan", actions=("add", "view")),
         *crud("gst", "gstcashpayment", actions=("add", "view")),
+        # The voucher is issued with the payment, by whoever pays (s.31(3)(g)).
+        *crud("gst", "paymentvoucher", actions=("add", "view")),
         *view("accounting", "tdssection", "tdsrate"),
     ],
     "Warehouse Staff": [
@@ -551,8 +553,7 @@ ROLES = {
         # Reverse charge: the self-invoice and the payment voucher are the officer's papers; the challan
         # moves money, so it is paid by the AP Manager, and read here.
         *crud("gst", "selfinvoice", actions=("add", "change", "view")),
-        *crud("gst", "paymentvoucher", actions=("add", "view")),
-        *view("gst", "gstcashpayment"),
+        *view("gst", "paymentvoucher", "gstcashpayment"),
         *full("gst", "unitquantitycode"),
         # A party's GST registration is master data, not a booking: the
         # officer who files GSTR-1 by GSTIN is the one who finds it wrong.
