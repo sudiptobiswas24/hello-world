@@ -12,6 +12,10 @@
 #   docker compose run --rm backup now                 a backup this minute
 #   docker compose run --rm backup restore <file>      see restore.sh
 #
+# Runs as the role that owns the tables (DATABASE_URL here is the owner's, docker-compose.yml): the
+# application's own role reads no more than it must and cannot drop the schema a restore replaces. The
+# dump keeps the grants to the application's role; its next start (migrate) gives them again regardless.
+#
 # Not in the backup: ERP_FIELD_KEYS, which seals each login's second factor
 # in the database (O255). A restore needs it as well, or every enrolled
 # login sets up its phone again; keep it off the machine, apart from these.

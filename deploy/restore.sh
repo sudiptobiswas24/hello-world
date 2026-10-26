@@ -57,6 +57,8 @@ fi
     pg_restore --no-owner --file=- "$file" | grep -v '^CREATE SCHEMA public;$'
 } | psql --quiet --no-psqlrc --set=ON_ERROR_STOP=1 --single-transaction "$DATABASE_URL" > /dev/null
 echo "restored from $file"
+# Run as the owner (the backup service's DATABASE_URL). The application's role is given its rows again by the
+# migrate the web service runs as it starts (apps/core/ledger_log.grant_app).
 
 if [ -f "$media" ]; then
     # Unpacked and checked beside the attachments first, then swapped in: an
