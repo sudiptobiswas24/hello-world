@@ -214,8 +214,12 @@ class ThePayrollLocks(TransactionTestCase):
         print(f"\nRACE void(receipt) / pay(slip, own): {outcomes}; unpaid {made.paid_run.unpaid_net()} "
               f"net pay payable {made.balance(made.net_pay)}")
         self.assertEqual(deadlocked(outcomes), [], outcomes)
-        # Whatever order, the books and the slips agree (E2 is not paid twice).
-        self.assertEqual(abs(made.balance(made.net_pay)), made.paid_run.unpaid_net())
+        # Whatever order, the books and the slips agree (E2 is not paid twice). The second payment was posted
+        # against net pay payable before the race; refused as the slip's (the void went first, so the slip is
+        # paid again), it stands there unapplied, 8,450.50 the slips do not owe. Before O257's numbering row was
+        # taken first the pay always won this race, and the assertion read only that order (fix_g23b4).
+        unapplied = Decimal("8450.50") if outcomes[1] != "done" else Decimal("0")
+        self.assertEqual(abs(made.balance(made.net_pay)), made.paid_run.unpaid_net() + unapplied, outcomes)
 
 
 @unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")

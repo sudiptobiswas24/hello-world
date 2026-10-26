@@ -8,6 +8,7 @@ is left as it is and named: its login is reset (Logins, Reset second
 factor) and enrols again. The command then fails, so a script sees it.
 """
 
+from apps.core.models import numbering_first
 from django.apps import apps
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
@@ -23,6 +24,7 @@ class Command(BaseCommand):
         for label, field in SEALED_FIELDS:
             model = apps.get_model(label)
             with transaction.atomic():
+                numbering_first()  # a raw row lock, after the company's numbering row (O257)
                 for row in model.objects.select_for_update(no_key=True).order_by("pk"):
                     try:
                         value = reseal(getattr(row, field))

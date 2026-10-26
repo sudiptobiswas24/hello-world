@@ -38,6 +38,14 @@ import traceback
 # Earliest first; the position is the rank. Each model is its own rank, and
 # rows of one model are taken in key order.
 LOCK_ORDER = (
+    # 0. the company's numbering row (O257), first: it is held to commit by every transaction that takes a
+    #    document number, before the type's sequence (GUARDED), so it is company-wide, and anything taken
+    #    before it is held while every other numbering waits. Ranked after the stock and before the period
+    #    (25 October), a note numbered first and then refunded through a bank took the bank FOR SHARE after
+    #    it (hold_money_account), which PostgreSQL alone showed (the gate's O261 fuzz). Every document that
+    #    numbers takes it as the first lock of its outermost transaction (@serialised, numbering models);
+    #    what it then posts follows it. The cost, accepted: postings that number run one at a time.
+    "core.documentnumbering",
     # 1. a purchase order, then a sales order (a drop-ship receipt ships
     #    the customer's order)
     "purchasing.purchaseorder",
@@ -82,20 +90,13 @@ LOCK_ORDER = (
     #    corrects before the goods come back. Rows in key order, so two
     #    landed costs onto the same two receipt lines take them alike.
     "inventory.stockposition",
-    # 6a. the company's numbering row (O257), held by every transaction that takes a document number,
-    #     before the type's sequence (GUARDED): one numbering at a time, so two documents each numbering
-    #     the other's type second no longer deadlock. The survey of 25 October over core, accounting,
-    #     sales, purchasing, hr, inventory, manufacturing, assets, quality and e2e saw it taken after
-    #     every document, line and stock position above, and after it only the period an entry posts
-    #     into and rows ranked nowhere, once the paths that numbered before holding their lines, the
-    #     shelves or a second document hold those first.
-    "core.documentnumbering",
     # 7. the period an entry is posted into, read under lock as the entry
     #    posts: after the stock the document moved
     "accounting.accountingperiod",
 )
 
 RANK = {label: rank for rank, label in enumerate(LOCK_ORDER)}
+FIRST = LOCK_ORDER[0]
 
 # Seen locking in the same transactions as the models above (the survey of
 # the suite, 10 October), and left unranked, each for its reason. Ranking
@@ -226,6 +227,18 @@ def taken(connection, label, pks, how=SELECTED):
         if how == SHARED and pk is not None:
             state.setdefault("shared", set()).add((label, pk))
         _guard_first(state, label, pk, how)
+        if label == FIRST:
+            before = [taken_label for taken_label in dict.fromkeys(state["taken"]) if taken_label != FIRST]
+            if before:
+                # Ranked or not, nothing comes before it: the numbering row is held to commit, and a row taken
+                # first is held while every other numbering waits on it. A lot taken before it, ranked nowhere,
+                # passed unseen, and a recall's lift deadlocked with a verdict on PostgreSQL (O257).
+                message = (f"{label} {pk} locked after {before[0]} ({how}): the numbering row is the first lock "
+                           "of a transaction that numbers (apps.core.lock_order)")
+                if _SURVEY:
+                    _survey("violation", before[0], label, how)
+                else:
+                    raise LockOrderViolation(message)
         rank = RANK.get(label)
         if _SURVEY:
             for earlier in dict.fromkeys(state["taken"]):

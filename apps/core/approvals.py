@@ -30,7 +30,7 @@ from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils import timezone
 
-from .models import check_login_acts, serialised
+from .models import numbering_first, check_login_acts, serialised
 
 
 def authors(document, *parts):
@@ -348,6 +348,7 @@ def asks_its_policy_when_taxes_change(line_model):
         if before is None:
             return
         with transaction.atomic():
+            numbering_first()  # a raw row lock, after the company's numbering row (O257)
             order = type(instance.order).objects.select_for_update(no_key=True).get(pk=instance.order_id)
             order.refuse_going_past_the_policy(before)
 

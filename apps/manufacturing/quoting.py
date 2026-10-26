@@ -48,7 +48,7 @@ from django.db import models, transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from apps.core.models import AuditModel
+from apps.core.models import numbering_first, AuditModel
 
 ZERO = Decimal("0")
 PLACES = Decimal("0.000001")
@@ -574,6 +574,7 @@ def quote(sheet, quotation, taxes):
     """
     from apps.sales.models import QuotationLine, QuotationStatus
 
+    numbering_first()  # a raw row lock, after the company's numbering row (O257)
     sheet = CostSheet.objects.select_for_update(no_key=True).get(pk=sheet.pk)
     if sheet.quotation_line_id is not None:
         raise ValidationError(

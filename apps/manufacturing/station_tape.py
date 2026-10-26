@@ -33,7 +33,7 @@ from django.core.exceptions import ValidationError
 from django.db import models, transaction
 from django.utils import timezone
 
-from apps.core.models import AuditModel
+from apps.core.models import numbering_first, AuditModel
 
 from .station_scale import TYPED_REASONS
 
@@ -125,6 +125,7 @@ def record_tape(station, operator, machine, gross_kg, bobbins, core_type, denier
     at = at or timezone.now()
     if station.kind != LineKind.EXTRUSION:
         raise ValidationError(f"{station} is not a tape line's station.")
+    numbering_first()  # a raw row lock, after the company's numbering row (O257)
     machine = Machine.objects.select_for_update(no_key=True).get(pk=machine.pk)
     shift, shift_date = _context(station, operator, machine, at)
     # Counted before the scale is asked (O279): the net frame's tare ran

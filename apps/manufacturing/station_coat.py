@@ -31,7 +31,7 @@ from django.core.exceptions import ValidationError
 from django.db import models, transaction
 from django.utils import timezone
 
-from apps.core.models import AuditModel
+from apps.core.models import numbering_first, AuditModel
 
 ZERO = Decimal("0")
 ONE_HUNDRED = Decimal("100")
@@ -115,6 +115,7 @@ def record_coating(station, operator, machine, metres, samples, supervisor=None,
     at = at or timezone.now()
     if station.kind != LineKind.COATING:
         raise ValidationError(f"{station} is not a coater's station.")
+    numbering_first()  # a raw row lock, after the company's numbering row (O257)
     machine = Machine.objects.select_for_update(no_key=True).get(pk=machine.pk)
     shift, shift_date = _context(station, operator, machine, at)
     metres = _number(metres, "The metres coated")

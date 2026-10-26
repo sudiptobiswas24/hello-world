@@ -64,7 +64,7 @@ from django.db import models, transaction
 from django.db.models import Q, Sum
 from django.utils import timezone
 
-from apps.core.models import AuditModel, lock_rows, serialised, to_date
+from apps.core.models import numbering_first, AuditModel, lock_rows, serialised, to_date
 
 ZERO = Decimal("0")
 MINUTES_PER_HOUR = Decimal("60")
@@ -345,6 +345,7 @@ class MaintenanceJob(AuditModel):
         if self.pk and not getattr(self, "_saving_state", False):
             # Under the lock: an edit read before a completion committed
             # would otherwise write the job back open over it.
+            numbering_first()  # a raw row lock, after the company's numbering row (O257)
             stored = type(self).objects.select_for_update(no_key=True).filter(pk=self.pk).values(
                 "done_on", "cancelled_at", "schedule_id", "work_centre_id", "machine_id").first()
             if stored and stored["done_on"] is not None:
@@ -659,6 +660,7 @@ def raise_breakdown(downtime, fault, technician=None, planned_minutes=None):
     """A job on a stoppage that was a failure."""
     from .shifts import Downtime
 
+    numbering_first()  # a raw row lock, after the company's numbering row (O257)
     downtime = Downtime.objects.select_for_update(no_key=True).get(pk=downtime.pk)
     if downtime.voided_at is not None:
         raise ValidationError(f"{downtime} was withdrawn; there is nothing to repair.")
@@ -755,6 +757,7 @@ def issue_spares(job, warehouse, lines, on_date=None, issued_to=None, reason=Non
 
     from .orders import ManufacturingSettings
 
+    numbering_first()  # a raw row lock, after the company's numbering row (O257)
     job = MaintenanceJob.objects.select_for_update(no_key=True).get(pk=job.pk)
     if not job.is_open():
         raise ValidationError(f"{job} is not open; spares go to a job being worked on.")

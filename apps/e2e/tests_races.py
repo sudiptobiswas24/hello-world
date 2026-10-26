@@ -2622,3 +2622,58 @@ class TwoDocumentsNumberingEachOthersTypeRaceTests(RaceCase):
                          ["DEL-2026-00001", "DEL-2026-00002", "INV-2026-00001", "INV-2026-00002"])
         self.assertEqual(sorted(DocumentSequenceYear.objects.values_list("sequence__code", "next_number")),
                          [("sales.delivery", 3), ("sales.invoice", 3)])
+
+
+@tag("race")
+@unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
+class ANoteRefundedThroughTheBankBesideAPaymentRaceTests(RaceCase):
+    """
+    O257: the company's numbering row is held to commit, so it is the first lock of every transaction that
+    numbers. Ranked after the stock and before the period, a credit note numbered first and then refunded in the
+    same transaction took the bank FOR SHARE (hold_money_account) after the numbering row, against the order,
+    while a payment through the same bank, holding the bank first, waited for the numbering row: refused by the
+    sentinel, and a deadlock waiting to happen. First in the order, both go through, each number once.
+    """
+
+    def test_a_note_and_its_refund_and_a_receipt_through_the_same_bank_both_post(self):
+        from apps.accounting import tests_fx_settlement as fx_fixture
+        from apps.sales.models import InvoicePayment, SalesOrder, SalesOrderLine
+
+        made = fixture(self, fx_fixture.FxSettlementTestCase)
+        day = datetime.date(2026, 1, 5)
+
+        def credit_and_refund():
+            # As the gate's O261 fuzz did, in one transaction: the order, its invoice, the money for it, a note
+            # and the note's refund through the same bank. Every document is made here, so the rows the order
+            # sees are the bank, the customer and the item, and the numbering row before them all.
+            order = SalesOrder.objects.create(customer=made.customer, order_date=day)
+            SalesOrderLine.objects.create(order=order, item=made.item, uom=made.uom, quantity=Decimal("2"),
+                                          unit_price=Decimal("500"), revenue_account=made.revenue)
+            order.confirm()
+            invoice = order.create_invoice(made.ar, invoice_date=day)
+            invoice.post()
+            paid = Payment.objects.create(party=made.customer, direction=PaymentDirection.RECEIPT, payment_date=day,
+                                          amount=Decimal("1000.00"), bank_account=made.bank,
+                                          counterpart_account=made.ar)
+            paid.post()
+            InvoicePayment.objects.create(invoice=invoice, payment=paid, amount=Decimal("1000.00"))
+            first = invoice.lines.order_by("pk").first()
+            note = invoice.create_credit_note(quantities={first: Decimal("1")}, on_date=day)
+            note.refresh_from_db()
+            refund = Payment.objects.create(party=made.customer, direction=PaymentDirection.DISBURSEMENT,
+                                            payment_date=day, amount=note.refund_due(), bank_account=made.bank,
+                                            counterpart_account=made.ar)
+            refund.post()
+            InvoicePayment.objects.create(invoice=note, payment=refund, amount=refund.amount)
+
+        def receipt():
+            Payment.objects.create(party=made.customer, direction=PaymentDirection.RECEIPT, payment_date=day,
+                                   amount=Decimal("250.00"), bank_account=made.bank,
+                                   counterpart_account=made.ar).post()
+
+        outcomes = race(Payment, credit_and_refund, receipt)
+        self.assertEqual(outcomes, ["done", "done"], outcomes)
+        numbers = list(Payment.objects.values_list("number", flat=True))
+        self.assertEqual(len(numbers), 3)  # the receipt for the invoice, its note's refund, the other receipt
+        self.assertEqual(len(set(numbers)), 3, numbers)
+        self.assertEqual(Invoice.objects.filter(credits__isnull=False, posted=True).count(), 1)

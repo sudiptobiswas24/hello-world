@@ -48,7 +48,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from apps.accounting.gst import STATES
-from apps.core.models import AuditModel, moment_that_has_come, serialised, to_date
+from apps.core.models import numbering_first, AuditModel, moment_that_has_come, serialised, to_date
 
 from . import particulars as p
 
@@ -582,6 +582,7 @@ def prepare(document, mode=TransportMode.ROAD, distance_km=0, transporter_id="",
     payload |= _transport_payload(transport)
     key = ({"invoice": document} if is_invoice else {"delivery": document} if is_delivery
            else {"challan": document})
+    numbering_first()  # a raw row lock, after the company's numbering row (O257)
     existing = EwayBill.objects.select_for_update(no_key=True).filter(
         cancelled_at__isnull=True, **key).first()
     if existing is not None and existing.number:

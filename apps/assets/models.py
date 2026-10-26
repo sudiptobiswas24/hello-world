@@ -395,13 +395,6 @@ class FixedAsset(Extensible, AuditModel):
                 f"{self} cannot go into service from {in_service}: it was capitalised on "
                 f"{self.capitalisation_entry.date}, and is not on the books before then."
             )
-        # Its number before the closed month is read and its opening balance posts: the company's numbering
-        # row is held before the period an entry posts into (O257).
-        if not self.number:
-            self.number = DocumentSequence.next_for(
-                "assets.fixed_asset", self.acquisition_date,
-                name="Fixed Assets", prefix="FA-",
-            )
         # Asked here, where the date is first known. Put into service from 15 January with the
         # first quarter closed, a machine's January could never be charged: every month-end run
         # stopped on it, for every asset, and the machine could not be disposed of either.
@@ -416,6 +409,11 @@ class FixedAsset(Extensible, AuditModel):
             )
         self.in_service_date = in_service
         opened = self._bring_in_as_an_opening_balance() if not self.capitalisation_entry_id else None
+        if not self.number:
+            self.number = DocumentSequence.next_for(
+                "assets.fixed_asset", self.acquisition_date,
+                name="Fixed Assets", prefix="FA-",
+            )
         self.status = AssetStatus.IN_SERVICE
         self._status_by_method = True
         if opened is not None:

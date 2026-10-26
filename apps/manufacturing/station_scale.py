@@ -32,7 +32,7 @@ from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils import timezone
 
-from apps.core.models import AuditModel
+from apps.core.models import numbering_first, AuditModel
 
 FRESH = datetime.timedelta(seconds=60)
 
@@ -125,6 +125,7 @@ def post_reading(scale_code, gross_kg, stable, at=None, net_kg=None, key=None):
 
 def latest(station, at=None):
     at = at or timezone.now()
+    numbering_first()  # a raw row lock, after the company's numbering row (O257)
     return (ScaleReading.objects.select_for_update(no_key=True)
             .filter(scale_code=station.scale_code, read_at__lte=at).first())
 

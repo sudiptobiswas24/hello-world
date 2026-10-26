@@ -40,7 +40,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from apps.accounting.models import round_money
-from apps.core.models import AuditModel, DocumentSequence, serialised, to_date
+from apps.core.models import numbering_first, AuditModel, DocumentSequence, serialised, to_date
 
 ZERO = Decimal("0")
 HUNDRED = Decimal("100")
@@ -268,6 +268,7 @@ def bill_variation(order, start, end, receivable_account, invoice_date=None, by=
     """Write a bill for the window, and draft its invoice and credit note."""
     from .models import Invoice, InvoiceLine, SalesOrder
 
+    numbering_first()  # a raw row lock, after the company's numbering row (O257)
     order = SalesOrder.objects.select_for_update(no_key=True).get(pk=order.pk)
     rows = rows_for(order, start, end)
     if not rows:

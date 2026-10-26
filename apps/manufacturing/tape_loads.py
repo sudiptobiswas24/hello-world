@@ -25,7 +25,7 @@ from django.db import models, transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from apps.core.models import AuditModel, lock_rows
+from apps.core.models import numbering_first, AuditModel, lock_rows
 
 ZERO = Decimal("0")
 
@@ -82,6 +82,7 @@ def load_tape(station, operator, machine, code, kg, side, at=None):
         raise ValidationError(f"{station} is not a loom station.")
     if side not in CreelSide.values:
         raise ValidationError(f"{side!r} is not warp or weft.")
+    numbering_first()  # a raw row lock, after the company's numbering row (O257)
     machine = Machine.objects.select_for_update(no_key=True).get(pk=machine.pk)
     if not station.machines.filter(pk=machine.pk).exists():
         raise ValidationError(f"{station} does not load {machine.code}.")

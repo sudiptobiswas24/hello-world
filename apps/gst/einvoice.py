@@ -63,7 +63,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from apps.accounting.models import round_money
-from apps.core.models import AuditModel, lock_rows, moment_that_has_come, serialised, to_date
+from apps.core.models import numbering_first, AuditModel, lock_rows, moment_that_has_come, serialised, to_date
 
 from . import particulars as p
 
@@ -480,6 +480,7 @@ def build(invoice):
 def prepare(invoice):
     """Build the payload and keep it. Built again until the portal has answered."""
     payload = build(invoice)
+    numbering_first()  # a raw row lock, after the company's numbering row (O257)
     existing = EInvoice.objects.select_for_update(no_key=True).filter(invoice=invoice).first()
     if existing is None:
         return EInvoice.objects.create(invoice=invoice, payload=payload)

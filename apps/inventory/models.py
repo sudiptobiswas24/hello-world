@@ -7,7 +7,7 @@ from django.utils import timezone
 from django.db import models, transaction
 from django.db.models import Q, Sum
 
-from apps.core.models import Extensible, AuditModel, UnitOfMeasure, to_date
+from apps.core.models import numbering_first, Extensible, AuditModel, UnitOfMeasure, to_date
 
 
 class Warehouse(AuditModel):
@@ -383,6 +383,7 @@ class Item(Extensible, AuditModel):
         # The row held before anything is asked (the review of O330): a first receipt inserting its movement
         # holds a key share on this row, which FOR UPDATE waits for, so the question below sees it; asked
         # unlocked, a switch to FIFO and the first receipt both went through, the receipt booked under average.
+        numbering_first()  # a raw row lock, after the company's numbering row (O257)
         before = Item.objects.select_for_update(no_key=True).filter(pk=self.pk).values(
             "inventory_account_id", *(name for name, _ in self.COUNTED_AS)).first()
         if before is None:
@@ -894,6 +895,7 @@ class StockMovement(AuditModel):
         """
         if type(self).objects.filter(item_id=self.item_id).exists():
             return
+        numbering_first()  # a raw row lock, after the company's numbering row (O257)
         method = Item.objects.select_for_update(no_key=True).filter(pk=self.item_id).values_list(
             "costing_method", flat=True).first()
         if method is not None and method != self.item.costing_method:
