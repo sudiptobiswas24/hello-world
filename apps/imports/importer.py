@@ -80,6 +80,7 @@ def template(kind):
 def _party(row, options):
     from apps.accounting.models import PartyTaxProfile
     from apps.core.models import (
+    numbering_first,
         Address,
         AddressType,
         Country,
@@ -481,6 +482,7 @@ def _customer_rep(row, options):
 def _shipment_history(row, options):
     """A month the old system shipped an item from a warehouse, for the forecast; run again to correct it."""
     from apps.inventory.models import Item, Warehouse
+    from apps.core.models import numbering_first
     from apps.planning.history import ShipmentHistory, parse_month
 
     item = by_code(Item, row, "sku", field_name="sku")
@@ -491,6 +493,7 @@ def _shipment_history(row, options):
     quantity = decimal(row, "quantity", places=4, required_=True)
     if quantity < 0:
         raise RowError("quantity", "Shipped less returned is nothing or more.")
+    numbering_first()  # update_or_create() locks the row it finds: after the numbering row (O257)
     ShipmentHistory.objects.update_or_create(item=item, warehouse=warehouse, month=month,
                                              defaults={"quantity": quantity, "note": row.get("note", "")})
 

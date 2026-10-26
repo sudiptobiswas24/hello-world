@@ -20,7 +20,7 @@ from django.core.exceptions import ValidationError
 from django.db import models, transaction
 from django.utils import timezone
 
-from apps.core.models import AuditModel
+from apps.core.models import numbering_first, AuditModel
 
 from .station_scale import TYPED_REASONS
 
@@ -106,6 +106,7 @@ def record_film(station, operator, machine, gross_kg, core_type, metres, micron_
     at = at or timezone.now()
     if station.kind != LineKind.BLOWN_FILM:
         raise ValidationError(f"{station} is not a blown-film line's station.")
+    numbering_first()  # a raw row lock, after the company's numbering row (O257)
     machine = Machine.objects.select_for_update(no_key=True).get(pk=machine.pk)
     shift, shift_date = _context(station, operator, machine, at)
     gross, reading = weigh_gross(station, operator, supervisor, gross_kg, source, at,

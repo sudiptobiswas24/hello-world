@@ -26,6 +26,7 @@ worth knowing before concluding from a green suite that the locking
 works.
 """
 
+from apps.core.models import numbering_first
 from django.db import IntegrityError, models, transaction
 
 from .models import Item, Warehouse
@@ -83,6 +84,7 @@ def lock_position(item, warehouse):
     # One query once the row exists, which after the first posting for a
     # pair is every time. get_or_create() first would spend a SELECT and
     # sometimes an INSERT on every posting for the life of the system.
+    numbering_first()  # a raw row lock, after the company's numbering row (O257)
     held = (
         StockPosition.objects.select_for_update(no_key=True)
         .filter(item=item, warehouse=warehouse)
@@ -98,6 +100,7 @@ def lock_position(item, warehouse):
         # Theirs is as good as ours; what matters is that one exists to
         # lock.
         pass
+    numbering_first()  # a raw row lock, after the company's numbering row (O257)
     return (
         StockPosition.objects.select_for_update(no_key=True)
         .filter(item=item, warehouse=warehouse)

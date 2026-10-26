@@ -40,6 +40,13 @@ def hold_money_account(account):
         # Held outside a transaction, the lock ends with the statement: TdsChallan.pay asked here
         # before its transaction opened, and paid through a bank unmarked meanwhile (review F4).
         raise RuntimeError("hold_money_account() outside a transaction holds nothing.")
+    from apps.core.models import DocumentNumbering, in_a_transaction_it_opened
+
+    if in_a_transaction_it_opened():
+        # The company's numbering row first (O257): money moved through a bank is a payment, which numbers,
+        # and the numbering row is the first lock of a transaction that numbers. A payment saved and posted in
+        # one transaction shared its bank here, then asked for the numbering row as it posted, after it.
+        DocumentNumbering.hold()
     if connection.vendor == "postgresql":
         table = connection.ops.quote_name(account._meta.db_table)
         with connection.cursor() as cursor:

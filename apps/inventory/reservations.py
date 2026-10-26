@@ -29,7 +29,7 @@ from django.db import IntegrityError, models, transaction
 from django.db.models import F, Q, Sum
 from django.utils import timezone
 
-from apps.core.models import AuditModel, serialised
+from apps.core.models import numbering_first, AuditModel, serialised
 
 from .locking import lock_positions
 from .models import Item, Warehouse
@@ -120,6 +120,7 @@ class ReservationManager(models.Manager.from_queryset(ReservationQuerySet)):
             # source is not locked first because its callers take the customer before
             # the line (sales.salesorderline after core.party), and the lock order puts
             # the line first.
+            numbering_first()  # a raw row lock, after the company's numbering row (O257)
             existing = self.for_source(source).open().select_for_update(no_key=True).get()
             existing.quantity = existing.consumed + taken
             existing.warehouse = warehouse

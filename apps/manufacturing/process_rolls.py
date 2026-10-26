@@ -40,7 +40,7 @@ from django.db import models, transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from apps.core.models import AuditModel, lock_rows
+from apps.core.models import numbering_first, AuditModel, lock_rows
 
 from .station_scale import TYPED_REASONS
 
@@ -185,6 +185,7 @@ class ProcessRoll(AuditModel):
 
 
 def _open_mount(machine):
+    numbering_first()  # a raw row lock, after the company's numbering row (O257)
     return RollMount.objects.select_for_update(no_key=True).filter(
         machine=machine, finished_at__isnull=True, voided_at__isnull=True).first()
 
@@ -226,6 +227,7 @@ def mount_roll(station, operator, machine, code, at=None):
     at = at or timezone.now()
     _check_kind(station, (LineKind.COATING, LineKind.PRINTING, LineKind.CONVERSION),
                 "mounts rolls")
+    numbering_first()  # a raw row lock, after the company's numbering row (O257)
     machine = Machine.objects.select_for_update(no_key=True).get(pk=machine.pk)
     _shift, shift_date = _context(station, operator, machine, at)
     run, step = _step(machine)
@@ -351,6 +353,7 @@ def weigh_roll(station, operator, machine, gross_kg, core_type, metres, supervis
 
     at = at or timezone.now()
     _check_kind(station, (LineKind.COATING, LineKind.PRINTING), "weighs rolls off")
+    numbering_first()  # a raw row lock, after the company's numbering row (O257)
     machine = Machine.objects.select_for_update(no_key=True).get(pk=machine.pk)
     shift, shift_date = _context(station, operator, machine, at)
     mount = _open_mount(machine)
