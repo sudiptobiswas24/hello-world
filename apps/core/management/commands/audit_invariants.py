@@ -159,6 +159,7 @@ class Command(BaseCommand):
         "planning.parse_month": "called by the CSV importer in apps/imports, which is not audited",
         "core.yes_no": "a CSV cell reader (csvrows.py) the importer in apps/imports uses; the punch file does not",
         "assets.register_against_ledger": "the daily health check's footing (apps/web/health.py), which is not audited",
+        "hr.statutory_gaps": "go_live_check's line per statutory engine (apps/imports/management), which is not audited",
     }
 
     # -- shape 2: inert feature ------------------------------------------

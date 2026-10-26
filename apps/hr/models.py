@@ -1257,7 +1257,7 @@ from .contract_labour import ContractWorker, LabourContractor  # noqa: E402,F401
 from .expenses import ClaimStatus, ExpenseClaim, ExpenseLine  # noqa: E402,F401
 from .appraisals import Appraisal, AppraisalStatus  # noqa: E402,F401
 from .recruitment import Applicant, JobOpening, OpeningStatus, Source, Stage  # noqa: E402,F401
-from .statutory import StatutoryFigure  # noqa: E402,F401
+from .statutory import MinimumWage, StatutoryFigure  # noqa: E402,F401
 from .pay_details import EmployeePayDetails  # noqa: E402,F401
 from .advances import SalaryAdvance  # noqa: E402,F401
 from .shortfalls import ShortfallSettlement  # noqa: E402,F401

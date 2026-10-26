@@ -1,0 +1,11 @@
+state,employment,zone,skill,effective_from,basic,vda,source,confirmed_by
+WB,Factories not covered by another schedule,A,unskilled,2026-07-01,10558,0,"West Bengal Labour Department, minimum wages revised from 1 July 2026 (notified 22 June 2026): Zone A unskilled 10,558 a month (406 a day), basic and VDA together, per factoHR and TeamLease RegTech; the split into basic and VDA was not found. Whether woven polypropylene sacks fall under this schedule or 'Plastic Industry' is UNSETTLED",
+WB,Factories not covered by another schedule,B,unskilled,2026-07-01,9760,0,"As above: Zone B unskilled 9,760 a month (375 a day)",
+WB,Bottling and packaging,A,unskilled,2026-07-01,10558,0,"As above, factoHR's bottling and packaging schedule: Zone A unskilled 10,558",
+WB,Bottling and packaging,A,semi_skilled,2026-07-01,11615,0,"As above: Zone A semi-skilled 11,615",
+WB,Bottling and packaging,A,skilled,2026-07-01,12777,0,"As above: Zone A skilled 12,777",
+WB,Bottling and packaging,A,highly_skilled,2026-07-01,14054,0,"As above: Zone A highly skilled 14,054",
+WB,Bottling and packaging,B,unskilled,2026-07-01,9760,0,"As above: Zone B unskilled 9,760",
+WB,Bottling and packaging,B,semi_skilled,2026-07-01,10733,0,"As above: Zone B semi-skilled 10,733",
+WB,Bottling and packaging,B,skilled,2026-07-01,11807,0,"As above: Zone B skilled 11,807",
+WB,Bottling and packaging,B,highly_skilled,2026-07-01,12990,0,"As above: Zone B highly skilled 12,990",

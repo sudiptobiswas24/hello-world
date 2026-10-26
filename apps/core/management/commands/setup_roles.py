@@ -165,7 +165,10 @@ ROLES = {
         *crud("hr", "statutoryremittance", actions=("add", "delete", "view")),
         # Pays the run's bank file and takes a returned transfer back; pays an advance out and records it
         # against its payment (reading the payments is the ledger's), and voids it with its payment.
-        *view("hr", "employeepaydetails", "statutoryfigure", "salarytransfer"),
+        *view("hr", "employeepaydetails", "statutoryfigure", "salarytransfer", "minimumwage"),
+        # The law's figures (statutory, minimum wages, professional tax and welfare fund schedules): the
+        # Payroll Officer loads and types them, the Controller confirms them before anything posts at them.
+        "hr.confirm_statutoryfigure", "hr.confirm_minimumwage",
         *crud("hr", "salaryadvance", actions=("add", "change", "view")),
         *crud("hr", "salarytransferfile", actions=("add", "delete", "view")),
         "hr.void_salaryadvance",
@@ -605,7 +608,7 @@ ROLES = {
         *full("hr", "paycomponent", "paycomponentslab", "employeecompensation"),
         *crud("hr", "payrun", actions=("add", "change", "view")),
         # The bank and the returns' master data, the law's dated figures, advances and the bank file.
-        *full("hr", "employeepaydetails", "statutoryfigure"),
+        *full("hr", "employeepaydetails", "statutoryfigure", "minimumwage"),
         # An advance's instalment, not the advance: giving one is picking the payment out, the ledger's side.
         *crud("hr", "salaryadvance", actions=("change", "view")),
         *crud("hr", "salarytransferfile", actions=("add", "view")), *view("hr", "salarytransfer"),

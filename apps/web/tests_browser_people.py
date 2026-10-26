@@ -137,7 +137,7 @@ class MyPayslipsInTheBrowserTests(BrowserTestCase):
         pt = PayComponent.objects.create(code="PT", name="Professional tax", kind=ComponentKind.DEDUCTION,
                                          basis=ComponentBasis.SLAB, liability_account=owed, statutory=Statutory.PT,
                                          sequence=90)
-        PayComponentSlab.objects.create(component=pt, state="WB", above=Decimal("15000"), amount=Decimal("130"),
+        PayComponentSlab.objects.create(confirmed_on=datetime.date(2000, 1, 1), component=pt, state="WB", above=Decimal("15000"), amount=Decimal("130"),
                                         effective_from=datetime.date(2026, 4, 1))
         worker = PeopleInTheBrowserTests.employee(self, "E008", "Mita Pal", None)
         EmployeeCompensation.objects.create(employee=worker, component=salary, amount=Decimal("20000"),

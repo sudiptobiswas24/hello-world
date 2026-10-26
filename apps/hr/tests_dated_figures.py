@@ -101,7 +101,7 @@ class TheWageCeilingIsKeptForTheMonthTests(DatedFiguresTestCase):
             person.uan = f"10000000000{number}"
             person.save()
             EmployeePayDetails.objects.create(employee=person, date_of_birth=D(1990, 1, 1))
-        self.rise = StatutoryFigure.objects.create(kind=FigureKind.EPF_WAGE_CEILING, effective_from=D(2026, 9, 17),
+        self.rise = StatutoryFigure.objects.create(confirmed_on=datetime.date(2000, 1, 1), kind=FigureKind.EPF_WAGE_CEILING, effective_from=D(2026, 9, 17),
                                                    value=Decimal("25000"), source="S.O. 5109(E), to confirm")
 
     def test_each_month_is_paid_at_the_ceiling_that_stood_on_its_last_day(self):
@@ -114,7 +114,7 @@ class TheWageCeilingIsKeptForTheMonthTests(DatedFiguresTestCase):
 
     def test_the_ecr_files_pension_wages_at_the_ceiling_the_run_kept(self):
         october = self.month_run(2026, 10)
-        StatutoryFigure.objects.create(kind=FigureKind.EPS_WAGE_CEILING, effective_from=D(2026, 10, 1),
+        StatutoryFigure.objects.create(confirmed_on=datetime.date(2000, 1, 1), kind=FigureKind.EPS_WAGE_CEILING, effective_from=D(2026, 10, 1),
                                        value=Decimal("25000"))
         row = next(row for row in ecr_rows(october) if row["name"] == "C")
         self.assertEqual((row["epf_wages"], row["eps_wages"], row["eps"], row["epf_diff"]), (20000, 15000, 1250, 1150))
@@ -135,7 +135,7 @@ class TheWageCeilingIsKeptForTheMonthTests(DatedFiguresTestCase):
 
     def test_a_figure_entered_after_the_run_was_calculated_stops_its_post(self):
         october = self.month_run(2026, 10, post=False)
-        StatutoryFigure.objects.create(kind=FigureKind.EPF_WAGE_CEILING, effective_from=D(2026, 10, 1),
+        StatutoryFigure.objects.create(confirmed_on=datetime.date(2000, 1, 1), kind=FigureKind.EPF_WAGE_CEILING, effective_from=D(2026, 10, 1),
                                        value=Decimal("21000"))
         with self.assertRaisesMessage(ValidationError, "pay has changed since this run was calculated"):
             october.post()
@@ -246,7 +246,7 @@ class ProfessionalTaxSchedulesTests(DatedFiguresTestCase):
                 ("25000", None, "200", None),
                 ("0", "15000", "0", D(2026, 10, 1)), ("15000", "25000", "130", D(2026, 10, 1)),
                 ("25000", None, "200", D(2026, 10, 1))]:
-            PayComponentSlab.objects.create(component=self.wb, state="WB", above=Decimal(above),
+            PayComponentSlab.objects.create(confirmed_on=datetime.date(2000, 1, 1), component=self.wb, state="WB", above=Decimal(above),
                                             up_to=Decimal(up_to) if up_to else None, amount=Decimal(amount),
                                             effective_from=since)
         self.low, self.mid = self.worker("L"), self.worker("M")
@@ -275,7 +275,7 @@ class ProfessionalTaxSchedulesTests(DatedFiguresTestCase):
             band.save()
 
     def test_slabs_of_two_states_ask_which_state_the_person_works_in(self):
-        PayComponentSlab.objects.create(component=self.wb, state="MH", above=Decimal("0"), amount=Decimal("175"))
+        PayComponentSlab.objects.create(confirmed_on=datetime.date(2000, 1, 1), component=self.wb, state="MH", above=Decimal("0"), amount=Decimal("175"))
         with self.assertRaisesMessage(ValidationError, "Set the state they work in"):
             self.month_run(2026, 10, post=False, employees=[self.mid])
         self.mid.work_state = "WB"
@@ -294,7 +294,7 @@ class LabourWelfareFundTests(DatedFiguresTestCase):
                 expense_account=self.employer if kind == ComponentKind.EMPLOYER_COST else None,
                 sequence=97, statutory=statutory)
             for when in (6, 12):
-                PayComponentSlab.objects.create(component=component, state="WB", month=when, amount=Decimal(amount))
+                PayComponentSlab.objects.create(confirmed_on=datetime.date(2000, 1, 1), component=component, state="WB", month=when, amount=Decimal(amount))
             shares.append(component)
         weaver = self.worker("W")
         self.paid(weaver, self.basic, "9000")
@@ -435,7 +435,7 @@ class OvertimeAtTheOrdinaryRateTests(DatedFiguresTestCase):
         staff = self.worker("S3", working_days="123456")
         self.paid(staff, self.basic, "13500")
         self.paid(staff, self.overtime, "1")
-        StatutoryFigure.objects.create(kind=FigureKind.OVERTIME_MULTIPLIER, effective_from=D(2026, 11, 1),
+        StatutoryFigure.objects.create(confirmed_on=datetime.date(2000, 1, 1), kind=FigureKind.OVERTIME_MULTIPLIER, effective_from=D(2026, 11, 1),
                                        value=Decimal("2.5"))
         self.mark(staff, D(2026, 10, 8), "6")
         self.mark(staff, D(2026, 11, 9), "6")
@@ -492,7 +492,7 @@ class TheMonthsFiguresAreOwedOnceTests(DatedFiguresTestCase):
                 sequence=97, statutory=statutory)
             component.base_components.set([self.basic])
             for above, up_to, amount, when in slabs:
-                PayComponentSlab.objects.create(component=component, state="WB", month=when, amount=Decimal(amount),
+                PayComponentSlab.objects.create(confirmed_on=datetime.date(2000, 1, 1), component=component, state="WB", month=when, amount=Decimal(amount),
                                                 above=Decimal(above or "0"), up_to=Decimal(up_to) if up_to else None)
             made[code] = component
         self.lwf, self.lwf_er, self.ptm = made["LWF"], made["LWF-ER"], made["PTM"]

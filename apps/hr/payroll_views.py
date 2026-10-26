@@ -73,7 +73,9 @@ class PayComponentSerializer(serializers.ModelSerializer):
 class SlabSerializer(serializers.ModelSerializer):
     class Meta:
         model = PayComponentSlab
-        fields = ["id", "component", "above", "up_to", "month", "amount", "state", "effective_from"]
+        fields = ["id", "component", "above", "up_to", "month", "amount", "state", "effective_from",
+                  "confirmed_by", "confirmed_on"]
+        read_only_fields = ["confirmed_by", "confirmed_on"]
 
 
 class RemittanceSerializer(serializers.ModelSerializer):
@@ -275,6 +277,7 @@ class SlabViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = PayComponentSlab.objects.select_related("component")
     serializer_class = SlabSerializer
     filter_fields = ["component"]
+    action_permission_map = {"confirm": "hr.confirm_statutoryfigure"}
 
     def perform_create(self, serializer):
         try:
@@ -287,6 +290,16 @@ class SlabViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
             super().perform_update(serializer)
         except IntegrityError as exc:
             raise DRFValidationError(["Those slab figures do not make a band."]) from exc
+
+    @action(detail=True, methods=["post"])
+    def confirm(self, request, pk=None):
+        """The Controller's word that the schedule this band is of (every band of it) is the law's."""
+        band = self.get_object()
+        try:
+            band.confirm_schedule(request.user)
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.messages)
+        return Response(self.get_serializer(band.schedule(), many=True).data)
 
 
 class RemittanceViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
