@@ -195,7 +195,7 @@ class ThePayrollLocks(TransactionTestCase):
         print(f"\nRACE void(receipt) / return_transfer(row, same receipt): {outcomes}")
         self.assertEqual(deadlocked(outcomes), [], outcomes)
 
-    def test_a_receipt_voided_while_the_slip_is_paid_by_a_payment_of_its_own(self):
+    def _receipt_voided_while_the_slip_is_paid(self, void_first):
         """The receipt's void follow-up locks the slip; the slip's own pay locks slip then its payment."""
         from apps.accounting.models import Payment, PaymentDirection
         from apps.hr.payroll import Payslip
@@ -207,20 +207,54 @@ class ThePayrollLocks(TransactionTestCase):
         own = made.money(made.people[1].party, "8450.50")
         slip = made.paid_run.payslips.get(employee=made.people[1])
         day = datetime.date(2026, 7, 1)
-        outcomes = race(None, lambda: Payment.objects.get(pk=receipt.pk).void(on_date=day),
-                        lambda: Payslip.objects.get(pk=slip.pk).pay(Payment.objects.get(pk=own.pk)))
-        from apps.hr.payroll import PayRun
+        void = lambda: Payment.objects.get(pk=receipt.pk).void(on_date=day)  # noqa: E731
+        pay = lambda: Payslip.objects.get(pk=slip.pk).pay(Payment.objects.get(pk=own.pk))  # noqa: E731
+        # Whoever holds the company's numbering row first goes first (O257): the first takes it, then lets the second
+        # start, so each order is run, not whichever the machine's timing gives.
+        import threading
 
-        print(f"\nRACE void(receipt) / pay(slip, own): {outcomes}; unpaid {made.paid_run.unpaid_net()} "
-              f"net pay payable {made.balance(made.net_pay)}")
+        from apps.core.models import DocumentNumbering
+
+        holding = threading.Event()
+
+        def first(step):
+            def call():
+                DocumentNumbering.hold()
+                holding.set()
+                step()
+            return call
+
+        def second(step):
+            def call():
+                holding.wait(5)
+                step()
+            return call
+
+        outcomes = race(None, first(void), second(pay)) if void_first else race(None, first(pay), second(void))
+        voided, paid_again = (outcomes if void_first else outcomes[::-1])
+        print(f"\nRACE void(receipt) / pay(slip, own), {'void' if void_first else 'pay'} first: {outcomes}; "
+              f"unpaid {made.paid_run.unpaid_net()} net pay payable {made.balance(made.net_pay)}")
         self.assertEqual(deadlocked(outcomes), [], outcomes)
-        # Whatever order, the books and the slips agree (E2 is not paid twice). The second payment was posted
-        # against net pay payable before the race; refused as the slip's (the void went first, so the slip is
-        # paid again), it stands there unapplied, 8,450.50 the slips do not owe. Before O257's numbering row was
-        # taken first the pay always won this race, and the assertion read only that order (fix_g23b4).
-        unapplied = Decimal("8450.50") if outcomes[1] != "done" else Decimal("0")
-        self.assertEqual(abs(made.balance(made.net_pay)), made.paid_run.unpaid_net() + unapplied, outcomes)
+        return voided, paid_again, made
 
+    def test_a_receipt_voided_while_the_slip_is_paid_the_void_first(self):
+        # Worked by hand (review_lockfirst P4a): the run's net 23,825.50 credited, the file's payment 23,825.50
+        # debited, E2's returned transfer 8,450.50 credited and its void 8,450.50 debited back; the second payment,
+        # posted before the race and refused as the slip's ("already been paid"), stands unapplied: Dr 8,450.50.
+        voided, paid_again, made = self._receipt_voided_while_the_slip_is_paid(void_first=True)
+        self.assertEqual(voided, "done")
+        self.assertIn("already been paid", paid_again)
+        self.assertEqual(made.paid_run.unpaid_net(), Decimal("0"))
+        self.assertEqual(abs(made.balance(made.net_pay)), Decimal("8450.50"))
+
+    def test_a_receipt_voided_while_the_slip_is_paid_the_pay_first(self):
+        # The second payment pays the slip again, and the void is refused (void that payment first): the books
+        # agree with the slips, 0.00 on net pay payable (review_lockfirst P4b).
+        voided, paid_again, made = self._receipt_voided_while_the_slip_is_paid(void_first=False)
+        self.assertEqual(paid_again, "done")
+        self.assertIn("Void that payment first", voided)
+        self.assertEqual(made.paid_run.unpaid_net(), Decimal("0"))
+        self.assertEqual(abs(made.balance(made.net_pay)), Decimal("0.00"))
 
 @unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
 class TheMonthsFiguresAtOnce(TransactionTestCase):

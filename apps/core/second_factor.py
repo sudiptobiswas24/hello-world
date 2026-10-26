@@ -69,6 +69,9 @@ ISSUER = "Deccan Polysacks ERP"
 class GuardedRight(models.Model):
     """A right that needs the second factor to use (setup_roles.SECOND_FACTOR writes them)."""
 
+    # Not a business record: the company's numbering row is not taken for it (O257, apps.core.apps).
+    numbering_exempt = "read and written at sign-in, beside the second factor"
+
     permission = models.OneToOneField(Permission, on_delete=models.CASCADE, related_name="+")
 
     def __str__(self):
@@ -77,6 +80,9 @@ class GuardedRight(models.Model):
 
 class SecondFactor(models.Model):
     """One login's authenticator: confirmed once a code from it was given."""
+
+    # Not a business record: the company's numbering row is not taken for it (O257, apps.core.apps).
+    numbering_exempt = "enrolled and checked at sign-in"
 
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="second_factor")
     # The authenticator's secret, sealed (O255): read and set it through `secret`.
@@ -122,6 +128,9 @@ UNREADABLE = ("This login's second factor can no longer be read on this server: 
 
 
 class RecoveryCode(models.Model):
+
+    # Not a business record: the company's numbering row is not taken for it (O257, apps.core.apps).
+    numbering_exempt = "spent at sign-in"
     factor = models.ForeignKey(SecondFactor, on_delete=models.CASCADE, related_name="recovery_codes")
     digest = models.CharField(max_length=64, unique=True)
     used_at = models.DateTimeField(null=True, blank=True)

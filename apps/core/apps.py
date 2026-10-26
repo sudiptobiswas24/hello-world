@@ -19,27 +19,64 @@ def make_the_numbering_row(sender, using="default", **kwargs):
         pass  # migrating to before the table existed: its migration makes the row
 
 
+def numbering_exempt(model):
+    """
+    Whether `model` is not a business record and takes no numbering row (O257): it says so with a
+    `numbering_exempt` reason. Sign-in, sign-out and a session's refresh write such rows; held behind the
+    numbering row, signing out waited the whole of a pay run (review_lockfirst F1). A model that does not say so
+    is held.
+    """
+    return bool(getattr(model, "numbering_exempt", None))
+
+
 def numbering_before_a_write(sender, instance, **kwargs):
     """
     A save of a row that stood, or a delete, locks that row: it comes after the company's numbering row as
     every row lock does (O257, row_lock_query). A password reset saved the user, then locked a row, and held the
-    user while it waited for the numbering row. Not a row the transaction made, nor a migration's.
+    user while it waited for the numbering row. Not a fresh insert (no key yet: a first sign-in does not wait),
+    nor a migration's row, nor a model that is not a business record (numbering_exempt). A model built with its
+    key and saved runs an UPDATE, so a key set is held, adding or not (review_lockfirst F2).
     """
     from .models import DocumentNumbering, DocumentSequence, DocumentSequenceYear, numbering_first
 
     if sender in (DocumentNumbering, DocumentSequence, DocumentSequenceYear) or sender.__module__ == "__fake__":
         return
-    if kwargs.get("raw") or (instance._state.adding and "signal" in kwargs and kwargs["signal"] is pre_save):
+    if kwargs.get("raw") or numbering_exempt(sender) or instance.pk is None:
         return
     numbering_first()
 
 
 def numbering_before_a_link(sender, action, **kwargs):
-    """A role given or taken (a many-to-many row added or removed) locks its rows, after the numbering row (O257)."""
-    if action in ("pre_add", "pre_remove", "pre_clear"):
+    """A many-to-many row added or removed locks its rows, after the numbering row (O257), unless exempt."""
+    if action in ("pre_add", "pre_remove", "pre_clear") and not numbering_exempt(sender):
         from .models import numbering_first
 
         numbering_first()
+
+
+# Django's own infrastructure, which a sign-in, a sign-out and a session's refresh write: marked here because
+# their classes are not ours to edit (O257, review_lockfirst F1). Each of our models says it on its class.
+DJANGO_INFRASTRUCTURE = {
+    "sessions.Session": "a session, saved and deleted by every sign-in, sign-out and refresh",
+    "admin.LogEntry": "the admin's own log of what it did",
+    "contenttypes.ContentType": "Django's table of models",
+    "auth.Permission": "Django's table of rights",
+    "auth.Group": "a role, given and read at sign-in",
+    "auth.User": "a login, stamped at sign-in (last_login) and by a password change",
+}
+
+
+def mark_django_infrastructure():
+    from django.apps import apps
+
+    for label, reason in DJANGO_INFRASTRUCTURE.items():
+        try:
+            model = apps.get_model(label)
+        except LookupError:
+            continue
+        model.numbering_exempt = reason
+        for field in model._meta.many_to_many:
+            field.remote_field.through.numbering_exempt = f"{label}'s {field.name}: {reason}"
 
 
 class CoreConfig(AppConfig):
@@ -51,6 +88,7 @@ class CoreConfig(AppConfig):
         from django.conf import settings
 
         post_migrate.connect(make_the_numbering_row, sender=self, dispatch_uid="apps.core.numbering_row")
+        mark_django_infrastructure()
         pre_save.connect(numbering_before_a_write, weak=False, dispatch_uid="apps.core.numbering_before_save")
         pre_delete.connect(numbering_before_a_write, weak=False, dispatch_uid="apps.core.numbering_before_delete")
         m2m_changed.connect(numbering_before_a_link, weak=False, dispatch_uid="apps.core.numbering_before_link")

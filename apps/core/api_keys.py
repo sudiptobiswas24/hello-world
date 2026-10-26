@@ -55,6 +55,9 @@ class Integration(AuditModel):
 
 
 class ApiKey(AuditModel):
+
+    # Not a business record: the company's numbering row is not taken for it (O257, apps.core.apps).
+    numbering_exempt = "checked and stamped as a key signs in"
     integration = models.ForeignKey(Integration, on_delete=models.PROTECT, related_name="keys")
     label = models.CharField(max_length=80, blank=True, help_text="Where it is kept: the station PC, the GSP's account.")
     prefix = models.CharField(max_length=16, unique=True, editable=False)
@@ -94,6 +97,9 @@ class ApiKeyUse(models.Model):
     sees what an integration did and what tried to pass as one. Kept 18
     months (manage.py prune_api_key_uses).
     """
+
+    # Not a business record: the company's numbering row is not taken for it (O257, apps.core.apps).
+    numbering_exempt = "written as a key signs in"
 
     key = models.ForeignKey(ApiKey, null=True, blank=True, on_delete=models.CASCADE, related_name="uses",
                             editable=False)
