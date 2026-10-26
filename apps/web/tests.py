@@ -343,10 +343,6 @@ class EveryCollectionIsKeptOnAScreenTests(TestCase):
         "/api/manufacturing/work-order-operations/": (
             "A run's steps, written by releasing it and shown on its page."
         ),
-        # g24 reverse charge: built to the API and the health lines; screens reported, not built (reports/fix_rcm.md).
-        "/api/gst/self-invoices/": "Issued by the GST officer through the API until its screen is built.",
-        "/api/gst/payment-vouchers/": "Issued by the GST officer through the API until its screen is built.",
-        "/api/gst/cash-payments/": "Paid by the AP manager through the API until its screen is built.",
     }
 
     def test_every_collection_is_kept_on_a_screen_or_says_why_not(self):

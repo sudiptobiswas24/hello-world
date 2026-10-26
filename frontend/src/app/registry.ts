@@ -847,6 +847,26 @@ export const MODULES: Module[] = [
         keywords: "gstr1 gstr3b tax return", load: () => import("../modules/accounts/GstReturns"),
       },
       {
+        path: "self-invoices", label: "Self-invoices", permission: "gst.view_selfinvoice", create: "gst.add_selfinvoice",
+        keywords: "reverse charge rcm self invoice unregistered supplier 31(3)(f) rule 47a",
+        load: () => import("../modules/gst/SelfInvoices"), detail: () => import("../modules/gst/SelfInvoiceForm"),
+      },
+      {
+        path: "payment-vouchers", label: "Payment vouchers", permission: "gst.view_paymentvoucher",
+        create: "gst.add_paymentvoucher", keywords: "reverse charge rcm payment voucher 31(3)(g) rule 52",
+        load: () => import("../modules/gst/PaymentVouchers"), detail: () => import("../modules/gst/PaymentVoucherForm"),
+      },
+      {
+        path: "gst-challans", label: "GST cash challans", permission: "gst.view_gstcashpayment",
+        create: "gst.add_gstcashpayment", keywords: "reverse charge rcm cash challan pmt-06 cpin table 6.1",
+        load: () => import("../modules/gst/GstChallans"), detail: () => import("../modules/gst/GstChallanForm"),
+      },
+      {
+        path: "gst-cash-ledger", label: "GST cash ledger", permission: "gst.view_gstcashpayment",
+        keywords: "electronic cash ledger reverse charge deposited set off",
+        load: () => import("../modules/gst/GstCashLedger"),
+      },
+      {
         path: "gstr2b", label: "Input credit against GSTR-2B", permission: "gst.compile_returns",
         keywords: "gstr2b 2b itc input tax credit reconcile match supplier filed", load: () => import("../modules/accounts/Gstr2b"),
       },

@@ -311,7 +311,10 @@ class PaymentVoucherViewSet(viewsets.ReadOnlyModelViewSet):
     def create(self, request):
         payment = record_or_404(Payment, request.data.get("payment"), "payment")
         made = reverse_charge.PaymentVoucher.issue_for(payment)
-        return Response(PaymentVoucherSerializer(made, many=True).data, status=201)
+        # The first made, as a record screen opens what it created; the rest are listed by number with it.
+        data = PaymentVoucherSerializer(made[0]).data
+        data["issued"] = [voucher.number for voucher in made]
+        return Response(data, status=201)
 
 
 class GstCashPaymentViewSet(viewsets.ReadOnlyModelViewSet):
