@@ -300,7 +300,36 @@ built.
        - pip needs tblib, or the parallel runner dies silently on the first
          failure ("tracebacks cannot be pickled"); it is pinned now.
        - Agents never `git stash`: worktrees share one stash.
-   - **g24, stores and purchasing for a polymer buyer:**
+   - **g24, go-live statutory and the audit trail (decided 26 October, from
+     docs/handoff/reports/odoo19_gap_analysis_oct26.md).** The re-done Odoo 19
+     comparison found the 16 go-live build items of 14 October 12 built and 4
+     partly built, and 11 go-live gaps against Odoo 19, of which these were in
+     no gate. They come before the feature gates because go-live needs them
+     and none waits on the polymer, floor or sales work:
+     - an edit log that keeps old and new values and cannot be bypassed:
+       admin, shell and script edits included (Companies (Accounts) Rules,
+       rule 3(1) proviso; Odoo forces its trail on for Indian companies).
+       Today RecordEvent keeps field names only, written by the API layer;
+     - the statutory data seeded from the confirmed figures (TDS rates, West
+       Bengal PT from 1 October 2026, LWF before the December run, EPF and
+       ESI, bonus, the TCS rate), and a go_live_check line that refuses an
+       engine with no confirmed row, so the first run cannot deduct nothing
+       unseen. The figures wait on the accountant; the mechanism does not;
+     - TAN, and the Income-tax Act 2025's section and form names on TDS and
+       TCS challans, returns and screens (screens still say 26Q and challan
+       281);
+     - reverse charge: the self-invoice for an unregistered supplier, its
+       cash payment and GSTR-3B table 6;
+     - bonus: a dated ceiling, the higher of 7,000 and the minimum wage, with
+       a dated minimum-wage table;
+     - before the first year-end (31 March 2027): foreign balances restated
+       at the closing rate (the plant exports and imports), and tax
+       depreciation by block of assets at written-down value beside the
+       books' straight line.
+     Salary TDS (section 392, Forms 138 and 130) joins g24 if anyone's pay
+     will pass the exemption; the accountant says. The soon-after list (S, 60
+     items, the report's section 3) is worked after g27 by the plant's use.
+   - **g25, stores and purchasing for a polymer buyer:**
      - L16 polymer against price circulars;
      - L17 weighbridge, gross, tare and net on receipts and dispatches;
      - L18 gate register and returnable gate passes;
@@ -309,13 +338,13 @@ built.
        incoming plan;
      - L21 import purchases;
      - L9 scanning in stores.
-   - **g25, the floor and quality:**
+   - **g26, the floor and quality:**
      - L25 machine counters read automatically, beside the scale
        bridge g22 built (deploy/scale_bridge);
      - L27 a BOM from what a run used, and runs split and merged;
      - L11 step instructions and photo checks;
      - L29 BIS test plans and ISI marking records.
-   - **g26, sales and the books:**
+   - **g27, sales and the books:**
      - L19 post-dated cheques;
      - L20 export papers;
      - L22 billing policy per item;
