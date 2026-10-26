@@ -59,7 +59,8 @@ class UsersApiTests(TestCase):
                          ([], ["Bookkeeper"], False))
         self.assertTrue(Client().login(username="asha", password="loom-shed-2026"))
         pk = made.json()["id"]
-        self.assertEqual(RecordEvent.objects.filter(object_id=pk).count(), 1)
+        # Made once (the model layer also logs the sign-in's last_login and every row the request made with it).
+        self.assertEqual(RecordEvent.objects.filter(object_id=pk, content_type__model="user", kind="created").count(), 1)
 
         # A role the HR Admin holds is given at once.
         granted = hr.post(f"{USERS}{pk}/grant/", {"role": "HR Admin"}, format="json")

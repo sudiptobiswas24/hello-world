@@ -325,6 +325,34 @@ def _invoice_numbers(day):
                     else f"{len(missing)} number(s) were taken and never issued.", rows, "/sales/invoices")
 
 
+def _books_change_log(day):
+    """
+    The database's own log of the books (apps/core/ledger_log.py, PostgreSQL): every books table still has its
+    trigger, and no change in the last month was made with nobody named (psql, a script on its own connection).
+    """
+    from django.db import connection
+
+    from apps.core.ledger_log import UNATTRIBUTED, LedgerChange, present, tables_without_their_trigger
+
+    if not present(connection):
+        return _finding(None, 0, "This database keeps no log of its own (PostgreSQL only); the edit log is the "
+                                 "application's alone.")
+    since = timezone.now() - datetime.timedelta(days=30)
+    unlogged = tables_without_their_trigger(connection)
+    nobody = LedgerChange.objects.filter(through=UNATTRIBUTED, at__gte=since).order_by("-id")
+    count = nobody.count()
+    problems = []
+    if unlogged:
+        problems.append(f"{len(unlogged)} books tables are not logged: {', '.join(unlogged)}.")
+    if count:
+        problems.append(f"{count} change{'s' if count != 1 else ''} to the books in the last 30 days named nobody: "
+                        f"made around the application.")
+    rows = [{"label": f"{timezone.localtime(change.at):%Y-%m-%d %H:%M} {change.operation} {change.table_name} "
+                      f"{change.row_id} by database user {change.db_user}", "href": ""} for change in nobody[:SHOW]]
+    return _finding(not problems, len(unlogged) + count,
+                    " ".join(problems) or "Every books table is logged and every change names who made it.", rows)
+
+
 PROBES = [
     Probe("trial_balance", "Trial balance", _trial_balance),
     Probe("entries_balanced", "Every posted entry balances", _entries_balanced),
@@ -335,6 +363,7 @@ PROBES = [
     Probe("fixed_assets", "Fixed assets agree with the ledger", _fixed_assets),
     Probe("closed_periods", "Closed months stayed closed", _closed_periods),
     Probe("invoice_numbers", "Invoice numbers run without a gap", _invoice_numbers),
+    Probe("books_change_log", "The books' change log is whole", _books_change_log),
 ]
 
 

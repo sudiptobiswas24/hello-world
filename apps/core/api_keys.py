@@ -100,6 +100,7 @@ class ApiKeyUse(models.Model):
 
     # Not a business record: the company's numbering row is not taken for it (O257, apps.core.apps).
     numbering_exempt = "written as a key signs in"
+    not_edit_logged = "itself a log: one request a key signed in"
 
     key = models.ForeignKey(ApiKey, null=True, blank=True, on_delete=models.CASCADE, related_name="uses",
                             editable=False)

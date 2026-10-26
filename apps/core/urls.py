@@ -6,7 +6,7 @@ from .chatter_api import FollowUpViewSet, NoteViewSet
 from .customfields import CustomFieldViewSet
 from .endpoints import EndpointsView
 from .errors_api import ServerErrorViewSet
-from .history_api import HistoryView
+from .history_api import EditLogViewSet, HistoryView
 from .licences_api import LicenceViewSet
 from .numbering_api import DocumentSequenceViewSet
 from .roles_api import RoleProposalViewSet
@@ -51,6 +51,7 @@ router.register("role-proposals", RoleProposalViewSet)
 router.register("document-sequences", DocumentSequenceViewSet)
 router.register("licences", LicenceViewSet)
 router.register("errors", ServerErrorViewSet)
+router.register("edit-log", EditLogViewSet)
 router.register("custom-fields", CustomFieldViewSet)
 router.register("attachments", AttachmentViewSet, basename="attachment")
 router.register("notes", NoteViewSet, basename="note")

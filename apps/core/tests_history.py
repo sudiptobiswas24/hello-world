@@ -1,7 +1,9 @@
 """
-A record's history is written by the API layer for every kind of record:
-made, which fields changed, each action, deleted; and read under the
-record's own view permission.
+A record's history is written for every kind of record: made, which
+fields changed (with their old and new values: tests_edit_log.py), each
+action, deleted; and read under the record's own view permission. Made,
+changed and deleted by the model layer, so a record made in code has its
+line too.
 """
 
 from django.contrib.auth.models import Permission, User
@@ -29,7 +31,7 @@ class HistoryIsWrittenByTheApiTests(TestCase):
         self.assertEqual(self.client.delete(f"/api/core/parties/{pk}/").status_code, 204)
         rows = self.client.get("/api/core/history/", {"model": "core.party", "id": pk}).json()
         self.assertEqual((rows[0]["kind"], rows[0]["summary"]), ("deleted", "C-9 - Shree Cement Ltd"))
-        self.assertEqual(RecordEvent.objects.count(), 3)
+        self.assertEqual(RecordEvent.objects.filter(content_type__model="party", object_id=pk).count(), 3)
 
     def test_the_history_is_read_under_the_records_own_view_permission(self):
         party = Party.objects.create(code="C-1", name="Acme")
@@ -40,7 +42,9 @@ class HistoryIsWrittenByTheApiTests(TestCase):
         reader.user_permissions.add(Permission.objects.get(content_type__app_label="core", codename="view_party"))
         client = APIClient()
         client.force_authenticate(reader)
-        self.assertEqual(client.get("/api/core/history/", {"model": "core.party", "id": party.pk}).json(), [])
+        # Made in code, by nobody signed in: its line says so (it said nothing at all when only the API wrote).
+        self.assertEqual([(row["kind"], row["who"]) for row in client.get(
+            "/api/core/history/", {"model": "core.party", "id": party.pk}).json()], [("created", "")])
         self.assertEqual(client.get("/api/core/history/", {"model": "nowhere.nothing", "id": 1}).status_code, 400)
         self.assertEqual(client.get("/api/core/history/", {"model": "core.party", "id": "x"}).status_code, 400)
 

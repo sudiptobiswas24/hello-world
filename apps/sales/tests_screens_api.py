@@ -635,5 +635,7 @@ class DeliveryMailAndHistoryTests(ScreensTestCase):
         self.assertEqual(mail.outbox[0].subject, f"Delivery challan {delivery.number} from Test Co")
         rows = warehouse.get("/api/core/history/", {"model": "sales.delivery", "id": delivery.pk}).json()
         self.assertEqual([(row["label"], row["summary"]) for row in rows],
-                         [("Sent", "Delivery challan to ap@acme.example"), ("Posted delivery", "")])
+                         [("Sent", "Delivery challan to ap@acme.example"), ("Posted delivery", ""),
+                          # What posting changed, and the delivery's making: the model layer's (core/history.py).
+                          ("Changed", "journal_entry, number, posted, posted_at"), ("Made", "")])
         self.assertEqual(self.as_("Payroll Officer").post(f"/api/sales/deliveries/{delivery.pk}/send/").status_code, 403)

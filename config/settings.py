@@ -143,6 +143,8 @@ MIDDLEWARE = [
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
     "apps.core.middleware.RequestMemo",
+    # Who is acting, for the edit log of every change (apps/core/history.py, apps/core/ledger_log.py).
+    "apps.core.middleware.Acting",
     "apps.core.errors.ErrorCapture",
 ]
 

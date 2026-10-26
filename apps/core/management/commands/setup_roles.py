@@ -691,6 +691,21 @@ for _role in ROLES:
 # added after the rights every person's role is given above (O271).
 ROLES["Scale bridge"] = ["manufacturing.add_scalereading"]
 
+# The edit log (apps/core/history.py): every change to every record, old and new values, by whom and through
+# what. The Controller reads it; so does the auditor, who reads the books and changes nothing. Added after the
+# rights every role is given above, so the auditor is given no note, file or follow-up to add (read only).
+ROLES["Controller"] = [*ROLES["Controller"], "core.view_recordevent"]
+ROLES["Auditor"] = [
+    "core.view_recordevent",
+    *REFERENCE,
+    *view("accounting", "journalentry", "journalline", "accountingperiod", "payment"),
+    *view("sales", "invoice", "invoiceline", "invoicepayment", "invoicewriteoff"),
+    *view("purchasing", "bill", "billline", "billpayment"),
+    *view("inventory", "stockmovement"),
+    *view("assets", "fixedasset", "depreciationentry"),
+    "sales.view_every_customer",
+]
+
 
 # Who signs in with a second factor (apps/core/second_factor.py): whoever
 # holds any of these, by any role or on their own, and every superuser. The

@@ -1228,6 +1228,11 @@ export const MODULES: Module[] = [
         keywords: "health checks books agree trial balance backup disk server integrity sweep", load: () => import("../modules/settings/Health"),
       },
       {
+        path: "edit-log", label: "Edit log", permission: "core.view_recordevent",
+        keywords: "edit log audit trail changes old new values who changed history companies accounts rules",
+        load: () => import("../modules/settings/EditLog"),
+      },
+      {
         path: "problems", label: "Problems people hit", permission: "core.view_servererror",
         keywords: "errors problems server error reference traceback failed went wrong", load: () => import("../modules/settings/Problems"),
         detail: () => import("../modules/settings/ProblemForm"),
