@@ -15,6 +15,8 @@ class Migration(migrations.Migration):
             name="section_1961",
             field=models.CharField(
                 blank=True,
+                db_default="",
+                default="",
                 help_text="Its section of the Income-tax Act 1961: 206C(1).",
                 max_length=32,
             ),
@@ -24,6 +26,8 @@ class Migration(migrations.Migration):
             name="section_2025",
             field=models.CharField(
                 blank=True,
+                db_default="",
+                default="",
                 help_text="Its section of the Income-tax Act 2025: 394(1).",
                 max_length=32,
             ),
@@ -33,6 +37,8 @@ class Migration(migrations.Migration):
             name="section_1961",
             field=models.CharField(
                 blank=True,
+                db_default="",
+                default="",
                 help_text="Its section of the Income-tax Act 1961: 194C.",
                 max_length=32,
             ),
@@ -42,6 +48,8 @@ class Migration(migrations.Migration):
             name="section_2025",
             field=models.CharField(
                 blank=True,
+                db_default="",
+                default="",
                 help_text="Its section of the Income-tax Act 2025: 393(1).",
                 max_length=32,
             ),

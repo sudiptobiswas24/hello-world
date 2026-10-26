@@ -15,6 +15,8 @@ class Migration(migrations.Migration):
             name="tan",
             field=models.CharField(
                 blank=True,
+                db_default="",
+                default="",
                 help_text="Four letters, five digits and a letter. Required before a TDS or TCS challan or return is made.",
                 max_length=10,
                 verbose_name="TAN",

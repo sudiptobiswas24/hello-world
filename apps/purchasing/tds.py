@@ -259,9 +259,9 @@ class TdsChallan(AuditModel):
         JournalEntry, null=True, blank=True, on_delete=models.PROTECT, related_name="+", editable=False)
     # Facts of the payment, kept as they stood on it: the company's TAN, the challan's name and the section of
     # the Act the deductions were made under, on their month (accounting.statutory_names).
-    tan = models.CharField(max_length=10, blank=True, editable=False, verbose_name="TAN")
-    form = models.CharField(max_length=32, blank=True, editable=False, help_text="The challan's name on its day.")
-    section_code = models.CharField(max_length=32, blank=True, editable=False,
+    tan = models.CharField(max_length=10, blank=True, default="", db_default="", editable=False, verbose_name="TAN")
+    form = models.CharField(max_length=32, blank=True, default="", db_default="", editable=False, help_text="The challan's name on its day.")
+    section_code = models.CharField(max_length=32, blank=True, default="", db_default="", editable=False,
                                     help_text="The section of the Act the deductions were made under.")
 
     class Meta:

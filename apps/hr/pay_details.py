@@ -40,11 +40,11 @@ class EmployeePayDetails(AuditModel):
     # What the minimum wage they are owed is read by (statutory.MinimumWage): the bonus ceiling is the higher of
     # the dated floor and that wage.
     scheduled_employment = models.CharField(
-        max_length=128, blank=True, help_text="The scheduled employment the State's minimum wages name their work "
+        max_length=128, blank=True, default="", db_default="", help_text="The scheduled employment the State's minimum wages name their work "
                                               "under, as the notification names it.")
-    wage_zone = models.CharField(max_length=32, blank=True,
+    wage_zone = models.CharField(max_length=32, blank=True, default="", db_default="",
                                  help_text="The zone the notification places the workplace in; blank where it has none.")
-    skill = models.CharField(max_length=16, blank=True, choices=Skill.choices,
+    skill = models.CharField(max_length=16, blank=True, default="", db_default="", choices=Skill.choices,
                              help_text="Their skill category under the notification.")
 
     class Meta:

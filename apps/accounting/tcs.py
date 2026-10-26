@@ -33,9 +33,9 @@ from .dated_rates import DatedRate, rate_standing
 class TcsSection(AuditModel):
     code = models.CharField(max_length=16, unique=True, help_text="206C(1), or 394 from April 2026")
     name = models.CharField(max_length=128, help_text="What it is collected on: scrap.")
-    section_1961 = models.CharField(max_length=32, blank=True,
+    section_1961 = models.CharField(max_length=32, blank=True, default="", db_default="",
                                     help_text="Its section of the Income-tax Act 1961: 206C(1).")
-    section_2025 = models.CharField(max_length=32, blank=True,
+    section_2025 = models.CharField(max_length=32, blank=True, default="", db_default="",
                                     help_text="Its section of the Income-tax Act 2025: 394(1).")
     form_code = models.CharField(
         max_length=8, blank=True,
