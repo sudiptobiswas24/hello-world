@@ -32,7 +32,7 @@ from django.db import models, transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from apps.core.models import AuditModel, lock_rows
+from apps.core.models import numbering_first, AuditModel, lock_rows
 
 LEFT_RUNNING = datetime.timedelta(hours=24)
 
@@ -69,6 +69,7 @@ class MachineClock(AuditModel):
 
 
 def _open(machine):
+    numbering_first()  # a raw row lock, after the company's numbering row (O257)
     return MachineClock.objects.select_for_update(no_key=True).filter(
         machine=machine, stopped_at__isnull=True).first()
 

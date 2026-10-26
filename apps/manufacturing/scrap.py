@@ -40,7 +40,7 @@ from django.db import models, transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from apps.core.models import AuditModel, serialised, to_date
+from apps.core.models import numbering_first, AuditModel, serialised, to_date
 
 ZERO = Decimal("0")
 
@@ -184,6 +184,7 @@ class OperationReport(AuditModel):
 
 
 def _lock(order):
+    numbering_first()  # a raw row lock, after the company's numbering row (O257)
     type(order).objects.select_for_update(no_key=True).filter(pk=order.pk).first()
 
 

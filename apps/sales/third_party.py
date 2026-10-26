@@ -46,7 +46,7 @@ from django.db import models, transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from apps.core.models import AuditModel, DocumentSequence, serialised, to_date
+from apps.core.models import numbering_first, AuditModel, DocumentSequence, serialised, to_date
 
 ZERO = Decimal("0")
 
@@ -160,6 +160,7 @@ class ThirdPartyRelease(AuditModel):
         if not (reason or "").strip():
             raise ValidationError("Say why the release is withdrawn.")
         lots = [line.lot for line in self.lines.select_related("lot")]
+        numbering_first()  # a raw row lock, after the company's numbering row (O257)
         list(Lot.objects.select_for_update(no_key=True).order_by().filter(pk__in=[lot.pk for lot in lots]))
         for lot in lots:
             fits, _ = _fits(self.customer, lot, exclude_release=self)
@@ -316,6 +317,7 @@ def refuse_uncovered(delivery, lines):
             continue
         for lot in taken:
             lots[lot.pk] = lot
+    numbering_first()  # a raw row lock, after the company's numbering row (O257)
     list(Lot.objects.select_for_update(no_key=True).order_by().filter(pk__in=list(lots)))
     for lot in lots.values():
         fits, spare = _fits(customer, lot, adding=delivery)

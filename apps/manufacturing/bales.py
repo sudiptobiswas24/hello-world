@@ -38,7 +38,7 @@ from django.db import models, transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from apps.core.models import AuditModel, DocumentSequence, to_date
+from apps.core.models import numbering_first, AuditModel, DocumentSequence, to_date
 
 ZERO = Decimal("0")
 GRAMMES_PER_KG = Decimal("1000")
@@ -255,6 +255,7 @@ def load(delivery, bales, order_line=None):
     if delivery.is_return():
         raise ValidationError(f"{delivery} is goods coming back.")
     for bale in bales:
+        numbering_first()  # a raw row lock, after the company's numbering row (O257)
         bale = Bale.objects.select_for_update(no_key=True).get(pk=bale.pk)
         if bale.broken_at is not None:
             raise ValidationError(f"{bale} was broken.")
@@ -284,6 +285,7 @@ def load(delivery, bales, order_line=None):
 @transaction.atomic
 def unload(bale):
     """Take a bale off a delivery that has not shipped."""
+    numbering_first()  # a raw row lock, after the company's numbering row (O257)
     bale = Bale.objects.select_for_update(no_key=True).get(pk=bale.pk)
     if bale.delivery_id is None:
         raise ValidationError(f"{bale} is on no delivery.")

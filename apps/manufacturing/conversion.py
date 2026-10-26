@@ -37,7 +37,7 @@ from django.db import models, transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from apps.core.models import AuditModel
+from apps.core.models import numbering_first, AuditModel
 from apps.core.windows import covers
 
 ZERO = Decimal("0")
@@ -162,6 +162,7 @@ def record_bags(station, operator, machine, bags, sample_grams, supervisor=None,
         raise ValidationError(f"{station} is not in use.")
     if operator is None:
         raise ValidationError("Nobody is signed in at this station.")
+    numbering_first()  # a raw row lock, after the company's numbering row (O257)
     machine = Machine.objects.select_for_update(no_key=True).get(pk=machine.pk)
     if not station.machines.filter(pk=machine.pk).exists():
         raise ValidationError(f"{station} does not count for {machine.code}.")
@@ -238,16 +239,6 @@ def record_bags(station, operator, machine, bags, sample_grams, supervisor=None,
                   for check in off_coatings(order, mounted if mounted is not None
                                             and mounted.operation.work_order_id == order.pk else None)
                   .select_related("station").order_by("pk")]
-    # Made before the inspection takes its number, and its shelves held: the company's numbering row
-    # is held after every shelf the entry posted below moves (O257).
-    entry = ProductionEntry.objects.create(
-        work_order=order, entry_date=shift_date, warehouse=station.warehouse,
-        quantity_produced=Decimal(bags), uom=order.uom, lot=lot,
-        work_centre=machine.work_centre, machine=machine, memo=f"Counted at {station}",
-    )
-    from apps.inventory.locking import lock_positions
-
-    lock_positions(entry.shelves())
     inspection = floor_inspection(lot, plan, operator, shift_date, passed, station, supervisor,
                                   reason, "off weight", made_from=made_from)
     for number, value in enumerate(values, start=1):
@@ -255,6 +246,11 @@ def record_bags(station, operator, machine, bags, sample_grams, supervisor=None,
                                sample_reference=f"S{number}", instrument=instrument)
     if not lab_to_finish:
         inspection.post()
+    entry = ProductionEntry.objects.create(
+        work_order=order, entry_date=shift_date, warehouse=station.warehouse,
+        quantity_produced=Decimal(bags), uom=order.uom, lot=lot,
+        work_centre=machine.work_centre, machine=machine, memo=f"Counted at {station}",
+    )
     entry.post()
     return BagCount.objects.create(
         mount=mounted if mounted is not None and mounted.operation.work_order_id == order.pk

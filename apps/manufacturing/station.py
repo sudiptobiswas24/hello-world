@@ -38,7 +38,7 @@ from django.db import models, transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from apps.core.models import AuditModel, lock_rows, serialised
+from apps.core.models import numbering_first, AuditModel, lock_rows, serialised
 from apps.core.windows import covers
 
 ONE_HUNDRED = Decimal("100")
@@ -374,6 +374,7 @@ def record_roll(station, operator, machine, gross_kg, core_type, declared_m,
         raise ValidationError("Nobody is signed in at this station.")
     # One roll at a time per loom, so two confirmations cannot take the
     # same roll number.
+    numbering_first()  # a raw row lock, after the company's numbering row (O257)
     machine = Machine.objects.select_for_update(no_key=True).get(pk=machine.pk)
     if not station.machines.filter(pk=machine.pk).exists():
         raise ValidationError(f"{station} does not weigh for {machine.code}.")

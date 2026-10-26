@@ -26,6 +26,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from apps.core.models import (
+    numbering_first,
     Extensible, AuditModel, correction_date, Party, PartyRole, documents_it_answers_to, lock_rows, serialised, to_date,
 )
 
@@ -555,6 +556,7 @@ class LeavePolicy(AuditModel):
         """
         with transaction.atomic():
             if self.pk:
+                numbering_first()  # a raw row lock, after the company's numbering row (O257)
                 before = LeavePolicy.objects.select_for_update(no_key=True).filter(pk=self.pk).values_list(
                     "annual_days", flat=True).first()
                 if before is not None and before != self.annual_days:

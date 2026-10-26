@@ -96,6 +96,14 @@ def row_lock_query(model, pk, no_key=True):
     for a number. FOR UPDATE (no_key=False) only where the row is deleted
     or its key changes: lock_rows(..., deleting=True).
     """
+    if model is not DocumentNumbering and in_a_transaction_it_opened():
+        # Every row lock comes after the company's numbering row (O257), whatever the model: it is held to
+        # commit by whatever takes a number, and taken after any other row a transaction holds, it waited for
+        # a row whose holder then wanted it. lock_rows(), lock_in_turn(), @serialised, lock_for_change() and
+        # hold_what_it_names_first() all lock through here. The cost, decided: every transaction that locks a
+        # row runs one at a time across the plant; two postings at once wait for each other, and a long one (a
+        # pay run, the demo) holds the rest for its length.
+        DocumentNumbering.hold()
     return model._base_manager.select_for_update(no_key=no_key).filter(pk=pk).order_by().values_list(
         "pk", flat=True)
 
@@ -154,6 +162,14 @@ def lock_rows(*instances, refresh=True, deleting=False):
     FOR NO KEY UPDATE, which a foreign-key check of a row inserted
     elsewhere does not wait on (row_lock_query); `deleting=True` takes FOR
     UPDATE, for a row about to be deleted, which such a check must wait on.
+
+    The first row lock of a transaction takes the company's numbering row
+    first (DocumentNumbering.hold(), in row_lock_query), whatever the
+    model, and later locks find it held (O257). So every transaction that
+    locks a row runs one at a time across the plant: two postings at once
+    wait for each other, and a long one (a pay run, the demo) holds the
+    rest for its length. Decided, for one plant: any narrower rule kept
+    missing a path that held some other row before it numbered.
     """
     if not transaction.get_connection().in_atomic_block:
         raise RuntimeError("lock_rows() outside a transaction locks nothing.")
@@ -334,6 +350,16 @@ def serialised(*state, held_first=False):
                     return method(self, *args, **kwargs)
         return inner
     return wrap
+
+
+def numbering_first():
+    """
+    The company's numbering row before a row lock taken by a raw select_for_update() rather than through
+    lock_rows() (O257): every row lock of a transaction comes after it (row_lock_query). Outside a transaction
+    the code opened it holds nothing.
+    """
+    if in_a_transaction_it_opened():
+        DocumentNumbering.hold()
 
 
 @contextlib.contextmanager
@@ -1609,7 +1635,17 @@ class DocumentNumbering(models.Model):
         """Hold the numbering row until the transaction ends; inside a transaction the caller opened."""
         if not in_a_transaction_it_opened():
             raise RuntimeError("DocumentNumbering.hold() outside a transaction holds nothing.")
-        row, _ = cls.objects.get_or_create(pk=cls.ROW)
+        from django.db import DatabaseError
+
+        try:
+            # In a savepoint: a database migrated back to before 0042 (a migration's test) has no such table,
+            # and every row lock and write asks for the row; there it holds nothing, as before the table was.
+            with transaction.atomic():
+                row, _ = cls.objects.get_or_create(pk=cls.ROW)
+        except DatabaseError as error:
+            if cls._meta.db_table not in str(error):
+                raise
+            return None
         lock_rows(row, refresh=False)
         return row
 

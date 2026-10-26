@@ -135,6 +135,9 @@ class JobWorkChallan(AuditModel):
         if not lines:
             raise ValidationError("A challan with nothing on it sends nothing.")
         self.challan_date = to_date(self.challan_date)
+        # It posts no entry, so nothing else asks: issued into a closed month,
+        # the half-year's ITC-04 already signed off grows a challan.
+        _refuse_closed(self.challan_date, f"{self} is not issued on {self.challan_date}")
         # Each run held before its status and its other challans are read:
         # two challans of 600 issued at once each found the other unissued.
         runs = {line.operation.work_order_id: line.operation.work_order for line in lines}
@@ -170,12 +173,6 @@ class JobWorkChallan(AuditModel):
             "manufacturing.job_work_challan", self.challan_date,
             name="Job Work Challans", prefix="JWC-",
         )
-        # It posts no entry, so nothing else asks: issued into a closed month,
-        # the half-year's ITC-04 already signed off grows a challan. Asked
-        # after the number, as an entry's period is: the company's numbering
-        # row is held before the period (apps.core.lock_order), and a refusal
-        # rolls the number back.
-        _refuse_closed(self.challan_date, f"{self} is not issued on {self.challan_date}")
         self.posted = True
         self.posted_at = timezone.now()
         super().save(update_fields=[

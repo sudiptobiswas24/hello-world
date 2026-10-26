@@ -11,6 +11,7 @@ from django.utils import timezone
 UDYAM = re.compile(r"^UDYAM-[A-Z]{2}-[0-9]{2}-[0-9]{7}$")
 
 from apps.core.models import (
+    numbering_first,
     correction_date,
     AuditModel,
     answer_to_its_document,
@@ -246,6 +247,7 @@ class AccountingPeriod(AuditModel):
             return None
         covering = cls.objects.filter(start_date__lte=on_date, end_date__gte=on_date)
         if lock:
+            numbering_first()  # a raw row lock, after the company's numbering row (O257)
             covering = covering.select_for_update(no_key=True)
         return next((period for period in covering.order_by("pk") if period.closed), None)
 
@@ -1921,6 +1923,7 @@ class BooksOpening(AuditModel):
                     f"{self.opened_on}: the books cannot open on a day after what is already in them. "
                     "Open them on an earlier day, or reverse what was posted.")
         if self.pk is not None:
+            numbering_first()  # a raw row lock, after the company's numbering row (O257)
             before = BooksOpening.objects.select_for_update(no_key=True).get(pk=self.pk)
             if (before.opened_on, before.opening_account_id) != (self.opened_on, self.opening_account_id):
                 last = max(before.opened_on, self.opened_on)

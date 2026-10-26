@@ -5,7 +5,7 @@ from django.db import connection, transaction
 from django.test import TestCase
 
 from .lock_order import LOCK_ORDER, LockedOutsideATransaction, LockOrderViolation, taken
-from .models import Party, lock_rows
+from .models import DocumentNumbering, Party, lock_rows
 
 
 class TheSentinelHoldsTestsToTheLockOrderTests(TestCase):
@@ -41,6 +41,7 @@ class TheSentinelHoldsTestsToTheLockOrderTests(TestCase):
 
     def test_the_written_order_and_a_row_already_held_pass(self):
         with transaction.atomic():
+            DocumentNumbering.hold()  # the first lock of every transaction that locks (O257)
             taken(connection, "purchasing.purchaseorder", [9])
             taken(connection, "sales.salesorder", [1])
             lock_rows(self.first)
@@ -54,6 +55,7 @@ class TheSentinelHoldsTestsToTheLockOrderTests(TestCase):
         with transaction.atomic():
             lock_rows(self.second)
         with transaction.atomic():
+            DocumentNumbering.hold()  # the first lock of every transaction that locks (O257)
             taken(connection, "sales.salesorder", [1])
             taken(connection, "manufacturing.machine", [1])
             lock_rows(self.first)
@@ -194,7 +196,7 @@ class TheSentinelSeesEveryLockAStatementTakesTests(TestCase):
             lock_rows(self.second)
 
     def test_the_order_is_the_written_one(self):
-        self.assertEqual(LOCK_ORDER[:5], ("purchasing.purchaseorder", "sales.salesorder",
+        self.assertEqual(LOCK_ORDER[:6], ("core.documentnumbering", "purchasing.purchaseorder", "sales.salesorder",
                                           "purchasing.purchaseorderline", "sales.salesorderline", "core.party"))
 
 
@@ -307,8 +309,10 @@ class NumberingIsHeldBehindTheCompanysOneRowTests(TestCase):
                                       f"core.documentsequence {self.first.pk} locked after core.documentsequence "
                                       f"{self.second.pk}"):
             with transaction.atomic():
-                lock_rows(self.second, refresh=False)
-                lock_rows(self.first, refresh=False)
+                # Taken as a raw lock would: through lock_rows() the numbering row comes first, behind which
+                # the order between sequences decides nothing.
+                taken(connection, "core.documentsequence", [self.second.pk])
+                taken(connection, "core.documentsequence", [self.first.pk])
 
     def test_the_numbering_row_taken_after_a_sequence_is_refused(self):
         from .models import DocumentNumbering
@@ -316,7 +320,7 @@ class NumberingIsHeldBehindTheCompanysOneRowTests(TestCase):
         with self.assertRaisesMessage(LockOrderViolation,
                                       "core.documentnumbering 1 locked after core.documentsequence"):
             with transaction.atomic():
-                lock_rows(self.first, refresh=False)
+                taken(connection, "core.documentsequence", [self.first.pk])
                 DocumentNumbering.hold()
 
     def test_a_year_counter_is_behind_the_row_too(self):
@@ -326,8 +330,8 @@ class NumberingIsHeldBehindTheCompanysOneRowTests(TestCase):
         late = DocumentSequenceYear.objects.create(sequence=self.second, year=2026, next_number=9)
         with self.assertRaises(LockOrderViolation):
             with transaction.atomic():
-                lock_rows(late, refresh=False)
-                lock_rows(early, refresh=False)
+                taken(connection, "core.documentsequenceyear", [late.pk])
+                taken(connection, "core.documentsequenceyear", [early.pk])
         from .models import DocumentSequence
 
         with transaction.atomic():
@@ -376,3 +380,19 @@ class APlainForUpdateIsReportedTests(TestCase):
                       if connection.vendor == "postgresql" else "FOR NO KEY UPDATE")
         self.assertTrue(row_lock_query(Party, 1).query.select_for_no_key_update)
         self.assertFalse(row_lock_query(Party, 1, no_key=False).query.select_for_no_key_update)
+
+
+class TheNumberingRowIsTheFirstLockTests(TestCase):
+    """O257: the numbering row comes before every row, a model ranked nowhere included."""
+
+    def test_a_row_ranked_nowhere_before_it_is_refused_and_after_it_passes(self):
+        from .models import DocumentNumbering
+
+        with self.assertRaisesMessage(LockOrderViolation, "core.documentnumbering 1 locked after manufacturing.machine"):
+            with transaction.atomic():
+                taken(connection, "manufacturing.machine", [3])
+                DocumentNumbering.hold()
+        with transaction.atomic():
+            DocumentNumbering.hold()
+            taken(connection, "manufacturing.machine", [3])
+            lock_rows(Party.objects.create(code="P9", name="P9"))
