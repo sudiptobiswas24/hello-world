@@ -308,3 +308,42 @@ class ReverseChargeApiTests(ReverseChargeCashTestCase):
         self.assertEqual((ledger.status_code, ledger.data["difference"]), (200, D("0.00")))
         voided = ap.post(f"/api/gst/cash-payments/{paid.data['id']}/void/", {"date": "2026-10-16"}, format="json")
         self.assertEqual((voided.status_code, voided.data["voided"]), (200, True))
+
+
+class KeptAccountAndRoundingTests(ReverseChargeCashTestCase):
+    """
+    The debit note gives back into the account its bill owed into, and every side books each tax in base,
+    rounded, as the challan pays it (/home/user/work/calc_fix_rcm/fx_drift.py):
+      0.37 + 0.37 USD at 83.3367: rows 30.83 + 30.83 = 61.66; summed first, 61.67, and a paisa left for good.
+    """
+
+    def test_a_debit_note_gives_back_into_the_bills_account_after_the_tax_moved(self):
+        bill = self.freight_bill()
+        moved = Account.objects.create(code="2299", name="moved", account_type=AccountType.LIABILITY)
+        self.igst5.reverse_charge_account = moved
+        self.igst5.save()
+        note = bill.create_debit_note(quantities={bill.lines.get(): D("0.5")})
+        Bill.objects.filter(pk=note.pk).update(bill_date=datetime.date(2026, 9, 20))
+        self.assertEqual((self.ledger("2291"), self.ledger("2299")), (D("250.00"), D("0.00")))
+        self.pay()
+        self.assertEqual((self.ledger("2291"), self.ledger("2299"), self.ledger("1395")),
+                         (D("0.00"), D("0.00"), D("0.00")))
+
+    def test_the_audit_sees_the_account_read_through_the_tax(self):
+        from apps.core.management.commands.audit_invariants import Command, app_sources
+
+        def findings(old, new):
+            sources = app_sources()
+            sources["purchasing"] = {path: text.replace(old, new) if path.name == "models.py" else text
+                                     for path, text in sources["purchasing"].items()}
+            return [text for _, text in Command().kept_settings_read_live(["purchasing"], sources)
+                    if "reverse_charge_account" in text]
+
+        self.assertEqual(findings("", ""), [])
+        planted = findings("tax_totals[owed_account_at_posting(line, tax)] -= amount",
+                           "tax_totals[tax.reverse_charge_account] -= amount")
+        self.assertEqual(len(planted), 1)
+        self.assertIn("_build_journal_entry reads `tax.reverse_charge_account`", planted[0])
+        keyed = findings("self.owed_account = owed_account_at_posting(self.line, self.tax)",
+                         "self.owed_account_id = self.tax.reverse_charge_account_id")
+        self.assertTrue(any("self.tax.reverse_charge_account_id" in text for text in keyed), keyed)

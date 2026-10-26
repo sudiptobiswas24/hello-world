@@ -2234,7 +2234,8 @@ class Command(BaseCommand):
             for model in django_apps.get_app_config(label).get_models():
                 for relation, names in (getattr(model, "KEPT_FROM", None) or {}).items():
                     for name in names:
-                        for match in re.finditer(rf"\.{relation}\.{name}\b", code):
+                        # Its key read as well (the relation, then the field with _id): the same setting read live.
+                        for match in re.finditer(rf"\.{relation}\.{name}(_id)?\b", code):
                             line = code[:match.start()].count("\n") + 1
                             findings.append((
                                 "kept setting read live",
@@ -2272,7 +2273,10 @@ class Command(BaseCommand):
                         continue
                     body = self._code(fn)
                     for model, relation, name in keepers:
-                        if not re.search(rf"(?<![\w.]){relation}\.{name}\b", body):
+                        if not re.search(rf"(?<![\w.]){relation}\.{name}(_id)?\b", body):
+                            continue
+                        # The function a keeper names as the event that reads it (KEPT_BY): the one place it is read.
+                        if fn.name in getattr(model, "KEPT_BY", ()):
                             continue
                         # The event that records it, or a sibling keeping the same field: read once and kept.
                         if any(re.search(rf"\b{other.__name__}(\.objects\.create)?\(", body)
