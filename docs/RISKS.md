@@ -305,6 +305,8 @@ missing), **minor**.
 | O380 | core, sales | A rolled-back post gives its object the old number back only through @serialised; a post that numbers without it keeps the number in hand, and a retry answers an IntegrityError (seen 2026-10-25, fix_g23b2) | rule | minor |
 | O381 | core, inventory | Unproven, from review_numbering: a race on a shelf row that does not exist yet, and two first numbers taken while the company's numbering row is missing. Each wants a race() probe on PostgreSQL (seen 2026-10-25, review_numbering) | race | minor |
 | O382 | core | The lock-order sentinel sees a path's order only where a test gives it the rows: the job-work challan's period-then-number was seen only once a test had an open period. A suite fixture (or a sentinel lane) that runs every posting path with an open period and stock already on the shelf would show the rest (seen 2026-10-25, g23b gate) | race | minor |
+| O383 | hr, accounting | A salary payment posted against net pay payable whose application is then refused (the slip's receipt voided first, a race O257 now lets either side win) stands unapplied, 8,450.50 in ThePayrollLocks. Check that such a payment is listed where Payroll sees it and can be applied or voided, so net pay payable can clear (seen 2026-10-26, fix_g23b4) | books | minor |
+| O384 | core | Bulk QuerySet.update() and .delete() do not take the company's numbering row first; only the lock-order sentinel watches them (none failed in g23b) (seen 2026-10-26, fix_g23b4) | race | minor |
 
 Upgrade notes, true of data made before the 8 October fixes:
 - Landed cost allocated before the stores fix releases to cost of sales, and old inventory differences stay where they were.
