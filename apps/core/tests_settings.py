@@ -38,7 +38,7 @@ FIELD_KEY = "a2V5LWZvci10aGUtc2V0dGluZ3MtdGVzdHMtb25seS0="
 
 def read(**env):
     clean = {key: value for key, value in os.environ.items()
-             if not key.startswith(("DJANGO_", "DATABASE_", "ERP_FIELD_KEYS"))}
+             if not key.startswith(("DJANGO_", "DATABASE_", "ERP_FIELD_KEYS", "ERP_DATABASE_"))}
     # A server's own field key, unless a case is about that key (TheFieldKeysTests).
     clean["ERP_FIELD_KEYS"] = FIELD_KEY
     clean.update(env)
@@ -115,6 +115,18 @@ class TheDatabaseTests(SimpleTestCase):
                           found["host"], found["port"]),
                          ("django.db.backends.postgresql", "plant", "erp", "p@ss/word",
                           "db.local", "6543"))
+
+    def test_the_plant_migrates_as_the_owner_and_runs_as_a_role_that_owns_nothing(self):
+        app, owner = "postgres://erp_app:a@db/erp", "postgres://erp:o@db/erp"
+        self.assertEqual(read(DATABASE_URL=app, DATABASE_OWNER_URL=owner)["user"], "erp_app")
+        self.assertEqual(read(DATABASE_URL=app, DATABASE_OWNER_URL=owner, ERP_DATABASE_AS_OWNER="1")["user"], "erp")
+        self.assertIn("name the same role", read(DATABASE_URL=owner, DATABASE_OWNER_URL=owner))
+        self.assertIn("ERP_DATABASE_AS_OWNER=1 needs DATABASE_OWNER_URL", read(DATABASE_URL=app, ERP_DATABASE_AS_OWNER="1"))
+
+    def test_the_plants_server_refuses_to_start_without_the_owner(self):
+        self.assertIn("DATABASE_OWNER_URL is not set", read(
+            DJANGO_ENV="production", DJANGO_SECRET_KEY=SECRET, DJANGO_ALLOWED_HOSTS="erp.example.in",
+            DATABASE_URL="postgres://erp_app:a@db/erp"))
 
     def test_nothing_else(self):
         self.assertIn("DATABASE_URL must be postgres://",
