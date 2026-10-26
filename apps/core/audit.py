@@ -1,14 +1,15 @@
 """
 Shared mixins that stamp created_by/updated_by on AuditModel subclasses
-and write the record's history (apps/core/history.py): made, which
-fields changed, each action taken on it, deleted. Every module's
+and write the record's history (apps/core/history.py): each action taken
+on it. Made, changed (old and new values) and deleted are written by the
+model layer for every path, the API's among them (history.install). Every module's
 admin/viewsets use these instead of doing it ad hoc, so "who changed
 this, and what did they do" is handled consistently everywhere.
 """
 
 from django.db import transaction
 
-from .history import EventKind, record_by_id
+from .history import DOING, EventKind, edit_logged, record_by_id
 from .models import lock_for_change
 
 
@@ -126,6 +127,13 @@ class AuditableViewSetMixin(RowHeldViewSetMixin):
 
         return narrows_for(cls, user)
 
+    def initial(self, request, *args, **kwargs):
+        """An action's own changes are logged as made by it (history.DOING), not as an edit of the record."""
+        super().initial(request, *args, **kwargs)
+        action = getattr(self, "action", None)
+        if action not in (None, "create", "update", "partial_update", "destroy", "list", "retrieve", "metadata"):
+            self._doing = DOING.set(action)
+
     def dispatch(self, request, *args, **kwargs):
         mapped = getattr(self, "action_map", None)
         if mapped is not None:
@@ -155,19 +163,23 @@ class AuditableViewSetMixin(RowHeldViewSetMixin):
 
     def finalize_response(self, request, response, *args, **kwargs):
         """
-        A write that succeeded is a line in the record's history: made,
-        changed (the fields the request named), each action (posted,
-        voided, approved), deleted. Written here, after the fact, so a
-        viewset that saves its own way (an owner forced, a party made with
-        its roles) is in the history like any other.
+        An action that succeeded is a line in the record's history: posted,
+        voided, approved. Made, changed and deleted are the model layer's
+        for an edit-logged model (history.install), with each field's old
+        and new value, so they are written here only for one that is not.
         """
         response = super().finalize_response(request, response, *args, **kwargs)
+        doing = self.__dict__.pop("_doing", None)
+        if doing is not None:
+            DOING.reset(doing)
         action = getattr(self, "action", None)
         if request.method not in ("POST", "PUT", "PATCH", "DELETE") or not 200 <= response.status_code < 300:
             return response
         model = self.get_queryset().model
         pk = str(self.kwargs.get(self.lookup_url_kwarg or self.lookup_field, ""))
-        if action == "create":
+        if action in ("create", "update", "partial_update", "destroy") and edit_logged(model):
+            pass
+        elif action == "create":
             made = getattr(response, "data", None) or {}
             if str(made.get("id", "")).isdigit():
                 record_by_id(model, int(made["id"]), request.user, EventKind.CREATED)

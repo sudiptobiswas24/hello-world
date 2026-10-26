@@ -98,4 +98,6 @@ class AttachmentTests(TestCase):
         self.assertFalse(os.path.exists(path))
         history = manager.get("/api/core/history/", self.where).json()
         self.assertEqual([(row["label"], row["summary"]) for row in history],
-                         [("Removed", "theirs.pdf"), ("Removed", "mine.pdf"), ("Attached", "theirs.pdf"), ("Attached", "mine.pdf")])
+                         [("Removed", "theirs.pdf"), ("Removed", "mine.pdf"), ("Attached", "theirs.pdf"), ("Attached", "mine.pdf"),
+                          # The party's own making, logged by the model layer (apps/core/history.py).
+                          ("Made", "")])

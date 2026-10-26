@@ -365,6 +365,34 @@ def _gst_cash_ledger(day):
                     rows, "/accounts/gst")
 
 
+def _books_change_log(day):
+    """
+    The database's own log of the books (apps/core/ledger_log.py, PostgreSQL): every books table still has its
+    trigger, and no change in the last month was made with nobody named (psql, a script on its own connection).
+    """
+    from django.db import connection
+
+    from apps.core.ledger_log import UNATTRIBUTED, LedgerChange, present, tables_without_their_trigger
+
+    if not present(connection):
+        return _finding(None, 0, "This database keeps no log of its own (PostgreSQL only); the edit log is the "
+                                 "application's alone.")
+    since = timezone.now() - datetime.timedelta(days=30)
+    unlogged = tables_without_their_trigger(connection)
+    nobody = LedgerChange.objects.filter(through=UNATTRIBUTED, at__gte=since).order_by("-id")
+    count = nobody.count()
+    problems = []
+    if unlogged:
+        problems.append(f"{len(unlogged)} books tables are not logged: {', '.join(unlogged)}.")
+    if count:
+        problems.append(f"{count} change{'s' if count != 1 else ''} to the books in the last 30 days named nobody: "
+                        f"made around the application.")
+    rows = [{"label": f"{timezone.localtime(change.at):%Y-%m-%d %H:%M} {change.operation} {change.table_name} "
+                      f"{change.row_id} by database user {change.db_user}", "href": ""} for change in nobody[:SHOW]]
+    return _finding(not problems, len(unlogged) + count,
+                    " ".join(problems) or "Every books table is logged and every change names who made it.", rows)
+
+
 PROBES = [
     Probe("trial_balance", "Trial balance", _trial_balance),
     Probe("entries_balanced", "Every posted entry balances", _entries_balanced),
@@ -378,6 +406,7 @@ PROBES = [
     Probe("self_invoices", "Reverse-charge supplies have their self-invoices", _self_invoices),
     Probe("payment_vouchers", "Reverse-charge payments have their vouchers", _payment_vouchers),
     Probe("gst_cash_ledger", "The GST cash ledger agrees with its challans", _gst_cash_ledger),
+    Probe("books_change_log", "The books' change log is whole", _books_change_log),
 ]
 
 

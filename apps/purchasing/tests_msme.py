@@ -408,7 +408,8 @@ class AcceptedOnDeliveryTests(MsmeTestCase):
         self.assertEqual(ap.delete(url).status_code, 200)
         self.assertEqual(
             [(event.who.username, event.summary)
-             for event in RecordEvent.objects.filter(object_id=receipt.pk, action="objection").order_by("pk")],
+             # The actions' own lines; the fields each changed are the model layer's, named by the action too.
+             for event in RecordEvent.objects.filter(object_id=receipt.pk, action="objection", kind="action").order_by("pk")],
             [("apmanager", "objection made 2026-06-12"),
              ("warehousestaff", "objection of 2026-06-12 removed 2026-06-20"),
              ("apmanager", "objection withdrawn: was made 2026-06-12, removed 2026-06-20")])

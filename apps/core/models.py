@@ -1655,6 +1655,7 @@ class LoginFailure(models.Model):
 
     # Not a business record: the company's numbering row is not taken for it (O257, apps.core.apps).
     numbering_exempt = "a wrong password counted at sign-in"
+    not_edit_logged = "itself a log: one wrong password, counted"
 
     username = models.CharField(max_length=150, db_index=True)
     address = models.GenericIPAddressField(null=True, blank=True, db_index=True)
@@ -1916,6 +1917,7 @@ from .attachments import Attachment  # noqa: E402,F401
 from .customfields import CustomField  # noqa: E402,F401
 from .errors import ServerError  # noqa: E402,F401
 from .history import RecordEvent  # noqa: E402,F401
+from .ledger_log import LedgerChange  # noqa: E402,F401
 from .chatter import FollowUp, Note  # noqa: E402,F401
 from .saved_filters import SavedFilter  # noqa: E402,F401
 from .licences import Licence  # noqa: E402,F401

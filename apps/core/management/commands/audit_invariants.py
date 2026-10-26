@@ -128,6 +128,7 @@ class Command(BaseCommand):
         findings += self.allocations_counted_past_a_void(labels, sources)
         findings += self.drawdowns_from_todays_setting(labels, sources)
         findings += self.opening_kinds_brought_in_twice()
+        findings += self.writes_without_an_event()
         # Every app answers requests, not only those the other checks read: the office's own reports (apps/web)
         # read a margin from the query unseen (review_sechr F2).
         others = [] if options["apps"] else sorted(
@@ -160,7 +161,49 @@ class Command(BaseCommand):
         "core.yes_no": "a CSV cell reader (csvrows.py) the importer in apps/imports uses; the punch file does not",
         "assets.register_against_ledger": "the daily health check's footing (apps/web/health.py), which is not audited",
         "hr.statutory_gaps": "go_live_check's line per statutory engine (apps/imports/management), which is not audited",
+
+
+        "core.tables_without_their_trigger": "the daily health check's (apps/web/health.py), which is not audited",
     }
+
+    RAW_WRITE = re.compile(r"""execute(?:many)?\(\s*[rfbu]*["']{1,3}\s*(?:INSERT|UPDATE|DELETE|TRUNCATE|MERGE)\b""", re.I)
+
+    def writes_without_an_event(self, sources=None, models=None):
+        """
+        A record written with no line in the edit log (Companies (Accounts) Rules 2014, rule 3(1): an edit log of
+        each change, that cannot be disabled). Every save, delete, link and bulk write through the ORM writes
+        one (apps/core/history.py), so what is left is what goes around the ORM: raw SQL that writes (only the
+        books' own tables are caught by the database, and only on PostgreSQL), and a model that takes itself out
+        of the log. An AuditModel never may; the bulk writes' wrappers must still be on.
+        """
+        from apps.core.history import edit_logged, installed
+        from apps.core.models import AuditModel
+
+        findings = []
+        if sources is None:
+            sources = {}
+            for root in Path("apps").iterdir():
+                if (root / "__init__.py").exists():
+                    sources.update(source_of(root.name))
+        for path, text in sorted(sources.items(), key=lambda pair: str(pair[0])):
+            if "test" in path.name or "migrations" in path.parts:
+                continue
+            for match in self.RAW_WRITE.finditer(text):
+                line = text.count("\n", 0, match.start()) + 1
+                findings.append(("writes_without_an_event",
+                                 f"{path}:{line} writes by raw SQL, which leaves no line in the edit log: write "
+                                 f"through the ORM"))
+        if models is None:
+            models = django_apps.get_models()
+            if not installed():
+                findings.append(("writes_without_an_event", "QuerySet.update/bulk_create/bulk_update are not the "
+                                                            "edit log's (apps.core.history.install)"))
+        for model in models:
+            if issubclass(model, AuditModel) and (not edit_logged(model) or getattr(model, "not_edit_logged", None)):
+                findings.append(("writes_without_an_event",
+                                 f"{model._meta.label} ({model.__name__}) is an AuditModel the edit log leaves out "
+                                 f"({getattr(model, 'not_edit_logged', '')!r}): every AuditModel is logged"))
+        return findings
 
     # -- shape 2: inert feature ------------------------------------------
     def uncalled_helpers(self, labels, sources, code):

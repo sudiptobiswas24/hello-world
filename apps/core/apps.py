@@ -97,3 +97,11 @@ class CoreConfig(AppConfig):
             from apps.core import lock_order
 
             lock_order.install()
+
+        # The edit log (apps/core/history.py): every save, delete, link and bulk write of a record, at the model
+        # layer, so no path through the ORM goes around it; after the sentinel, whose
+        # wrappers it wraps. Not a setting: it cannot be switched off.
+        from apps.core import history, ledger_log
+
+        history.install()
+        ledger_log.install()

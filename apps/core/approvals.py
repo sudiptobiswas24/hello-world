@@ -52,8 +52,10 @@ def authors(document, *parts):
     for row in rows:
         by_kind[ContentType.objects.get_for_model(type(row))].add(row.pk)
     for kind, pks in by_kind.items():
+        # Made or changed by an edit (the screens, the admin, the shell), not by an action's own handling: the
+        # order an approver's acceptance of a quote makes is not theirs to have raised (history.DOING).
         found.update(RecordEvent.objects.filter(
-            content_type=kind, object_id__in=pks, kind__in=[EventKind.CREATED, EventKind.UPDATED],
+            content_type=kind, object_id__in=pks, kind__in=[EventKind.CREATED, EventKind.UPDATED], action="",
         ).values_list("who_id", flat=True))
     earlier = getattr(document, "revision_of", None)
     if earlier is not None:
