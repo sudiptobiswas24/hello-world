@@ -95,7 +95,8 @@ class ProbeTests(HealthTestCase):
         self.assertEqual([(row["key"], row["ok"], row["count"]) for row in findings],
                          [("trial_balance", True, 0), ("entries_balanced", True, 0), ("receivables", True, 0),
                           ("payables", True, 0), ("stock", True, 0), ("negative_stock", True, 0),
-                          ("fixed_assets", True, 0), ("closed_periods", True, 0), ("invoice_numbers", True, 0)])
+                          ("fixed_assets", True, 0), ("closed_periods", True, 0), ("invoice_numbers", True, 0),
+                          ("self_invoices", True, 0), ("payment_vouchers", True, 0), ("gst_cash_ledger", True, 0)])
         self.assertEqual(self.finding("receivables")["rows"][0]["label"],
                          "1100 AR: ledger 17,000.00, documents 17,000.00")
         self.assertEqual([row["key"] for row in inbox(self.controller(), self.today) if row["key"] == "books_disagree"], [])

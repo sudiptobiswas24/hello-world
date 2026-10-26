@@ -18,3 +18,14 @@ class GstConfig(AppConfig):
         register_invoice_stamp(invoice_stamp)
         register_challan_void_guard(refuse_challan_void)
         register_supplier_note_guard(refuse_supplier_note_change)
+
+        from apps.accounting.models import register_bank_movements, register_void_follow_up
+        from apps.purchasing.models import register_debit_note_follow_up
+
+        from .reverse_charge import cancel_vouchers_of, cancel_with_a_whole_debit_note, challans_paid
+
+        # Reverse charge: a whole debit note cancels its self-invoice, a void its payment voucher, and the
+        # GST challans' money through the bank is matched as a TDS challan's is.
+        register_debit_note_follow_up(cancel_with_a_whole_debit_note)
+        register_void_follow_up(cancel_vouchers_of)
+        register_bank_movements(challans_paid)

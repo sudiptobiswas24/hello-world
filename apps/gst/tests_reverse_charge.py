@@ -4,10 +4,10 @@ charges no GST, and the company owes it and claims it back.
 
   bill 10,000 for freight; reverse charge IGST 5% = 500
   vendor owed 10,000; input credit 500; reverse charge payable 500
-  GSTR-3B: 3.1(d) 10,000 and IGST 500; 4(A)(3) IGST 500; 4(A)(5) untouched
-  half of it debited back: 3.1(d) 5,000 and 250; 4(A)(3) 250
-  from an unregistered agency the credit is still claimed: it rests on
-  the company's payment, not the supplier's registration
+  GSTR-3B: 3.1(d) 10,000 and IGST 500; 4(A)(3) nothing until the tax is
+  paid in cash (Rule 36(1)(b); g24, tests_rcm_cash); 4(A)(5) untouched
+  half of it debited back: 3.1(d) 5,000 and 250
+  from an unregistered agency the tax is owed all the same
 """
 
 from decimal import Decimal as D
@@ -52,7 +52,8 @@ class ReverseChargeTests(GstReturnTestCase):
         result = gstr3b(*SEPTEMBER)
         self.assertEqual(result["3.1d"], {"taxable": D("10000.00"), "igst": D("500.00"), "cgst": D("0"),
                                           "sgst": D("0"), "cess": D("0")})
-        self.assertEqual(result["4A3"], {"igst": D("500.00"), "cgst": D("0"), "sgst": D("0"), "cess": D("0")})
+        # Not claimed until paid in cash (g24): this asserted 500 from the bill alone.
+        self.assertEqual(result["4A3"], {"igst": D("0"), "cgst": D("0"), "sgst": D("0"), "cess": D("0")})
         self.assertEqual(result["4A5"]["igst"], D("0"))
         self.assertNotIn("3.1(d) and 4(A)(3): reverse charge", result["not_built"])
 
@@ -62,15 +63,16 @@ class ReverseChargeTests(GstReturnTestCase):
         Bill.objects.filter(pk=note.pk).update(bill_date=DAY)
         result = gstr3b(*SEPTEMBER)
         self.assertEqual((result["3.1d"]["taxable"], result["3.1d"]["igst"], result["4A3"]["igst"]),
-                         (D("5000.00"), D("250.00"), D("250.00")))
+                         (D("5000.00"), D("250.00"), D("0")))
         self.assertEqual((self.ledger("2290"), self.ledger("2000")), (D("250.00"), D("5000.00")))
 
     def test_from_an_unregistered_agency_the_credit_still_stands(self):
         backyard = self.party("TRUCKER", role=PartyRole.VENDOR, gst_state="27", gst_registration="unregistered")
         self.freight_bill(vendor=backyard)
         result = gstr3b(*SEPTEMBER)
-        self.assertEqual((result["3.1d"]["igst"], result["4A3"]["igst"]), (D("500.00"), D("500.00")))
-        self.assertEqual(result["warnings"], [])
+        self.assertEqual((result["3.1d"]["igst"], result["4A3"]["igst"]), (D("500.00"), D("0")))
+        self.assertEqual(result["warnings"], ["Reverse charge IGST: 500.00 owed for the period, 0 paid in cash; "
+                                              "the credit is claimed only on what is paid."])
 
     def test_refusals(self):
         with self.assertRaisesMessage(ValidationError, "scope is purchases"):

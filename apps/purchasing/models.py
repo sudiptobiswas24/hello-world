@@ -3275,6 +3275,16 @@ def vendor_invoice_key(number, day):
     return f"{start.year if start else ''}:{key}"
 
 
+# What else a posted debit note takes back, registered by the module that knows (purchasing imports
+# neither gst nor anything after it): gst cancels the self-invoice of a supply wholly debited back.
+DEBIT_NOTE_FOLLOW_UPS = []
+
+
+def register_debit_note_follow_up(follow_up):
+    if follow_up not in DEBIT_NOTE_FOLLOW_UPS:
+        DEBIT_NOTE_FOLLOW_UPS.append(follow_up)
+
+
 class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
     """
     Vendor bill — the Purchasing mirror of Sales' Invoice. Posting builds
@@ -4431,6 +4441,10 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         self._record_landed_cost()
         if self.is_debit_note():
             self._undo_settlements_without_money()
+            # What a note takes back elsewhere, asked of the module that knows (gst: the self-invoice of a
+            # reverse-charge supply wholly taken back is cancelled with it). Inside the note's transaction.
+            for follow_up in DEBIT_NOTE_FOLLOW_UPS:
+                follow_up(self)
 
         # Draw down the order's prepayments automatically. Leaving it to
         # the caller means the day someone forgets, the vendor is paid the
@@ -5744,6 +5758,21 @@ class BillLine(PostedLineMixin, TaxedLineMixin, AuditModel):
 
 class BillLineTax(RecordedLineTax):
     line = models.ForeignKey(BillLine, on_delete=models.CASCADE, related_name="recorded_taxes")
+    owed_account = models.ForeignKey(
+        Account, null=True, blank=True, on_delete=models.PROTECT, related_name="+", editable=False,
+        help_text="Reverse charge: the account the company's tax was owed into when the line posted, kept "
+                  "with it. A GST cash payment clears this account, never the tax's account as it stands now "
+                  "(mistake 4): moved after the bill posted, the payment would clear an account that never held "
+                  "the tax.")
+
+    def save(self, *args, **kwargs):
+        if self._state.adding and self.reverse_charge and self.owed_account_id is None:
+            # A debit note owes back into the account its bill owed into; a bill, the tax's at posting.
+            original = getattr(self.line, "debits_line", None)
+            kept = (original.recorded_taxes.filter(tax_id=self.tax_id).values_list("owed_account", flat=True)
+                    .first() if original is not None else None)
+            self.owed_account_id = kept or self.tax.reverse_charge_account_id
+        super().save(*args, **kwargs)
 
 
 class PrepaymentApplication(AuditModel):
