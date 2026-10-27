@@ -59,6 +59,11 @@ class PayComponentSerializer(serializers.ModelSerializer):
     def validate(self, attrs):
         # ModelSerializer does not run model.clean(); save() does, and its
         # ValidationError would otherwise reach the client as a 500.
+        if self.instance is not None and "statutory" in attrs and attrs["statutory"] != self.instance.statutory:
+            raise DRFValidationError({"statutory": [
+                f"Which statutory line {self.instance.code} is ({self.instance.get_statutory_display() or 'none'}) "
+                "decides which of the law's figures gate it, and is the Controller's to change: they relink it "
+                "under People > Pay components."]})
         instance = copy.copy(self.instance) if self.instance is not None else PayComponent()
         for name, value in attrs.items():
             if name not in ("base_components", "coverage_components"):
@@ -140,6 +145,33 @@ class PayComponentViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     serializer_class = PayComponentSerializer
     filter_fields = ["kind", "basis", "is_active"]
     search_fields = ["code", "name"]
+    action_permission_map = {"relink": "hr.relink_paycomponent"}
+
+    @action(detail=True, methods=["post"])
+    def relink(self, request, pk=None):
+        """{statutory}: the Controller changes which statutory line the component is; recorded in its history."""
+        from django.db import transaction
+
+        from apps.core.history import EventKind, record
+        from apps.core.models import lock_rows
+
+        component = self.get_object()
+        new = request.data.get("statutory", None)
+        if new is None or new not in dict(PayComponent._meta.get_field("statutory").choices):
+            raise DRFValidationError({"statutory": ["Say which statutory line it is, or \"\" for none."]})
+        with transaction.atomic():
+            lock_rows(component)
+            old = component.statutory
+            if new == old:
+                raise DRFValidationError({"statutory": [f"{component.code} is that line already."]})
+            component.statutory = new
+            try:
+                component.save()
+            except DjangoValidationError as exc:
+                raise DRFValidationError(exc.messages)
+            record(component, request.user, EventKind.UPDATED, action="relink",
+                   summary=f"statutory {old or 'none'} to {new or 'none'}")
+        return Response(self.get_serializer(component).data)
 
 
 class CompensationViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):

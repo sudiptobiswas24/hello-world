@@ -54,6 +54,26 @@ def _schedules(components, day, states):
     return missing
 
 
+def _levy(engine, kinds, levied_in, marked, day, states):
+    """
+    A state levy is used where the plant's active employees work in a state
+    its file (statutory/<levied_in>.csv) names, whatever the components say:
+    a component unmarked is not a levy gone (review p03). Each such state needs
+    a component marked as each share with a confirmed schedule standing today.
+    """
+    from apps.accounting.statutory_load import rows
+
+    levying = {row["state"] for row in rows(levied_in)}
+    where = [state for state in states if state in levying]
+    missing = []
+    for kind in kinds:
+        components = marked(kind)
+        if not components and where:
+            missing.append(f"no active pay component marked '{Statutory(kind).label}' for {', '.join(where)}")
+        missing += _schedules(components, day, where or states)
+    return engine, bool(where or marked(*kinds)), missing
+
+
 def statutory_gaps(day):
     """[(engine, used, missing)] for every engine, in ENGINES order."""
     from apps.accounting.models import TcsSection, TdsSection
@@ -74,9 +94,8 @@ def statutory_gaps(day):
         ("ESI", bool(marked(Statutory.ESI, Statutory.ESI_EMPLOYER)),
          _figures((FigureKind.ESI_EMPLOYEE_RATE, FigureKind.ESI_EMPLOYER_RATE, FigureKind.ESI_WAGE_CEILING),
                   day, states)),
-        ("PT", bool(marked(Statutory.PT)), _schedules(marked(Statutory.PT), day, states)),
-        ("LWF", bool(marked(Statutory.LWF, Statutory.LWF_EMPLOYER)),
-         _schedules(marked(Statutory.LWF, Statutory.LWF_EMPLOYER), day, states)),
+        _levy("PT", (Statutory.PT,), "professional_tax", marked, day, states),
+        _levy("LWF", (Statutory.LWF, Statutory.LWF_EMPLOYER), "labour_welfare_fund", marked, day, states),
         ("Bonus", bool(bonus), _figures((FigureKind.BONUS_FLOOR, FigureKind.BONUS_ELIGIBILITY), day, states)),
     ]
     wages = []

@@ -168,7 +168,7 @@ ROLES = {
         *view("hr", "employeepaydetails", "statutoryfigure", "salarytransfer", "minimumwage"),
         # The law's figures (statutory, minimum wages, professional tax and welfare fund schedules): the
         # Payroll Officer loads and types them, the Controller confirms them before anything posts at them.
-        "hr.confirm_statutoryfigure", "hr.confirm_minimumwage",
+        "hr.confirm_statutoryfigure", "hr.confirm_minimumwage", "hr.relink_paycomponent",
         *crud("hr", "salaryadvance", actions=("add", "change", "view")),
         *crud("hr", "salarytransferfile", actions=("add", "delete", "view")),
         "hr.void_salaryadvance",
