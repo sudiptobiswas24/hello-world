@@ -475,6 +475,7 @@ def logged_update(original):
                 _write(events, self.db)
         return count
     update.edit_logged = True
+    update.__wrapped__ = original
     return update
 
 
@@ -489,6 +490,7 @@ def logged_bulk_create(original):
                 for obj in objs if obj.pk is not None], self.db)
         return objs
     bulk_create.edit_logged = True
+    bulk_create.__wrapped__ = original
     return bulk_create
 
 
@@ -510,6 +512,7 @@ def logged_bulk_update(original):
                     for pk in sorted(before) if (changes := _diff(logged, before[pk], after.get(pk, {})))], self.db)
         return count
     bulk_update.edit_logged = True
+    bulk_update.__wrapped__ = original
     return bulk_update
 
 
