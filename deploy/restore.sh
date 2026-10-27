@@ -54,7 +54,9 @@ fi
 {
     echo "SET client_min_messages = warning;"
     echo "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
-    pg_restore --no-owner --file=- "$file" | grep -v '^CREATE SCHEMA public;$'
+    # Without the dump's grants: they name the application's role, which a new machine does not have until the
+    # web service's first migrate makes it, and that migrate gives every grant again (apps/core/ledger_log.py).
+    pg_restore --no-owner --no-privileges --file=- "$file" | grep -v '^CREATE SCHEMA public;$'
 } | psql --quiet --no-psqlrc --set=ON_ERROR_STOP=1 --single-transaction "$DATABASE_URL" > /dev/null
 echo "restored from $file"
 # Run as the owner (the backup service's DATABASE_URL). The application's role is given its rows again by the
