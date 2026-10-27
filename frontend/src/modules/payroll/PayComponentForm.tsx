@@ -15,6 +15,11 @@ export default function PayComponentForm() {
       heading={(row) => String(row.code ?? "") + " · " + String(row.name ?? "")}
       state={(row) => (row.is_active === false ? { label: "Inactive", tone: "draft" } : null)}
       permissions={{ add: "hr.add_paycomponent", change: "hr.change_paycomponent", delete: "hr.delete_paycomponent" }}
+      actions={[
+        // Which statutory line it is decides which law's figures gate it: the Controller's to change, recorded.
+        { label: "Relink", path: "relink", permission: "hr.relink_paycomponent", done: "Relinked",
+          fields: [{ key: "statutory", label: "Statutory line", kind: "choice", choices: [["", "Not a statutory line"], ["pf", "Provident fund, the employee's share"], ["pf_employer", "Provident fund, the employer's share"], ["eps", "Pension (EPS), the employer's share on its own"], ["esi", "ESI, the employee's share"], ["esi_employer", "ESI, the employer's share"], ["pt", "Professional tax"], ["lwf", "Labour welfare fund, the employee's share"], ["lwf_employer", "Labour welfare fund, the employer's share"]] }] },
+      ]}
       fields={[
         { key: "code", label: "Code" },
         { key: "name", label: "Name" },
@@ -32,7 +37,7 @@ export default function PayComponentForm() {
         { key: "coverage_period_months", label: "Coverage period months", kind: "integer", initial: 1, hint: "Coverage is decided by the first slip in each block of this many months from April,…" },
         { key: "rounding", label: "Rounding", kind: "choice", choices: [["paisa", "To the paisa"], ["rupee", "To the nearest rupee"], ["rupee_up", "Up to the next rupee"]], initial: "paisa" },
         { key: "remit_by_day", label: "Remit by day", kind: "integer", hint: "Day of the following month what is owed must be paid over" },
-        { key: "statutory", label: "Statutory line", kind: "choice", initial: "", choices: [["", "Not a statutory line"], ["pf", "Provident fund, the employee's share"], ["pf_employer", "Provident fund, the employer's share"], ["eps", "Pension (EPS), the employer's share on its own"], ["esi", "ESI, the employee's share"], ["esi_employer", "ESI, the employer's share"], ["pt", "Professional tax"]],
+        { key: "statutory", label: "Statutory line", kind: "choice", initial: "", createOnly: true, hint: "Once made, only the Controller relinks it", choices: [["", "Not a statutory line"], ["pf", "Provident fund, the employee's share"], ["pf_employer", "Provident fund, the employer's share"], ["eps", "Pension (EPS), the employer's share on its own"], ["esi", "ESI, the employee's share"], ["esi_employer", "ESI, the employer's share"], ["pt", "Professional tax"]],
           hint: "So the month's PF ECR and ESI files know which lines to read" },
       ]}
       panels={[{
