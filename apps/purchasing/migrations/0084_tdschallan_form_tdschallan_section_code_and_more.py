@@ -6,7 +6,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("purchasing", "0081_approved_figures_in_base"),
+        ("purchasing", "0083_billlinetax_credit_accounts"),
     ]
 
     operations = [

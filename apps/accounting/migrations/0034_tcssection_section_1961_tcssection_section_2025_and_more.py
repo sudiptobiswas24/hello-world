@@ -6,7 +6,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("accounting", "0031_books_opening"),
+        ("accounting", "0033_reverse_charge_waiting_account_cutover"),
     ]
 
     operations = [

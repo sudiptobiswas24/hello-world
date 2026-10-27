@@ -18,7 +18,7 @@ def name_each_by_its_date(apps, schema_editor):
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("accounting", "0032_tcssection_section_1961_tcssection_section_2025_and_more"),
+        ("accounting", "0034_tcssection_section_1961_tcssection_section_2025_and_more"),
     ]
 
     operations = [
