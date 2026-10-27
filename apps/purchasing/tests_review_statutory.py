@@ -55,7 +55,7 @@ class ChallanNameProbes(TdsTestCase):
         section = TcsSection.objects.create(code="206CI", name="Scrap", form_code="6CE")
         party = Party.objects.create(code="B-1", name="Buyer")
         declaration = TcsDeclaration.objects.create(
-            party=party, section=section, received_on=D(2026, 1, 15), valid_from=D(2026, 1, 15),
+            party=party, section=section, pan="AAACB1234F", received_on=D(2026, 1, 15), valid_from=D(2026, 1, 15),
             valid_to=D(2026, 3, 31))
         self.assertIn("27C", declaration.form)
 
