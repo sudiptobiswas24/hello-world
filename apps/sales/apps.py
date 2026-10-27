@@ -19,6 +19,17 @@ class SalesConfig(AppConfig):
         from .tcs import tcs_challans_paid
 
         register_bank_movements(tcs_challans_paid)
+        from apps.accounting.restatement import register_restatement_source
+
+        def foreign_invoices(day):
+            from apps.core.models import Company
+
+            from .models import Invoice
+
+            return list(Invoice.objects.filter(posted=True, invoice_date__lte=day, currency__isnull=False)
+                        .exclude(currency_id=Company.get().base_currency_id).order_by("pk"))
+
+        register_restatement_source(foreign_invoices)
         register_allocation_model(InvoicePayment)
         register_void_follow_up(undo_what_it_settled)
         register_party_scope(SalesScope())

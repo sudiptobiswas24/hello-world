@@ -347,7 +347,11 @@ class RealisedOnItsOwnDay:
         entry) and realise what it realises now, both on its own day.
         """
         document, _, party, control_account, is_receivable = self.settles()
+        # Applied on or before a day a standing restatement restated it, the document and the money on
+        # account would no longer be what was restated (g24); re-dated from such a day, nor would they.
+        self.refuse_behind_a_restatement(document, self.date)
         if previous is not None:
+            self.refuse_behind_a_restatement(document, previous.date)
             previous.create_reversal(entry_date=self.date, memo=f"Re-stating exchange difference on {self}")
         payment_base = self.payment_slice(control_account)
         difference = settlement_difference(
@@ -408,10 +412,20 @@ class RealisedOnItsOwnDay:
         taken = sum((row.payment_base for row in others), Decimal("0"))
         return round_money(booked * min(after, payment.amount) / payment.amount) - taken
 
+    def refuse_behind_a_restatement(self, document, day):
+        from .restatement import refuse_moving_restated
+
+        refuse_moving_restated([self.payment, document], day,
+                               f"{self.payment.number} is not applied to {document.number} on {to_date(day):%d-%m-%Y}")
+
     @transaction.atomic
     def delete(self, *args, **kwargs):
         from django.utils import timezone
 
+        if self.pk is not None:
+            stored = type(self).objects.filter(pk=self.pk).values_list("date", flat=True).first()
+            if stored is not None:
+                self.refuse_behind_a_restatement(self.settles()[0], stored)
         if self.fx_entry_id and not self.fx_released_entry_id:
             self.fx_entry.create_reversal(
                 entry_date=max(timezone.localdate(), self.fx_entry.date),
