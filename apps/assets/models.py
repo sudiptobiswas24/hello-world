@@ -83,6 +83,9 @@ class AssetCategory(AuditModel):
         default=DepreciationMethod.STRAIGHT_LINE,
     )
     is_active = models.BooleanField(default=True)
+    tax_block = models.ForeignKey(
+        "assets.TaxBlock", null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="The Income-tax block an asset of this category goes into (tax.py): what the next one gets.")
 
     class Meta:
         ordering = ["code"]
@@ -172,6 +175,13 @@ class FixedAsset(Extensible, AuditModel):
         help_text="Where its depreciation is held: its category's when it went into service. "
                   "Every charge is credited here and its disposal clears it.",
     )
+    tax_block = models.ForeignKey(
+        "assets.TaxBlock", null=True, blank=True, on_delete=models.PROTECT, related_name="assets",
+        help_text="The Income-tax block of assets it is in (tax.py): its category's when it went into "
+                  "service, unless set. Not moved once a filed tax year counted it.")
+    disposal_proceeds = models.DecimalField(
+        max_digits=18, decimal_places=2, null=True, blank=True, editable=False,
+        help_text="What its disposal said it brought in: what a sale takes off its tax block.")
     method = models.CharField(
         max_length=16, choices=DepreciationMethod.choices, blank=True, editable=False,
         help_text="How it is depreciated: its category's when it went into service. Its "
@@ -235,7 +245,7 @@ class FixedAsset(Extensible, AuditModel):
 
     # Copied from the category as the asset goes into service, unless
     # already kept: a capitalisation keeps the asset account it debited.
-    STANDS_ON = ("asset_account", "accumulated_account", "method")
+    STANDS_ON = ("asset_account", "accumulated_account", "method", "tax_block")
     # Read through the category, these are what the next asset gets, not
     # what this one stands on; `manage.py audit_invariants` refuses that read.
     KEPT_FROM = {"category": STANDS_ON}
@@ -257,6 +267,14 @@ class FixedAsset(Extensible, AuditModel):
                     kwargs["update_fields"] = [*kwargs["update_fields"], *kept]
         if self.pk:
             previous = FixedAsset.objects.filter(pk=self.pk).first()
+            if previous is not None and previous.tax_block_id != self.tax_block_id and previous.in_service_date:
+                from .tax import TaxDepreciationYear, year_end
+
+                counted = [year for year in TaxDepreciationYear.objects.filter(withdrawn_on__isnull=True)
+                           if year_end(year.year_start) >= to_date(previous.in_service_date)]
+                if counted:
+                    raise ValidationError({"tax_block": [
+                        f"{counted[0]} is filed and counted {self} in its block; withdraw it before moving it."]})
             # Fixed by what it has posted, not by its status alone: a draft from a bill has
             # posted its capitalisation.
             if previous is None:
@@ -388,6 +406,9 @@ class FixedAsset(Extensible, AuditModel):
         # Not from a day still to come: charged from next month, its months stood in
         # the books before anyone had used the machine (O12).
         in_service = day_that_has_come(in_service, f"{self} is not put into service from")
+        from .tax import refuse_in_filed_year
+
+        refuse_in_filed_year(in_service, f"{self} is not put into service")
         # Not before its cost is on the books: capitalised again after an undo, that is the day
         # it was capitalised, and months charged before it stood against a cost not yet there.
         if self.capitalisation_entry_id and in_service < to_date(self.capitalisation_entry.date):
@@ -665,6 +686,9 @@ class FixedAsset(Extensible, AuditModel):
         if self.status != AssetStatus.IN_SERVICE:
             raise ValidationError("Only an asset in service can be disposed of.")
         on_date = correction_date(on_date, self.acquisition_date, f"{self} is not disposed of on", "it was acquired")
+        from .tax import refuse_in_filed_year
+
+        refuse_in_filed_year(on_date, f"{self} is not disposed of")
         month_before = on_date.replace(day=1) - datetime.timedelta(days=1)
         self.depreciate(through=month_before)
         # Charges run past the disposal — the month-end job ran before the
@@ -731,7 +755,8 @@ class FixedAsset(Extensible, AuditModel):
         self._status_by_method = True
         self.disposed_on = on_date
         self.disposal_entry = entry
-        self.save(update_fields=["status", "disposed_on", "disposal_entry", "updated_at"])
+        self.disposal_proceeds = proceeds
+        self.save(update_fields=["status", "disposed_on", "disposal_entry", "disposal_proceeds", "updated_at"])
         return entry
 
     @serialised("status")
@@ -752,6 +777,9 @@ class FixedAsset(Extensible, AuditModel):
                 f"{self} was disposed of before its entry was kept; reverse that entry from the journal.")
         # Used where the disposal's month has closed: never a day before the disposal it takes back.
         on_date = correction_date(on_date, self.disposed_on, f"{self} is not reinstated on", "it was disposed of")
+        from .tax import refuse_in_filed_year
+
+        refuse_in_filed_year(self.disposed_on, f"{self}'s disposal is not taken back")
 
         def open_or_today(day):
             return day if AccountingPeriod.blocking(day) is None else on_date
@@ -767,9 +795,9 @@ class FixedAsset(Extensible, AuditModel):
             if month_end not in standing:
                 self._charge(month_end, taken_back.amount, posted_on=open_or_today(month_end))
                 standing.add(month_end)
-        self.status, self.disposed_on = AssetStatus.IN_SERVICE, None
+        self.status, self.disposed_on, self.disposal_proceeds = AssetStatus.IN_SERVICE, None, None
         self._status_by_method = True
-        self.save(update_fields=["status", "disposed_on", "reinstatement_entry", "updated_at"])
+        self.save(update_fields=["status", "disposed_on", "disposal_proceeds", "reinstatement_entry", "updated_at"])
         return self.reinstatement_entry
 
 
@@ -915,3 +943,6 @@ def register_against_ledger(as_of=None):
         register = held.get(account, Decimal("0"))
         rows.append({"account": account, "register": register, "ledger": ledger, "difference": ledger - register})
     return rows
+
+
+from .tax import TaxBlock, TaxBlockLine, TaxBlockOpening, TaxBlockRate, TaxDepreciationYear  # noqa: E402,F401

@@ -9,7 +9,7 @@ class AssetCategorySerializer(serializers.ModelSerializer):
         model = AssetCategory
         fields = ["id", "code", "name", "asset_account", "accumulated_account",
                   "expense_account", "disposal_account", "default_life_months",
-                  "method", "is_active"]
+                  "method", "is_active", "tax_block"]
 
 
 class DepreciationEntrySerializer(serializers.ModelSerializer):
@@ -33,10 +33,10 @@ class FixedAssetSerializer(ExtensibleSerializerMixin, serializers.ModelSerialize
                   "salvage_value", "life_months", "depreciated_before", "opening_depreciation", "status", "disposed_on",
                   "capitalisation_entry", "disposal_entry", "reinstatement_entry", "accumulated",
                   "net_book_value", "monthly_charge", "category_name", "vendor_name", "extra",
-                  "asset_account", "accumulated_account", "method"]
+                  "asset_account", "accumulated_account", "method", "tax_block", "disposal_proceeds"]
         read_only_fields = ["number", "bill_line", "status", "disposed_on",
                             "capitalisation_entry", "disposal_entry", "reinstatement_entry",
-                            "asset_account", "accumulated_account", "method"]
+                            "asset_account", "accumulated_account", "method", "disposal_proceeds"]
 
     def get_accumulated(self, obj):
         return obj.accumulated()
