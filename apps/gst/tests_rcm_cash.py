@@ -366,3 +366,20 @@ class KeptAccountAndRoundingTests(ReverseChargeCashTestCase):
         keyed = findings("self.owed_account = owed_account_at_posting(self.line, self.tax)",
                          "self.owed_account_id = self.tax.reverse_charge_account_id")
         self.assertTrue(any("self.tax.reverse_charge_account_id" in text for text in keyed), keyed)
+
+
+class CashLedgerReadTests(ReverseChargeApiTests):
+    """review_rcm F1: the cash-ledger view answers for the cash ledger and the reverse-charge payables only."""
+
+    def test_only_its_own_accounts_and_only_for_those_who_may(self):
+        self.freight_bill()
+        self.pay()
+        officer, clerk = self.as_("GST Officer"), self.as_("Purchasing Clerk")
+        url = "/api/gst/cash-payments/cash_ledger/?account="
+        self.assertEqual(officer.get(f"{url}{self.ecl.pk}").status_code, 200)
+        self.assertEqual(officer.get(f"{url}{self.rcm_igst.pk}").status_code, 200)
+        refused = officer.get(f"{url}{self.ap.pk}")
+        self.assertEqual(refused.status_code, 400)
+        self.assertNotIn("ledger", refused.data)
+        self.assertEqual(officer.get(f"{url}{self.bank.pk}").status_code, 400)
+        self.assertEqual(clerk.get(f"{url}{self.ecl.pk}").status_code, 403)

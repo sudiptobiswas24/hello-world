@@ -504,6 +504,12 @@ def cash_ledger(account):
             "difference": ledger - balance}
 
 
+def ledger_accounts():
+    """What the cash-ledger view may be asked about: the cash ledger accounts and the reverse-charge payables."""
+    owed = BillLineTax.objects.filter(reverse_charge=True).values("owed_account")
+    return Account.objects.filter(Q(pk__in=GstCashPayment.objects.values("cash_ledger_account")) | Q(pk__in=owed))
+
+
 def cash_ledger_accounts():
     return Account.objects.filter(pk__in=GstCashPayment.objects.values("cash_ledger_account")).order_by("code")
 
