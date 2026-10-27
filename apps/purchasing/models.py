@@ -4302,8 +4302,10 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
                     base = round_money(amount * rate)
                     owed, waiting, _ = reverse_charge_accounts_at_posting(line, tax)
                     if waiting is None:
-                        raise ValidationError(f"Tax {tax.code} names no account its reverse-charge credit waits in "
-                                              "until the tax is paid in cash; set it before posting.")
+                        raise ValidationError(
+                            f"Tax {tax.code} names no account its reverse-charge credit waits in until the tax is "
+                            "paid in cash, so this bill cannot post. The Controller sets it in accounting setup "
+                            "(Settings > Taxes: \"Reverse charge credit waits in\").")
                     reverse_totals[waiting] += base
                     reverse_totals[owed] -= base
                     continue

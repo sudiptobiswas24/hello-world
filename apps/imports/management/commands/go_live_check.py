@@ -85,7 +85,17 @@ def checks():
 
 def _gst(add):
     from apps.accounting.gst import GstSettings
+    from apps.accounting.models import Tax
     from apps.sales.models import SalesOrder
+
+    # Every reverse-charge tax names where its credit waits until paid in cash (review_rcm F2): a bill of one
+    # that does not is refused.
+    waiting = sorted(Tax.objects.filter(reverse_charge=True, reverse_charge_waiting_account__isnull=True)
+                     .values_list("code", flat=True))
+    if waiting:
+        add(FAIL, "Reverse charge: credit waiting account",
+            f"{', '.join(waiting)} name no account their credit waits in; their bills will be refused. The "
+            "Controller sets it in accounting setup (Settings > Taxes), or run setup_indian_books.")
 
     gst = GstSettings.active()
     if gst is None:

@@ -37,6 +37,7 @@ from apps.accounting.models import (
     TcsSection,
 )
 
+WAITING = "1319"
 A, L, E, I, X = (AccountType.ASSET, AccountType.LIABILITY, AccountType.EQUITY, AccountType.INCOME,
                  AccountType.EXPENSE)
 ACCOUNTS = [
@@ -45,6 +46,9 @@ ACCOUNTS = [
     ("1311", "Input CGST", A, False), ("1312", "Input SGST", A, False), ("1313", "Input IGST", A, False),
     ("1320", "TDS receivable (deducted by customers)", A, False),
     ("1321", "TCS receivable (collected by suppliers)", A, False),
+    # Where the credit of a reverse-charge tax waits until the tax is paid in cash and its document stands
+    # (gst.reverse_charge, review_rcm F2): a bill of such a tax is refused without it.
+    (WAITING, "Reverse-charge credit awaiting payment", A, False),
     ("2000", "Trade payables", L, False),
     ("2201", "Output CGST", L, False), ("2202", "Output SGST", L, False), ("2203", "Output IGST", L, False),
     ("2250", "TDS payable", L, False), ("2260", "TCS payable", L, False),
@@ -121,6 +125,10 @@ class Command(BaseCommand):
                                               authority=seeded["authority"])
                 self.seeded(rate, f"TCS rate {seeded['law']} from {seeded['from']:%d %b %Y}, unconfirmed: "
                                   f"{seeded['question']}")
+            # Every reverse-charge tax waits its credit in that account unless it names one already (F2 cutover).
+            for tax in Tax.objects.filter(reverse_charge=True, reverse_charge_waiting_account__isnull=True):
+                Tax.objects.filter(pk=tax.pk).update(reverse_charge_waiting_account=accounts[WAITING])
+                self.made.append(f"tax {tax.code}: reverse-charge credit waits in {WAITING}")
             if gstin:
                 self.gst_settings(gstin, FiscalPosition.objects.get(code="INTER"))
         for line in self.made:
