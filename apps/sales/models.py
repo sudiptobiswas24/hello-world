@@ -2590,6 +2590,37 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
         """
         return [self.journal_entry] + [row.journal_entry for row in self.tcs_collected.all() if row.journal_entry_id]
 
+    def restatement_item(self, day):
+        """
+        What of it was open on `day` for a restatement at the closing rate (accounting.restatement), or None.
+        A down payment is an advance, a non-monetary item, and is never restated (AS 11 para 11(b)).
+        """
+        from apps.accounting.restatement import document_item
+
+        if self.is_down_payment:
+            return None
+        return document_item(self, day, party=self.customer, account=self.receivable_account,
+                             side=-1 if self.is_credit_note() else 1, later=self.settled_otherwise_on())
+
+    def settled_otherwise_on(self):
+        """[(day, words)]: everything but a payment that settled it, or took that back, and the day of each."""
+        rows = [(note.invoice_date, f"credit note {note.number}") for note in self.credit_notes.all() if note.posted]
+        rows += [(row.date, f"deposit {row.deposit.number} drawn") for row in self.deposit_applications.all()]
+        for row in self.write_offs.all():
+            rows.append((row.date, "a write-off"))
+            if row.recovered_entry_id:
+                rows.append((row.recovered_entry.date, "a write-off recovered"))
+        for row in self.tds_withheld.all():
+            rows.append((row.date, "TDS deducted"))
+            if row.reversed_entry_id:
+                rows.append((row.reversed_entry.date, "TDS reversed"))
+        for entry, words in ((self.settlement_discount_entry, "a settlement discount"),
+                             (self.settlement_discount_withdrawal_entry, "a settlement discount withdrawn"),
+                             (self.settlement_reversal_entry, "a write-off or discount undone")):
+            if entry is not None:
+                rows.append((entry.date, words))
+        return rows
+
     def absorbed_into(self):
         """On a credit note: (its document, the part of it absorbed there), for settlement.absorbed_part (O261)."""
         if not self.is_credit_note():

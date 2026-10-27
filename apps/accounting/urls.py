@@ -5,6 +5,7 @@ from .tds_api import TcsDeclarationViewSet, TcsRateViewSet, TcsSectionViewSet, T
 
 from .banking_api import BankStatementLineViewSet, BankStatementViewSet
 from .charges_api import ChargeTypeViewSet
+from .restatement_api import RestatementViewSet
 
 from .views import (
     AccountingPeriodViewSet,
@@ -48,6 +49,7 @@ router.register(
 )
 
 router.register("charge-types", ChargeTypeViewSet)
+router.register("restatements", RestatementViewSet)
 router.register("tds-sections", TdsSectionViewSet)
 router.register("tds-rates", TdsRateViewSet)
 router.register("tcs-sections", TcsSectionViewSet)

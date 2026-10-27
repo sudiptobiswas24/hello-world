@@ -16,6 +16,17 @@ class PurchasingConfig(AppConfig):
         from .tds import challans_paid
 
         register_awaited_provider(drop_ship_awaited)
+        from apps.accounting.restatement import register_restatement_source
+
+        def foreign_bills(day):
+            from apps.core.models import Company
+
+            from .models import Bill
+
+            return list(Bill.objects.filter(posted=True, bill_date__lte=day, currency__isnull=False)
+                        .exclude(currency_id=Company.get().base_currency_id).order_by("pk"))
+
+        register_restatement_source(foreign_bills)
         register_allocation_model(BillPayment)
         register_payment_check(refuse_held_payment)
         register_void_follow_up(undo_what_it_settled)

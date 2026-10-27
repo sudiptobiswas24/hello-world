@@ -3824,6 +3824,33 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             return None
         return self.debits, self.amount_absorbed()
 
+    def restatement_item(self, day):
+        """
+        What of it was open on `day` for a restatement at the closing rate (accounting.restatement), or None.
+        A prepayment is an advance, a non-monetary item, and is never restated (AS 11 para 11(b)).
+        """
+        from apps.accounting.restatement import document_item
+
+        if self.is_prepayment:
+            return None
+        return document_item(self, day, party=self.vendor, account=self.payable_account,
+                             side=1 if self.is_debit_note() else -1, later=self.settled_otherwise_on())
+
+    def settled_otherwise_on(self):
+        """[(day, words)]: everything but a payment that settled it, or took that back, and the day of each."""
+        rows = [(note.bill_date, f"debit note {note.number}") for note in self.debit_notes.all() if note.posted]
+        rows += [(row.date, f"prepayment {row.prepayment.number} drawn") for row in self.prepayment_applications.all()]
+        for row in self.tds_deductions.all():
+            rows.append((row.date, "TDS deducted"))
+            if row.reversed_entry_id:
+                rows.append((row.reversed_entry.date, "TDS reversed"))
+        for entry, words in ((self.settlement_discount_entry, "a settlement discount"),
+                             (self.settlement_discount_withdrawal_entry, "a settlement discount withdrawn"),
+                             (self.settlement_reversal_entry, "a discount undone")):
+            if entry is not None:
+                rows.append((entry.date, words))
+        return rows
+
     def settled_by_entries(self):
         """Its debit notes and prepayment drawdowns, for a payment to count at what they booked (O209, review F1)."""
         return entries_that_settled(self.debit_notes.all(), self.prepayment_applications.all())
