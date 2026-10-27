@@ -116,8 +116,12 @@ class SetupStatutoryTests(LoadedTestCase):
             self.month_run(2026, 10, post=False, employees=[person])
         band = self.wb.slabs.filter(effective_from=D(2026, 10, 1)).first()
         url = f"/api/hr/pay-component-slabs/{band.pk}/confirm/"
-        self.assertEqual(self.in_role("Payroll Officer").post(url).status_code, 403)
-        answer = self.in_role("Controller").post(url)
+        controller = self.in_role("Controller")
+        read = controller.get("/api/hr/pay-component-slabs/", {"component": self.wb.pk}).json()
+        seen = {"bands": [row for row in read if row["effective_from"] == "2026-10-01"]}
+        self.assertEqual(self.in_role("Payroll Officer").post(url, seen, format="json").status_code, 403)
+        self.assertEqual(controller.post(url, {"bands": seen["bands"][1:]}, format="json").status_code, 400)
+        answer = controller.post(url, seen, format="json")
         self.assertEqual(answer.status_code, 200, answer.content)
         self.assertEqual(len(answer.json()), 5)
         self.assertFalse(self.wb.slabs.filter(effective_from=D(2026, 10, 1), confirmed_on__isnull=True).exists())
@@ -125,8 +129,9 @@ class SetupStatutoryTests(LoadedTestCase):
         self.assertEqual(self.line(october, person, self.wb).amount, Decimal("100.00"))
         with self.assertRaisesMessage(ValidationError, "of WB from 01 Apr 2008 is not confirmed"):
             self.month_run(2026, 9, post=False, employees=[person])
-        self.wb.slabs.filter(effective_from=D(2008, 4, 1)).first().confirm_schedule(User.objects.get(
-            username__startswith="Controller"))
+        old = self.wb.slabs.filter(effective_from=D(2008, 4, 1)).first()
+        old.confirm_schedule(User.objects.get(username__startswith="Controller"), {"bands": [
+            {"id": band.pk, **{name: getattr(band, name) for name in band.BAND_FIGURES}} for band in old.schedule()]})
         september = self.month_run(2026, 9, employees=[person])
         self.assertEqual(self.line(september, person, self.wb).amount, Decimal("130.00"))
 
