@@ -42,7 +42,9 @@ class ReverseChargeInTheBrowserTests(BrowserMixin, ReverseChargeCashTestCase, St
         form.get_by_label("Why").fill("typed against the wrong bill")
         form.get_by_label("Cancelled on").fill("2026-09-11")
         form.get_by_role("button", name="Cancel").click()
-        expect(page.locator("main")).to_contain_text("Cancelled")
+        # The action gone, not the word: "Cancelled on" is a field's label before anything is cancelled, and
+        # the database was read before the POST had answered whenever the machine was slow.
+        expect(page.get_by_role("button", name="Cancel", exact=True)).to_have_count(0)
         self.assertEqual(SelfInvoice.objects.get().cancelled_on, datetime.date(2026, 9, 11))
         page.goto(f"{self.live_server_url}/app/accounts/self-invoices")
         expect(page.locator("tbody")).to_contain_text("SI-2026-00001")
