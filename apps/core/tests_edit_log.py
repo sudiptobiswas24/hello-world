@@ -123,6 +123,30 @@ class EveryPathLeavesOldAndNewTests(TestCase):
         self.assertEqual((line.who, line.through, line.changes), (user, "script", {"symbol": {"from": "", "to": "$"}}))
 
 
+class TheEditLogIsKeptAsWrittenTests(TestCase):
+    def test_a_line_cannot_be_changed_or_removed_by_any_orm_path(self):
+        from .history import KeptAsWritten
+
+        line = lines(Currency.objects.create(code="USD", name="US Dollar"))[0]
+        line.summary = "nothing happened"
+        for attempt in (line.save, line.delete, lambda: RecordEvent.objects.filter(pk=line.pk).update(summary="x"),
+                        lambda: RecordEvent.objects.filter(pk=line.pk).delete(),
+                        lambda: RecordEvent._base_manager.filter(pk=line.pk).delete(),
+                        lambda: RecordEvent.objects.bulk_update([line], ["summary"])):
+            with self.subTest(attempt), self.assertRaisesMessage(KeptAsWritten, "kept as written"):
+                attempt()
+        self.assertEqual(RecordEvent.objects.get(pk=line.pk).summary, "")
+
+    @unittest.skipUnless(connection.vendor == "postgresql", "the database's own guard is PostgreSQL's")
+    def test_the_database_refuses_its_update_and_delete(self):
+        create_ledger_log(connection)
+        Currency.objects.create(code="USD", name="US Dollar")
+        for statement in ("UPDATE core_recordevent SET summary = 'x'", "DELETE FROM core_recordevent"):
+            with self.subTest(statement), self.assertRaises(DatabaseError), transaction.atomic():
+                with connection.cursor() as cursor:
+                    cursor.execute(statement)
+
+
 class WhatIsLoggedTests(TestCase):
     def test_every_audit_model_is_logged_and_the_bulk_writes_are_wrapped(self):
         from django.apps import apps
