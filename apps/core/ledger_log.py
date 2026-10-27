@@ -235,11 +235,14 @@ def present(connection):
 
 
 def tables_without_their_trigger(connection, tables=BOOKS_TABLES):
-    """The books tables whose trigger is gone or disabled (ALTER TABLE ... DISABLE TRIGGER)."""
+    """
+    The books tables whose trigger is gone or does not fire: disabled (D), or set to fire only in replica mode (R),
+    which an ordinary session never is. On only when it fires always (A) or at origin (O, the default).
+    """
     with connection.cursor() as cursor:
         cursor.execute("""
             SELECT c.relname FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
-            WHERE t.tgname = %s AND t.tgenabled <> 'D' AND c.relname = ANY(%s)""", [TRIGGER, list(tables)])
+            WHERE t.tgname = %s AND t.tgenabled IN ('O', 'A') AND c.relname = ANY(%s)""", [TRIGGER, list(tables)])
         kept = {row[0] for row in cursor.fetchall()}
     return [table for table in tables if table not in kept]
 
