@@ -95,16 +95,16 @@ def _left_after_notes(bill):
 
 def received_on(bill):
     """
-    The day the supply was received (Rule 47A counts from it): the first goods receipt of an order line the
-    bill bills, else the bill's own date, for a service or goods billed with no receipt.
+    The day the supply was received, which Rule 47A's thirty days count from: the first goods receipt of the
+    order lines the bill bills, when there is one; the bill's own date only when there is none (a service, or
+    goods billed with no receipt). Never the earlier of the two: a bill dated 1 September for goods received on
+    the 20th ran the limit out on 1 October instead of 20 October (review_rcm F3).
     """
     from apps.purchasing.models import _receipt_dates
 
-    days = [to_date(bill.bill_date)]
-    for line in bill.lines.all():
-        if line.order_line_id:
-            days += [day for day, quantity in _receipt_dates(line.order_line) if quantity > 0]
-    return min(days)
+    received = [day for line in bill.lines.all() if line.order_line_id
+                for day, quantity in _receipt_dates(line.order_line) if quantity > 0]
+    return min(received) if received else to_date(bill.bill_date)
 
 
 class SelfInvoice(AuditModel):

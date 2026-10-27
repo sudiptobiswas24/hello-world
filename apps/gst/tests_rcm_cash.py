@@ -383,3 +383,15 @@ class CashLedgerReadTests(ReverseChargeApiTests):
         self.assertNotIn("ledger", refused.data)
         self.assertEqual(officer.get(f"{url}{self.bank.pk}").status_code, 400)
         self.assertEqual(clerk.get(f"{url}{self.ecl.pk}").status_code, 403)
+
+
+class ReceivedOnTests(ReverseChargeCashTestCase):
+    """review_rcm F3: a service with no receipt document is received on its bill's date."""
+
+    def test_a_service_is_received_on_its_bills_date(self):
+        from .reverse_charge import received_on
+
+        bill = self.freight_bill(day=datetime.date(2026, 9, 3))
+        self.assertEqual(received_on(bill), datetime.date(2026, 9, 3))
+        self.assertEqual(SelfInvoice.issue(bill, on_date=datetime.date(2026, 10, 3)).received_on,
+                         datetime.date(2026, 9, 3))
