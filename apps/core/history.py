@@ -207,17 +207,48 @@ _LOGGED = {}
 
 
 def edit_logged(model):
-    """Whether every change of `model` is a line in the edit log: every model of ours unless it says why not."""
+    """
+    Whether every change of `model` is a line in the edit log: every model of ours unless it says why not. A
+    migration's historical model (RunPython, apps.get_model) is logged as the model it stands for.
+    """
     try:
         return _LOGGED[model]
     except KeyError:
         pass
     concrete = model._meta.concrete_model or model
-    answer = (concrete.__module__ != "__fake__" and not concrete._meta.auto_created
-              and not getattr(concrete, "not_edit_logged", None)
-              and (concrete.__module__.startswith("apps.") or concrete._meta.label in LOGGED_OUTSIDE_OUR_APPS))
+    if concrete.__module__ == "__fake__":
+        from django.apps import apps
+
+        try:
+            answer = edit_logged(apps.get_model(concrete._meta.label))
+        except LookupError:  # a model since removed: logged as it was, if it was ours
+            answer = concrete._meta.app_label not in ("sessions", "admin", "contenttypes", "migrations")
+    else:
+        answer = (not concrete._meta.auto_created and not getattr(concrete, "not_edit_logged", None)
+                  and (concrete.__module__.startswith("apps.") or concrete._meta.label in LOGGED_OUTSIDE_OUR_APPS))
     _LOGGED[model] = answer
     return answer
+
+
+def logging_now(model, using):
+    """
+    Whether to write `model`'s line now: always, but for a migration's historical model on a database whose edit
+    log is not yet built to this shape (a migration running before core 0043, or a test migrating back past it).
+    """
+    if not edit_logged(model):
+        return False
+    if (model._meta.concrete_model or model).__module__ != "__fake__":
+        return True
+    from django.db import connections
+
+    connection = connections[using]
+    with connection.cursor() as cursor:
+        try:
+            columns = {column.name for column in connection.introspection.get_table_description(
+                cursor, RecordEvent._meta.db_table)}
+        except Exception:  # noqa: BLE001 - no table yet: the migration that makes it has not run
+            return False
+    return {"changes", "through", "who_name"} <= columns
 
 
 def _fields(model, names=None):
@@ -325,7 +356,7 @@ def _write(events, using):
 
 def before_save(sender, instance, raw=False, using="default", update_fields=None, **kwargs):
     """The row as it stands, before the save writes over it (none: it is being made)."""
-    if not edit_logged(sender):
+    if not logging_now(sender, using):
         return
     instance.__dict__.pop("_edit_log_before", None)
     if instance.pk is None:
@@ -337,7 +368,7 @@ def before_save(sender, instance, raw=False, using="default", update_fields=None
 
 def after_save(sender, instance, created, raw=False, using="default", update_fields=None, **kwargs):
     """Made, with every value it was made with, or changed, with each field's old and new value."""
-    if not edit_logged(sender):
+    if not logging_now(sender, using):
         return
     before = instance.__dict__.pop("_edit_log_before", None)
     fields = _fields(sender, update_fields)
@@ -356,7 +387,7 @@ def after_save(sender, instance, created, raw=False, using="default", update_fie
 
 
 def before_delete(sender, instance, using="default", **kwargs):
-    if not edit_logged(sender) or instance.pk is None:
+    if instance.pk is None or not logging_now(sender, using):
         return
     fields = _fields(sender)
     instance.__dict__["_edit_log_gone"] = (str(instance)[:255], {
@@ -408,7 +439,7 @@ def link_changed(sender, instance, action, reverse, model, pk_set, using="defaul
 def logged_update(original):
     """QuerySet.update(): each row's old and new value of what it set, one line a row."""
     def update(self, **kwargs):
-        if not kwargs or not edit_logged(self.model):
+        if not kwargs or not logging_now(self.model, self.db):
             return original(self, **kwargs)
         model = self.model
         fields = _fields(model, kwargs)
@@ -434,7 +465,7 @@ def logged_update(original):
 def logged_bulk_create(original):
     def bulk_create(self, objs, *args, **kwargs):
         objs = original(self, objs, *args, **kwargs)
-        if edit_logged(self.model):
+        if logging_now(self.model, self.db):
             fields = _fields(self.model)
             _write([_event(self.model, obj.pk, EventKind.CREATED, {
                 field.name: _change(field, None, _current(field, obj), obj) for field in fields
@@ -447,7 +478,7 @@ def logged_bulk_create(original):
 
 def logged_bulk_update(original):
     def bulk_update(self, objs, fields, *args, **kwargs):
-        if not edit_logged(self.model):
+        if not logging_now(self.model, self.db):
             return original(self, objs, fields, *args, **kwargs)
         objs = list(objs)
         logged = _fields(self.model, fields)
