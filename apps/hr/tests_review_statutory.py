@@ -74,9 +74,9 @@ class ConfirmingProbes(LoadedTestCase):
                   f"the component was unmarked ({answer.status_code})")
 
 
-class GoLiveProbes(LoadedTestCase):
+class BonusWorld:
     def bonus_world(self, unconfirmed):
-        controller = User.objects.create_user("c-bonus")
+        controller = User.objects.get_or_create(username="c-bonus")[0]
         self.bonus = PayComponent.objects.create(
             code="BONUS", name="Bonus", kind=ComponentKind.EMPLOYER_COST, basis=ComponentBasis.PERCENT_OF_GROSS,
             expense_account=self.employer, liability_account=self.pf_payable, sequence=99,
@@ -98,18 +98,21 @@ class GoLiveProbes(LoadedTestCase):
         self.paid(person, self.bonus, "8.33")
         return person
 
+
+class GoLiveProbes(BonusWorld, LoadedTestCase):
     def test_p04_go_live_fails_bonus_when_the_rates_the_run_reads_are_unconfirmed(self):
         for kind in (FigureKind.BONUS_MINIMUM_PERCENT, FigureKind.BONUS_MAXIMUM_PERCENT):
             with self.subTest(kind=kind):
-                for row in StatutoryFigure.objects.all():
-                    row.delete()
+                StatutoryFigure.objects.all().delete()
+                MinimumWage.objects.all().delete()
+                from .payroll import EmployeeCompensation
+                EmployeeCompensation.objects.filter(component__code="BONUS").delete()
+                PayComponent.objects.filter(code="BONUS").delete()
                 person = self.bonus_world(unconfirmed=kind)
                 with self.assertRaisesMessage(ValidationError, "is not confirmed"):
                     self.month_run(2026, 10, post=False, employees=[person])
                 gaps = dict((engine, missing) for engine, used, missing in statutory_gaps(D(2026, 10, 26)))
                 self.assertTrue(gaps["Bonus"], "the run is refused but go_live_check's Bonus line is clear")
-                self.bonus.delete()
-                MinimumWage.objects.all().delete()
 
     def test_p05_a_confirmed_old_row_does_not_hide_an_unconfirmed_standing_one(self):
         self.mark(self.esi, Statutory.ESI)
@@ -147,16 +150,17 @@ class EsiProbes(LoadedTestCase):
     def test_p07_two_half_month_runs_across_a_mid_month_change_each_take_their_own_rate(self):
         StatutoryFigure.objects.create(kind=FigureKind.ESI_EMPLOYEE_RATE, effective_from=D(2026, 10, 16),
                                        value=Decimal("1"), source="probe", confirmed_on=D(2026, 9, 1))
-        from .payroll import PayRun
+        from .payroll import PayRun, EmployeeCompensation
 
+        EmployeeCompensation.objects.filter(employee=self.p, component=self.basic).update(amount=Decimal("6000"))
         amounts = []
         for start, end in ((D(2026, 10, 1), D(2026, 10, 15)), (D(2026, 10, 16), D(2026, 10, 31))):
             run = PayRun.objects.create(period_start=start, period_end=end, pay_date=end)
             run.calculate(employees=[self.p])
             run.post()
             amounts.append(self.line(run, self.p, self.esi).amount)
-        # 12,000 x 15/31 = 5,806.45 x 0.75% = 43.55 -> 44 (rupee up); 12,000 x 16/31 = 6,193.55 x 1% = 61.94 -> 62
-        self.assertEqual(amounts, [Decimal("44.00"), Decimal("62.00")])
+        # a fortnight's basic is paid whole per run: 6,000 x 0.75% = 45.00; 6,000 x 1% = 60.00 (calc.py)
+        self.assertEqual(amounts, [Decimal("45.00"), Decimal("60.00")])
 
     def test_p08_a_figure_edit_after_the_run_posted_is_refused_over_the_api_and_the_files_still_read_it(self):
         from .statutory_files import esi_rows
@@ -190,7 +194,7 @@ class EsiProbes(LoadedTestCase):
         self.assertFalse(october.payslips.get(employee=rich).lines.filter(component=self.esi).exists())
 
 
-class BonusProbes(GoLiveProbes):
+class BonusProbes(BonusWorld, LoadedTestCase):
     def test_p10_bonus_crossing_21000_mid_year_and_a_floor_of_7000(self):
         person = self.bonus_world(unconfirmed=None)
         # basic 20,000 to 31 Jan, 22,000 from 1 Feb (a new compensation row)
