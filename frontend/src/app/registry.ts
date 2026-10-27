@@ -918,7 +918,7 @@ export const MODULES: Module[] = [
       {
         path: "tcs-declarations", label: "TCS declarations", permission: "accounting.view_tcsdeclaration",
         create: "accounting.add_tcsdeclaration",
-        keywords: "form 127 27c declaration tcs exempt manufacture", load: () => import("../modules/accounts/TcsDeclarations"),
+        keywords: "form declaration tcs exempt manufacture buyer", load: () => import("../modules/accounts/TcsDeclarations"),
         detail: () => import("../modules/accounts/TcsDeclarationForm"),
       },
       {

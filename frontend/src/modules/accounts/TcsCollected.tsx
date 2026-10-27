@@ -11,7 +11,7 @@ const columns: Column<Row>[] = [
   { key: "amount", label: "TCS", kind: "money", width: "8rem" },
   { key: "gives_back", label: "", width: "7rem", render: (row) => (row.gives_back ? "Given back" : "Collected") },
   { key: "challan", label: "", width: "10rem",
-    render: (row) => (row.declaration ? "Form 127: not collected" : row.challan ? "Paid over" : "Due") },
+    render: (row) => (row.declaration ? "Declared: not collected" : row.challan ? "Paid over" : "Due") },
 ];
 
 /** What each scrap invoice collected and each credit note gave back, and whether a challan has paid it over. */

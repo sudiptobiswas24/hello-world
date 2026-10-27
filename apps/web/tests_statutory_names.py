@@ -12,7 +12,29 @@ from pathlib import Path
 from django.conf import settings
 from django.test import SimpleTestCase
 
-HARD_CODED = re.compile(r"\b(26Q|27EQ|27Q|24Q)\b|challan\s*(no\.?\s*)?281", re.IGNORECASE)
+def form_numbers():
+    """{key: [number, ...]}: the form and challan numbers statutory/names.csv names, the Acts left out."""
+    from apps.accounting.statutory_names import _names
+
+    return {key: [name.split()[-1] for _since, name, _source in rows] for key, rows in _names().items()
+            if key != "act"}
+
+
+def hard_coded():
+    """
+    Every form or challan number names.csv holds, written as "Form 140",
+    "Challan ITNS 281", "ITNS 281N" or bare where it has letters ("26Q"):
+    derived from the file, so a key added there is scanned for too.
+    """
+    numbers = sorted({number for found in form_numbers().values() for number in found} | {"27Q", "24Q"},
+                     key=len, reverse=True)
+    lead = r"(?:form|challan|itns)\s*(?:no\.?\s*)?(?:itns\s*)?"
+    alternatives = [lead + re.escape(number) + r"\b" for number in numbers]
+    alternatives += [r"\b" + re.escape(number) + r"\b" for number in numbers if re.search("[A-Za-z]", number)]
+    return re.compile("|".join(alternatives), re.IGNORECASE)
+
+
+HARD_CODED = hard_coded()
 
 
 def screens_and_prints():
@@ -34,7 +56,15 @@ class NoScreenOrPrintNamesAFormItselfTests(SimpleTestCase):
                  if HARD_CODED.search(line)]
         self.assertEqual(found, [])
 
+    def test_the_scan_sees_every_key_names_csv_holds(self):
+        for key, numbers in form_numbers().items():
+            for number in numbers:
+                self.assertTrue(HARD_CODED.search(f"Form {number}") or HARD_CODED.search(f"Challan ITNS {number}"),
+                                (key, number))
+
     def test_the_pattern_catches_what_it_is_for(self):
         for line in ('title="TDS return (26Q)"', "Form 27EQ", "keywords: tds challan 281", "Challan No. 281"):
             self.assertTrue(HARD_CODED.search(line), line)
-        self.assertFalse(HARD_CODED.search("Challan ITNS 281N from the API"))
+        for line in ("Form 127: not collected", "27C before April", "Challan ITNS 281N"):
+            self.assertTrue(HARD_CODED.search(line), line)
+        self.assertFalse(HARD_CODED.search("if (code < 32 || code === 127) return null;"))

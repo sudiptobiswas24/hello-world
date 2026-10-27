@@ -93,9 +93,9 @@ class TanAndTheActsNamesTests(TdsTestCase):
 
     def test_each_name_by_the_day_before_and_the_day_the_2025_act_applies(self):
         before, after = D(2026, 3, 31), D(2026, 4, 1)
-        expected = {"tds_return": ("Form 26Q", "Form 140"), "tds_return_nonresident": ("Form 27Q", "Form 144"),
-                    "tds_return_salary": ("Form 24Q", "Form 138"), "tcs_return": ("Form 27EQ", "Form 143"),
-                    "salary_certificate": ("Form 16", "Form 130"), "tcs_declaration": ("Form 27C", "Form 127"),
+        # Only the documents the ERP builds: the 27Q/144, 24Q/138 and Form 16/130 names wait for them (review p15).
+        expected = {"tds_return": ("Form 26Q", "Form 140"), "tcs_return": ("Form 27EQ", "Form 143"),
+                    "tcs_declaration": ("Form 27C", "Form 127"),
                     "tds_challan": ("Challan ITNS 281", "Challan ITNS 281N"),
                     "tcs_challan": ("Challan ITNS 281", "Challan ITNS 281N")}
         self.assertEqual({key: (name_on(key, before), name_on(key, after)) for key in expected}, expected)
