@@ -83,6 +83,9 @@ class SecondFactor(models.Model):
 
     # Not a business record: the company's numbering row is not taken for it (O257, apps.core.apps).
     numbering_exempt = "enrolled and checked at sign-in"
+    # The sign-in counters: access stamps, not edits (apps.core.history.ignored_fields). Enrolling, confirming
+    # and a reset are in the log as ever, and each use of a recovery code is an action in the login's history.
+    edit_log_ignores = ("last_step", "failures", "locked_until", "lockouts")
 
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="second_factor")
     # The authenticator's secret, sealed (O255): read and set it through `secret`.

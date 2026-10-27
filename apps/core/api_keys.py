@@ -58,6 +58,8 @@ class ApiKey(AuditModel):
 
     # Not a business record: the company's numbering row is not taken for it (O257, apps.core.apps).
     numbering_exempt = "checked and stamped as a key signs in"
+    # Its use is an access stamp, kept in ApiKeyUse; not an edit of the key (apps.core.history.ignored_fields).
+    edit_log_ignores = ("last_used_at",)
     integration = models.ForeignKey(Integration, on_delete=models.PROTECT, related_name="keys")
     label = models.CharField(max_length=80, blank=True, help_text="Where it is kept: the station PC, the GSP's account.")
     prefix = models.CharField(max_length=16, unique=True, editable=False)
