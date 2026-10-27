@@ -69,3 +69,24 @@ class ChallanNameProbes(TdsTestCase):
         for path in ("/api/purchasing/tds-deductions/quarter/", "/api/sales/tcs-collections/quarter/"):
             answer = client.get(path, {"from": "2026-04-01", "to": "2026-06-30"})
             self.assertEqual(answer.status_code, 400, (path, answer.content))
+
+
+class UnconfirmedOverTheApi(TdsTestCase):
+    def test_p21_deduct_tds_with_an_unconfirmed_rate_is_a_400_and_nothing_is_deducted(self):
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        from .models import TdsDeduction
+
+        call_command("setup_roles", verbosity=0)
+        self.bill("3000000")
+        bill = self.bill("3000000")
+        type(self.goods_rate).objects.filter(pk=self.goods_rate.pk).update(confirmed_on=None, confirmed_by=None)
+        user = User.objects.create_user("apm")
+        user.groups.add(Group.objects.get(name="AP Manager"))
+        client = APIClient()
+        client.force_authenticate(user)
+        answer = client.post(f"/api/purchasing/bills/{bill.pk}/deduct_tds/", {}, format="json")
+        self.assertEqual(answer.status_code, 400, answer.content)
+        self.assertFalse(TdsDeduction.objects.exists())
