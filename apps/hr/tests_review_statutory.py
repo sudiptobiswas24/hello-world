@@ -91,7 +91,8 @@ class BonusWorld:
         wage = MinimumWage.objects.create(state="WB", employment="Bottling", zone="A", skill=Skill.UNSKILLED,
                                           effective_from=D(2026, 7, 1), basic=Decimal("9500"), source="probe")
         wage.confirm(controller)
-        person = self.worker("G1", work_state="WB")
+        from .models import Employee
+        person = self.worker(f"G{Employee.objects.count()}", work_state="WB")
         EmployeePayDetails.objects.create(employee=person, scheduled_employment="Bottling", wage_zone="A",
                                           skill=Skill.UNSKILLED)
         self.paid(person, self.basic, "12000")
