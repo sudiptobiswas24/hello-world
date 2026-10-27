@@ -118,7 +118,9 @@ class TcsDeclaration(AuditModel):
 
     party = models.ForeignKey("core.Party", on_delete=models.PROTECT, related_name="tcs_declarations")
     section = models.ForeignKey(TcsSection, on_delete=models.PROTECT, related_name="declarations")
-    form = models.CharField(max_length=8, default="127", help_text="127, or 27C before April 2026.")
+    form = models.CharField(max_length=8, default="", editable=False,
+                            help_text="The form the law names on the day it was received (statutory_names): 27C "
+                                      "before 1 April 2026, 127 from it.")
     pan = models.CharField(
         max_length=10, blank=True,
         help_text="The buyer's PAN as the declaration gives it. Without one it exempts nothing: the law has the "
@@ -138,8 +140,11 @@ class TcsDeclaration(AuditModel):
         return f"Form {self.form} from {self.party} for {self.section.code}"
 
     def save(self, *args, **kwargs):
+        from .statutory_names import name_on
         from .tds import validate_pan
 
+        # The form follows the day it was received, through the names every TDS and TCS document reads.
+        self.form = name_on("tcs_declaration", self.received_on).removeprefix("Form ").strip()
         try:
             self.pan = validate_pan(self.pan)
         except ValidationError:

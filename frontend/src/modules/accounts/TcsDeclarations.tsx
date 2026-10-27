@@ -11,7 +11,7 @@ const columns: Column<Row>[] = [
   { key: "valid_to", label: "To", kind: "date", width: "8rem" },
 ];
 
-/** Buyers' declarations (Form 127, was 27C) that their scrap is for their own manufacture: no TCS is collected. */
+/** Buyers' declarations, on the form the law names for their date, that their scrap is for their own manufacture: no TCS is collected. */
 export default function TcsDeclarations() {
   return (
     <ListView<Row>
