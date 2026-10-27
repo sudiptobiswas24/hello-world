@@ -610,7 +610,11 @@ def install():
         execute = BaseCommand.execute
 
         def execute_as_itself(self, *args, **options):
-            with acting_as(through=through_command(self)):
+            # Through the command, by whoever called it: a command called inside a request or acting_as keeps
+            # that person (none from a terminal, which names nobody).
+            outer = _ACTING.get()
+            with acting_as(user=outer.user if outer else None, through=through_command(self),
+                           request=outer.request if outer else None):
                 return execute(self, *args, **options)
         execute_as_itself.edit_logged = True
         BaseCommand.execute = execute_as_itself
