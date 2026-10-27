@@ -367,7 +367,7 @@ def _gst_cash_ledger(day):
 
 def _books_change_log(day):
     """
-    The database's own log of the books (apps/core/ledger_log.py, PostgreSQL): every books table still has its
+    The database's own log (apps/core/ledger_log.py, PostgreSQL): every product table still has its
     trigger, and no change in the last month was made with nobody named (psql, a script on its own connection).
     """
     from django.db import connection
@@ -383,14 +383,14 @@ def _books_change_log(day):
     count = nobody.count()
     problems = []
     if unlogged:
-        problems.append(f"{len(unlogged)} books tables are not logged: {', '.join(unlogged)}.")
+        problems.append(f"{len(unlogged)} tables are not logged by the database: {', '.join(unlogged)}.")
     if count:
         problems.append(f"{count} change{'s' if count != 1 else ''} to the books in the last 30 days named nobody: "
                         f"made around the application.")
     rows = [{"label": f"{timezone.localtime(change.at):%Y-%m-%d %H:%M} {change.operation} {change.table_name} "
                       f"{change.row_id} by database user {change.db_user}", "href": ""} for change in nobody[:SHOW]]
     return _finding(not problems, len(unlogged) + count,
-                    " ".join(problems) or "Every books table is logged and every change names who made it.", rows)
+                    " ".join(problems) or "Every table is logged and every change names who made it.", rows)
 
 
 PROBES = [

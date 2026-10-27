@@ -32,14 +32,14 @@ def trail_off():
     connection.execute_wrappers[:] = [w for w in connection.execute_wrappers if w is not ledger_log.stamp_actor]
     if connection.vendor == "postgresql":
         with connection.cursor() as c:
-            for t in ledger_log.BOOKS_TABLES:
+            for t in ledger_log.product_tables(connection):
                 c.execute(f"ALTER TABLE {t} DISABLE TRIGGER erp_ledger_change")
     try:
         yield
     finally:
         if connection.vendor == "postgresql":
             with connection.cursor() as c:
-                for t in ledger_log.BOOKS_TABLES:
+                for t in ledger_log.product_tables(connection):
                     c.execute(f"ALTER TABLE {t} ENABLE TRIGGER erp_ledger_change")
         for n, fn in saved.items():
             setattr(QuerySet, n, fn)

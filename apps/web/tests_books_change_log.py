@@ -27,11 +27,11 @@ class TheBooksLogMigrationTests(TransactionTestCase):
         self.assertEqual(kept, 1)
         executor = MigrationExecutor(connection)
         executor.migrate([("web", None)])
-        self.assertEqual(tables_without_their_trigger(connection), list(BOOKS_TABLES))
+        self.assertEqual(tables_without_their_trigger(connection, BOOKS_TABLES), list(BOOKS_TABLES))
         self.assertTrue(present(connection))  # it holds a row, so it stays
         self.assertEqual(LedgerChange.objects.filter(row_id=str(entry.pk), table_name="accounting_journalentry").count(), kept)
         executor = MigrationExecutor(connection)
-        executor.migrate([("web", "0001_books_change_log")])
+        executor.migrate(executor.loader.graph.leaf_nodes("web"))
         self.assertEqual(tables_without_their_trigger(connection), [])
         JournalEntry.objects.filter(pk=entry.pk).update(memo="Again")
         self.assertEqual(LedgerChange.objects.filter(row_id=str(entry.pk), table_name="accounting_journalentry").count(), 2)

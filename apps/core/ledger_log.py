@@ -40,6 +40,12 @@ BOOKS_TABLES = (
     "assets_fixedasset", "assets_depreciationentry",
 )
 
+# Every table of the product is logged by the database (the root of raw SQL and migration writes: whatever goes
+# around the ORM still leaves its row), but Django's own infrastructure, which no person decides and every
+# sign-in writes, and the two logs themselves.
+INFRASTRUCTURE_TABLES = ("django_session", "django_admin_log", "django_content_type", "auth_permission",
+                         "django_migrations")
+
 LOG = "core_ledgerchange"
 TRIGGER = "erp_ledger_change"
 UNATTRIBUTED = "unattributed"
@@ -134,16 +140,29 @@ REVOKE TRUNCATE ON {LOG} FROM CURRENT_USER;
 """
 
 
+def product_tables(connection):
+    """Every table of the product in this database: all but Django's infrastructure and the two logs."""
+    with connection.cursor() as cursor:
+        names = connection.introspection.table_names(cursor)
+    left_out = {*INFRASTRUCTURE_TABLES, LOG, "core_recordevent"}
+    return sorted(name for name in names if name not in left_out)
+
+
 def _on(table):
     return (f"DROP TRIGGER IF EXISTS {TRIGGER} ON {table};\n"
             f"CREATE TRIGGER {TRIGGER} AFTER INSERT OR UPDATE OR DELETE ON {table} "
             f"FOR EACH ROW EXECUTE FUNCTION {TRIGGER}();\n")
 
 
-def create(connection, tables=BOOKS_TABLES):
-    """The log, its guards and a trigger on each of `tables`; run again, it changes nothing. PostgreSQL only."""
+def create(connection, tables=None):
+    """
+    The log, its guards and a trigger on each of `tables` (every product table when not named); run again, it
+    changes nothing. PostgreSQL only.
+    """
     if connection.vendor != "postgresql":
         return
+    if tables is None:
+        tables = product_tables(connection)
     with connection.cursor() as cursor:
         cursor.execute(CREATE_LOG)
         for table in tables:
@@ -234,11 +253,14 @@ def present(connection):
         return cursor.fetchone()[0]
 
 
-def tables_without_their_trigger(connection, tables=BOOKS_TABLES):
+def tables_without_their_trigger(connection, tables=None):
     """
     The books tables whose trigger is gone or does not fire: disabled (D), or set to fire only in replica mode (R),
-    which an ordinary session never is. On only when it fires always (A) or at origin (O, the default).
+    which an ordinary session never is. On only when it fires always (A) or at origin (O, the default). Every
+    product table, unless `tables` names some.
     """
+    if tables is None:
+        tables = product_tables(connection)
     with connection.cursor() as cursor:
         cursor.execute("""
             SELECT c.relname FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
