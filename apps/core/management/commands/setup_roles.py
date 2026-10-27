@@ -104,6 +104,11 @@ ROLES = {
         # Restates the foreign balances at the period end, and voids a restatement (g24).
         *view("accounting", "restatement", "restatementline", "restatementrate"),
         "accounting.post_restatement",
+        # Keeps the Income-tax depreciation schedule beside the books and files it; confirms its rates (g24).
+        *full("assets", "taxblock", "taxblockrate", "taxblockopening"),
+        *view("assets", "taxdepreciationyear"),
+        "assets.file_taxdepreciationyear", "assets.confirm_taxblockrate",
+        *view("assets", "fixedasset", "assetcategory", "depreciationentry"),
         *crud("accounting", "budget"),
         *crud("accounting", "budgetline"),
         *crud("accounting", "recurringjournal"),
