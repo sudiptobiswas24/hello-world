@@ -222,3 +222,29 @@ class BonusProbes(BonusWorld, LoadedTestCase):
         EmployeeCompensation.objects.filter(employee=person, component=self.bonus).update(amount=Decimal("8"))
         with self.assertRaises(ValidationError):
             self.month_run(2026, 10, post=False, employees=[person])
+
+
+class BonusFortnights(BonusWorld, LoadedTestCase):
+    def test_p18_two_fortnights_take_the_months_bonus_once_at_the_months_ceiling(self):
+        from .payroll import EmployeeCompensation, PayRun
+
+        person = self.bonus_world(unconfirmed=None)
+        EmployeeCompensation.objects.filter(employee=person, component=self.basic).update(amount=Decimal("6000"))
+        taken = []
+        for start, end in ((D(2026, 10, 1), D(2026, 10, 15)), (D(2026, 10, 16), D(2026, 10, 31))):
+            run = PayRun.objects.create(period_start=start, period_end=end, pay_date=end)
+            run.calculate(employees=[person])
+            run.post()
+            taken.append(self.line(run, person, self.bonus).amount)
+        # hand: 6,000 x 8.33% = 499.80; the month 12,000 capped at 9,500 (this fixture, no VDA) x 8.33% = 791.35; second = 291.55
+        self.assertEqual(taken, [Decimal("499.80"), Decimal("291.55")])
+
+    def test_p19_a_minimum_wage_rising_mid_month_pays_the_months_bonus_on_the_ceiling_of_its_last_day_once(self):
+        # VDA 1,058 -> 1,200 from 16 October: one whole-month run on 12,000 pays 8.33% of 10,700 = 891.31
+        person = self.bonus_world(unconfirmed=None)
+        rise = MinimumWage.objects.create(state="WB", employment="Bottling", zone="A", skill=Skill.UNSKILLED,
+                                          effective_from=D(2026, 10, 16), basic=Decimal("9500"),
+                                          vda=Decimal("1200"), source="probe")
+        rise.confirm(User.objects.get(username="c-bonus"))
+        run = self.month_run(2026, 10, employees=[person])
+        self.assertEqual(self.line(run, person, self.bonus).amount, Decimal("891.31"))
