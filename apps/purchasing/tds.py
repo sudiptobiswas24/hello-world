@@ -20,7 +20,7 @@ from django.db import models, transaction
 from django.db.models import Q
 
 from apps.accounting.models import Account, JournalEntry, JournalLine, TdsSection
-from apps.accounting.statutory_names import section_on
+from apps.accounting.statutory_names import period_names
 from apps.accounting.tds import deduction_terms, financial_year
 from apps.core.models import AuditModel, Company, correction_date, lock_rows, serialised, to_date
 
@@ -299,8 +299,8 @@ class TdsChallan(AuditModel):
             memo=f"TDS {section.code} for {month:%B %Y}, challan {challan_number}",
             make_challan=lambda total, entry, **kept: cls.objects.create(
                 **kept, section=section, month=month, date=to_date(date), bank_account=bank_account,
-                challan_number=challan_number, bsr_code=bsr_code, amount=total, journal_entry=entry,
-                section_code=section_on(section, month)))
+                challan_number=challan_number, bsr_code=bsr_code, amount=total, journal_entry=entry),
+            period=month)
 
     @serialised("voided_entry")
     @takes_back
@@ -345,7 +345,7 @@ def tds_return(start, end):
         paid = sign > 0 and row.is_paid_over()
         rows.append({
             "deduction": row.pk, "date": row.date if sign > 0 else row.reversed_entry.date,
-            "section": section_on(row.section, row.date), "vendor": row.bill.vendor.name,
+            "section": period_names("tds", row.date, row.section)["section"], "vendor": row.bill.vendor.name,
             "pan": row.pan or "PANNOTAVBL", "bill": row.bill.number, "base": sign * row.base,
             "rate_percent": row.rate_percent, "amount": sign * row.amount,
             "challan": f"{row.challan.bsr_code}/{row.challan.challan_number}" if paid else "",
