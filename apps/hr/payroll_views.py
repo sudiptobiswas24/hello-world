@@ -325,10 +325,10 @@ class SlabViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def confirm(self, request, pk=None):
-        """The Controller's word that the schedule this band is of (every band of it) is the law's."""
+        """{bands: [{id, above, up_to, month, amount}]}: the Controller's word that the schedule, as read, is the law's."""
         band = self.get_object()
         try:
-            band.confirm_schedule(request.user)
+            band.confirm_schedule(request.user, request.data)
         except DjangoValidationError as exc:
             raise DRFValidationError(exc.messages)
         return Response(self.get_serializer(band.schedule(), many=True).data)

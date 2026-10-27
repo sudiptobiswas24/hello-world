@@ -455,11 +455,33 @@ class PayComponentSlab(Confirmed, AuditModel):
         return PayComponentSlab.objects.filter(component_id=self.component_id, state=self.state,
                                                effective_from=self.effective_from).order_by("month", "above", "pk")
 
-    def confirm_schedule(self, user):
-        """The Controller's word that this band's whole schedule is the law's: each band confirmed as it stands."""
+    BAND_FIGURES = ("above", "up_to", "month", "amount")
+
+    def confirm_schedule(self, user, seen):
+        """
+        The Controller's word that this band's whole schedule is the law's, as
+        they read it: `seen` is {"bands": [{"id", "above", "up_to", "month",
+        "amount"}, ...]}, every band of the schedule as the screen showed it.
+        Refused if a band is missing or has changed since (a band read at 0
+        and edited to 999 by another was confirmed at 999: review p02), as a
+        figure's and a rate's confirmation are.
+        """
+        from apps.accounting.dated_rates import _same
+
+        read = {str(band.get("id")): band for band in (seen or {}).get("bands") or [] if isinstance(band, dict)}
         with transaction.atomic():
             bands = list(self.schedule())
             lock_rows(*bands, refresh=False)
+            bands = list(self.schedule())
+            if set(read) != {str(band.pk) for band in bands}:
+                raise ValidationError(
+                    f"Confirm the schedule {self} is of as you read it: send every band of it ({len(bands)}) with "
+                    "the figures the screen showed. Read it again, and confirm what it says now.")
+            moved = [f"{band.above}-{band.up_to or 'and over'}" for band in bands
+                     if not all(_same(getattr(band, name), read[str(band.pk)].get(name)) for name in self.BAND_FIGURES)]
+            if moved:
+                raise ValidationError(f"The schedule is not what was read: the bands {', '.join(moved)} differ. Read it "
+                                      "again, and confirm what it says now.")
             waiting = [band for band in bands if band.confirmed_on is None]
             if not waiting:
                 raise ValidationError(f"The schedule {self} is of is already confirmed.")

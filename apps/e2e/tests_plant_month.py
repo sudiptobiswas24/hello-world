@@ -605,8 +605,8 @@ class Month:
             self.slab(code, share, month=12)
         # The Controller's word that each schedule is the law's (g24): no run deducts at one before it.
         for code in ("PT", "LWF", "LWF-ER"):
-            [band, *_] = self.get("Controller", "/api/hr/pay-component-slabs/", {"component": self.components[code]})
-            self.post("Controller", f"/api/hr/pay-component-slabs/{band['id']}/confirm/")
+            bands = self.get("Controller", "/api/hr/pay-component-slabs/", {"component": self.components[code]})
+            self.post("Controller", f"/api/hr/pay-component-slabs/{bands[0]['id']}/confirm/", {"bands": bands})
         self.pay_component("ADV", "deduction", "fixed", 99, liability_account=a["1400"].pk)
 
     def hire(self, number, name, hired, born, pay, uan, esi=None, **more):
@@ -936,8 +936,8 @@ class PlantMonthTests(TestCase):
             self.slab(code, share, month=12)
         # The Controller's word that each schedule is the law's (g24): no run deducts at one before it.
         for code in ("PT", "LWF", "LWF-ER"):
-            [band, *_] = self.get("Controller", "/api/hr/pay-component-slabs/", {"component": self.components[code]})
-            self.post("Controller", f"/api/hr/pay-component-slabs/{band['id']}/confirm/")
+            bands = self.get("Controller", "/api/hr/pay-component-slabs/", {"component": self.components[code]})
+            self.post("Controller", f"/api/hr/pay-component-slabs/{bands[0]['id']}/confirm/", {"bands": bands})
         self.pay_component("ADV", "deduction", "fixed", 99, liability_account=a["1400"].pk)
 
     def hire(self, number, name, hired, born, pay, uan, esi=None, **more):
