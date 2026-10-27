@@ -101,6 +101,9 @@ ROLES = {
         # runs the recurring entries.
         *crud("accounting", "accountingperiod"),
         "accounting.close_accountingperiod",
+        # Restates the foreign balances at the period end, and voids a restatement (g24).
+        *view("accounting", "restatement", "restatementline", "restatementrate"),
+        "accounting.post_restatement",
         *crud("accounting", "budget"),
         *crud("accounting", "budgetline"),
         *crud("accounting", "recurringjournal"),

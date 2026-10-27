@@ -1334,6 +1334,13 @@ class Payment(AuditModel):
         # Not before it was made, and not ahead of the ledger, where the documents would read it unpaid from
         # now and the books paid until then (correction_date, O15).
         on_date = correction_date(on_date, self.payment_date, "A payment is not voided on", "it was made")
+        # What it was, and what it settled, are restated as they stood on a day: voided on or before it, the
+        # money on account or the document it paid would no longer be what was restated (g24).
+        from .restatement import refuse_moving_restated
+        from .settlement import allocations_of
+
+        refuse_moving_restated([self] + [row.settles()[0] for row in allocations_of(self)], on_date,
+                               f"{self.number} is not voided on {on_date:%d-%m-%Y}")
         entry = self.journal_entry.create_reversal(
             entry_date=on_date, memo=memo or f"Void of payment {self.number}"
         )
@@ -1949,3 +1956,6 @@ class BooksOpening(AuditModel):
         if JournalEntry.objects.filter(posted=True, date__lte=self.opened_on).exists():
             raise ValidationError(f"Something is posted on or before {self.opened_on}, against the books' opening.")
         return super().delete(*args, **kwargs)
+
+
+from .restatement import Restatement, RestatementLine, RestatementRate  # noqa: E402,F401
