@@ -102,10 +102,11 @@ class TcsDeclarationSerializer(serializers.ModelSerializer):
         model = TcsDeclaration
         fields = ["id", "party", "party_name", "section", "form", "pan", "reference", "received_on", "valid_from",
                   "valid_to"]
+        read_only_fields = ["form"]
 
 
 class TcsDeclarationViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
-    """The buyer's declaration (Form 127, was 27C) that its purchases are for its own manufacture."""
+    """The buyer's declaration that its purchases are for its own manufacture; its form follows its date."""
 
     queryset = TcsDeclaration.objects.select_related("party", "section")
     serializer_class = TcsDeclarationSerializer
