@@ -351,6 +351,10 @@ class GstCashPaymentViewSet(viewsets.ReadOnlyModelViewSet):
             return Response([dict(ledger, account=ledger["account"].pk) for ledger in
                              map(reverse_charge.cash_ledger, reverse_charge.cash_ledger_accounts())])
         account = record_or_404(Account, request.query_params.get("account"), "account")
+        # Only the accounts this ledger is about: any other pk read the books of whatever account it named, the
+        # payables control included, for a role that reads no account at all (review_rcm F1).
+        if not reverse_charge.ledger_accounts().filter(pk=account.pk).exists():
+            raise DRFValidationError({"account": ["Not a GST cash ledger or reverse-charge payable account."]})
         ledger = reverse_charge.cash_ledger(account)
         ledger["account"] = account.pk
         return Response(ledger)
