@@ -581,8 +581,14 @@ class Month:
                            expense_account=a["6100"].pk, **pf)
         esi = {"basis": "percent", "rounding": "rupee_up", "liability_account": a["2420"].pk, "remit_by_day": 15,
                "base_components": [self.components[c] for c in ("BASIC", "HRA", "OT")],
-               "coverage_components": [self.components[c] for c in ("BASIC", "HRA")], "coverage_ceiling": "21000",
-               "coverage_period_months": 6}
+               "coverage_components": [self.components[c] for c in ("BASIC", "HRA")], "coverage_period_months": 6}
+        # ESI's rates and ceiling are the law's dated figures: the Payroll Officer enters them, the Controller
+        # confirms each (g24); the component carries no rate or ceiling of its own.
+        for kind, value in (("esi_employee_rate", "0.75"), ("esi_employer_rate", "3.25"), ("esi_ceiling", "21000")):
+            figure = self.post("Payroll Officer", "/api/hr/statutory-figures/", {
+                "kind": kind, "state": "", "effective_from": "2019-07-01", "value": value, "source": "ESI rules"})
+            self.post("Controller", f"/api/hr/statutory-figures/{figure['id']}/confirm/", {
+                "kind": kind, "state": "", "effective_from": "2019-07-01", "value": figure["value"]})
         self.pay_component("ESI", "deduction", sequence=70, statutory="esi", **esi)
         self.pay_component("ESI-ER", "employer_cost", sequence=80, statutory="esi_employer",
                            expense_account=a["6100"].pk, **esi)
@@ -607,7 +613,7 @@ class Month:
         person = self.post("HR Admin", "/api/hr/employees/", {
             "employee_number": number, "new_name": name, "hire_date": hired, "working_days": "123456",
             "holiday_region": "", "work_state": "WB", "uan": uan, "esi_number": esi or "", **more})
-        for code, amount in {**pay, "PF": "12", "PF-ER": "12", "ESI": "0.75", "ESI-ER": "3.25", "PT": "1",
+        for code, amount in {**pay, "PF": "12", "PF-ER": "12", "ESI": "1", "ESI-ER": "1", "PT": "1",
                              "LWF": "1", "LWF-ER": "1"}.items():
             self.post("Payroll Officer", "/api/hr/compensation/", {
                 "employee": person["id"], "component": self.components[code], "amount": amount,
@@ -906,8 +912,14 @@ class PlantMonthTests(TestCase):
                            expense_account=a["6100"].pk, **pf)
         esi = {"basis": "percent", "rounding": "rupee_up", "liability_account": a["2420"].pk, "remit_by_day": 15,
                "base_components": [self.components[c] for c in ("BASIC", "HRA", "OT")],
-               "coverage_components": [self.components[c] for c in ("BASIC", "HRA")], "coverage_ceiling": "21000",
-               "coverage_period_months": 6}
+               "coverage_components": [self.components[c] for c in ("BASIC", "HRA")], "coverage_period_months": 6}
+        # ESI's rates and ceiling are the law's dated figures: the Payroll Officer enters them, the Controller
+        # confirms each (g24); the component carries no rate or ceiling of its own.
+        for kind, value in (("esi_employee_rate", "0.75"), ("esi_employer_rate", "3.25"), ("esi_ceiling", "21000")):
+            figure = self.post("Payroll Officer", "/api/hr/statutory-figures/", {
+                "kind": kind, "state": "", "effective_from": "2019-07-01", "value": value, "source": "ESI rules"})
+            self.post("Controller", f"/api/hr/statutory-figures/{figure['id']}/confirm/", {
+                "kind": kind, "state": "", "effective_from": "2019-07-01", "value": figure["value"]})
         self.pay_component("ESI", "deduction", sequence=70, statutory="esi", **esi)
         self.pay_component("ESI-ER", "employer_cost", sequence=80, statutory="esi_employer",
                            expense_account=a["6100"].pk, **esi)
@@ -932,7 +944,7 @@ class PlantMonthTests(TestCase):
         person = self.post("HR Admin", "/api/hr/employees/", {
             "employee_number": number, "new_name": name, "hire_date": hired, "working_days": "123456",
             "holiday_region": "", "work_state": "WB", "uan": uan, "esi_number": esi or "", **more})
-        for code, amount in {**pay, "PF": "12", "PF-ER": "12", "ESI": "0.75", "ESI-ER": "3.25", "PT": "1",
+        for code, amount in {**pay, "PF": "12", "PF-ER": "12", "ESI": "1", "ESI-ER": "1", "PT": "1",
                              "LWF": "1", "LWF-ER": "1"}.items():
             self.post("Payroll Officer", "/api/hr/compensation/", {
                 "employee": person["id"], "component": self.components[code], "amount": amount,

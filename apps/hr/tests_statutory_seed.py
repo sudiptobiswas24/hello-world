@@ -188,8 +188,7 @@ class GoLiveStatutoryTests(LoadedTestCase):
 
     def test_each_engine_needs_a_confirmed_figure_covering_today_and_a_planted_gap_fails_by_name(self):
         for component, marked in ((self.pf, Statutory.PF), (self.esi, Statutory.ESI)):
-            component.statutory = marked
-            component.save()
+            self.mark(component, marked)
         bonus = PayComponent.objects.create(
             code="BONUS", name="Bonus", kind=ComponentKind.EMPLOYER_COST, basis=ComponentBasis.PERCENT_OF_GROSS,
             expense_account=self.employer, liability_account=self.pf_payable, sequence=99,
@@ -229,7 +228,8 @@ class BonusRuleTests(LoadedTestCase):
             expense_account=self.employer, liability_account=self.bonus_payable, sequence=99,
             rounding=Rounding.PAISA, ceiling_figure=BONUS_CEILING)
         self.bonus.base_components.set([self.basic])
-        for kind, value in ((FigureKind.BONUS_FLOOR, "7000"), (FigureKind.BONUS_ELIGIBILITY, "21000")):
+        for kind, value in ((FigureKind.BONUS_FLOOR, "7000"), (FigureKind.BONUS_ELIGIBILITY, "21000"),
+                            (FigureKind.BONUS_MINIMUM_PERCENT, "8.33"), (FigureKind.BONUS_MAXIMUM_PERCENT, "20")):
             StatutoryFigure.objects.create(kind=kind, effective_from=D(2025, 11, 21), value=Decimal(value),
                                            source="test row").confirm(controller)
         self.wage = MinimumWage.objects.create(state="WB", employment="Bottling and packaging", zone="A",
@@ -299,3 +299,88 @@ class BonusRuleTests(LoadedTestCase):
         self.assertEqual(self.line(september, person, self.bonus).amount, Decimal("879.48"))
         kept.refresh_from_db()
         self.assertEqual((kept.amount, kept.base_ceiling), (Decimal("583.10"), Decimal("7000.00")))
+
+
+    def test_a_bonus_rate_outside_the_laws_least_and_most_is_refused_and_the_terms_are_kept(self):
+        person = self.worker_on("E1", "12000")
+        october = self.month_run(2026, 10, post=False, employees=[person])
+        kept = self.line(october, person, self.bonus).kept_terms
+        self.assertEqual((kept["bonus_minimum_percent"][2], kept["bonus_maximum_percent"][2]), ("8.33", "20"))
+        high = self.worker_on("E2", "12000")
+        from .payroll import EmployeeCompensation
+
+        EmployeeCompensation.objects.filter(employee=high, component=self.bonus).update(amount=Decimal("25"))
+        with self.assertRaisesMessage(ValidationError, "at 25%, and the law's bonus on 31 Oct 2026 is from 8.33% "
+                                                       "to 20% of wages"):
+            self.month_run(2026, 10, post=False, employees=[high])
+
+
+class EsiReadsTheDatedRatesTests(LoadedTestCase):
+    """
+    ESI at the dated rates: 0.75% and 3.25% (test rows from 2000), the employee's share 1% from
+    1 October 2026 (an illustrative change, not the gazette's). Basic 12,000, rounded up to the rupee:
+    September 90 and 390, October 120 and 390. 22,000 is past the dated 21,000: no ESI.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.mark(self.esi, Statutory.ESI)
+        self.mark(self.esi_er, Statutory.ESI_EMPLOYER)
+        self.rise = StatutoryFigure.objects.create(kind=FigureKind.ESI_EMPLOYEE_RATE, effective_from=D(2026, 10, 1),
+                                                   value=Decimal("1"), source="test row", confirmed_on=D(2026, 9, 1))
+        self.insured = self.worker("I", work_state="WB")
+        self.paid(self.insured, self.basic, "12000")
+        for component in (self.esi, self.esi_er):
+            self.paid(self.insured, component, "1")
+
+    def test_a_run_before_the_change_and_a_run_after_it_each_read_their_own_rate(self):
+        september = self.month_run(2026, 9, employees=[self.insured])
+        october = self.month_run(2026, 10, employees=[self.insured])
+        lines = lambda run: [(line.amount, line.rate) for line in (  # noqa: E731
+            self.line(run, self.insured, self.esi), self.line(run, self.insured, self.esi_er))]
+        self.assertEqual(lines(september), [(Decimal("90.00"), Decimal("0.7500")), (Decimal("390.00"),
+                                                                                       Decimal("3.2500"))])
+        self.assertEqual(lines(october), [(Decimal("120.00"), Decimal("1.0000")), (Decimal("390.00"),
+                                                                                     Decimal("3.2500"))])
+        kept = self.line(september, self.insured, self.esi).kept_terms
+        self.assertEqual(kept["esi_employee_rate"][2], "0.75")
+        self.assertEqual(kept["esi_ceiling"][2], "21000")
+        old = StatutoryFigure.objects.get(kind=FigureKind.ESI_EMPLOYEE_RATE, effective_from=D(2000, 1, 1))
+        old.value = Decimal("0.8")
+        with self.assertRaisesMessage(ValidationError, "is what"):
+            old.save()
+        self.assertEqual(self.line(september, self.insured, self.esi).rate, Decimal("0.7500"))
+
+    def test_past_the_dated_ceiling_there_is_no_esi_and_a_typed_rate_is_refused(self):
+        rich = self.worker("R", work_state="WB")
+        self.paid(rich, self.basic, "22000")
+        self.paid(rich, self.esi, "1")
+        october = self.month_run(2026, 10, post=False, employees=[rich])
+        self.assertFalse(october.payslips.get(employee=rich).lines.filter(component=self.esi).exists())
+        with self.assertRaisesMessage(ValidationError, "Give it as 1: they are insured"):
+            self.paid(self.worker("T"), self.esi, "0.75")
+        self.esi.coverage_ceiling = Decimal("21000")
+        with self.assertRaisesMessage(ValidationError, "not a ceiling of its own"):
+            self.esi.save()
+
+    def test_an_unconfirmed_rate_stops_the_month_it_covers(self):
+        StatutoryFigure.objects.filter(pk=self.rise.pk).update(confirmed_on=None)
+        self.month_run(2026, 9, post=False, employees=[self.insured])
+        with self.assertRaisesMessage(ValidationError, "ESI, the employee's share, per cent of wages of 1 from "
+                                                       "01 Oct 2026 is not confirmed"):
+            self.month_run(2026, 10, post=False, employees=[self.insured])
+
+
+class EveryFigureIsReadTests(LoadedTestCase):
+    def test_audit_invariants_reports_a_figure_no_engine_reads(self):
+        from apps.core.management.commands.audit_invariants import Command
+
+        command = Command()
+        self.assertEqual(command.unread_figures("\n".join(f"FigureKind.{kind.name}" for kind in FigureKind), ""), [])
+        planted = "\n".join(f"FigureKind.{kind.name}" for kind in FigureKind if kind != FigureKind.ESI_EMPLOYER_RATE)
+        self.assertEqual([detail for _shape, detail in command.unread_figures(planted, "")],
+                         ["The statutory figure \"ESI, the employer's share, per cent of wages\" is loaded and "
+                          "confirmed but no engine reads it."])
+        # A mention in the go-live check alone is not a read.
+        self.assertEqual(len(command.unread_figures(planted + "\nFigureKind.ESI_EMPLOYER_RATE",
+                                                    "FigureKind.ESI_EMPLOYER_RATE")), 1)

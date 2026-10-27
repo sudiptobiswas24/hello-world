@@ -389,7 +389,13 @@ class ATakeBackOutsideAFinalRunTests(PieceworkTestCase):
             code="ESI", name="ESI", kind=ComponentKind.DEDUCTION, basis=ComponentBasis.PERCENT_OF_GROSS,
             liability_account=owed, sequence=510, statutory=Statutory.ESI, rounding=Rounding.RUPEE_UP)
         self.rate(self.pf, "12", SEP(1))
-        self.rate(self.esi, "0.75", SEP(1))
+        # ESI at the dated rate (test row), the person's row saying only that they are insured (g24).
+        from apps.hr.statutory import FigureKind, StatutoryFigure
+
+        for kind, value in ((FigureKind.ESI_EMPLOYEE_RATE, "0.75"), (FigureKind.ESI_WAGE_CEILING, "21000")):
+            StatutoryFigure.objects.create(kind=kind, effective_from=datetime.date(2019, 7, 1), value=Decimal(value),
+                                           source="test row", confirmed_on=datetime.date(2019, 7, 1))
+        self.rate(self.esi, "1", SEP(1))
         self.weaver.uan, self.weaver.esi_number = "100200300499", "3100200399"
         self.weaver.save()
         EmployeePayDetails.objects.create(employee=self.weaver, date_of_birth=datetime.date(1990, 1, 1))
