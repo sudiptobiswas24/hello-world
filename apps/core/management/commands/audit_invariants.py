@@ -2011,6 +2011,7 @@ class Command(BaseCommand):
             "a fold of movements that may have gone below zero"
         ),
         "gst.GstCashPaymentRow.amount": "negative is a debit note's reverse charge set against its month's",
+        "gst.ReverseChargeCredit.amount": "negative is a debit note's credit given back with its paid tax",
     }
 
     def unsigned_money(self, labels):
