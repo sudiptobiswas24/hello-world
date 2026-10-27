@@ -279,7 +279,10 @@ class PaymentVoucher(AuditModel):
     def issue_for(cls, payment):
         """A voucher for each reverse-charge bill the payment settles that has none standing."""
         with transaction.atomic():
-            lock_rows(payment)
+            # The bills with the payment: two payments of one bill vouchered at once would each read the
+            # other's voucher as not there, and both take the remainder.
+            bills = list(Bill.objects.filter(payment_allocations__payment=payment).distinct().order_by("pk"))
+            lock_rows(payment, *bills)
             if not payment.posted or payment.is_voided():
                 raise ValidationError(f"Payment {payment.number or payment.pk} is not a posted payment standing.")
             made = []
@@ -287,13 +290,21 @@ class PaymentVoucher(AuditModel):
                 bill = allocation.bill
                 figures = reverse_charge_figures(bill)
                 whole = bill.posted_total or bill.total()
-                share = {head: round_money(figures[head] * allocation.amount / whole) if whole else ZERO
-                         for head in HEADS}
+                paid = round_money(allocation.amount * (payment.exchange_rate or Decimal("1")))
+                before = PaymentVoucher.objects.filter(bill=bill, cancelled_on__isnull=True)
+                vouchered = {head: sum(before.values_list(head, flat=True), ZERO) for head in HEADS}
+                if sum(before.values_list("amount", flat=True), ZERO) + paid >= round_money(
+                        whole * (bill.exchange_rate or Decimal("1"))):
+                    # The payment that settles the bill takes what is left of its tax: three thirds each
+                    # rounded up came to 500.01 on a tax of 500 (review_rcm F4).
+                    share = {head: figures[head] - vouchered[head] for head in HEADS}
+                else:
+                    share = {head: round_money(figures[head] * allocation.amount / whole) if whole else ZERO
+                             for head in HEADS}
                 number = DocumentSequence.next_for("gst.payment_voucher", payment.payment_date,
                                                    name="Payment vouchers (reverse charge)", prefix="PV-")
                 made.append(cls.objects.create(
-                    number=number, payment=payment, bill=bill, date=payment.payment_date,
-                    amount=round_money(allocation.amount * (payment.exchange_rate or Decimal("1"))), **share))
+                    number=number, payment=payment, bill=bill, date=payment.payment_date, amount=paid, **share))
             if not made:
                 raise ValidationError(f"Payment {payment.number} settles no reverse-charge bill without a voucher.")
             return made

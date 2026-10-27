@@ -395,3 +395,13 @@ class ReceivedOnTests(ReverseChargeCashTestCase):
         self.assertEqual(received_on(bill), datetime.date(2026, 9, 3))
         self.assertEqual(SelfInvoice.issue(bill, on_date=datetime.date(2026, 10, 3)).received_on,
                          datetime.date(2026, 9, 3))
+
+
+class VoucherRemainderTests(ReverseChargeCashTestCase):
+    """review_rcm F4: 3333.33 + 3333.33 + 3333.34 of 10,000 at IGST 500: 166.67 + 166.67 + 166.66 = 500.00."""
+
+    def test_the_payment_that_settles_the_bill_takes_the_remainder(self):
+        bill = self.freight_bill(vendor=self.gta)
+        made = [PaymentVoucher.issue_for(self.paid_supplier(bill, part))[0].igst
+                for part in ("3333.33", "3333.33", "3333.34")]
+        self.assertEqual(made, [D("166.67"), D("166.67"), D("166.66")])
