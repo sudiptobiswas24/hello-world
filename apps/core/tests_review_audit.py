@@ -32,16 +32,20 @@ class ApplicationLayerProbes(TestCase):
                                 "a RunPython write through apps.get_model leaves no application event")
 
     def test_p02_a_set_null_cascade_on_user_delete_leaves_an_event_on_the_child(self):
+        # Decided in g24 (decision 4): a login that has acted is never deleted, so no SET_NULL cascade runs.
+        from .history import HasActed
         maker = User.objects.create_user("maker")
         usd = Currency.objects.create(code="USD", name="US Dollar")
         rate = ExchangeRate.objects.create(currency=usd, rate=Decimal("83.25"), valid_from=datetime.date(2026, 10, 1),
                                            created_by=maker)
         before = len(events_of(ExchangeRate, rate.pk))
-        maker.delete()
+        with self.assertRaisesMessage(HasActed, "Deactivate it instead"):
+            maker.delete()
+        with self.assertRaises(HasActed):
+            User.objects.filter(pk=maker.pk).delete()
         rate.refresh_from_db()
-        self.assertIsNone(rate.created_by_id)
-        after = events_of(ExchangeRate, rate.pk)
-        self.assertGreater(len(after), before, "created_by set to NULL by a cascade changed the row with no event")
+        self.assertEqual(rate.created_by_id, maker.pk)
+        self.assertEqual(len(events_of(ExchangeRate, rate.pk)), before)
 
     def test_p03_the_edit_log_itself_cannot_be_rewritten_or_deleted_through_the_orm(self):
         usd = Currency.objects.create(code="USD", name="US Dollar")
@@ -80,13 +84,16 @@ class ApplicationLayerProbes(TestCase):
         self.assertEqual(found, [])
 
     def test_p07_deleting_a_role_logs_the_logins_lost_membership(self):
+        # Decided in g24 (decision 4): a role that has acted is never deleted, so no login loses it unlogged.
+        from .history import HasActed
         group = Group.objects.create(name="Probe role")
         user = User.objects.create_user("member")
         user.groups.add(group)
-        before = len([e for e in events_of(User, user.pk) if "groups" in e.changes])
-        group.delete()
-        after = len([e for e in events_of(User, user.pk) if "groups" in e.changes])
-        self.assertGreater(after, before, "a login lost its role through the role's deletion: no line on the login")
+        with self.assertRaisesMessage(HasActed, "Take its logins and rights off instead"):
+            group.delete()
+        with self.assertRaises(HasActed):
+            Group.objects.filter(pk=group.pk).delete()
+        self.assertTrue(user.groups.filter(pk=group.pk).exists())
 
     def test_p08_a_command_run_inside_a_request_keeps_the_requests_person(self):
         from .history import acting_as, acting
