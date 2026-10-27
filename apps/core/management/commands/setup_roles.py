@@ -695,16 +695,22 @@ ROLES["Scale bridge"] = ["manufacturing.add_scalereading"]
 # what. The Controller reads it; so does the auditor, who reads the books and changes nothing. Added after the
 # rights every role is given above, so the auditor is given no note, file or follow-up to add (read only).
 ROLES["Controller"] = [*ROLES["Controller"], "core.view_recordevent"]
-ROLES["Auditor"] = [
-    "core.view_recordevent",
-    *REFERENCE,
-    *view("accounting", "journalentry", "journalline", "accountingperiod", "payment"),
-    *view("sales", "invoice", "invoiceline", "invoicepayment", "invoicewriteoff"),
-    *view("purchasing", "bill", "billline", "billpayment"),
-    *view("inventory", "stockmovement"),
-    *view("assets", "fixedasset", "depreciationentry"),
-    "sales.view_every_customer",
-]
+def _reads_everything():
+    """Every right to read a kind of record, of every model: the auditor's (read only, nothing added or changed)."""
+    from django.apps import apps
+
+    rights = set()
+    for model in apps.get_models():
+        meta = model._meta
+        if meta.app_label == "sessions":  # a session's key signs its login in: not a record to read
+            continue
+        if "view" in meta.default_permissions:
+            rights.add(f"{meta.app_label}.view_{meta.model_name}")
+        rights.update(f"{meta.app_label}.{codename}" for codename, _ in meta.permissions if codename.startswith("view_"))
+    return sorted(rights)
+
+
+ROLES["Auditor"] = ["core.view_recordevent", *_reads_everything()]
 
 
 # Who signs in with a second factor (apps/core/second_factor.py): whoever

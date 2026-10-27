@@ -86,6 +86,13 @@ class EditLogViewSet(viewsets.ReadOnlyModelViewSet):
 
     def get_queryset(self):
         rows = super().get_queryset()
+        user = self.request.user
+        if not user.is_superuser:
+            # A record's values only to whoever may read that kind of record in place: the Controller sees pay
+            # (it posts the runs), a login given the log and no pay right sees no pay change through it.
+            held = user.get_all_permissions()
+            rows = rows.filter(content_type_id__in=[
+                kind.pk for kind in ContentType.objects.all() if f"{kind.app_label}.view_{kind.model}" in held])
         label = self.request.query_params.get("model", "")
         if label:
             try:
