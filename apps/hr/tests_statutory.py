@@ -120,8 +120,25 @@ class StatutoryTestCase(TestCase):
             self.paid(employee, rates[name], amount)
         for component, rate in [(self.pf, "12"), (self.pf_er, "12"), (self.esi, "0.75"),
                                 (self.esi_er, "3.25"), (self.pt, "1")]:
-            self.paid(employee, component, rate)
+            # A component marked ESI is taken at the dated rate: the person's row says only that they are insured.
+            component.refresh_from_db(fields=["statutory"])
+            self.paid(employee, component, "1" if component.statutory in ("esi", "esi_employer") else rate)
         return employee
+
+    def mark(self, component, statutory):
+        """Mark `component` as a statutory line; ESI then reads the dated, confirmed ESI figures (test rows)."""
+        from .statutory import FigureKind, StatutoryFigure
+
+        component.statutory = statutory
+        if statutory in ("esi", "esi_employer"):
+            component.coverage_ceiling = None
+            for kind, value in ((FigureKind.ESI_EMPLOYEE_RATE, "0.75"), (FigureKind.ESI_EMPLOYER_RATE, "3.25"),
+                                (FigureKind.ESI_WAGE_CEILING, "21000")):
+                StatutoryFigure.objects.get_or_create(kind=kind, state="", effective_from=datetime.date(2000, 1, 1),
+                                                      defaults={"value": Decimal(value), "source": "test row",
+                                                                "confirmed_on": datetime.date(2000, 1, 1)})
+            EmployeeCompensation.objects.filter(component=component).update(amount=Decimal("1"))
+        component.save()
 
     def paid(self, employee, component, amount, since=datetime.date(2020, 1, 1)):
         return EmployeeCompensation.objects.create(
@@ -568,8 +585,7 @@ class AMonthPaidInTwoRunsTests(StatutoryTestCase):
 
         for component, marked in ((self.pf, Statutory.PF), (self.pf_er, Statutory.PF_EMPLOYER),
                                   (self.esi, Statutory.ESI), (self.esi_er, Statutory.ESI_EMPLOYER)):
-            component.statutory = marked
-            component.save()
+            self.mark(component, marked)
         person = self.person("F", **pay)
         for number, employee in enumerate(Employee.objects.order_by("pk")):
             Employee.objects.filter(pk=employee.pk).update(uan=f"10000000000{number}", esi_number=f"220000000{number}")
