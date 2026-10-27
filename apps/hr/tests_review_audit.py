@@ -79,31 +79,53 @@ class ReadingTheLog(RolesTestCase):
         self.row.amount = Decimal("7000")
         self.row.save()
 
+    # Decided in g24: the Edit log and History show a record's values only to whoever may read that record in
+    # place; the Auditor reads every model, read only; the Controller reads pay (it posts the runs).
     def test_p21_the_auditor_does_not_read_pay_through_the_log_she_may_not_read_in_place(self):
         auditor = self.as_("Auditor")
-        self.assertEqual(auditor.get("/api/hr/employee-compensations/").status_code in (403, 404), True) \
-            if False else None
-        refused = auditor.get("/api/core/history/", {"model": "hr.employeecompensation", "id": self.row.pk})
-        self.assertEqual(refused.status_code, 403, "history panel: the Auditor has no right to pay")
+        self.assertEqual(auditor.get("/api/hr/compensation/").status_code, 200, "the Auditor reads pay")
+        self.assertEqual(auditor.get("/api/core/history/", {"model": "hr.employeecompensation",
+                                                            "id": self.row.pk}).status_code, 200)
         log = auditor.get("/api/core/edit-log/", {"model": "hr.employeecompensation", "from": "2000-01-01",
-                                                  "to": "2099-12-31"})
-        self.assertEqual(log.status_code, 200)
-        self.assertEqual(log.json(), [], "the edit log hands the Auditor every salary change the role may not read")
+                                                  "to": "2099-12-31", "kind": "updated"}).json()
+        self.assertEqual([change["to"] for row in log for change in row["changes"] if change["field"] == "amount"],
+                         ["7000.0000"])  # the column keeps four places
+        self.assertEqual(auditor.post("/api/hr/compensation/", {}, format="json").status_code, 403)
+        # A login given the log and no right to pay: no pay change through it, and no pay History.
+        reader = User.objects.create_user("log_reader")
+        from django.contrib.auth.models import Permission
+        reader.user_permissions.add(Permission.objects.get(content_type__app_label="core", codename="view_recordevent"))
+        client = APIClient()
+        client.force_authenticate(reader)
+        self.assertEqual(client.get("/api/core/edit-log/", {"model": "hr.employeecompensation", "from": "2000-01-01",
+                                                            "to": "2099-12-31"}).json(), [])
+        self.assertEqual(client.get("/api/core/history/", {"model": "hr.employeecompensation",
+                                                           "id": self.row.pk}).status_code, 403)
 
     def test_p22_roles_without_the_right_are_refused_and_the_controller_filters(self):
-        for role in ("Sales Rep", "HR Admin", "Employee Self Service"):
-            if Group.objects.filter(name=role).exists():
-                self.assertEqual(self.as_(role).get("/api/core/edit-log/").status_code, 403, role)
+        from apps.core.management.commands.setup_roles import ROLES
+        let_in = {role: code for role in ROLES if role not in ("Controller", "Auditor")
+                  if (code := self.as_(role).get("/api/core/edit-log/").status_code) != 403}
+        self.assertEqual(let_in, {}, "every role but the Controller and the Auditor is refused the edit log")
         controller = self.as_("Controller")
         response = controller.get("/api/core/edit-log/", {"model": "hr.employeecompensation", "kind": "updated",
                                                           "from": "2000-01-01", "to": "2099-12-31"})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(controller.get("/api/core/edit-log/", {"model": "nope"}).status_code, 400)
         self.assertEqual(controller.get("/api/core/edit-log/", {"who": "x"}).status_code, 400)
-        # the Controller has no hr right either
+        # The Controller holds hr.view_employeecompensation (setup_roles: it posts the pay runs), so it reads the
+        # change in place and in the log alike.
         self.assertEqual(controller.get("/api/core/history/", {"model": "hr.employeecompensation",
-                                                               "id": self.row.pk}).status_code, 403)
-        self.assertEqual(response.json(), [], "the Controller reads pay changes in the log without any right to pay")
+                                                               "id": self.row.pk}).status_code, 200)
+        self.assertEqual(len(response.json()), 1)
+        # A model the Controller may not read in place: none of its lines through the log either.
+        from apps.core.history import RecordEvent
+        who = User.objects.get(username="Controller")
+        unread = {f"{row.content_type.app_label}.{row.content_type.model}" for row in RecordEvent.objects.all()
+                  if not who.has_perm(f"{row.content_type.app_label}.view_{row.content_type.model}")}
+        self.assertTrue(unread, "a line of a kind the Controller may not read, for the filter to leave out")
+        shown = {row["model"] for row in controller.get("/api/core/edit-log/").json()}
+        self.assertFalse(set(unread) & shown)
 
 
 class Cost(PayrollApiTestCase):
