@@ -13,10 +13,10 @@ from django.core.exceptions import ValidationError
 
 from apps.core.models import to_date
 
-from .payroll import PF_KINDS, PayComponent, Statutory
-from .statutory import BONUS_CEILING, FigureKind, figure_standing, minimum_wage_on
+from .payroll import PF_KINDS, ComponentBasis, PayComponent, Statutory
+from .statutory import BONUS_CEILING, ENGINE_FIGURES, FigureKind, figure_standing, minimum_wage_on  # noqa: F401
 
-ENGINES = ("TDS", "TCS", "PF", "ESI", "PT", "LWF", "Bonus", "Minimum wage")
+ENGINES = ("TDS", "TCS", "PF", "ESI", "PT", "LWF", "Bonus", "Overtime", "Minimum wage")
 
 
 def _figures(kinds, day, states):
@@ -89,14 +89,14 @@ def statutory_gaps(day):
     found = [
         ("TDS", TdsSection.objects.filter(is_active=True).exists(), _rates(TdsSection, day)),
         ("TCS", TcsSection.objects.filter(is_active=True).exists(), _rates(TcsSection, day)),
-        ("PF", bool(marked(*PF_KINDS)),
-         _figures((FigureKind.EPF_WAGE_CEILING, FigureKind.EPS_WAGE_CEILING), day, states)),
-        ("ESI", bool(marked(Statutory.ESI, Statutory.ESI_EMPLOYER)),
-         _figures((FigureKind.ESI_EMPLOYEE_RATE, FigureKind.ESI_EMPLOYER_RATE, FigureKind.ESI_WAGE_CEILING),
-                  day, states)),
+        # Each engine's line asks every figure its calculation reads (statutory.ENGINE_FIGURES).
+        ("PF", bool(marked(*PF_KINDS)), _figures(ENGINE_FIGURES["PF"], day, states)),
+        ("ESI", bool(marked(Statutory.ESI, Statutory.ESI_EMPLOYER)), _figures(ENGINE_FIGURES["ESI"], day, states)),
         _levy("PT", (Statutory.PT,), "professional_tax", marked, day, states),
         _levy("LWF", (Statutory.LWF, Statutory.LWF_EMPLOYER), "labour_welfare_fund", marked, day, states),
-        ("Bonus", bool(bonus), _figures((FigureKind.BONUS_FLOOR, FigureKind.BONUS_ELIGIBILITY), day, states)),
+        ("Bonus", bool(bonus), _figures(ENGINE_FIGURES["Bonus"], day, states)),
+        ("Overtime", active.filter(basis=ComponentBasis.OVERTIME_ORDINARY).exists(),
+         _figures(ENGINE_FIGURES["Overtime"], day, states)),
     ]
     wages = []
     for person in employees:

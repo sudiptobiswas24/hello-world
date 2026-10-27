@@ -1543,14 +1543,19 @@ class Command(BaseCommand):
         confirmed by the Controller, and changing nothing. ESI's rates and
         the bonus percentages were exactly this (g24). A mention in the
         go-live check (hr/statutory_check.py) asks whether one is confirmed;
-        it is not a read.
+        it is not a read, nor is the list of each engine's figures
+        (statutory.ENGINE_FIGURES) that go-live asks.
         """
         from apps.hr.statutory import FigureKind
 
         if checks_only is None:
             from pathlib import Path
 
-            checks_only = (Path(django_apps.get_app_config("hr").path) / "statutory_check.py").read_text()
+            hr = Path(django_apps.get_app_config("hr").path)
+            checks_only = (hr / "statutory_check.py").read_text()
+            # The list of each engine's figures names them all; it is what go-live asks, not a read.
+            declared = (hr / "statutory.py").read_text()
+            checks_only += declared[declared.index("PF_FIGURES ="):declared.index("def read_figure")]
         findings = []
         for kind in FigureKind:
             pattern = rf"FigureKind\.{kind.name}\b"
