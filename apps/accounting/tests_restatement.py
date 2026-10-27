@@ -138,6 +138,24 @@ class AnOpenInvoiceTests(RestatementTestCase):
         self.assertEqual(self.gains(), Decimal("225.32") + Decimal("727.98"))
 
 
+class AnOpenBillTests(RestatementTestCase):
+    def test_a_bill_owed_in_dollars_is_restated_as_a_loss(self):
+        from apps.purchasing.models import Bill, BillLine
+
+        expense = Account.objects.create(code="5000", name="Purchases", account_type=AccountType.EXPENSE)
+        bill = Bill.objects.create(vendor=self.vendor, bill_date=D(2026, 3, 5), payable_account=self.ap,
+                                   currency=self.usd)
+        BillLine.objects.create(bill=bill, description="Parts", quantity=Decimal("1"), unit_price=Decimal("1000"),
+                                expense_account=expense)
+        bill.post()
+        line = Restatement.make(YEAR_END).lines.get()
+        self.assertEqual((line.label, line.side, line.carried_base, line.restated_base, line.difference),
+                         (bill.number, -1, Decimal("-83336.70"), Decimal("-84100.00"), Decimal("-763.30")))
+        self.assertEqual(self.balance(self.ap, YEAR_END), Decimal("-84100.00"))
+        self.assertEqual(self.gains(YEAR_END), Decimal("-763.30"))
+        self.assertEqual(self.balance(self.ap), Decimal("-83336.70"))
+
+
 class AForeignBankTests(RestatementTestCase):
     def test_the_eefc_balance_and_the_money_on_account(self):
         self.receipt("1000", D(2026, 3, 10), bank=self.eefc)
