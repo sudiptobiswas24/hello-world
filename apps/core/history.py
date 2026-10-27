@@ -243,11 +243,12 @@ def logging_now(model, using):
 
     connection = connections[using]
     with connection.cursor() as cursor:
-        try:
-            columns = {column.name for column in connection.introspection.get_table_description(
-                cursor, RecordEvent._meta.db_table)}
-        except Exception:  # noqa: BLE001 - no table yet: the migration that makes it has not run
+        # Asked without an error on a database that has no such table yet: on PostgreSQL a failed statement
+        # would abort the migration's whole transaction.
+        if RecordEvent._meta.db_table not in connection.introspection.table_names(cursor):
             return False
+        columns = {column.name for column in connection.introspection.get_table_description(
+            cursor, RecordEvent._meta.db_table)}
     return {"changes", "through", "who_name"} <= columns
 
 
@@ -433,7 +434,7 @@ def link_changed(sender, instance, action, reverse, model, pk_set, using="defaul
     """A role given or taken, a tag added: the record's links before and after, by label."""
     if action not in ("pre_add", "pre_remove", "pre_clear", "post_add", "post_remove", "post_clear"):
         return
-    if not edit_logged(type(instance)):
+    if not logging_now(type(instance), using):
         return
     name = _link_name(instance, sender, reverse)
     if name is None:
