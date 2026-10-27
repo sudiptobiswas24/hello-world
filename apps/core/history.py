@@ -251,8 +251,22 @@ def logging_now(model, using):
     return {"changes", "through", "who_name"} <= columns
 
 
+# Access stamps on models not ours, as `edit_log_ignores` says them on ours: a sign-in is not an edit.
+IGNORED_OUTSIDE_OUR_APPS = {"auth.User": ("last_login",)}
+
+
+def ignored_fields(model):
+    """
+    The fields a model's class says are access stamps, not edits (`edit_log_ignores`): an API key's last use, a
+    login's last sign-in, the second factor's counters. Kept out of the edit log; their own access records stay.
+    """
+    concrete = model._meta.concrete_model or model
+    return set(getattr(concrete, "edit_log_ignores", ())) | set(IGNORED_OUTSIDE_OUR_APPS.get(concrete._meta.label, ()))
+
+
 def _fields(model, names=None):
-    fields = [field for field in model._meta.concrete_fields if field.name not in UNLOGGED_FIELDS]
+    left_out = UNLOGGED_FIELDS | ignored_fields(model)
+    fields = [field for field in model._meta.concrete_fields if field.name not in left_out]
     if names is not None:
         names = set(names)
         fields = [field for field in fields if field.name in names or field.attname in names]
@@ -443,6 +457,8 @@ def logged_update(original):
             return original(self, **kwargs)
         model = self.model
         fields = _fields(model, kwargs)
+        if not fields:  # only access stamps: no edit to log
+            return original(self, **kwargs)
         attnames = [field.attname for field in fields]
         with transaction.atomic(using=self.db, savepoint=False):
             before = {row.pop("pk"): row for row in self.values("pk", *attnames)}

@@ -168,6 +168,19 @@ class WhoActedIsKeptTests(TestCase):
             doer.delete()
 
 
+class AccessStampsAreNotEditsTests(TestCase):
+    def test_a_sign_in_writes_no_line_and_an_edit_beside_it_does(self):
+        from django.utils import timezone
+
+        user = User.objects.create_user("asha", password="pw")
+        made = len(lines(user))
+        self.assertTrue(self.client.login(username="asha", password="pw"))  # stamps last_login
+        User.objects.filter(pk=user.pk).update(last_login=timezone.now())
+        self.assertEqual(len(lines(user)), made)
+        User.objects.filter(pk=user.pk).update(last_login=timezone.now(), first_name="Asha")
+        self.assertEqual(set(lines(user)[-1].changes), {"first_name"})
+
+
 class WhatIsLoggedTests(TestCase):
     def test_every_audit_model_is_logged_and_the_bulk_writes_are_wrapped(self):
         from django.apps import apps
