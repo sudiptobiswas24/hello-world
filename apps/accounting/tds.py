@@ -106,6 +106,12 @@ class TdsSection(AuditModel):
         """The rate row that applies on `day`, confirmed by the accountant; refused in words otherwise."""
         return rate_standing(self, day, "TDS", "deducted", "TDS rates")
 
+    def code_on(self, day):
+        """The section of the Act standing on `day` (statutory_names.section_on), as TcsSection.code_on."""
+        from .statutory_names import section_on
+
+        return section_on(self, day)
+
     def owed(self, rate, this, year_before, untaxed_before):
         """
         (base, tax, caught up) on a bill of `this`, with `year_before` already
