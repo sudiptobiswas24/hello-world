@@ -65,6 +65,26 @@ FIGURE_DEFAULTS = {
     FigureKind.OVERTIME_MULTIPLIER: Decimal("2"),
 }
 CEILINGS = (FigureKind.EPF_WAGE_CEILING, FigureKind.EPS_WAGE_CEILING)
+# The figures each engine's calculation reads, one list per engine: the pay run reads them from here and
+# go_live_check asks each of them (statutory_check), so a figure added to a calculation is asked too.
+PF_FIGURES = (FigureKind.EPF_WAGE_CEILING, FigureKind.EPS_WAGE_CEILING)
+ESI_FIGURES = (FigureKind.ESI_EMPLOYEE_RATE, FigureKind.ESI_EMPLOYER_RATE, FigureKind.ESI_WAGE_CEILING)
+BONUS_FIGURES = (FigureKind.BONUS_FLOOR, FigureKind.BONUS_ELIGIBILITY, FigureKind.BONUS_MINIMUM_PERCENT,
+                 FigureKind.BONUS_MAXIMUM_PERCENT)
+OVERTIME_FIGURES = (FigureKind.OVERTIME_MULTIPLIER,)
+ENGINE_FIGURES = {"PF": PF_FIGURES, "ESI": ESI_FIGURES, "Bonus": BONUS_FIGURES, "Overtime": OVERTIME_FIGURES}
+assert {kind for kinds in ENGINE_FIGURES.values() for kind in kinds} == set(FigureKind), \
+    "every statutory figure belongs to the engine that reads it (ENGINE_FIGURES)"
+
+
+def read_figure(engine, kind, day, state=""):
+    """figure_as_of for `engine`'s calculation, refused for a figure the engine does not list (ENGINE_FIGURES)."""
+    if kind not in ENGINE_FIGURES[engine]:
+        raise AssertionError(f"{engine} reads {kind}, which ENGINE_FIGURES does not list for it: go_live_check "
+                             "would not ask it.")
+    return figure_as_of(kind, day, state)
+
+
 # A component capped by the bonus rule: the higher of the dated floor and the person's minimum wage, paid only
 # while a month's wages are within the dated eligibility ceiling (PayComponent.ceiling_figure).
 BONUS_CEILING = "bonus_ceiling"
@@ -307,7 +327,7 @@ def minimum_wage_on(employee, day):
 
 def bonus_ceiling(employee, day):
     """(ceiling, kept terms) of the bonus rule on `day`: the higher of the dated floor and the minimum wage."""
-    floor, floor_term = figure_as_of(FigureKind.BONUS_FLOOR, day, employee.work_state)
+    floor, floor_term = read_figure("Bonus", FigureKind.BONUS_FLOOR, day, employee.work_state)
     wage, wage_term = minimum_wage_on(employee, day)
     return max(floor, wage), {FigureKind.BONUS_FLOOR.value: floor_term, "minimum_wage": wage_term}
 

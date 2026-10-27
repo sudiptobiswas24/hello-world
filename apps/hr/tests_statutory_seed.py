@@ -79,7 +79,9 @@ class LoadedTestCase(DatedFiguresTestCase):
 class SetupStatutoryTests(LoadedTestCase):
     def test_every_file_is_loaded_unconfirmed_with_its_source_and_run_again_adds_nothing(self):
         said = self.load()
-        figures = sum(len(rows(name)) for name in ("provident_fund", "esi", "bonus"))
+        from .management.commands.setup_statutory import FIGURE_FILES
+
+        figures = sum(len(rows(name)) for name in FIGURE_FILES)
         self.assertEqual(StatutoryFigure.objects.count(), figures)
         self.assertEqual(MinimumWage.objects.count(), len(rows("minimum_wages")))
         self.assertEqual(TdsRate.objects.count(), len(rows("tds_rates")))
@@ -417,3 +419,19 @@ class TheStatutoryLinkIsTheControllersTests(LoadedTestCase):
                              if engine == "PT"]
         self.assertTrue(used)
         self.assertEqual(missing, ["no active pay component marked 'Professional tax' for WB"])
+
+
+class EveryEngineAsksWhatItReadsTests(LoadedTestCase):
+    """Review finding 2 (p04): the bonus line asked two of the four figures the bonus reads."""
+
+    def test_every_figure_the_pay_run_reads_is_in_its_engines_go_live_line(self):
+        import re
+        from pathlib import Path
+
+        from .statutory import ENGINE_FIGURES, read_figure
+
+        source = (Path(__file__).parent / "payroll.py").read_text() + (Path(__file__).parent / "statutory.py").read_text()
+        for engine, kind in re.findall(r'read_figure\(\s*"(\w+)", FigureKind\.(\w+)', source):
+            self.assertIn(FigureKind[kind], ENGINE_FIGURES[engine], (engine, kind))
+        with self.assertRaisesMessage(AssertionError, "which ENGINE_FIGURES does not list for it"):
+            read_figure("ESI", FigureKind.BONUS_FLOOR, D(2026, 10, 31))
