@@ -16,35 +16,7 @@ from apps.core.tests_roles import RolesTestCase
 from .tests_payroll_api import PayrollApiTestCase
 
 
-@contextlib.contextmanager
-def trail_off():
-    """The application layer's receivers and wrappers, the actor stamp and (PostgreSQL) the 19 triggers, off."""
-    from django.db.models import QuerySet
-    from django.db.models.signals import m2m_changed, post_delete, post_save, pre_delete, pre_save
-    from apps.core import history, ledger_log
-    pairs = [(pre_save, history.before_save), (post_save, history.after_save), (pre_delete, history.before_delete),
-             (post_delete, history.after_delete), (m2m_changed, history.link_changed)]
-    saved = {n: getattr(QuerySet, n) for n in ("update", "bulk_create", "bulk_update")}
-    for signal, fn in pairs:
-        signal.disconnect(fn, dispatch_uid=f"apps.core.history.{fn.__name__}")
-    for n in saved:
-        setattr(QuerySet, n, getattr(saved[n], "__wrapped__", None) or saved[n].__closure__[0].cell_contents)
-    connection.execute_wrappers[:] = [w for w in connection.execute_wrappers if w is not ledger_log.stamp_actor]
-    if connection.vendor == "postgresql":
-        with connection.cursor() as c:
-            for t in ledger_log.product_tables(connection):
-                c.execute(f"ALTER TABLE {t} DISABLE TRIGGER erp_ledger_change")
-    try:
-        yield
-    finally:
-        if connection.vendor == "postgresql":
-            with connection.cursor() as c:
-                for t in ledger_log.product_tables(connection):
-                    c.execute(f"ALTER TABLE {t} ENABLE TRIGGER erp_ledger_change")
-        for n, fn in saved.items():
-            setattr(QuerySet, n, fn)
-        history.install()
-        connection.execute_wrappers.insert(0, ledger_log.stamp_actor)
+from apps.core.tests_trail_cost import trail_off  # noqa: E402  (the reviewer's own errored: g24)
 
 
 class PayRunPostNamesThePoster(PayrollApiTestCase):
