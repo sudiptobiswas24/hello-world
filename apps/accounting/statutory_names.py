@@ -55,6 +55,23 @@ def section_on(section, day):
     return section.section_1961 or section.code
 
 
+def period_names(tax, day, section=None):
+    """
+    The names the law gives the TDS (`tax` "tds") or TCS ("tcs") period
+    holding `day`: the Act, the quarterly return's form, the challan, and,
+    given a section, the section of the Act it is under. The one place a
+    period is named: a challan asks it for the month it pays, not the day it
+    is paid (March's tax paid on 7 April is the 1961 Act's), a return for its
+    quarter, a return row and a collection for their own day.
+    """
+    day = to_date(day)
+    names = {"act": name_on("act", day), "form": name_on(f"{tax}_return", day),
+             "challan_form": name_on(f"{tax}_challan", day)}
+    if section is not None:
+        names["section"] = section.code_on(day)
+    return names
+
+
 def heading(kind, start, end):
     """
     What a TDS (`kind` "tds") or TCS ("tcs") challan or return for the
@@ -64,6 +81,4 @@ def heading(kind, start, end):
     from .challans import company_tan
 
     end = to_date(end)
-    return {"tan": company_tan(f"a {kind.upper()} return"), "act": name_on("act", end),
-            "form": name_on(f"{kind}_return", end), "challan_form": name_on(f"{kind}_challan", end),
-            "from": to_date(start), "to": end}
+    return {"tan": company_tan(f"a {kind.upper()} return"), **period_names(kind, end), "from": to_date(start), "to": end}

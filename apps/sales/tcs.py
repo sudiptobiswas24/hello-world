@@ -226,12 +226,12 @@ def collect(invoice):
         account = section.payable_account
         entry = None
         if amount:
-            entry = _entry(invoice, account, amount, f"TCS {rate.section_code or section.code} on {invoice.number}",
+            entry = _entry(invoice, account, amount, f"TCS {section.code_on(day)} on {invoice.number}",
                            give_back=False)
         row = TcsCollection.objects.create(invoice=invoice, section=section, rate=rate, base=base,
                                            rate_percent=percent, pan=pan, amount=amount, date=day,
                                            journal_entry=entry, posted_account=account,
-                                           section_code=rate.section_code or section.code,
+                                           section_code=section.code_on(day),
                                            # Read once at the event, as the account is (O245).
                                            collection_code=section.form_code)
         for advance, counted in counts:
@@ -502,9 +502,8 @@ class TcsChallan(AuditModel):
             memo=f"TCS {section.code} for {month:%B %Y}, challan {challan_number}",
             make_challan=lambda total, entry, **kept: cls.objects.create(
                 **kept, section=section, month=month, date=to_date(date), bank_account=bank_account,
-                challan_number=challan_number, bsr_code=bsr_code, amount=total, journal_entry=entry,
-                section_code=section.code_on(to_date(date))),
-            signed=TcsCollection.signed, tax="tcs")
+                challan_number=challan_number, bsr_code=bsr_code, amount=total, journal_entry=entry),
+            signed=TcsCollection.signed, tax="tcs", period=month)
 
     @serialised("voided_entry")
     @takes_back
