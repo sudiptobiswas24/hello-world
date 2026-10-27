@@ -12,6 +12,7 @@ the state where it applies, its value and its source:
     professional_tax.csv     professional tax schedules (West Bengal from 1 October 2026)
     labour_welfare_fund.csv  the labour welfare fund (June and December)
     bonus.csv                the bonus rates, the calculation floor and the eligibility ceiling
+    overtime.csv             overtime, times the ordinary rate of wages
     minimum_wages.csv        minimum wages by state, employment, zone and skill, with VDA revisions
 
 Every row is loaded unconfirmed unless its confirmed_by column names a user
@@ -29,7 +30,7 @@ from apps.accounting.statutory_load import Loader, load_tcs, load_tds, number, r
 from apps.hr.payroll import PayComponent, PayComponentSlab, Statutory
 from apps.hr.statutory import MinimumWage, StatutoryFigure
 
-FIGURE_FILES = ("provident_fund", "esi", "bonus")
+FIGURE_FILES = ("provident_fund", "esi", "bonus", "overtime")
 LWF_SHARES = {"employee": Statutory.LWF, "employer": Statutory.LWF_EMPLOYER}
 
 

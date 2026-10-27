@@ -65,6 +65,7 @@ from .statutory import (
     bonus_ceiling,
     figure_as_of,
     pension_stops,
+    read_figure,
     refuse_if_kept,
     refuse_unconfirmed,
 )
@@ -1445,8 +1446,8 @@ class Payslip(AuditModel):
                 # The ECR files EPS wages at the pension ceiling of the month (O222), and none from the
                 # month after the member turns 58: the date of birth read is kept with it.
                 kept = self._terms(component.pk)
-                kept["eps_ceiling"] = figure_as_of(
-                    FigureKind.EPS_WAGE_CEILING, self.run.period_end, self.employee.work_state)[1]
+                kept["eps_ceiling"] = read_figure(
+                    "PF", FigureKind.EPS_WAGE_CEILING, self.run.period_end, self.employee.work_state)[1]
                 details = getattr(self.employee, "pay_details", None)
                 born = details.date_of_birth if details is not None else None
                 kept["born"] = born.isoformat() if born else None
@@ -1729,7 +1730,7 @@ class Payslip(AuditModel):
             for name, term in terms.items():
                 kept[name] = term
             return round_money(value)
-        value, term = figure_as_of(component.ceiling_figure, self.run.period_end, self.employee.work_state)
+        value, term = read_figure("PF", component.ceiling_figure, self.run.period_end, self.employee.work_state)
         self._terms(component.pk)[component.ceiling_figure] = term
         return round_money(value)
 
@@ -1764,7 +1765,8 @@ class Payslip(AuditModel):
         self.__dict__.setdefault("_hours", {})[row.pk] = sum((hours for _day, hours in worked), Decimal("0"))
         if not worked:
             return Decimal("0")
-        multiplier, term = figure_as_of(FigureKind.OVERTIME_MULTIPLIER, self.run.period_end, self.employee.work_state)
+        multiplier, term = read_figure("Overtime", FigureKind.OVERTIME_MULTIPLIER, self.run.period_end,
+                                       self.employee.work_state)
         hours_a_day = self.employee.hours_a_day
         if not hours_a_day or hours_a_day <= 0:
             # A row from before Employee.save refused it (review RP7): said, not a bare division by nothing.
@@ -1904,12 +1906,12 @@ class Payslip(AuditModel):
     def _coverage_ceiling(self, component):
         """What a month's wages may be for `component` to apply: its own, or the dated ESI or bonus eligibility."""
         if component.statutory in ESI_RATES:
-            kind = FigureKind.ESI_WAGE_CEILING
+            engine, kind = "ESI", FigureKind.ESI_WAGE_CEILING
         elif component.ceiling_figure == BONUS_CEILING:
-            kind = FigureKind.BONUS_ELIGIBILITY
+            engine, kind = "Bonus", FigureKind.BONUS_ELIGIBILITY
         else:
             return component.coverage_ceiling
-        value, term = figure_as_of(kind, self.run.period_end, self.employee.work_state)
+        value, term = read_figure(engine, kind, self.run.period_end, self.employee.work_state)
         self._terms(component.pk)[kind.value] = term
         return value
 
@@ -1923,11 +1925,11 @@ class Payslip(AuditModel):
         rate = row.amount
         if component.statutory in ESI_RATES:
             kind = ESI_RATES[component.statutory]
-            rate, term = figure_as_of(kind, end, state)
+            rate, term = read_figure("ESI", kind, end, state)
             self._terms(component.pk)[kind.value] = term
         elif component.ceiling_figure == BONUS_CEILING:
-            least, least_term = figure_as_of(FigureKind.BONUS_MINIMUM_PERCENT, end, state)
-            most, most_term = figure_as_of(FigureKind.BONUS_MAXIMUM_PERCENT, end, state)
+            least, least_term = read_figure("Bonus", FigureKind.BONUS_MINIMUM_PERCENT, end, state)
+            most, most_term = read_figure("Bonus", FigureKind.BONUS_MAXIMUM_PERCENT, end, state)
             if not least <= rate <= most:
                 raise ValidationError(
                     f"{component.code} is paid to {self.employee} at {rate.normalize():f}%, and the law's bonus on "
