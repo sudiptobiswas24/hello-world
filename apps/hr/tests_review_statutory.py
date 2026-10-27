@@ -248,3 +248,18 @@ class BonusFortnights(BonusWorld, LoadedTestCase):
         rise.confirm(User.objects.get(username="c-bonus"))
         run = self.month_run(2026, 10, employees=[person])
         self.assertEqual(self.line(run, person, self.bonus).amount, Decimal("891.31"))
+
+
+class ApiRefusalProbes(LoadedTestCase):
+    def test_p20_an_unconfirmed_levy_stops_the_run_over_the_api_in_words_not_a_500(self):
+        self.load()
+        person = self.worker("API", work_state="WB")
+        self.paid(person, self.basic, "25000")
+        self.paid(person, self.wb, "1")
+        client = self.in_role("Payroll Officer")
+        made = client.post("/api/hr/pay-runs/", {"period_start": "2026-10-01", "period_end": "2026-10-31",
+                                                 "pay_date": "2026-10-31"}, format="json")
+        self.assertEqual(made.status_code, 201, made.content)
+        answer = client.post(f"/api/hr/pay-runs/{made.json()['id']}/calculate/", {}, format="json")
+        self.assertEqual(answer.status_code, 400, answer.content)
+        self.assertIn("not confirmed", answer.content.decode())
