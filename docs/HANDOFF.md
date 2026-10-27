@@ -156,7 +156,7 @@ built.
        - A new container: build .venv from the gated tree's own
          requirements.txt, then `pip install playwright` (it is in no
          requirements file); recreate PostgreSQL's role
-         (`CREATE ROLE erp LOGIN PASSWORD 'erp' CREATEDB`) if the cluster is
+         (`CREATE ROLE erp LOGIN PASSWORD 'erp' CREATEDB CREATEROLE`; CREATEROLE since g24, for the two-role test in apps/web/tests_books_log_roles.py, which skips without it) if the cluster is
          new; add `.venv` and `frontend/node_modules` to .git/info/exclude
          when they are links, or the tree reads dirty.
        - The mig lane outgrew its 6900 s cap (20 of 33 by then, alone). It
