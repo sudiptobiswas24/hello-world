@@ -111,6 +111,9 @@ class Statutory(models.TextChoices):
 PF_KINDS = (Statutory.PF, Statutory.PF_EMPLOYER, Statutory.EPS)
 # The levies whose schedules are the law's slabs: read only once the Controller confirms them.
 SLAB_LEVIES = (Statutory.PT, Statutory.LWF, Statutory.LWF_EMPLOYER)
+# ESI's shares are the law's dated rates, not a rate typed per person, and its coverage ceiling the dated
+# figure (statutory.FigureKind): one source, read by the slip's period and kept on its line.
+ESI_RATES = {Statutory.ESI: FigureKind.ESI_EMPLOYEE_RATE, Statutory.ESI_EMPLOYER: FigureKind.ESI_EMPLOYER_RATE}
 
 
 # What piece work can be counted in, registered by the modules that record
@@ -263,6 +266,10 @@ class PayComponent(AuditModel):
                                   f"{self.get_ceiling_figure_display()}, not both.")
         if self.ceiling_figure and self.basis not in (ComponentBasis.PERCENT_OF_GROSS, ComponentBasis.SLAB):
             raise ValidationError(f"{self.code}: only what is taken of a base has a ceiling.")
+        if self.statutory in ESI_RATES and (self.coverage_ceiling is not None or self.basis !=
+                                            ComponentBasis.PERCENT_OF_GROSS):
+            raise ValidationError(f"{self.code}: ESI is a percentage at the dated ESI rate, covered up to the dated "
+                                  "ESI ceiling (People > Statutory figures), not a ceiling of its own.")
         if self.ceiling_figure == BONUS_CEILING and self.coverage_ceiling is not None:
             raise ValidationError(f"{self.code}: the bonus rule's eligibility is the dated ceiling, not one of "
                                   "its own.")
@@ -512,6 +519,10 @@ class EmployeeCompensation(AuditModel):
         self.effective_to = to_date(self.effective_to)
         if self.effective_to and self.effective_to < self.effective_from:
             raise ValidationError("effective_to cannot precede effective_from.")
+        if self.component.statutory in ESI_RATES and self.amount != 1:
+            raise ValidationError(
+                f"{self.component.code} is taken at the dated ESI rate (People > Statutory figures), not a rate "
+                f"typed for {self.employee}. Give it as 1: they are insured.")
         if self.component.basis == ComponentBasis.OVERTIME_ORDINARY and self.amount != 1:
             raise ValidationError(
                 f"{self.component.code} is paid at a multiple of {self.employee}'s ordinary rate of wages, worked "
@@ -1446,7 +1457,7 @@ class Payslip(AuditModel):
                         marked, label = Statutory.PF_EMPLOYER, f"{component.name}, to provident fund past 58"
             for row, amount, quantity in owed:
                 amount, kind = component.round(amount), component.kind
-                rate = row.amount
+                rate = self.__dict__.get("_rates", {}).get(row.pk, row.amount)
                 if component.basis == ComponentBasis.OVERTIME_ORDINARY and amount > 0:
                     quantity = self._hours.get(row.pk)
                     rate = (amount / quantity).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
@@ -1888,12 +1899,42 @@ class Payslip(AuditModel):
         return wages <= ceiling
 
     def _coverage_ceiling(self, component):
-        """What a month's wages may be for `component` to apply: its own, or the bonus rule's dated eligibility."""
-        if component.ceiling_figure != BONUS_CEILING:
+        """What a month's wages may be for `component` to apply: its own, or the dated ESI or bonus eligibility."""
+        if component.statutory in ESI_RATES:
+            kind = FigureKind.ESI_WAGE_CEILING
+        elif component.ceiling_figure == BONUS_CEILING:
+            kind = FigureKind.BONUS_ELIGIBILITY
+        else:
             return component.coverage_ceiling
-        value, term = figure_as_of(FigureKind.BONUS_ELIGIBILITY, self.run.period_end, self.employee.work_state)
-        self._terms(component.pk)[FigureKind.BONUS_ELIGIBILITY.value] = term
+        value, term = figure_as_of(kind, self.run.period_end, self.employee.work_state)
+        self._terms(component.pk)[kind.value] = term
         return value
+
+    def _percent(self, row):
+        """
+        The percentage `row` is taken at on this slip: ESI's dated rate of the
+        period's last day; a bonus rate typed for the person, refused outside
+        the dated least and most; otherwise the rate typed. Kept on the line.
+        """
+        component, end, state = row.component, self.run.period_end, self.employee.work_state
+        rate = row.amount
+        if component.statutory in ESI_RATES:
+            kind = ESI_RATES[component.statutory]
+            rate, term = figure_as_of(kind, end, state)
+            self._terms(component.pk)[kind.value] = term
+        elif component.ceiling_figure == BONUS_CEILING:
+            least, least_term = figure_as_of(FigureKind.BONUS_MINIMUM_PERCENT, end, state)
+            most, most_term = figure_as_of(FigureKind.BONUS_MAXIMUM_PERCENT, end, state)
+            if not least <= rate <= most:
+                raise ValidationError(
+                    f"{component.code} is paid to {self.employee} at {rate.normalize():f}%, and the law's bonus on "
+                    f"{end:%d %b %Y} is from {least.normalize():f}% to {most.normalize():f}% of wages. Correct their "
+                    "rate.")
+            kept = self._terms(component.pk)
+            kept[FigureKind.BONUS_MINIMUM_PERCENT.value], kept[FigureKind.BONUS_MAXIMUM_PERCENT.value] = \
+                least_term, most_term
+        self.__dict__.setdefault("_rates", {})[row.pk] = rate
+        return rate
 
     def _monthly_rate(self, deciding, opening, month, following):
         """
@@ -1952,7 +1993,7 @@ class Payslip(AuditModel):
                 if term is not None:
                     self._terms(component.pk)["slab"] = term
             else:
-                amount = base * row.amount / Decimal("100")
+                amount = base * self._percent(row) / Decimal("100")
             return amount if whole else self._part(amount, start, end)
         if component.basis == ComponentBasis.OVERTIME_ORDINARY:
             return self._overtime_at_ordinary_rate(row, start, end)

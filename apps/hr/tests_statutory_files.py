@@ -27,8 +27,7 @@ class FilesTestCase(StatutoryTestCase):
         for component, kind in ((self.pf, Statutory.PF), (self.pf_er, Statutory.PF_EMPLOYER),
                                 (self.esi, Statutory.ESI), (self.esi_er, Statutory.ESI_EMPLOYER),
                                 (self.pt, Statutory.PT)):
-            component.statutory = kind
-            component.save()
+            self.mark(component, kind)
         self.a.uan, self.a.esi_number = "100200300400", "3100200300"
         self.a.save()
         self.b.uan = "100200300401"

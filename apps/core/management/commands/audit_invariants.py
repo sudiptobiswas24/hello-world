@@ -1534,6 +1534,31 @@ class Command(BaseCommand):
                     f"Company.{field.name} is declared but never read — "
                     "configurable and doing nothing.",
                 ))
+        findings += self.unread_figures(code)
+        return findings
+
+    def unread_figures(self, code, checks_only=None):
+        """
+        A statutory figure no engine reads (hr.statutory.FigureKind): loaded,
+        confirmed by the Controller, and changing nothing. ESI's rates and
+        the bonus percentages were exactly this (g24). A mention in the
+        go-live check (hr/statutory_check.py) asks whether one is confirmed;
+        it is not a read.
+        """
+        from apps.hr.statutory import FigureKind
+
+        if checks_only is None:
+            from pathlib import Path
+
+            checks_only = (Path(django_apps.get_app_config("hr").path) / "statutory_check.py").read_text()
+        findings = []
+        for kind in FigureKind:
+            pattern = rf"FigureKind\.{kind.name}\b"
+            if len(re.findall(pattern, code)) - len(re.findall(pattern, checks_only)) <= 0:
+                findings.append((
+                    "inert setting",
+                    f"The statutory figure {kind.label!r} is loaded and confirmed but no engine reads it.",
+                ))
         return findings
 
     # -- shape 1: mirror gap ---------------------------------------------
