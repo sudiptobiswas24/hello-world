@@ -681,6 +681,11 @@ class Tax(AuditModel):
         help_text="Reverse charge: where the tax the company owes on the vendor's supply waits to be "
                   "paid in cash.",
     )
+    reverse_charge_waiting_account = models.ForeignKey(
+        Account, null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="Reverse charge: where the credit waits until the tax is paid in cash and its document stands "
+                  "(Rule 36(1)(b), s.16(2)(a)); it moves to the paid account then.",
+    )
 
     class Meta:
         verbose_name_plural = "taxes"
@@ -718,6 +723,11 @@ class Tax(AuditModel):
             if not self.reverse_charge_account_id:
                 raise ValidationError({"reverse_charge_account": "Say where the tax the company owes on it "
                                                                  "is owed."})
+            if not self.reverse_charge_waiting_account_id or \
+                    self.reverse_charge_waiting_account_id == self.paid_account_id:
+                raise ValidationError({"reverse_charge_waiting_account": (
+                    "Say where its credit waits until the tax is paid in cash and its document stands: an account "
+                    "of its own, not the paid account it is claimed in.")})
             if self.price_included:
                 raise ValidationError({"price_included": "The vendor's price holds no tax it does not charge."})
         if self.pk and self._used():

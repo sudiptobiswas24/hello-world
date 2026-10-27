@@ -186,10 +186,13 @@ class SelfInvoice(AuditModel):
                     "carry a penalty.")
             number = DocumentSequence.next_for("gst.self_invoice", day, name="Self-invoices (reverse charge)",
                                                prefix="SI-")
-            return cls.objects.create(
+            made = cls.objects.create(
                 number=number, bill=bill, date=day, received_on=received, supplier_name=bill.vendor.name,
                 place_of_supply=bill.place_of_supply, taxable=figures["taxable"],
                 **{head: figures[head] for head in HEADS})
+            # Tax already paid in cash waited for this document; its credit is claimed now.
+            take_credit(_paid_rows_of(bill), day)
+            return made
 
     @serialised("cancelled_on")
     @takes_back
@@ -202,6 +205,10 @@ class SelfInvoice(AuditModel):
         self.cancelled_on = correction_date(on_date, self.date, f"{self.number} is not cancelled on", "it was issued")
         self.cancellation_reason = reason[:255]
         super().save(update_fields=["cancelled_on", "cancellation_reason", "updated_at"])
+        # The credit rested on this document (s.16(2)(a)): without it, what was claimed is taken back.
+        take_back_credit(ReverseChargeCredit.objects.filter(
+            paid__in=_paid_rows_of(self.bill), taken_back_entry__isnull=True), self.cancelled_on,
+            f"Credit taken back: self-invoice {self.number} cancelled")
         return self
 
 
@@ -443,6 +450,9 @@ class GstCashPayment(AuditModel):
             GstCashPaymentRow.objects.bulk_create([
                 GstCashPaymentRow(payment=payment, row=row, head=row.gst_head, account_id=row.owed_account_id,
                                   amount=amount) for row, amount in signed])
+            # Paid: the credit of each tax whose document stands is claimed now; the rest waits for its
+            # self-invoice (Rule 36(1)(b), s.16(2)(a)).
+            take_credit(GstCashPaymentRow.objects.filter(payment=payment), day)
             return payment
 
     @serialised("voided_entry")
@@ -451,7 +461,11 @@ class GstCashPayment(AuditModel):
         """The challan did not go through: the tax is owed again, and its rows wait for another."""
         from apps.accounting.challans import void_challan
 
-        return void_challan(self, on_date)
+        entry = void_challan(self, on_date)
+        # Not paid after all: the credit it earned is taken back on the void's day.
+        take_back_credit(ReverseChargeCredit.objects.filter(paid__payment=self, taken_back_entry__isnull=True),
+                         to_date(entry.date), f"Credit taken back: challan CPIN {self.cpin} voided")
+        return entry
 
 
 class GstCashPaymentRow(models.Model):
@@ -530,3 +544,109 @@ def challans_paid():
     paid = GstCashPayment.objects.values("journal_entry")
     voided = GstCashPayment.objects.filter(voided_entry__isnull=False).values("voided_entry")
     return JournalEntry.objects.filter(Q(pk__in=paid) | Q(pk__in=voided))
+
+
+# -- The credit, once paid and documented ---------------------------------------
+
+class ReverseChargeCredit(models.Model):
+    """
+    The credit of one reverse-charge tax a challan paid, claimed once its document stood: the self-invoice for a
+    supplier not registered when billed, the supplier's own invoice (the bill) for one who was (Rule 36(1)(b),
+    s.16(2)(a)). Dr the kept credit account / Cr the kept waiting account. Taken back by a reversal when the
+    challan is voided or the self-invoice cancelled; 4(A)(3) reads the credits standing.
+    """
+
+    paid = models.ForeignKey(GstCashPaymentRow, on_delete=models.PROTECT, related_name="credits")
+    amount = models.DecimalField(max_digits=18, decimal_places=2, editable=False)
+    date = models.DateField(editable=False)
+    journal_entry = models.ForeignKey(JournalEntry, on_delete=models.PROTECT, related_name="+", editable=False)
+    taken_back_on = models.DateField(null=True, blank=True, editable=False)
+    taken_back_entry = models.ForeignKey(JournalEntry, null=True, blank=True, on_delete=models.PROTECT,
+                                         related_name="+", editable=False)
+
+    class Meta:
+        ordering = ["id"]
+        constraints = [models.UniqueConstraint(fields=["paid"], condition=Q(taken_back_entry__isnull=True),
+                                               name="one_standing_credit_per_paid_tax")]
+
+    def __str__(self):
+        return f"{self.paid} credit {self.amount}"
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            before = ReverseChargeCredit.objects.get(pk=self.pk)
+            if (before.paid_id, before.amount, before.date, before.journal_entry_id) != (
+                    self.paid_id, self.amount, self.date, self.journal_entry_id) or before.taken_back_entry_id:
+                raise ValidationError("A credit claimed is a fact; it is taken back, never changed.")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError("A credit claimed is a fact; it is taken back, never deleted.")
+
+
+def documented(bill):
+    """Whether the document the credit rests on stands: the supplier's invoice, or the self-invoice."""
+    original = bill.debits if bill.debits_id else bill
+    if original.party_gstin:
+        return True
+    return SelfInvoice.objects.filter(bill=original, cancelled_on__isnull=True).exists()
+
+
+def _paid_rows_of(bill):
+    """The reverse-charge taxes of a bill and its debit notes that standing challans paid."""
+    return GstCashPaymentRow.objects.filter(payment__voided_entry__isnull=True).filter(
+        Q(row__line__bill=bill) | Q(row__line__bill__debits=bill))
+
+
+def _credit_entry(paid_rows, day, memo, back):
+    """Dr credit / Cr waiting by each row's kept accounts, or the other way to take it back."""
+    by_pair = defaultdict(Decimal)
+    for paid in paid_rows:
+        by_pair[(paid.row.credit_account_id, paid.row.waiting_account_id)] += paid.amount
+    entry = JournalEntry.objects.create(date=day, memo=memo)
+    for (credit, waiting), amount in sorted(by_pair.items()):
+        amount = -amount if back else amount
+        if not amount:
+            continue
+        for account, debit in ((credit, amount), (waiting, -amount)):
+            JournalLine.objects.create(entry=entry, account_id=account, debit=max(debit, ZERO),
+                                       credit=max(-debit, ZERO), description=memo)
+    entry.post()
+    return entry
+
+
+def take_credit(paid_rows, day):
+    """Claim the credit of every paid tax here whose document stands and that has none standing."""
+    rows = [paid for paid in paid_rows.select_related("row__line__bill", "payment").order_by("pk")
+            if documented(paid.row.line.bill) and not paid.credits.filter(taken_back_entry__isnull=True).exists()]
+    rows = [paid for paid in rows if paid.amount]
+    if not rows:
+        return None
+    # Claimed when both have happened: the payment and the document.
+    day = max([to_date(day)] + [to_date(paid.payment.date) for paid in rows])
+    entry = _credit_entry(rows, day, "Reverse-charge credit claimed: paid in cash, its document standing", False)
+    ReverseChargeCredit.objects.bulk_create([
+        ReverseChargeCredit(paid=paid, amount=paid.amount, date=day, journal_entry=entry) for paid in rows])
+    return entry
+
+
+def take_back_credit(credits, day, memo):
+    """Take the standing `credits` back, on `day` or the last of their own days if later."""
+    credits = list(credits.select_related("paid__row").order_by("pk"))
+    if not credits:
+        return None
+    day = max([to_date(day)] + [credit.date for credit in credits])
+    entry = _credit_entry([credit.paid for credit in credits], day, memo, True)
+    ReverseChargeCredit.objects.filter(pk__in=[credit.pk for credit in credits]).update(
+        taken_back_on=day, taken_back_entry=entry)
+    return entry
+
+
+def credit_claimed(start, end):
+    """{head: amount} of credit standing on challans for the months from `start` to `end`: 4(A)(3)."""
+    claimed = {head: ZERO for head in HEADS}
+    for credit in ReverseChargeCredit.objects.filter(
+            taken_back_entry__isnull=True, paid__payment__month__gte=start.replace(day=1),
+            paid__payment__month__lte=end).select_related("paid"):
+        claimed[credit.paid.head] += credit.amount
+    return claimed

@@ -616,11 +616,18 @@ def gstr3b(start, end):
     result["4A5"].pop("taxable")
     # Reverse charge is paid in cash, never from credit (s.2(82), s.49(4)), and its credit is taken once
     # paid (Rule 36(1)(b)): 6.1 and 4(A)(3) read the challans standing for the period, not the bills (mistake 4).
-    from .reverse_charge import paid_in_cash
+    from .reverse_charge import credit_claimed, paid_in_cash
 
     paid = paid_in_cash(start, end)
     payable = {head: result["3.1d"][head] for head in HEADS}
-    result["4A3"] = dict(paid)
+    # Credit only where the document stands as well (s.16(2)(a)): the self-invoice for a supplier not
+    # registered, the supplier's invoice for one who was. Read from the credits claimed, not recomputed.
+    result["4A3"] = credit_claimed(start, end)
+    for head in HEADS:
+        if paid[head] != result["4A3"][head]:
+            result["warnings"].append(
+                f"Reverse charge {head.upper()}: {paid[head]} paid in cash, {result['4A3'][head]} claimed; the rest "
+                "waits for its self-invoice.")
     result["6.1"] = {"reverse_charge": {"payable": payable, "paid_through_itc": {head: ZERO for head in HEADS},
                                         "paid_in_cash": dict(paid)}}
     for head in HEADS:

@@ -31,9 +31,12 @@ class ReverseChargeTests(GstReturnTestCase):
                                                   account_type=AccountType.LIABILITY)
         self.itc = Account.objects.create(code="1390", name="GST input on reverse charge",
                                           account_type=AccountType.ASSET)
+        self.waiting = Account.objects.create(code="1391", name="Reverse-charge credit waiting",
+                                              account_type=AccountType.ASSET)
         self.gta_igst = Tax.objects.create(
             code="IGST5RC", name="IGST 5% reverse charge", rate=D("5"), gst_head="igst", scope=TaxScope.PURCHASE,
-            paid_account=self.itc, reverse_charge=True, reverse_charge_account=self.rcm_payable)
+            paid_account=self.itc, reverse_charge=True, reverse_charge_account=self.rcm_payable,
+            reverse_charge_waiting_account=self.waiting)
         self.agency = self.party("GTA", role=PartyRole.VENDOR, gstin=gstin("29AABCV4444D1Z"))
 
     def freight_bill(self, vendor=None, amount="10000"):
@@ -47,8 +50,9 @@ class ReverseChargeTests(GstReturnTestCase):
     def test_owed_by_the_company_and_claimed_back(self):
         bill = self.freight_bill()
         self.assertEqual((bill.total(), bill.amount_due()), (D("10000.00"), D("10000.00")))
-        self.assertEqual((self.ledger("2000"), self.ledger("2290"), self.ledger("1390")),
-                         (D("10000.00"), D("500.00"), D("-500.00")))
+        # The credit waits in 1391 until the tax is paid in cash and its document stands (review_rcm F2).
+        self.assertEqual((self.ledger("2000"), self.ledger("2290"), self.ledger("1391"), self.ledger("1390")),
+                         (D("10000.00"), D("500.00"), D("-500.00"), D("0")))
         result = gstr3b(*SEPTEMBER)
         self.assertEqual(result["3.1d"], {"taxable": D("10000.00"), "igst": D("500.00"), "cgst": D("0"),
                                           "sgst": D("0"), "cess": D("0")})

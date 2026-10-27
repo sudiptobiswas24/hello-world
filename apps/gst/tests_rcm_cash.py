@@ -43,12 +43,14 @@ class ReverseChargeCashTestCase(GstReturnTestCase):
         self.rcm_igst = account("2291", AccountType.LIABILITY)
         self.rcm_local = account("2292", AccountType.LIABILITY)
         self.itc = account("1390", AccountType.ASSET)
+        self.waiting = account("1391", AccountType.ASSET)
         self.bank = account("1010", AccountType.ASSET, holds_money=True)
         self.ecl = account("1395", AccountType.ASSET)
 
         def rcm(code, rate, head, owed):
             return Tax.objects.create(code=code, name=code, rate=D(rate), gst_head=head, scope=TaxScope.PURCHASE,
-                                      paid_account=self.itc, reverse_charge=True, reverse_charge_account=owed)
+                                      paid_account=self.itc, reverse_charge=True, reverse_charge_account=owed,
+                                      reverse_charge_waiting_account=self.waiting)
 
         self.igst5 = rcm("IGST5RC", "5", "igst", self.rcm_igst)
         self.cgst25 = rcm("CGST25RC", "2.5", "cgst", self.rcm_local)
@@ -167,8 +169,9 @@ class SelfInvoiceTests(ReverseChargeCashTestCase):
 
 class CashPaymentTests(ReverseChargeCashTestCase):
     def test_paid_in_cash_through_the_cash_ledger_and_then_claimed(self):
-        self.freight_bill()
-        self.local_bill()
+        # Both suppliers unregistered: the credit rests on the self-invoices as well (review_rcm F2).
+        SelfInvoice.issue(self.freight_bill(), on_date=DAY)
+        SelfInvoice.issue(self.local_bill(), on_date=DAY)
         before = gstr3b(*SEPTEMBER)
         self.assertEqual(before["4A3"], {"igst": D("0"), "cgst": D("0"), "sgst": D("0"), "cess": D("0")})
         self.assertEqual(len([w for w in before["warnings"] if w.startswith("Reverse charge")]), 3)
@@ -359,12 +362,12 @@ class KeptAccountAndRoundingTests(ReverseChargeCashTestCase):
                     if "reverse_charge_account" in text]
 
         self.assertEqual(findings("", ""), [])
-        planted = findings("reverse_totals[owed_account_at_posting(line, tax)] -= base",
-                           "reverse_totals[tax.reverse_charge_account] -= base")
-        self.assertEqual(len(planted), 1)
-        self.assertIn("_build_journal_entry reads `tax.reverse_charge_account`", planted[0])
-        keyed = findings("self.owed_account = owed_account_at_posting(self.line, self.tax)",
-                         "self.owed_account_id = self.tax.reverse_charge_account_id")
+        planted = findings("owed, waiting, _ = reverse_charge_accounts_at_posting(line, tax)",
+                           "owed, waiting = tax.reverse_charge_account, tax.reverse_charge_waiting_account")
+        self.assertTrue(planted)
+        self.assertTrue(all("_build_journal_entry reads `tax.reverse_charge" in text for text in planted), planted)
+        keyed = findings("reverse_charge_accounts_at_posting(self.line, self.tax)",
+                         "(self.tax.reverse_charge_account_id, None, None)")
         self.assertTrue(any("self.tax.reverse_charge_account_id" in text for text in keyed), keyed)
 
 
@@ -405,3 +408,36 @@ class VoucherRemainderTests(ReverseChargeCashTestCase):
         made = [PaymentVoucher.issue_for(self.paid_supplier(bill, part))[0].igst
                 for part in ("3333.33", "3333.33", "3333.34")]
         self.assertEqual(made, [D("166.67"), D("166.67"), D("166.66")])
+
+
+class CreditOnItsDocumentTests(ReverseChargeCashTestCase):
+    """
+    review_rcm F2 (s.16(2)(a), Rule 36(1)(b)): credit on reverse charge once the tax is paid in cash and its
+    document stands. Freight 10,000 from an unregistered trucker, IGST 500:
+      paid, no self-invoice: 4(A)(3) 0, 500 waits in 1391; self-invoice issued 20 Oct: 500 to 1390, 4(A)(3) 500
+      self-invoice cancelled 22 Oct: 500 back to 1391, 4(A)(3) 0; challan voided: nothing more to take back
+      a registered GTA's bill is its own document: claimed with the challan
+    """
+
+    def test_it_waits_for_the_self_invoice_and_goes_back_with_it(self):
+        bill = self.freight_bill()
+        self.pay()
+        self.assertEqual((self.ledger("1391"), self.ledger("1390"), gstr3b(*SEPTEMBER)["4A3"]["igst"]),
+                         (D("-500.00"), D("0"), D("0")))
+        made = SelfInvoice.issue(bill, on_date=datetime.date(2026, 10, 10))
+        self.assertEqual((self.ledger("1391"), self.ledger("1390"), gstr3b(*SEPTEMBER)["4A3"]["igst"]),
+                         (D("0.00"), D("-500.00"), D("500.00")))
+        made.cancel("issued to the wrong supplier", on_date=datetime.date(2026, 10, 22))
+        self.assertEqual((self.ledger("1391"), self.ledger("1390"), gstr3b(*SEPTEMBER)["4A3"]["igst"]),
+                         (D("-500.00"), D("0.00"), D("0")))
+        GstCashPayment.objects.get().void(on_date=datetime.date(2026, 10, 23))
+        self.assertEqual((self.ledger("1391"), self.ledger("1390"), self.ledger("2291")),
+                         (D("-500.00"), D("0.00"), D("500.00")))
+
+    def test_a_registered_agencys_bill_is_its_document_and_a_void_takes_the_credit_back(self):
+        self.freight_bill(vendor=self.gta)
+        payment = self.pay()
+        self.assertEqual((self.ledger("1390"), gstr3b(*SEPTEMBER)["4A3"]["igst"]), (D("-500.00"), D("500.00")))
+        payment.void(on_date=datetime.date(2026, 10, 20))
+        self.assertEqual((self.ledger("1391"), self.ledger("1390"), gstr3b(*SEPTEMBER)["4A3"]["igst"]),
+                         (D("-500.00"), D("0.00"), D("0")))

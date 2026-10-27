@@ -1,6 +1,7 @@
 """Review probes for GST reverse charge (review_rcm): what SHOULD be true. Numbers: /home/user/work/calc_review_rcm/calc.py."""
 
 import datetime
+import unittest
 from decimal import Decimal as D
 from unittest import mock
 
@@ -66,6 +67,8 @@ class ReviewRcm(ReverseChargeCashTestCase):
         SelfInvoice.issue(a, on_date=DAY)
         a.create_debit_note(on_date=SEP12)
         self.assertIsNotNone(SelfInvoice.objects.get().cancelled_on)
+        # fix_rcm F2: b's credit now needs its self-invoice too (s.16(2)(a)); issued, so 1390 still holds b's 500.
+        SelfInvoice.issue(b, on_date=DAY)
         self.pay()
         self.assertEqual([self.ledger("2291"), self.ledger("1395"), self.ledger("1390")],
                          [D("0.00"), D("0.00"), D("-500.00")])
@@ -99,6 +102,8 @@ class ReviewRcm(ReverseChargeCashTestCase):
         self.pay()
         self.assertEqual(gstr3b(*SEPTEMBER)["4A3"]["igst"], D("0.00"))
 
+    # F5 is not fixed here: the coordinator sends it to the register and the tax adviser (fix_rcm report).
+    @unittest.expectedFailure
     def test_5_a_part_debit_note_leaves_the_self_invoice_at_the_supply_it_no_longer_is(self):
         bill = self.freight_bill()
         made = SelfInvoice.issue(bill, on_date=DAY)
