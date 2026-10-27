@@ -243,6 +243,9 @@ class PayComponent(AuditModel):
 
     class Meta:
         ordering = ["sequence", "code"]
+        # Which statutory line a component is decides which law's figures gate it (the PT and LWF schedules, the
+        # ESI rates): a fact the setup laid down, changed by the Controller only (relink), never by an edit.
+        permissions = [("relink_paycomponent", "Can change which statutory line a pay component is")]
 
     def __str__(self):
         return f"{self.code} - {self.name}"

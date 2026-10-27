@@ -384,3 +384,36 @@ class EveryFigureIsReadTests(LoadedTestCase):
         # A mention in the go-live check alone is not a read.
         self.assertEqual(len(command.unread_figures(planted + "\nFigureKind.ESI_EMPLOYER_RATE",
                                                     "FigureKind.ESI_EMPLOYER_RATE")), 1)
+
+
+class TheStatutoryLinkIsTheControllersTests(LoadedTestCase):
+    """Review finding 1 (p03): unmarking a levy walked round the unconfirmed gate and hid it from go-live."""
+
+    def test_a_payroll_officer_cannot_relink_and_the_controllers_relink_is_recorded(self):
+        from apps.core.history import RecordEvent
+
+        url = f"/api/hr/pay-components/{self.wb.pk}/"
+        refused = self.in_role("Payroll Officer").patch(url, {"statutory": ""}, format="json")
+        self.assertEqual(refused.status_code, 400, refused.content)
+        self.assertIn("is the Controller's to change", refused.content.decode())
+        self.assertEqual(self.in_role("Payroll Officer").post(url + "relink/", {"statutory": ""},
+                                                              format="json").status_code, 403)
+        renamed = self.in_role("Payroll Officer").patch(url, {"name": "Professional tax (WB)"}, format="json")
+        self.assertEqual(renamed.status_code, 200, renamed.content)
+        answer = self.in_role("Controller").post(url + "relink/", {"statutory": ""}, format="json")
+        self.assertEqual(answer.status_code, 200, answer.content)
+        self.wb.refresh_from_db()
+        self.assertEqual(self.wb.statutory, "")
+        self.assertTrue(RecordEvent.objects.filter(object_id=self.wb.pk, action="relink",
+                                                   summary="statutory pt to none").exists())
+
+    def test_go_live_counts_professional_tax_from_where_people_work_not_from_the_link(self):
+        from .models import Employee
+
+        Employee.objects.update(employment_status="terminated")
+        self.worker("Q", work_state="WB")
+        PayComponent.objects.filter(pk=self.wb.pk).update(statutory="")
+        [(used, missing)] = [(used, missing) for engine, used, missing in statutory_gaps(D(2026, 10, 26))
+                             if engine == "PT"]
+        self.assertTrue(used)
+        self.assertEqual(missing, ["no active pay component marked 'Professional tax' for WB"])
