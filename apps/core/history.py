@@ -497,6 +497,72 @@ def logged_bulk_update(original):
     return bulk_update
 
 
+# -- who has acted is kept ---------------------------------------------------------------------------------
+
+class HasActed(PermissionDenied):
+    """A login or a role that has acted, deleted: refused. It is deactivated (a login) or emptied (a role)."""
+
+
+def what_it_did(instance):
+    """Why `instance` (a login or a role) may not be deleted, in words, or "" when it has never acted."""
+    from django.apps import apps
+    from django.contrib.auth import get_user_model
+    from django.contrib.auth.models import Group
+
+    if isinstance(instance, Group):
+        if RecordEvent.objects.filter(content_type=ContentType.objects.get_for_model(Group), object_id=instance.pk).exists():
+            return "it has its own lines in the edit log"
+        if instance.user_set.exists():
+            return "logins hold it"
+        return ""
+    if RecordEvent.objects.filter(who=instance).exists():
+        return "it has lines in the edit log as the one who acted"
+    user_model = get_user_model()
+    for model in apps.get_models():
+        for name in ("created_by", "updated_by"):
+            try:
+                field = model._meta.get_field(name)
+            except Exception:  # noqa: BLE001 - a model without the stamp
+                continue
+            if getattr(field, "related_model", None) is user_model and \
+                    model._base_manager.filter(**{name: instance}).exists():
+                return f"it made or changed {model._meta.verbose_name_plural}"
+    return ""
+
+
+def refuse_deleting_who_acted(instance):
+    from django.contrib.auth.models import Group
+
+    reason = what_it_did(instance)
+    if not reason:
+        return
+    if isinstance(instance, Group):
+        raise HasActed(f"The role {instance} is kept: {reason}. Take its logins and rights off instead; a role "
+                       f"that has acted is never deleted, so the edit log keeps naming it.")
+    raise HasActed(f"The login {instance.get_username()} is kept: {reason}. Deactivate it instead (Active off); a "
+                   f"login that has acted is never deleted, so the edit log keeps naming it.")
+
+
+def keeping_who_acted(original):
+    """QuerySet.delete() of logins or roles: each asked before anything is deleted, as one by one is."""
+    def delete(self):
+        from django.contrib.auth import get_user_model
+        from django.contrib.auth.models import Group
+
+        if self.model in (get_user_model(), Group):
+            for row in self:
+                refuse_deleting_who_acted(row)
+        return original(self)
+    delete.edit_logged = True
+    delete.__wrapped__ = original
+    return delete
+
+
+def keep_who_acted(sender, instance, **kwargs):
+    """pre_delete of a login or a role: a bulk delete and the admin's are refused as one by one is."""
+    refuse_deleting_who_acted(instance)
+
+
 def install():
     """Every save, delete, link and bulk write of an edit-logged model leaves its line (apps.core.apps.ready)."""
     from django.core.management.base import BaseCommand
@@ -508,8 +574,20 @@ def install():
     pre_delete.connect(before_delete, weak=False, dispatch_uid="apps.core.history.before_delete")
     post_delete.connect(after_delete, weak=False, dispatch_uid="apps.core.history.after_delete")
     m2m_changed.connect(link_changed, weak=False, dispatch_uid="apps.core.history.link_changed")
+    from django.contrib.auth import get_user_model
+    from django.contrib.auth.models import Group
+
+    for model in (get_user_model(), Group):
+        pre_delete.connect(keep_who_acted, sender=model, weak=False, dispatch_uid=f"apps.core.history.keep_{model.__name__}")
+        if not getattr(model.delete, "edit_logged", False):
+            # Asked before the collector, whose PROTECT on the edit log's `who` would answer in its own words.
+            def delete(self, *args, _delete=model.delete, **kwargs):
+                refuse_deleting_who_acted(self)
+                return _delete(self, *args, **kwargs)
+            delete.edit_logged = True
+            model.delete = delete
     for name, wrap in (("update", logged_update), ("bulk_create", logged_bulk_create),
-                       ("bulk_update", logged_bulk_update)):
+                       ("bulk_update", logged_bulk_update), ("delete", keeping_who_acted)):
         if not getattr(getattr(QuerySet, name), "edit_logged", False):
             setattr(QuerySet, name, wrap(getattr(QuerySet, name)))
     if not getattr(BaseCommand.execute, "edit_logged", False):
@@ -526,7 +604,8 @@ def installed():
     """Whether nothing has taken the bulk writes' logging off (audit_invariants)."""
     from django.db.models import QuerySet
 
-    return all(getattr(getattr(QuerySet, name), "edit_logged", False) for name in ("update", "bulk_create", "bulk_update"))
+    return all(getattr(getattr(QuerySet, name), "edit_logged", False)
+               for name in ("update", "bulk_create", "bulk_update", "delete"))
 
 
 def words_for(action):

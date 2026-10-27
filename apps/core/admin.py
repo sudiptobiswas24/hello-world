@@ -175,11 +175,22 @@ class SuperusersOnly:
         return request.user.is_active and request.user.is_superuser
 
 
-class SuperuserUserAdmin(SuperusersOnly, UserAdmin):
+class KeptOnceItHasActed:
+    """A login or a role that has acted is never deleted, the admin included (apps.core.history.what_it_did)."""
+
+    def has_delete_permission(self, request, obj=None):
+        from .history import what_it_did
+
+        if obj is not None and what_it_did(obj):
+            return False
+        return super().has_delete_permission(request, obj)
+
+
+class SuperuserUserAdmin(KeptOnceItHasActed, SuperusersOnly, UserAdmin):
     pass
 
 
-class SuperuserGroupAdmin(SuperusersOnly, GroupAdmin):
+class SuperuserGroupAdmin(KeptOnceItHasActed, SuperusersOnly, GroupAdmin):
     pass
 
 

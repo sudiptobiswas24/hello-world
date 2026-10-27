@@ -147,6 +147,27 @@ class TheEditLogIsKeptAsWrittenTests(TestCase):
                     cursor.execute(statement)
 
 
+class WhoActedIsKeptTests(TestCase):
+    def test_a_login_never_acted_goes_one_that_acted_stays_admin_included(self):
+        from .history import HasActed
+
+        User.objects.create_user("never").delete()
+        self.assertFalse(User.objects.filter(username="never").exists())
+        root = User.objects.create_superuser("root", "root@example.com", "pw")
+        doer = User.objects.create_user("doer")
+        with acting_as(user=doer):
+            Currency.objects.create(code="INR", name="Rupee")
+        staff_session(self.client, root)
+        response = self.client.post(f"/admin/auth/user/{doer.pk}/delete/", {"post": "yes"})
+        self.assertEqual(response.status_code, 403)
+        # The admin's bulk delete: refused too (it lists what protects the login, and deletes nothing).
+        self.client.post("/admin/auth/user/", {"action": "delete_selected", "_selected_action": [doer.pk], "post": "yes"})
+        self.assertTrue(User.objects.filter(pk=doer.pk).exists())
+        self.assertTrue(User.objects.filter(pk=doer.pk).exists())
+        with self.assertRaisesMessage(HasActed, "has lines in the edit log as the one who acted"):
+            doer.delete()
+
+
 class WhatIsLoggedTests(TestCase):
     def test_every_audit_model_is_logged_and_the_bulk_writes_are_wrapped(self):
         from django.apps import apps
