@@ -33,6 +33,7 @@ import uuid
 from decimal import Decimal
 
 from django.conf import settings
+from django.core.exceptions import PermissionDenied
 from django.contrib.contenttypes.models import ContentType
 from django.db import models, transaction
 from django.utils import timezone
@@ -46,13 +47,39 @@ class EventKind(models.TextChoices):
     DELETED = "deleted", "Deleted"
 
 
+class KeptAsWritten(PermissionDenied):
+    """A line of the edit log changed or removed: refused, whatever path asked (rule 3(1): the trail is kept)."""
+
+
+def _refuse(what):
+    raise KeptAsWritten(f"The edit log is kept as written: {what} a line of it is refused (Companies (Accounts) Rules "
+                        f"2014, rule 3(1)).")
+
+
+class KeptQuerySet(models.QuerySet):
+    """The edit log's rows: added to, read, never changed or removed in bulk either."""
+
+    def update(self, **kwargs):
+        _refuse("changing")
+
+    def bulk_update(self, objs, fields, *args, **kwargs):
+        _refuse("changing")
+
+    def delete(self):
+        _refuse("deleting")
+
+    def _raw_delete(self, using):
+        _refuse("deleting")
+
+
 class RecordEvent(models.Model):
     # Kept eight years and more (Companies Act s.128(5)), never pruned: a kind of record removed from the code
     # keeps its lines, so its content type cannot be deleted under them (PROTECT, not CASCADE).
     content_type = models.ForeignKey(ContentType, on_delete=models.PROTECT, related_name="+")
     object_id = models.PositiveBigIntegerField()
     at = models.DateTimeField(default=timezone.now, editable=False)
-    who = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+    # PROTECT: a login that has acted is never deleted (only deactivated), so its lines keep naming it.
+    who = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.PROTECT,
                             related_name="+")
     # The login's name as it was, so a login removed later still names who did it.
     who_name = models.CharField(max_length=150, blank=True, default="")
@@ -68,13 +95,24 @@ class RecordEvent(models.Model):
 
     not_edit_logged = "the edit log itself"
 
+    objects = KeptQuerySet.as_manager()
+
     class Meta:
+        base_manager_name = "objects"
         indexes = [models.Index(fields=["content_type", "object_id", "-at"], name="record_event_by_record"),
                    models.Index(fields=["-at"], name="record_event_by_time")]
         ordering = ["-at", "-pk"]
 
     def __str__(self):
         return f"{self.get_kind_display()} {self.content_type.model} {self.object_id}"
+
+    def save(self, *args, **kwargs):
+        if self.pk is not None and not self._state.adding:
+            _refuse("changing")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        _refuse("deleting")
 
 
 # -- who is acting, and through what ------------------------------------------------------------------------
