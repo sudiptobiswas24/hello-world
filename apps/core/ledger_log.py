@@ -216,15 +216,17 @@ def grant_app(connection, role, password=""):
             f"GRANT USAGE ON SCHEMA public TO {app}",
             f"REVOKE ALL ON ALL TABLES IN SCHEMA public FROM {app}",
             f"GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO {app}",
-            f"GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO {app}",
+            # UPDATE too: setval, as loaddata and a sequence reset do (the trigger's log sequence is the owner's).
+            f"GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO {app}",
             f"ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO {app}",
-            f"ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO {app}",
+            f"ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO {app}",
         ):
             cursor.execute(statement)
         cursor.execute(f"SELECT to_regclass('{LOG}') IS NOT NULL")
         if cursor.fetchone()[0]:
             cursor.execute(f"REVOKE ALL ON {LOG} FROM {app}")
             cursor.execute(f"GRANT SELECT ON {LOG} TO {app}")
+            cursor.execute(f"REVOKE ALL ON SEQUENCE {LOG}_id_seq FROM {app}")
         # The application's edit log: read and added to, never changed or removed.
         cursor.execute(f"REVOKE ALL ON core_recordevent FROM {app}")
         cursor.execute(f"GRANT SELECT, INSERT ON core_recordevent TO {app}")
