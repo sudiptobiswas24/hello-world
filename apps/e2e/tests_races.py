@@ -2710,3 +2710,30 @@ class ANoteRefundedThroughTheBankBesideAPaymentRaceTests(RaceCase):
         self.assertEqual(len(numbers), 3)  # the receipt for the invoice, its note's refund, the other receipt
         self.assertEqual(len(set(numbers)), 3, numbers)
         self.assertEqual(Invoice.objects.filter(credits__isnull=False, posted=True).count(), 1)
+
+
+@tag("race")
+@unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
+class ARestatementAndAPaymentOfWhatItRestatesRaceTests(RaceCase):
+    def test_a_receipt_is_not_applied_to_an_invoice_as_its_year_end_is_restated(self):
+        """
+        g24: a USD 1,000 invoice booked at 83.3367 is restated as at 31 March while a receipt of 1,000 is
+        applied to it on 31 March. Unlocked, the restatement read it open and posted 763.30 of unrealised
+        gain on an invoice paid that day. Held, one waits for the other: either the receipt is applied and
+        nothing is open to restate, or the restatement stands and the receipt is refused on its day.
+        """
+        from apps.accounting import tests_restatement as restatement_fixture
+        from apps.accounting.restatement import Restatement
+
+        books = fixture(self, restatement_fixture.RestatementTestCase)
+        invoice = books.invoice()
+        receipt = books.receipt("1000", datetime.date(2026, 3, 20))
+        outcomes = race((Restatement, InvoicePayment),
+                        lambda: Restatement.make(restatement_fixture.YEAR_END),
+                        lambda: InvoicePayment.objects.create(invoice=Invoice.objects.get(pk=invoice.pk),
+                                                              payment=Payment.objects.get(pk=receipt.pk),
+                                                              amount=Decimal("1000"), date=restatement_fixture.YEAR_END))
+        self.once(outcomes)
+        restated = Restatement.objects.filter(lines__item_id=invoice.pk, lines__item_type="sales.invoice").exists()
+        paid = InvoicePayment.objects.filter(invoice=invoice).exists()
+        self.assertFalse(restated and paid, f"{outcomes}: restated open and paid on the same day")

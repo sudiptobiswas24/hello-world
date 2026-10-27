@@ -831,6 +831,16 @@ export const MODULES: Module[] = [
         keywords: "bank statement import csv file", load: () => import("../modules/accounts/StatementImport"),
       },
       {
+        path: "restatements", label: "Restate foreign balances", permission: "accounting.post_restatement",
+        also: ["accounting.view_restatement"],
+        keywords: "restatement closing rate year end foreign exchange unrealised fx revalue", load: () => import("../modules/accounts/Restatements"),
+      },
+      {
+        path: "tax-depreciation", label: "Tax depreciation by block", permission: "assets.view_taxdepreciationyear",
+        also: ["assets.view_taxblockrate", "assets.view_taxblockopening", "assets.view_taxblock"],
+        keywords: "income tax depreciation block wdv written down value 180 days schedule deferred tax", load: () => import("../modules/accounts/TaxDepreciation"),
+      },
+      {
         path: "trial-balance", label: "Trial balance", permission: "accounting.view_journalentry",
         keywords: "tb balances", load: () => import("../modules/accounts/TrialBalance"),
       },
