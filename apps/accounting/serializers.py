@@ -155,6 +155,7 @@ class TaxSerializer(serializers.ModelSerializer):
             "include_base_amount", "sequence", "scope", "collected_account",
             "paid_account", "is_active",
             "gst_head", "group_name", "reverse_charge", "reverse_charge_account",
+            "reverse_charge_waiting_account",
         ]
 
 

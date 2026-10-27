@@ -4295,11 +4295,17 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
                     # as the return and the GST cash payment read the row it records: summed in the bill's
                     # currency and rounded once, 0.37 + 0.37 USD at 83.3367 booked 61.67 owed against two rows of
                     # 30.83, and the challan left a paisa on the payable for good. Owed into the account the
-                    # line's tax is kept at (owed_account_at_posting): a debit note gives back into its bill's,
+                    # line's tax is kept at (reverse_charge_accounts_at_posting): a debit note gives back into its bill's,
                     # never into the tax's account as it stands now (mistake 4).
+                    # The credit waits until the tax is paid in cash and its document stands (gst.reverse_charge:
+                    # Rule 36(1)(b), s.16(2)(a)); it is claimed in the paid account then, not as the bill posts.
                     base = round_money(amount * rate)
-                    reverse_totals[account] += base
-                    reverse_totals[owed_account_at_posting(line, tax)] -= base
+                    owed, waiting, _ = reverse_charge_accounts_at_posting(line, tax)
+                    if waiting is None:
+                        raise ValidationError(f"Tax {tax.code} names no account its reverse-charge credit waits in "
+                                              "until the tax is paid in cash; set it before posting.")
+                    reverse_totals[waiting] += base
+                    reverse_totals[owed] -= base
                     continue
                 tax_totals[account] += amount
         for account, amount in tax_totals.items():
@@ -5769,34 +5775,43 @@ class BillLineTax(RecordedLineTax):
     line = models.ForeignKey(BillLine, on_delete=models.CASCADE, related_name="recorded_taxes")
     owed_account = models.ForeignKey(
         Account, null=True, blank=True, on_delete=models.PROTECT, related_name="+", editable=False,
-        help_text="Reverse charge: the account the company's tax was owed into when the line posted, kept "
-                  "with it. A GST cash payment clears this account, never the tax's account as it stands now "
-                  "(mistake 4): moved after the bill posted, the payment would clear an account that never held "
-                  "the tax.")
+        help_text="Reverse charge: the account the company's tax was owed into when the line posted, kept with it. A "
+                  "GST cash payment clears this account, never the tax's account as it stands now (mistake 4).")
+    waiting_account = models.ForeignKey(
+        Account, null=True, blank=True, on_delete=models.PROTECT, related_name="+", editable=False,
+        help_text="Reverse charge: where the credit waited from the posting, kept with it, until the tax is paid "
+                  "in cash and its document stands.")
+    credit_account = models.ForeignKey(
+        Account, null=True, blank=True, on_delete=models.PROTECT, related_name="+", editable=False,
+        help_text="Reverse charge: where the credit is claimed then, kept with it: the tax's paid account as it "
+                  "posted.")
 
     # Kept from the tax as the line posts; read through the tax only by the posting itself
     # (audit_invariants, kept_settings_read_live).
-    KEPT_FROM = {"tax": ("reverse_charge_account",)}
-    KEPT_BY = ("owed_account_at_posting",)
+    KEPT_FROM = {"tax": ("reverse_charge_account", "reverse_charge_waiting_account")}
+    KEPT_BY = ("reverse_charge_accounts_at_posting",)
 
     def save(self, *args, **kwargs):
         if self._state.adding and self.reverse_charge and self.owed_account_id is None:
-            self.owed_account = owed_account_at_posting(self.line, self.tax)
+            self.owed_account, self.waiting_account, self.credit_account = \
+                reverse_charge_accounts_at_posting(self.line, self.tax)
         super().save(*args, **kwargs)
 
 
-def owed_account_at_posting(line, tax):
+def reverse_charge_accounts_at_posting(line, tax):
     """
-    Where a line's reverse-charge tax is owed: on a debit note, into the account its bill's line kept; on a
-    bill, the tax's account as the bill posts, which the line then keeps (BillLineTax.owed_account). The entry
-    and the kept row both ask here, so they cannot disagree.
+    (owed, waiting, credit): where a line's reverse-charge tax is owed, where its credit waits, and where it is
+    claimed. On a debit note, the accounts its bill's line kept; on a bill, the tax's as the bill posts, which the
+    line then keeps (BillLineTax). The entry and the kept row both ask here, so they cannot disagree.
     """
     original = getattr(line, "debits_line", None)
     if original is not None:
-        kept = original.recorded_taxes.filter(tax_id=tax.pk).values_list("owed_account", flat=True).first()
-        if kept is not None:
-            return Account.objects.get(pk=kept)
-    return tax.reverse_charge_account
+        kept = original.recorded_taxes.filter(tax_id=tax.pk).values_list(
+            "owed_account", "waiting_account", "credit_account").first()
+        if kept is not None and all(kept):
+            found = Account.objects.in_bulk(kept)
+            return tuple(found[pk] for pk in kept)
+    return tax.reverse_charge_account, tax.reverse_charge_waiting_account, tax.account_for(is_sale=False)
 
 
 class PrepaymentApplication(AuditModel):
