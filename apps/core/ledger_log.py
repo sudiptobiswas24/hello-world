@@ -132,9 +132,13 @@ DROP TRIGGER IF EXISTS {LOG}_not_truncated ON {LOG};
 CREATE TRIGGER {LOG}_not_truncated BEFORE TRUNCATE ON {LOG} FOR EACH STATEMENT EXECUTE FUNCTION {TRIGGER}_kept();
 -- The application's own edit log (apps/core/history.py) the same: added to, never changed or removed. Not its
 -- TRUNCATE: a test's flush empties it (the application's role has no TRUNCATE on it anyway).
-DROP TRIGGER IF EXISTS core_recordevent_kept ON core_recordevent;
-CREATE TRIGGER core_recordevent_kept BEFORE UPDATE OR DELETE ON core_recordevent FOR EACH ROW
-    EXECUTE FUNCTION {TRIGGER}_kept();
+DO $$ BEGIN
+    IF to_regclass('core_recordevent') IS NOT NULL THEN
+        DROP TRIGGER IF EXISTS core_recordevent_kept ON core_recordevent;
+        CREATE TRIGGER core_recordevent_kept BEFORE UPDATE OR DELETE ON core_recordevent FOR EACH ROW
+            EXECUTE FUNCTION {TRIGGER}_kept();
+    END IF;
+END $$;
 REVOKE TRUNCATE ON {LOG} FROM PUBLIC;
 REVOKE TRUNCATE ON {LOG} FROM CURRENT_USER;
 """
@@ -241,7 +245,10 @@ def grant_after_migrate(sender, using="default", **kwargs):
     from django.conf import settings
     from django.db import connections
 
-    create(connections[using])
+    connection = connections[using]
+    if not present(connection):
+        return  # migrated to before web 0001 (a test migrating back): this state has no log to keep
+    create(connection)
     grant_app(connections[using], getattr(settings, "DATABASE_APP_ROLE", ""),
               getattr(settings, "DATABASE_APP_PASSWORD", ""))
 
