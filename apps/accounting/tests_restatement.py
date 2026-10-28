@@ -137,6 +137,16 @@ class AnOpenInvoiceTests(RestatementTestCase):
         self.assertEqual(self.balance(self.ar), Decimal("0"))
         self.assertEqual(self.gains(), Decimal("0"))
 
+    def test_the_base_carried_is_the_ledgers_not_the_slice(self):
+        # calc_round2.py G2: an April receipt of 50 applied first, then a March one of 550. On 31 March only
+        # the March part stood: the ledger carries 37,501.52 for the 450 open; the slice rule read 37,501.51.
+        invoice = self.invoice()
+        self.apply(self.receipt("50", D(2026, 4, 10)), invoice, "50", D(2026, 4, 10))
+        self.apply(self.receipt("550", D(2026, 3, 10)), invoice, "550", D(2026, 3, 10))
+        line = Restatement.make(YEAR_END).lines.get(item_type="sales.invoice")
+        self.assertEqual((line.open_amount, line.carried_base, line.restated_base, line.difference),
+                         (Decimal("450.00"), Decimal("37501.52"), Decimal("37845.00"), Decimal("343.48")))
+
     def test_a_part_paid_invoice_restates_what_is_left(self):
         invoice = self.invoice()
         self.apply(self.receipt("400", D(2026, 3, 10)), invoice, "400", D(2026, 3, 10))
