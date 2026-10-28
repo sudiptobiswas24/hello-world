@@ -136,10 +136,10 @@ class FilingTests(TaxDepreciationTestCase):
         with self.assertRaisesMessage(ValidationError, "is already filed"):
             TaxDepreciationYear.file(YEAR)
         lathe = FixedAsset.objects.get(name="PM-GEN 300000")
-        with self.assertRaisesMessage(ValidationError, "is filed. Withdraw it"):
+        with self.assertRaisesMessage(ValidationError, "is filed and rests on this year"):
             lathe.dispose(on_date=D(2026, 3, 1), proceeds=Decimal("1"))
         sold = FixedAsset.objects.get(name="PM-COMP 90000")
-        with self.assertRaisesMessage(ValidationError, "is filed. Withdraw it"):
+        with self.assertRaisesMessage(ValidationError, "is filed and rests on this year"):
             sold.reinstate()
         lathe.tax_block = self.blocks["PM-40"]
         with self.assertRaisesMessage(ValidationError, "withdraw it before moving it"):

@@ -408,7 +408,12 @@ class FixedAsset(Extensible, AuditModel):
         in_service = day_that_has_come(in_service, f"{self} is not put into service from")
         from .tax import refuse_in_filed_year
 
-        refuse_in_filed_year(in_service, f"{self} is not put into service")
+        from .tax import TaxBlock
+
+        # The block it goes into as it goes into service: its own, or its category's as save() will copy it.
+        going_into = self.tax_block or TaxBlock.objects.filter(
+            pk__in=AssetCategory.objects.filter(pk=self.category_id).values("tax_block")).first()
+        refuse_in_filed_year(in_service, f"{self} is not put into service", going_into)
         # Not before its cost is on the books: capitalised again after an undo, that is the day
         # it was capitalised, and months charged before it stood against a cost not yet there.
         if self.capitalisation_entry_id and in_service < to_date(self.capitalisation_entry.date):
@@ -688,7 +693,7 @@ class FixedAsset(Extensible, AuditModel):
         on_date = correction_date(on_date, self.acquisition_date, f"{self} is not disposed of on", "it was acquired")
         from .tax import refuse_in_filed_year
 
-        refuse_in_filed_year(on_date, f"{self} is not disposed of")
+        refuse_in_filed_year(on_date, f"{self} is not disposed of", self.tax_block)
         month_before = on_date.replace(day=1) - datetime.timedelta(days=1)
         self.depreciate(through=month_before)
         # Charges run past the disposal — the month-end job ran before the
@@ -779,7 +784,7 @@ class FixedAsset(Extensible, AuditModel):
         on_date = correction_date(on_date, self.disposed_on, f"{self} is not reinstated on", "it was disposed of")
         from .tax import refuse_in_filed_year
 
-        refuse_in_filed_year(self.disposed_on, f"{self}'s disposal is not taken back")
+        refuse_in_filed_year(self.disposed_on, f"{self}'s disposal is not taken back", self.tax_block)
 
         def open_or_today(day):
             return day if AccountingPeriod.blocking(day) is None else on_date

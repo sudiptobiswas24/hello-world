@@ -38,10 +38,16 @@ class Probes(TaxDepreciationTestCase):
         before = TaxBlockLine.objects.get(year__year_start=YEAR, block__code="PM-GEN")
         late = FixedAsset.objects.create(name="late", category=self.category("PM-GEN"), acquisition_date=D(2024, 10, 1),
                                          cost=Decimal("77000"), life_months=120)
-        late.place_in_service(on_date=D(2024, 10, 1))  # a day in an earlier, unfiled year
-        # The filed year opens at what the year before it closes at, or the schedule does not foot.
-        y1 = {r.block.code: r for r in schedule(D(2024, 4, 1))}["PM-GEN"]
-        self.assertEqual(before.opening, y1.closing)
+        # Decided (coordinator, C): an asset event in a year before a filed year is refused, since the filed
+        # year rests on every year before it. As first written the probe let it through and asked the filed
+        # opening to equal 2024-25's closing; with the block opened by its 2025-26 opening row that cannot
+        # hold either way, so the claim is that the filed year still reads as filed.
+        from django.core.exceptions import ValidationError
+
+        with self.assertRaisesMessage(ValidationError, "is filed and rests on this year"):
+            late.place_in_service(on_date=D(2024, 10, 1))  # a day in an earlier, unfiled year
+        filed = {r.block.code: r for r in schedule(YEAR)}["PM-GEN"]
+        self.assertEqual((filed.opening, filed.closing), (before.opening, before.closing))
 
     def test_T04_file_while_a_disposal_is_made(self):
         # single-thread view of the same claim: a disposal made after filing is refused (the guard exists).
