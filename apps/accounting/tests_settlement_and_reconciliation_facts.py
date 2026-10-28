@@ -299,6 +299,7 @@ class AEEFCAccount(base.FxSettlementTestCase):
         except ValidationError as exc:
             refused = " ".join(exc.messages)
         say(bool(refused), "O24 (mirror) a journal entry in base money on an account kept in euros is refused", refused or "posted")
+        self.assertIn("is kept in EUR", refused)
 
 
 class BouncedChequeAcrossStatements(base.FxSettlementTestCase):

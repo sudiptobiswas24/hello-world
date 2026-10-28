@@ -444,8 +444,13 @@ class JournalEntry(AuditModel):
         return debit > 0 and debit == self.total_credit()
 
     @serialised("posted")
-    def post(self, opening_balance=False, correcting=False):
+    def post(self, opening_balance=False, correcting=False, in_its_currency=False):
         """
+        `in_its_currency`: the entry moves an account kept in another currency (an EEFC account) in that
+        currency, as a payment through it does, or values it at a rate, as a restatement does. Any other entry
+        carries base money only and is refused on such an account (O24): asked here, every path is asked, not
+        only the journal keyed by hand. A reversal takes back what was let through, so it is let through too.
+
         `opening_balance`: the entry is an open invoice or bill brought in from the old system, which
         keeps the date it was issued on, before the books opened (O281). Nothing else is dated then.
 
@@ -468,6 +473,8 @@ class JournalEntry(AuditModel):
                 "them. Only an open invoice or bill brought in from the old system keeps an earlier date.")
         if not correcting and self.reverses_id is None:
             refuse_switched_off(self.lines.select_related("account", "cost_centre"))
+        if not in_its_currency and self.reverses_id is None:
+            self.refuse_accounts_in_another_currency(keyed_by_hand=False)
         if not self.is_balanced():
             raise ValidationError(
                 f"Cannot post an unbalanced entry (debit={self.total_debit()}, "
@@ -477,7 +484,7 @@ class JournalEntry(AuditModel):
         self.posted_at = timezone.now()
         super(JournalEntry, self).save(update_fields=["posted", "posted_at", "updated_at"])
 
-    def refuse_accounts_in_another_currency(self):
+    def refuse_accounts_in_another_currency(self, keyed_by_hand=True):
         """
         Asked of an entry keyed by hand (review F8): a journal line carries base money only, so it is not
         posted to an account kept in another currency (an EEFC account), whose movements are payments in
@@ -490,9 +497,9 @@ class JournalEntry(AuditModel):
             account = line.account
             if account.currency_id and account.currency_id != base:
                 raise ValidationError(
-                    f"{account.code} {account.name} is kept in {account.currency.code}; an entry keyed by hand "
-                    f"carries base money only, so it is not posted to it. Record the movement as a payment in "
-                    f"{account.currency.code}.")
+                    f"{account.code} {account.name} is kept in {account.currency.code}; "
+                    f"{'an entry keyed by hand' if keyed_by_hand else 'this entry'} carries base money only, so it "
+                    f"is not posted to it. Record the movement as a payment in {account.currency.code}.")
 
     @serialised("posted")
     @takes_back
@@ -1281,7 +1288,7 @@ class Payment(AuditModel):
             entry=entry, account=credit_account, party=self.party,
             credit=base_amount, description=f"Payment {self.number}",
         )
-        entry.post()
+        entry.post(in_its_currency=True)
 
         self.journal_entry = entry
         self.posted = True
