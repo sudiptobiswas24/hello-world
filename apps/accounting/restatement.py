@@ -23,7 +23,7 @@ the drawdown leaves it at that rate (settlement.post_drawdown). The brief listed
 standard says otherwise, so they are left out and the accountant is told.
 
 Each item is one line on the restatement and on its entry: the base carried less the base restated,
-each rounded, subtracted (O49). The entry reverses on the first day of the next period, so the realised
+each rounded, subtracted (O49). The entry reverses on the next day, so the realised
 difference when the item is later settled is worked, as it always was, against the base the document
 booked (settlement.booked_by reads the document's own entries; this entry is not one of them). The
 year's books read the restated figure; the next year's P&L takes the reversal and the realised
@@ -189,6 +189,14 @@ def bank_item(account, day):
     return OpenItem(account, account.code, None, account, account.currency, abs(held), side * carried, side)
 
 
+def standing_on(instance, day):
+    """What standing restatements put on the account for `instance` and had not reversed by the close of `day`."""
+    rows = RestatementLine.objects.filter(
+        item_type=item_key(instance), item_id=instance.pk, restatement__voided_on__isnull=True,
+        restatement__as_of__lt=day, restatement__reverses_on__gt=day).aggregate(total=Sum("difference"))
+    return rows["total"] or Decimal("0")
+
+
 def refuse_moving_restated(instances, day, doing):
     """
     Refuse `doing` on `day` to any of `instances` (a document, a payment) a standing restatement restated
@@ -210,11 +218,11 @@ def refuse_moving_restated(instances, day, doing):
 
 
 class Restatement(AuditModel):
-    """Foreign balances restated at the closing rate on a day; reversed on the first day after its period."""
+    """Foreign balances restated at the closing rate on a day; reversed on the next day."""
 
     number = models.CharField(max_length=32, blank=True, editable=False)
     as_of = models.DateField(help_text="The day restated: normally the last day of a period.")
-    reverses_on = models.DateField(editable=False, help_text="The first day of the next period, when it reverses.")
+    reverses_on = models.DateField(editable=False, help_text="The day after it, when it reverses.")
     gain_account = models.ForeignKey(Account, on_delete=models.PROTECT, related_name="+", editable=False)
     loss_account = models.ForeignKey(Account, on_delete=models.PROTECT, related_name="+", editable=False)
     journal_entry = models.ForeignKey(JournalEntry, null=True, blank=True, on_delete=models.PROTECT,
@@ -314,8 +322,10 @@ class Restatement(AuditModel):
                 if row is None:
                     raise ValidationError(f"No exchange rate for {code} on {as_of:%d-%m-%Y}: enter the closing rate.")
                 used[code] = (item.currency, row.rate, row.valid_from)
-        covering = AccountingPeriod.objects.filter(start_date__lte=as_of, end_date__gte=as_of).first()
-        reverses_on = (covering.end_date if covering else as_of) + datetime.timedelta(days=1)
+        # A valuation at its own day: it stands that day alone (review F1, F2). Reversed at the period's end
+        # instead, a second restatement in the period stacked on the first, and an invoice paid between the
+        # restatement and the period end left its unrealised difference on the receivable with nothing open.
+        reverses_on = as_of + datetime.timedelta(days=1)
 
         restatement = cls(number=number, as_of=as_of, reverses_on=reverses_on, gain_account=gain,
                           loss_account=loss, memo=memo[:255], created_by=by, updated_by=by)
@@ -330,6 +340,10 @@ class Restatement(AuditModel):
             signed_open = item.side * item.open_amount
             restated = round_money(signed_open * rate)
             carried = item.side * item.carried
+            if item.account is not item.item:
+                # Worked against the base it is carried at that day: what it booked, and any restatement still
+                # standing then (a bank's ledger balance already holds it).
+                carried += standing_on(item.item, as_of)
             difference = restated - carried
             lines.append(RestatementLine(
                 restatement=restatement, item_type=item_key(item.item), item_id=item.item.pk, label=item.label,

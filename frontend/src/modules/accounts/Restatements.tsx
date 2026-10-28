@@ -21,7 +21,7 @@ interface Restatement {
 /**
  * Foreign balances restated at the closing rate on a day (accounting.restatement): what was open, the
  * base it was carried at, the base at the closing rate, and the difference posted. It reverses on the
- * first day of the next period; a standing one is voided here.
+ * next day; a standing one is voided here.
  */
 export default function Restatements() {
   const [asOf, setAsOf] = useState("");
