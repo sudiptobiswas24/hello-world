@@ -74,6 +74,24 @@ class ABackupRestoresItsAttachmentsTests(SimpleTestCase):
         self.assertEqual([path.name for path in self.media.iterdir()], ["attachments"])
         self.assertEqual(self.psql(self.url, "SELECT path FROM attached"), "attachments/2026/10/lr-4471.pdf")
 
+    def test_a_plant_with_nothing_attached_yet_is_backed_up_and_restored(self):
+        # A new plant attaches nothing for its first weeks: its manifest is empty, which sha256sum --check
+        # refuses, and every night failed with no backup written at all (fix_audit's two-role run, g24).
+        shutil.rmtree(self.media / "attachments")
+        self.psql(self.url, "DELETE FROM attached")
+        taken = self.run_script(str(DEPLOY / "backup.sh"), "now")
+        self.assertEqual(taken.returncode, 0, taken.stderr)
+        self.assertIn("0 files", taken.stdout)
+        (dump,) = self.backups.glob("erp_*.dump")
+        (manifest,) = self.backups.glob("erp_*.media.sha256")
+        self.assertEqual(manifest.read_text(), "")
+
+        (self.media / "attached-later.pdf").write_bytes(b"later")
+        restored = self.run_script(str(DEPLOY / "restore.sh"), str(dump))
+        self.assertEqual(restored.returncode, 0, restored.stderr)
+        self.assertIn("nothing was attached", restored.stderr)
+        self.assertEqual(list(self.media.iterdir()), [])
+
     def test_a_dump_without_its_attachments_is_refused(self):
         taken = self.run_script(str(DEPLOY / "backup.sh"), "now")
         self.assertEqual(taken.returncode, 0, taken.stderr)
