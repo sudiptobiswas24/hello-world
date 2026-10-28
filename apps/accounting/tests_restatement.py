@@ -287,3 +287,161 @@ class ThroughTheApiTests(RestatementTestCase):
                                      format="json").status_code, 403)
         self.assertEqual(client.get("/api/accounting/restatements/").status_code, 403)
         self.assertFalse(Restatement.objects.exists())
+
+
+# The sentinel's own reading of the code: what books against a document or a payment, and whether it asks.
+from .restatement import AsksTheRestatement  # noqa: E402
+
+
+def settling_models():
+    """Every model that books money against an invoice, a bill or a payment: what the sentinel asks."""
+    from django.apps import apps
+
+    targets = {"sales.invoice", "purchasing.bill", "accounting.payment"}
+    found = []
+    for model in apps.get_models():
+        names = {f.name for f in model._meta.concrete_fields}
+        if model._meta.label_lower in targets or (names & {"journal_entry", "amount"} and any(
+                f.is_relation and f.related_model is not None and f.related_model._meta.label_lower in targets
+                for f in model._meta.concrete_fields)):
+            found.append(model)
+    return found
+
+
+# What books against a document or a payment and needs not ask, and why.
+NEED_NOT_ASK = {
+    "accounting.bankstatementline": "matches a statement line to a payment already posted; nothing open changes",
+    "hr.statutoryremittance": "payroll's remittance, in the base currency; its payment asks at Payment.post",
+    "hr.salaryadvance": "payroll, in the base currency; its payment asks at Payment.post",
+    "hr.shortfallsettlement": "payroll, in the base currency; its payment asks at Payment.post",
+    "hr.salarytransfer": "payroll, in the base currency; its payment asks at Payment.post",
+}
+
+
+def unasked(classes):
+    """The classes, by label, whose code (their own or a base's) never asks refuse_behind_a_restatement."""
+    import inspect
+
+    missing = []
+    for cls in classes:
+        if isinstance(cls, type) and issubclass(cls, AsksTheRestatement):
+            continue
+        sources = []
+        for base in cls.__mro__:
+            if base.__module__.startswith(("django.", "builtins")) or base is object:
+                continue
+            try:
+                sources.append(inspect.getsource(base))
+            except (OSError, TypeError):
+                continue
+        if not any("refuse_behind_a_restatement(" in text for text in sources):
+            missing.append(getattr(getattr(cls, "_meta", None), "label_lower", cls.__name__))
+    return missing
+
+
+class EveryEventAsksTheRestatementTests(RestatementTestCase):
+    """
+    The mirror of E: whatever changes what a foreign document has open on a day is refused, in words, when
+    dated on or before a standing restatement's day (restatement.refuse_behind_a_restatement, the one check).
+    """
+
+    REFUSED = "restated the foreign balances as they stood on 31-03-2026"
+
+    def setUp(self):
+        super().setUp()
+        self.inv = self.invoice()
+
+    def restate(self):
+        return Restatement.make(YEAR_END)
+
+    def test_a_new_payment_dated_before_the_day(self):
+        self.restate()
+        payment = Payment.objects.create(party=self.customer, direction=PaymentDirection.RECEIPT,
+                                         payment_date=D(2026, 3, 20), amount=Decimal("100"), currency=self.usd,
+                                         bank_account=self.bank, counterpart_account=self.ar)
+        with self.assertRaisesMessage(ValidationError, self.REFUSED):
+            payment.post()
+        payment.payment_date = D(2026, 4, 1)
+        payment.save()
+        payment.post()
+
+    def test_a_credit_note_dated_on_the_day(self):
+        self.restate()
+        with self.assertRaisesMessage(ValidationError, self.REFUSED):
+            self.inv.create_credit_note(on_date=YEAR_END)
+
+    def test_an_allocation_removed(self):
+        allocation = self.apply(self.receipt("400", D(2026, 3, 10)), self.inv, "400", D(2026, 3, 10))
+        self.restate()
+        with self.assertRaisesMessage(ValidationError, self.REFUSED):
+            allocation.delete()
+
+    def test_a_write_off_and_its_recovery(self):
+        company = Company.objects.get()
+        company.bad_debt_account = Account.objects.create(code="5950", name="Bad debts", account_type=AccountType.EXPENSE)
+        company.save()
+        self.inv.write_off(amount=Decimal("100"), on_date=D(2026, 3, 20))
+        written = self.inv.write_offs.get()
+        self.restate()
+        with self.assertRaisesMessage(ValidationError, self.REFUSED):
+            self.inv.recover_write_off(written, on_date=YEAR_END)
+        with self.assertRaisesMessage(ValidationError, self.REFUSED):
+            self.inv.write_off(amount=Decimal("100"), on_date=YEAR_END)
+
+    def test_tds_tcs_and_a_drawdown_recorded_into_the_day(self):
+        from apps.sales.models import DepositApplication
+        from apps.sales.tcs import TcsCollection
+        from apps.sales.tds import CustomerTds
+
+        self.restate()
+        for record in (CustomerTds(invoice=self.inv, date=YEAR_END, amount=Decimal("10")),
+                       TcsCollection(invoice=self.inv, date=YEAR_END, amount=Decimal("10")),
+                       DepositApplication(invoice=self.inv, deposit=self.inv, date=YEAR_END, amount=Decimal("10"))):
+            with self.subTest(type(record).__name__), self.assertRaisesMessage(ValidationError, self.REFUSED):
+                record.save()
+
+    def test_a_bills_tds_and_prepayment(self):
+        from apps.purchasing.models import Bill, BillLine, PrepaymentApplication
+        from apps.purchasing.tds import TdsDeduction
+
+        expense = Account.objects.create(code="5002", name="Parts", account_type=AccountType.EXPENSE)
+        bill = Bill.objects.create(vendor=self.vendor, bill_date=D(2026, 3, 5), payable_account=self.ap,
+                                   currency=self.usd)
+        BillLine.objects.create(bill=bill, description="Parts", quantity=Decimal("1"), unit_price=Decimal("100"),
+                                expense_account=expense)
+        bill.post()
+        self.restate()
+        for record in (TdsDeduction(bill=bill, date=YEAR_END, amount=Decimal("1")),
+                       PrepaymentApplication(bill=bill, prepayment=bill, date=YEAR_END, amount=Decimal("1"))):
+            with self.subTest(type(record).__name__), self.assertRaisesMessage(ValidationError, self.REFUSED):
+                record.save()
+
+    def test_a_settlement_discount_and_its_withdrawal(self):
+        from .settlement import take_settlement_discount, withdraw_discount
+
+        self.restate()
+        with self.assertRaisesMessage(ValidationError, self.REFUSED):
+            take_settlement_discount(self.inv, control_account=self.ar, party=self.customer,
+                                     discount_account=self.loss, account_label="discount", is_receivable=True,
+                                     on_date=YEAR_END, force=True)
+        with self.assertRaisesMessage(ValidationError, self.REFUSED):
+            withdraw_discount(self.inv, self.ar, self.customer, Decimal("10"), YEAR_END, "withdrawn")
+
+    def test_every_path_that_settles_a_document_asks_it(self):
+        models = [model for model in settling_models() if model._meta.label_lower not in NEED_NOT_ASK]
+        self.assertGreaterEqual(len(models), 10)
+        self.assertEqual(unasked(models), [])
+        # And a reason outlives nothing: an exemption names a model that still books against one.
+        self.assertEqual(sorted(set(NEED_NOT_ASK) - {m._meta.label_lower for m in settling_models()}), [])
+
+    def test_the_sentinel_names_a_path_that_does_not_ask(self):
+        class PlantedWriteOff:
+            def save(self):
+                return "settles an invoice without asking the restatement"
+
+        class AskingWriteOff:
+            def save(self):
+                from .restatement import refuse_behind_a_restatement
+                refuse_behind_a_restatement([], None, "")
+
+        self.assertEqual(unasked([PlantedWriteOff, AskingWriteOff]), ["PlantedWriteOff"])

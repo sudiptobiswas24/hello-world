@@ -15,12 +15,14 @@ from django.db.models import Q
 from django.utils import timezone
 
 from apps.accounting.models import JournalEntry, JournalLine, TdsSection, round_money
+from apps.accounting.restatement import AsksTheRestatement
 from apps.core.models import AuditModel, Company, correction_date, lock_rows, serialised, to_date
 
 
 from apps.core.models import takes_back  # noqa: E402  (O354: a correction step)
 
-class CustomerTds(AuditModel):
+class CustomerTds(AsksTheRestatement, AuditModel):
+    RESTATES = ("invoice",)
     invoice = models.ForeignKey("sales.Invoice", on_delete=models.PROTECT, related_name="tds_withheld")
     section = models.ForeignKey(TdsSection, on_delete=models.PROTECT, related_name="+")
     amount = models.DecimalField(max_digits=18, decimal_places=2)

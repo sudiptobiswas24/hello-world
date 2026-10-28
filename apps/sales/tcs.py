@@ -31,13 +31,15 @@ from django.db.models import Q
 
 from apps.accounting.models import (Account, JournalEntry, JournalLine, TcsDeclaration, TcsRate, TcsSection,
                                      round_money)
+from apps.accounting.restatement import AsksTheRestatement
 from apps.accounting.tds import rupees
 from apps.core.models import AuditModel, Company, serialised, to_date
 
 
 from apps.core.models import takes_back  # noqa: E402  (O354: a correction step)
 
-class TcsCollection(AuditModel):
+class TcsCollection(AsksTheRestatement, AuditModel):
+    RESTATES = ("invoice",)
     invoice = models.ForeignKey("sales.Invoice", on_delete=models.PROTECT, related_name="tcs_collected")
     section = models.ForeignKey(TcsSection, on_delete=models.PROTECT, related_name="+")
     rate = models.ForeignKey(TcsRate, null=True, blank=True, on_delete=models.PROTECT, related_name="collections")
