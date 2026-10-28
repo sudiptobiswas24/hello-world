@@ -141,8 +141,9 @@ class Probes(RestatementTestCase):
 
     def test_P12_an_invoice_posted_into_a_restated_day_is_refused_or_restated(self):
         # limit 4: the year end misses a USD invoice dated on or before the day, posted after it.
+        # Decided (coordinator, E): refused, with the way out in words; the year end then still reads 84,100.00.
         self.invoice()
-        Restatement.make(YEAR_END)
-        late = self.invoice("500")  # dated 5 March, posted now, March still open
-        self.assertEqual(self.balance(self.ar, YEAR_END), Decimal("84100.00") + Decimal("500") * Decimal("84.1"),
-                         f"{late.number} dated 5 Mar is open at 31 Mar and is not at the closing rate")
+        made = Restatement.make(YEAR_END)
+        with self.assertRaisesMessage(ValidationError, f"Void {made.number} and restate"):
+            self.invoice("500")  # dated 5 March, posted now, March still open
+        self.assertEqual(self.balance(self.ar, YEAR_END), Decimal("84100.00"))

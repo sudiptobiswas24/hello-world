@@ -4369,6 +4369,10 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
     def post(self, memo=None, apply_prepayments=True):
         if self.posted:
             raise ValidationError("This bill is already posted.")
+        # Into a day a standing restatement valued, it would be open there at its own rate (g24 review).
+        from apps.accounting.restatement import refuse_posting_behind_a_restatement
+
+        refuse_posting_behind_a_restatement(self, self.bill_date)
         # Asked again as it posts: the account may have been made a bank's since the draft named it.
         refuse_money_kept_as(self, "payable_account", changed_only=False)
         # What the order has been billed, and paid up front, is decided on

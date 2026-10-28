@@ -167,6 +167,22 @@ class AnOpenBillTests(RestatementTestCase):
         self.assertEqual(self.balance(self.ap), Decimal("-83336.70"))
 
 
+    def test_a_bill_dated_into_a_restated_day_is_refused(self):
+        from apps.purchasing.models import Bill, BillLine
+
+        self.invoice()
+        made = Restatement.make(YEAR_END)
+        expense = Account.objects.create(code="5001", name="Freight", account_type=AccountType.EXPENSE)
+        bill = Bill.objects.create(vendor=self.vendor, bill_date=D(2026, 3, 30), payable_account=self.ap,
+                                   currency=self.usd)
+        BillLine.objects.create(bill=bill, description="Freight", quantity=Decimal("1"), unit_price=Decimal("10"),
+                                expense_account=expense)
+        with self.assertRaisesMessage(ValidationError, f"Void {made.number} and restate once this is posted"):
+            bill.post()
+        made.void(on_date=YEAR_END)
+        bill.post()
+
+
 class AForeignBankTests(RestatementTestCase):
     def test_the_eefc_balance_and_the_money_on_account(self):
         self.receipt("1000", D(2026, 3, 10), bank=self.eefc)
