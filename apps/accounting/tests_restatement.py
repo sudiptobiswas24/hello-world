@@ -126,6 +126,17 @@ class AnOpenInvoiceTests(RestatementTestCase):
         with self.assertRaisesMessage(ValidationError, "Nothing in a foreign currency was open on 31-03-2026"):
             Restatement.make(YEAR_END)
 
+    def test_a_credit_note_after_the_day_is_replayed_to_it(self):
+        # A full credit note dated 2 April, the year end restated after it: 1,000 was open on 31 March.
+        invoice = self.invoice()
+        invoice.create_credit_note(on_date=D(2026, 4, 2))
+        line = Restatement.make(YEAR_END).lines.get(item_type="sales.invoice", item_id=invoice.pk)
+        self.assertEqual((line.open_amount, line.carried_base, line.difference),
+                         (Decimal("1000.00"), Decimal("83336.70"), Decimal("763.30")))
+        self.assertEqual(self.balance(self.ar, YEAR_END), Decimal("84100.00"))
+        self.assertEqual(self.balance(self.ar), Decimal("0"))
+        self.assertEqual(self.gains(), Decimal("0"))
+
     def test_a_part_paid_invoice_restates_what_is_left(self):
         invoice = self.invoice()
         self.apply(self.receipt("400", D(2026, 3, 10)), invoice, "400", D(2026, 3, 10))
