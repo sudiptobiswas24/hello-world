@@ -132,12 +132,12 @@ class Probes(RestatementTestCase):
         self.assertEqual(self.balance(self.ar, D(2026, 4, 1)), Decimal("83336.70"))
 
     def test_P11_a_note_dated_after_the_day_does_not_make_the_year_end_unrestatable_silently(self):
-        # the author's limit 1: refused in words, not silently wrong.
+        # the author's limit 1. Decided (coordinator, D): replayed to the day as payments are, not refused:
+        # on 31 Mar the whole 1,000 was open, so it is restated at 763.30.
         invoice = self.invoice()
-        from apps.sales.models import SalesOrderLine  # noqa: F401
         invoice.create_credit_note(on_date=D(2026, 4, 2))
-        with self.assertRaises(ValidationError):
-            Restatement.make(YEAR_END)
+        line = Restatement.make(YEAR_END).lines.get(item_type="sales.invoice", item_id=invoice.pk)
+        self.assertEqual((line.open_amount, line.difference), (Decimal("1000.00"), Decimal("763.30")))
 
     def test_P12_an_invoice_posted_into_a_restated_day_is_refused_or_restated(self):
         # limit 4: the year end misses a USD invoice dated on or before the day, posted after it.
