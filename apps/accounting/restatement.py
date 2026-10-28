@@ -193,6 +193,24 @@ def standing_on(instance, day):
     return rows["total"] or Decimal("0")
 
 
+def refuse_posting_behind_a_restatement(document, day):
+    """
+    Refuse posting a foreign `document` dated on or before a standing restatement's day: it would be open that
+    day at its own rate while the restatement valued everything else at the closing one, and the year end would
+    miss it. A correction dated anywhere (audit shape): void the restatement and restate, or date it after.
+    """
+    if not is_foreign(document.currency):
+        return
+    day = to_date(day)
+    standing = (Restatement.objects.filter(voided_on__isnull=True, as_of__gte=day).order_by("as_of").first()
+                if day is not None else None)
+    if standing is not None:
+        raise ValidationError(
+            f"{standing.number} restated the foreign balances as they stood on {standing.as_of:%d-%m-%Y}; a "
+            f"{document.currency.code} document dated {day:%d-%m-%Y} is not posted behind it. Void "
+            f"{standing.number} and restate once this is posted, or date it after {standing.as_of:%d-%m-%Y}.")
+
+
 def refuse_moving_restated(instances, day, doing):
     """
     Refuse `doing` on `day` to any of `instances` (a document, a payment) a standing restatement restated

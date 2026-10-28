@@ -2883,6 +2883,10 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
     def post(self, memo=None, apply_deposits=True):
         if self.posted:
             raise ValidationError("This invoice is already posted.")
+        # Into a day a standing restatement valued, it would be open there at its own rate (g24 review).
+        from apps.accounting.restatement import refuse_posting_behind_a_restatement
+
+        refuse_posting_behind_a_restatement(self, self.invoice_date)
         # Asked again as it posts: the account may have been made a bank's since the draft named it.
         refuse_money_kept_as(self, "receivable_account", changed_only=False)
         # The address may have been edited since the draft was saved.
