@@ -2737,3 +2737,44 @@ class ARestatementAndAPaymentOfWhatItRestatesRaceTests(RaceCase):
         restated = Restatement.objects.filter(lines__item_id=invoice.pk, lines__item_type="sales.invoice").exists()
         paid = InvoicePayment.objects.filter(invoice=invoice).exists()
         self.assertFalse(restated and paid, f"{outcomes}: restated open and paid on the same day")
+
+
+@tag("race")
+@unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
+class FilingATaxYearAsAMachineIsDisposedOfRaceTests(RaceCase):
+    """
+    g24 review: 2025-26 is filed while a press put to use in it is disposed of on 1 March 2026. file() holds
+    every block; the disposal holds the press's block before it asks whether the year is filed (and both take
+    the company's numbering row first, O257). Either the disposal is refused (filed first), or the filed year
+    counts it (disposed first): never a filed year that a disposal in it moved after it was kept.
+    """
+
+    def race_them(self, file_first):
+        from apps.assets import tax
+        from apps.assets import tests_tax as tax_fixture
+
+        books = fixture(self, tax_fixture.TaxDepreciationTestCase)
+        books.the_year()
+        books.confirm_all()
+        press = FixedAsset.objects.get(name="PM-GEN 300000")
+        filing = lambda: tax.TaxDepreciationYear.file(tax_fixture.YEAR)  # noqa: E731
+        disposing = lambda: FixedAsset.objects.get(pk=press.pk).dispose(  # noqa: E731
+            on_date=datetime.date(2026, 3, 1), proceeds=Decimal("1000"))
+        pair = (filing, disposing) if file_first else (disposing, filing)
+        outcomes = race_in_order((tax.TaxDepreciationYear, JournalEntry), *pair)
+        filed = tax.TaxDepreciationYear.standing(tax_fixture.YEAR)
+        press.refresh_from_db()
+        self.assertIn("done", outcomes)
+        if filed is not None and press.disposed_on is not None:
+            kept = filed.lines.get(block__code="PM-GEN")
+            self.assertEqual(kept.sales, Decimal("51000.00"), f"{outcomes}: filed without a disposal made in its year")
+        return outcomes
+
+    def test_filed_first_the_disposal_is_refused(self):
+        outcomes = self.race_them(file_first=True)
+        self.assertEqual(outcomes[0], "done", outcomes)
+        self.assertIn("is filed and rests on this year", outcomes[1])
+
+    def test_disposed_first_the_filed_year_counts_it(self):
+        outcomes = self.race_them(file_first=False)
+        self.assertEqual(outcomes, ["done", "done"])
