@@ -310,7 +310,7 @@ def _block_year(block, year_start, opening, assets):
     end = year_end(year_start)
     row = BlockYear(block=block, year_start=year_start, opening=opening)
     row.rate = block.rates.filter(applies_from__lte=year_start).order_by("-applies_from", "-pk").first()
-    remaining = 0
+    remaining = disposed_in_year = 0
     for asset in assets:
         used_from = to_date(asset.in_service_date)
         if used_from is None or used_from > end:
@@ -325,6 +325,7 @@ def _block_year(block, year_start, opening, assets):
             else:
                 row.additions_full += asset.cost
         if disposed is not None and disposed <= end:
+            disposed_in_year += 1
             row.sales += asset.disposal_proceeds or Decimal("0")
             if asset not in row.assets:
                 row.assets.append(asset)
@@ -334,7 +335,9 @@ def _block_year(block, year_start, opening, assets):
         row.book_depreciation += sum(
             (charge.amount for charge in asset.depreciation_entries.all()
              if charge.reversal_id is None and year_start <= to_date(charge.period_end) <= end), Decimal("0"))
-    row.ceased = bool(row.sales) and remaining == 0
+    # Every asset of it gone in the year, whatever it fetched: a machine scrapped for nothing ends its block with
+    # the loss (review F3). Asked of what money came in, a sole asset scrapped for 0 left its cost depreciating.
+    row.ceased = disposed_in_year > 0 and remaining == 0
     rate = row.rate.rate_percent if row.rate is not None else Decimal("0")
     row.depreciation, row.closing, row.capital_gain = work_block_year(
         row.opening, row.additions_full, row.additions_half, row.sales, rate, row.ceased)
