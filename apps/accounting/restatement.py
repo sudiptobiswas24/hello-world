@@ -379,7 +379,7 @@ class Restatement(AuditModel):
                 JournalLine.objects.create(entry=entry, account=gain if to_account else loss, party=line.party,
                                            debit=Decimal("0") if to_account else size,
                                            credit=size if to_account else Decimal("0"), description=words[:255])
-            entry.post()
+            entry.post(in_its_currency=True)  # values an EEFC account at the closing rate
             restatement.journal_entry = entry
             restatement.reversal_entry = entry.create_reversal(
                 entry_date=reverses_on, memo=f"{number} reversed: the next period opens at the booked rates")
@@ -408,7 +408,7 @@ class Restatement(AuditModel):
             for line in self.journal_entry.lines.all():
                 JournalLine.objects.create(entry=negation, account=line.account, party=line.party, debit=line.credit,
                                            credit=line.debit, description=line.description)
-            negation.post(correcting=True)
+            negation.post(correcting=True, in_its_currency=True)
             self.void_entry = negation
             self.void_reversal_entry = self.reversal_entry.create_reversal(
                 entry_date=self.reversal_entry.date, memo=f"{self.number} void: its reversal taken back")
