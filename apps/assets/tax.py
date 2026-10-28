@@ -135,7 +135,7 @@ class TaxBlockOpening(AuditModel):
         self.year_start = to_date(self.year_start)
         if self.year_start != tax_year_of(self.year_start) or self.year_start.month != 4 or self.year_start.day != 1:
             raise ValidationError({"year_start": ["A tax year opens on 1 April."]})
-        refuse_in_filed_year(self.year_start, f"The opening of {self.block.code} is not changed")
+        refuse_in_filed_year(self.year_start, f"The opening of {self.block.code} is not changed", self.block)
         if self.pk:
             stored = TaxBlockOpening.objects.get(pk=self.pk)
             refuse_in_filed_year(stored.year_start, f"The opening of {stored.block.code} is not changed")
@@ -248,14 +248,24 @@ class TaxBlockLine(AuditModel):
         raise ValidationError("A filed schedule's lines are what was filed; withdraw the year instead.")
 
 
-def refuse_in_filed_year(day, doing):
-    """Refuse `doing` on `day` when the tax year it falls in is filed: the schedule kept would no longer hold."""
+def refuse_in_filed_year(day, doing, block=None):
+    """
+    Refuse `doing` on `day` when the tax year it falls in, or any later one, is filed: a filed year opens at
+    what every year before it closed at, so an asset event in an earlier year moves a filed year's opening
+    (review F4: a machine put to use in 2024-25 after 2025-26 was filed never reached a filed year).
+
+    `block`, the block it moves, is held first, as file() holds every block: filing then waits for the event,
+    or the event for the filing, and whichever comes second reads what the first did.
+    """
     if day is None:
         return
-    filed = TaxDepreciationYear.standing(tax_year_of(day))
+    if block is not None:
+        lock_rows(block, refresh=False)
+    filed = (TaxDepreciationYear.objects.filter(withdrawn_on__isnull=True, year_start__gte=tax_year_of(day))
+             .order_by("year_start").first())
     if filed is not None:
-        raise ValidationError(f"{doing} on {to_date(day):%d-%m-%Y}: {filed} is filed. Withdraw it for a revised "
-                              "return first.")
+        raise ValidationError(f"{doing} on {to_date(day):%d-%m-%Y}: {filed} is filed and rests on this year. Withdraw "
+                              "it for a revised return first.")
 
 
 @dataclass
