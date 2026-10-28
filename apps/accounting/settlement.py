@@ -413,9 +413,9 @@ class RealisedOnItsOwnDay:
         return round_money(booked * min(after, payment.amount) / payment.amount) - taken
 
     def refuse_behind_a_restatement(self, document, day):
-        from .restatement import refuse_moving_restated
+        from .restatement import refuse_behind_a_restatement as refuse
 
-        refuse_moving_restated([self.payment, document], day,
+        refuse([self.payment, document], day,
                                f"{self.payment.number} is not applied to {document.number} on {to_date(day):%d-%m-%Y}")
 
     @transaction.atomic
@@ -827,6 +827,10 @@ def take_settlement_discount(document, *, control_account, party, discount_accou
     (section 15(3)(b): agreed before the supply, the accountant's choice) are
     refused here: that discount is a credit note, not this entry.
     """
+    from .restatement import refuse_behind_a_restatement
+
+    # Asked as the day is first known: given, or worked out from the payment below (asked again there).
+    refuse_behind_a_restatement([document], on_date, f"No settlement discount is taken on {document.number}")
     terms = document.payment_terms
     if terms is not None and terms.discount_reduces_gst:
         raise ValidationError(
@@ -842,6 +846,7 @@ def take_settlement_discount(document, *, control_account, party, discount_accou
             raise ValidationError(f"{payment.number} was made on {to_date(payment.payment_date)}, after the "
                                   f"discount days on {document.number} ended ({deadline}).")
         on_date = on_date or max(to_date(payment.payment_date), document.date_for_discount())
+        refuse_behind_a_restatement([document], on_date, f"No settlement discount is taken on {document.number}")
         amount = discount_earned_by(document, payment) if not force else settlement_discount_to_take(
             document, on_date, force)
         if amount <= 0:
@@ -906,6 +911,9 @@ def withdraw_discount(document, control_account, party, amount, on_date, memo):
     discount's own entry turned round, at the document's rate, on the day
     the payment that earned it came back. Returns the entry.
     """
+    from .restatement import refuse_behind_a_restatement
+
+    refuse_behind_a_restatement([document], on_date, f"{document.number}'s settlement discount is not withdrawn")
     taken = document.settlement_discount_entry
     credited = any(line.credit for line in taken.lines.all() if line.account_id == control_account.pk)
     base = round_money(amount * (document.exchange_rate or Decimal("1")))

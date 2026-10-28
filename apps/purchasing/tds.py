@@ -20,6 +20,7 @@ from django.db import models, transaction
 from django.db.models import Q
 
 from apps.accounting.models import Account, JournalEntry, JournalLine, TdsSection
+from apps.accounting.restatement import AsksTheRestatement
 from apps.accounting.statutory_names import period_names
 from apps.accounting.tds import deduction_terms, financial_year
 from apps.core.models import AuditModel, Company, correction_date, lock_rows, serialised, to_date
@@ -37,7 +38,8 @@ def _live(queryset):
     return queryset.filter(reversed_entry__isnull=True)
 
 
-class TdsDeduction(AuditModel):
+class TdsDeduction(AsksTheRestatement, AuditModel):
+    RESTATES = ("bill",)
     bill = models.ForeignKey("purchasing.Bill", on_delete=models.PROTECT, related_name="tds_deductions")
     section = models.ForeignKey(TdsSection, on_delete=models.PROTECT, related_name="+")
     # What the deduction was made at, kept: a rate or PAN changed on the

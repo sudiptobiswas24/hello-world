@@ -30,7 +30,7 @@ year's books read the restated figure; the next year's P&L takes the reversal an
 difference, which together are what the money moved by after the year end.
 
 A restatement is a fact about what was open on its day: an allocation, a void or a deletion that would
-change what was open on or before it is refused while it stands (`refuse_moving_restated`). Its own
+change what was open on or before it is refused while it stands (`refuse_behind_a_restatement`). Its own
 reverse is a void, dated under correction_date(), before the restatement has reversed itself.
 """
 
@@ -221,42 +221,66 @@ def standing_on(instance, day):
     return rows["total"] or Decimal("0")
 
 
-def refuse_posting_behind_a_restatement(document, day):
+def refuse_behind_a_restatement(instances, day, doing):
     """
-    Refuse posting a foreign `document` dated on or before a standing restatement's day: it would be open that
-    day at its own rate while the restatement valued everything else at the closing one, and the year end would
-    miss it. A correction dated anywhere (audit shape): void the restatement and restate, or date it after.
+    The one check (review, the mirror of E): refuse `doing` on `day` to any foreign document or payment in
+    `instances` while a standing restatement valued the foreign balances as they stood on `day` or later. Every
+    event that changes what a foreign document has open on a day asks it: posting an invoice, bill or note, a
+    payment and its void, an allocation and its removal, a drawdown, a write-off and its recovery, TDS and its
+    reversal, TCS, a settlement discount and its withdrawal (AsksTheRestatement for the records, the methods
+    themselves for the rest; tests_restatement names any that does not). Void the restatement and restate, or
+    date it after: a correction dated anywhere is the shape it guards.
     """
-    if not is_foreign(document.currency):
-        return
     day = to_date(day)
-    standing = (Restatement.objects.filter(voided_on__isnull=True, as_of__gte=day).order_by("as_of").first()
-                if day is not None else None)
+    if day is None or not any(instance is not None and is_foreign(getattr(instance, "currency", None))
+                              for instance in instances):
+        return
+    standing = Restatement.objects.filter(voided_on__isnull=True, as_of__gte=day).order_by("as_of").first()
     if standing is not None:
         raise ValidationError(
-            f"{standing.number} restated the foreign balances as they stood on {standing.as_of:%d-%m-%Y}; a "
-            f"{document.currency.code} document dated {day:%d-%m-%Y} is not posted behind it. Void "
-            f"{standing.number} and restate once this is posted, or date it after {standing.as_of:%d-%m-%Y}.")
+            f"{doing}: {standing.number} restated the foreign balances as they stood on {standing.as_of:%d-%m-%Y}, "
+            f"and that would change what was open then. Void {standing.number} and restate once this is posted, "
+            f"or date it after {standing.as_of:%d-%m-%Y}.")
 
 
-def refuse_moving_restated(instances, day, doing):
+class AsksTheRestatement:
     """
-    Refuse `doing` on `day` to any of `instances` (a document, a payment) a standing restatement restated
-    as open on `day` or later: it would change what was open on a day whose figure is posted. Void the
-    restatement first (and restate again), or date it after the restatement's day.
+    A record that settles a foreign document, or takes a settlement back: made, deleted, or given the entry that
+    takes it back (a reversal, a recovery), it asks refuse_behind_a_restatement on the day of what it does.
+    `RESTATES` names the fields holding the documents it moves.
     """
-    day = to_date(day)
-    for instance in instances:
-        if instance is None or instance.pk is None:
-            continue
-        line = (RestatementLine.objects.filter(
-            item_type=item_key(instance), item_id=instance.pk, restatement__voided_on__isnull=True,
-            restatement__as_of__gte=day).select_related("restatement").order_by("restatement__as_of").first())
-        if line is not None:
-            raise ValidationError(
-                f"{doing}: {line.restatement.number} restated {line.label} as it stood on "
-                f"{line.restatement.as_of:%d-%m-%Y}, and that would change it. Date it after "
-                f"{line.restatement.as_of:%d-%m-%Y}, or void {line.restatement.number} first.")
+
+    RESTATES = ()
+
+    def _words(self):
+        # Not str(self): an unsaved record's own words may read what it has not been given yet.
+        named = ", ".join(str(getattr(doc, "number", "") or doc.pk) for doc in self._restated())
+        return f"{self._meta.verbose_name.capitalize()} of {named}"
+
+    def _restated(self):
+        return [getattr(self, name) for name in self.RESTATES if getattr(self, f"{name}_id", None)]
+
+    def _taking_back(self):
+        """The entries that take it back, by field name: every journal entry it keeps beside the one it made."""
+        return [f.name for f in self._meta.concrete_fields if f.is_relation and f.related_model is JournalEntry
+                and f.name not in ("journal_entry", "fx_entry")]
+
+    def save(self, *args, **kwargs):
+        if self._state.adding or self.pk is None:
+            refuse_behind_a_restatement(self._restated(), self.date, f"{self._words()} is not recorded on {self.date}")
+        else:
+            names = self._taking_back()
+            stored = type(self)._base_manager.filter(pk=self.pk).values(*[f"{n}_id" for n in names]).first() or {}
+            for name in names:
+                if getattr(self, f"{name}_id") and not stored.get(f"{name}_id"):
+                    taken_back_on = getattr(self, name).date
+                    refuse_behind_a_restatement(self._restated(), taken_back_on,
+                                                f"{self._words()} is not taken back on {taken_back_on}")
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        refuse_behind_a_restatement(self._restated(), self.date, f"{self._words()} is not removed")
+        return super().delete(*args, **kwargs)
 
 
 class Restatement(AuditModel):
