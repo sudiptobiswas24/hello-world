@@ -430,6 +430,34 @@ built.
    - (O213) whether an overpayment taken back outside a final run is held
      within the deduction cap like an advance recovery (the code holds it
      there, and what the cap leaves waits for the next run).
+   Added by g24. None of its figures could be confirmed from an official site (the
+   proxy blocked them), so every one is loaded unconfirmed, with what secondary
+   sources said, and go_live_check fails until the Controller confirms each:
+   - for the accountant (statutory): the EPF wage ceiling (25,000 from
+     17 September 2026, or 15,000); the bonus notification, Central or State;
+     which West Bengal minimum-wage schedule covers sack making (no plastics
+     schedule was found; the loaded rows are stand-ins); the TCS rate on scrap
+     (1% or 2%); section 393's serial numbers and the 194J and 194I thresholds;
+     Form 144 or 140; the West Bengal PT band edge (25,000 or 30,000); the LWF
+     employer share (30 or 15);
+   - for the accountant (year-end): AS 11 or Ind AS 21; every tax block rate;
+     each block's opening WDV from the last return; the put-to-use and
+     day-count rules; additional depreciation; separate unrealised exchange
+     accounts or the FX gain and loss accounts;
+   - for the tax adviser (reverse charge): time of supply (the bill date or the
+     self-invoice date, s.13(3)); when the cash set-off happens (the deposit or
+     the GSTR-3B filing); a supplier's registration as dated data; O385 (a part
+     debit note against a self-invoice); O387 (table 4(B) after a self-invoice
+     is cancelled); the consolidated monthly self-invoice; the voucher's tax on
+     a part payment, pro rata today; the Rule 47A and Notification 17/2024-CT
+     texts, which were not read first-hand;
+   - for the accountant (audit trail): the exact wording of rule 3(1)'s proviso
+     and the retention period, quoted in docs/handoff/reports/g24_fix_audit.md.
+   Deployment, from g24: production needs DATABASE_OWNER_URL (migrations,
+   backup and restore run as the owner) beside DATABASE_URL (the app's role,
+   which owns nothing) and POSTGRES_APP_PASSWORD; ERP_FIELD_KEYS as before.
+   .env.example and docker-compose.yml say so. A new container's erp role
+   needs CREATEROLE for the two-role test.
 4. The scratch worktrees `fix_{sec,trade,stat,qual}` and
    `audit_{acc,sales,pur,perm,qc}` are merged into g18 and can be removed;
    their snapshots stay on `claude/erp-wip-*`.
