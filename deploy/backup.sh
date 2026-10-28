@@ -76,8 +76,14 @@ dump() {
     # put back and matched against the manifest, strictly.
     mkdir -p "$check" && tar -C "$check" -xzf "${media}.partial" \
         || { failed "the attachments archive does not unpack for checking"; return 1; }
-    (cd "$check" && sha256sum --check --quiet --strict "${manifest}.partial") > /dev/null \
-        || { failed "the manifest does not verify against the archive"; return 1; }
+    # A plant with nothing attached yet has an empty manifest, which sha256sum --check refuses ("no properly
+    # formatted checksum lines"): there, the archive must hold no file either, and that is what is asked.
+    if [ -s "${manifest}.partial" ]; then
+        (cd "$check" && sha256sum --check --quiet --strict "${manifest}.partial") > /dev/null \
+            || { failed "the manifest does not verify against the archive"; return 1; }
+    elif [ -n "$(find "$check" -type f -print -quit)" ]; then
+        failed "the manifest lists no file but the archive holds some"; return 1
+    fi
     rm -rf -- "$check"
     # Renamed only once complete, so a half-written file is never taken
     # for a backup.

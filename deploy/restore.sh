@@ -26,12 +26,20 @@ if [ -f "$media" ]; then
     rm -rf "$staging"
     mkdir "$staging"
     tar -C "$staging" -xzf "$media"
-    if [ -f "$manifest" ]; then
+    if [ -f "$manifest" ] && [ ! -s "$manifest" ] && [ -n "$(find "$staging" -type f -print -quit)" ]; then
+        rm -rf "$staging"
+        echo "$manifest lists no file but $media holds some; nothing changed" >&2
+        exit 1
+    fi
+    # An empty manifest is a backup taken with nothing attached: it verifies when the archive holds no file.
+    if [ -s "$manifest" ]; then
         (cd "$staging" && sha256sum --check --quiet --strict "$manifest") >&2 || {
             rm -rf "$staging"
             echo "$media does not match $manifest: an attachment is not what was backed up; nothing changed" >&2
             exit 1
         }
+    elif [ -f "$manifest" ]; then
+        echo "nothing was attached when this backup was taken: the archive holds no file" >&2
     else
         echo "no manifest beside it ($manifest): the attachments' content is not checked" >&2
     fi
