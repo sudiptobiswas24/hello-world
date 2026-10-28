@@ -279,6 +279,12 @@ def _secret(field):
 
 
 def _label(field, value, instance=None):
+    # A migration's historical model keeps the id alone. Its related model is the project state's, and the
+    # database may stand at another state for that app (a test taking one app back, a migration of one app
+    # running before another's), so reading the whole related row asked for a column the table did not
+    # have (the g24 gate's purchasing TDS migration test). The database layer keeps the whole row anyway.
+    if (field.model._meta.concrete_model or field.model).__module__ == "__fake__":
+        return None
     if instance is not None and field.is_cached(instance):
         related = field.get_cached_value(instance)
         if related is not None and getattr(related, field.target_field.attname, None) == value:
