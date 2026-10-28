@@ -49,17 +49,26 @@ class Probes(RaceCase):
         self._check(invoice, out)
         self.assertTrue(out[0] == "done", out)
 
-    def test_R3_restatement_against_a_void_of_the_payment_both_orders(self):
-        for restate_first in (True, False):
-            fx, books, invoice, receipt = self._setup()
-            voider = lambda: Payment.objects.get(pk=receipt.pk).void(on_date=fx.YEAR_END)  # noqa: E731
-            make = lambda: Restatement.make(fx.YEAR_END)  # noqa: E731
-            out = race_in_order(Restatement, make, voider) if restate_first else race_in_order(Restatement, voider, make)[::-1]
-            payment = Payment.objects.get(pk=receipt.pk)
-            voided = payment.is_voided()
-            made = Restatement.objects.filter(voided_on__isnull=True).exists()
-            # a payment voided on 31 Mar while a standing restatement read it as unapplied money on account
-            # (or the invoice as paid) is a restatement of a figure that no longer holds
-            if made and voided:
-                line = Restatement.objects.get().lines.first()
-                self.fail(f"{out}: restated {line.label} as at 31 Mar and voided the receipt on 31 Mar")
+    def _r3(self, restate_first):
+        # Fixed by the author (round 2): one order per test, since a second fixture in one test collides on
+        # its codes; and the claim asked for any standing restatement once the receipt was voided. Voided first,
+        # the restatement rightly leaves the receipt out and restates the invoice it never paid. The defect
+        # is a restatement that reads the voided receipt as money on account.
+        fx, books, invoice, receipt = self._setup()
+        voider = lambda: Payment.objects.get(pk=receipt.pk).void(on_date=fx.YEAR_END)  # noqa: E731
+        make = lambda: Restatement.make(fx.YEAR_END)  # noqa: E731
+        out = race_in_order(Restatement, make, voider) if restate_first else race_in_order(Restatement, voider, make)[::-1]
+        voided = Payment.objects.get(pk=receipt.pk).is_voided()
+        restated = Restatement.objects.filter(voided_on__isnull=True, lines__item_type="accounting.payment",
+                                              lines__item_id=receipt.pk).exists()
+        if restated and voided:
+            self.fail(f"{out}: restated the receipt as at 31 Mar and voided it on 31 Mar")
+        return out, voided, restated
+
+    def test_R3_restatement_first_then_a_void_of_the_payment(self):
+        out, voided, restated = self._r3(restate_first=True)
+        self.assertEqual((out[0], restated, voided), ("done", True, False), out)
+
+    def test_R3_void_of_the_payment_first_then_the_restatement(self):
+        out, voided, restated = self._r3(restate_first=False)
+        self.assertEqual((out, voided, restated), (["done", "done"], True, False), out)
