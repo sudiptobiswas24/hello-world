@@ -170,7 +170,7 @@ class Chain(piecework.ATakeBackOutsideAFinalRunTests):
         person = self.other("EMP-0301")
         EmployeeCompensation.objects.create(employee=person, component=basic, amount=D("10000"),
                                             effective_from=SEP(1))
-        for component, amount in ((self.pf, "12"), (self.esi, "0.75")):
+        for component, amount in ((self.pf, "12"), (self.esi, "1")):  # ESI at the dated rate: 1 is "insured"
             EmployeeCompensation.objects.create(employee=person, component=component, amount=D(amount),
                                                 effective_from=SEP(1))
         run = PayRun.objects.create(period_start=SEP(1), period_end=SEP(30), pay_date=SEP(30))
@@ -191,7 +191,7 @@ class Chain(piecework.ATakeBackOutsideAFinalRunTests):
         person = self.other("EMP-0302")
         EmployeeCompensation.objects.create(employee=person, component=hourly, amount=D("100"),
                                             effective_from=SEP(1))
-        for component, amount in ((self.pf, "12"), (self.esi, "0.75")):
+        for component, amount in ((self.pf, "12"), (self.esi, "1")):  # ESI at the dated rate: 1 is "insured"
             EmployeeCompensation.objects.create(employee=person, component=component, amount=D(amount),
                                                 effective_from=SEP(1))
         run = PayRun.objects.create(period_start=SEP(1), period_end=SEP(30), pay_date=SEP(30))
@@ -273,7 +273,8 @@ class Settled(piecework.AFormerEmployeesShortfallIsSettledTests):
             Group.objects.filter(permissions__codename=codename).values_list("name", flat=True))
         self.assertEqual(holders("write_off_shortfall"), ["Controller"])
         self.assertEqual(holders("void_shortfallsettlement"), ["Controller"])
-        self.assertEqual(holders("view_shortfallsettlement"), ["Controller"])
+        # Reading is not deciding: the Auditor reads every record, read-only (g24, the edit log).
+        self.assertEqual(holders("view_shortfallsettlement"), ["Auditor", "Controller"])
 
     def test_a_write_off_is_dated_by_the_rule(self):
         controller = self.as_("Controller")
