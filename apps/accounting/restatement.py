@@ -111,19 +111,12 @@ def _stood_on(payment, day):
 
 def document_open_on(document, day, later):
     """
-    What of `document` was open at the close of `day`, in its own currency: what is due now, with the
-    payments applied to it replayed by the day each was applied and the day each was voided.
-
-    `later`, [(day, words)], is what else settled it (a note, a drawdown, a write-off, tax deducted,
-    a discount) and the day of each. One dated after `day` is refused in words rather than replayed:
-    each of those has its own rules on either side, and a restatement that guessed at them would
-    restate a figure no document ever held. Restate before it, or as at a day after it.
+    What of `document` was open at the close of `day`, in its own currency: what is due now, with what has
+    settled it replayed by its day. Payments by the day each was applied and the day each was voided; `later`,
+    [(day, amount, entries, words)], the rest (a note, a drawdown, a write-off, tax deducted, a discount), each
+    signed as it settled the document (what took one back is negative), added back when dated after `day`.
+    Refused instead, a credit note dated 2 April kept a USD invoice open on 31 March from being restated at all.
     """
-    moved = [words for when, words in later if when is not None and to_date(when) > day]
-    if moved:
-        raise ValidationError(
-            f"{document.number} cannot be restated as it stood on {day:%d-%m-%Y}: {'; '.join(moved)}, after that "
-            "day. Only payments are replayed to the day; restate before that was recorded, or ask the accountant.")
     open_amount = document.amount_due()
     for allocation in document.payment_allocations.select_related("payment__voided_entry", "payment__journal_entry"):
         payment = allocation.payment
@@ -133,6 +126,9 @@ def document_open_on(document, day, later):
             open_amount += allocation.amount
         elif standing_then and not standing_now:
             open_amount -= allocation.amount
+    for when, amount, _entries, _words in later:
+        if when is not None and to_date(when) > day:
+            open_amount += amount
     return open_amount
 
 

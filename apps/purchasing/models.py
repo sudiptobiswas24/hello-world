@@ -82,6 +82,7 @@ from apps.inventory.models import (
     plan_putaway,
 )
 from apps.accounting.settlement import (
+    entries_booked,
     allocated_on,
     base_or_none,
     in_base,
@@ -3837,18 +3838,36 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
                              side=1 if self.is_debit_note() else -1, later=self.settled_otherwise_on())
 
     def settled_otherwise_on(self):
-        """[(day, words)]: everything but a payment that settled it, or took that back, and the day of each."""
-        rows = [(note.bill_date, f"debit note {note.number}") for note in self.debit_notes.all() if note.posted]
-        rows += [(row.date, f"prepayment {row.prepayment.number} drawn") for row in self.prepayment_applications.all()]
+        """
+        [(day, amount, entries, words)]: everything but a payment that settled it, signed (what took it back is
+        negative), with the day of each and the entries that moved its control account for it (None where they
+        are not its alone). The restatement replays what is dated after its day (accounting.restatement).
+        """
+        if self.is_debit_note():
+            return []
+        rows = []
+        for note in self.debit_notes.all():
+            if not note.posted:
+                continue
+            absorbed = note.amount_absorbed()
+            whole = absorbed == note.total() and not note.reversed_discount
+            rows.append((note.bill_date, absorbed, entries_booked(note) if whole else None, f"debit note {note.number}"))
+            if note.reversed_discount and note.settlement_reversal_entry_id:
+                rows.append((note.settlement_reversal_entry.date, -note.reversed_discount,
+                             [note.settlement_reversal_entry], f"discount undone by {note.number}"))
+        for row in self.prepayment_applications.all():
+            rows.append((row.date, row.amount, [row.journal_entry, row.fx_entry],
+                         f"prepayment {row.prepayment.number} drawn"))
         for row in self.tds_deductions.all():
-            rows.append((row.date, "TDS deducted"))
+            rows.append((row.date, row.amount, [row.journal_entry], "TDS deducted"))
             if row.reversed_entry_id:
-                rows.append((row.reversed_entry.date, "TDS reversed"))
-        for entry, words in ((self.settlement_discount_entry, "a settlement discount"),
-                             (self.settlement_discount_withdrawal_entry, "a settlement discount withdrawn"),
-                             (self.settlement_reversal_entry, "a discount undone")):
-            if entry is not None:
-                rows.append((entry.date, words))
+                rows.append((row.reversed_entry.date, -row.amount, [row.reversed_entry], "TDS reversed"))
+        if self.settlement_discount_amount and self.settlement_discount_entry_id:
+            rows.append((self.settlement_discount_entry.date, self.settlement_discount_amount,
+                         [self.settlement_discount_entry], "a settlement discount"))
+        if self.settlement_discount_withdrawn and self.settlement_discount_withdrawal_entry_id:
+            rows.append((self.settlement_discount_withdrawal_entry.date, -self.settlement_discount_withdrawn,
+                         [self.settlement_discount_withdrawal_entry], "a settlement discount withdrawn"))
         return rows
 
     def settled_by_entries(self):
