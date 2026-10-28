@@ -109,6 +109,16 @@ def _stood_on(payment, day):
     return bool(payment.posted) and to_date(payment.payment_date) <= day and (voided is None or voided > day)
 
 
+def _allocations_then(document, day):
+    """[(allocation, standing now, standing at the close of day)] for every payment applied to `document`."""
+    rows = []
+    for allocation in document.payment_allocations.select_related("payment__voided_entry", "payment__journal_entry"):
+        payment = allocation.payment
+        rows.append((allocation, not payment.is_voided(),
+                     to_date(allocation.date) <= day and _stood_on(payment, day)))
+    return rows
+
+
 def document_open_on(document, day, later):
     """
     What of `document` was open at the close of `day`, in its own currency: what is due now, with what has
@@ -118,10 +128,7 @@ def document_open_on(document, day, later):
     Refused instead, a credit note dated 2 April kept a USD invoice open on 31 March from being restated at all.
     """
     open_amount = document.amount_due()
-    for allocation in document.payment_allocations.select_related("payment__voided_entry", "payment__journal_entry"):
-        payment = allocation.payment
-        standing_now = not payment.is_voided()
-        standing_then = to_date(allocation.date) <= day and _stood_on(payment, day)
+    for allocation, standing_now, standing_then in _allocations_then(document, day):
         if standing_now and not standing_then:
             open_amount += allocation.amount
         elif standing_then and not standing_now:
@@ -132,11 +139,34 @@ def document_open_on(document, day, later):
     return open_amount
 
 
+def carried_on(document, day, account, booked, later):
+    """
+    The base the ledger holds for `document` at the close of `day`: what it booked, less what each settlement
+    standing then cleared off its control account as that settlement recorded it (an allocation's
+    document_base, O209; a note's, a drawdown's or a write-off's own entries), as the next settlement reads it
+    (settlement.base_of_the_part). The slice of the booked base for what was settled is a third figure:
+    a March receipt of 550 applied after an April one of 50 left 37,501.52 on the receivable and the slice
+    read 37,501.51.
+    """
+    from .settlement import booked_on_together
+
+    rate = document.exchange_rate or Decimal("1")
+    cleared = Decimal("0")
+    for allocation, _now, standing_then in _allocations_then(document, day):
+        if standing_then:
+            cleared += (allocation.document_base if allocation.document_base is not None
+                        else round_money(allocation.amount * rate))
+    for when, amount, entries, _words in later:
+        if when is None or to_date(when) > day or not amount:
+            continue
+        base = booked_on_together([entry for entry in entries if entry is not None], account) if entries else None
+        base = round_money(abs(amount) * rate) if base is None else base
+        cleared += base if amount > 0 else -base
+    return booked - cleared
+
+
 def document_item(document, day, *, party, account, side, later):
-    """
-    The OpenItem for an invoice, bill or note open on `day`, or None. Its base carried is what it booked
-    less the slice of that settled (settlement.slice_of), as the next payment applied to it would read.
-    """
+    """The OpenItem for an invoice, bill or note open on `day`, or None, at the base the ledger carries for it."""
     from .settlement import booked_by
 
     if not document.posted or not document.journal_entry_id or not is_foreign(document.currency):
@@ -144,10 +174,8 @@ def document_item(document, day, *, party, account, side, later):
     open_amount = document_open_on(document, day, later)
     if open_amount <= 0:
         return None
-    total = document.total()
     booked = booked_by(document, account) or Decimal("0")
-    settled = max(total - open_amount, Decimal("0"))
-    carried = booked - round_money(booked * settled / total) if total else Decimal("0")
+    carried = carried_on(document, day, account, booked, later)
     return OpenItem(document, document.number, party, account, document.currency, open_amount, carried, side)
 
 
