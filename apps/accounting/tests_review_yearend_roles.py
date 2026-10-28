@@ -29,6 +29,9 @@ class Roles(RestatementTestCase):
             for method, path in PATHS:
                 status = getattr(client, method)(path, {"as_of": "2026-03-31", "year": "2025-04-01"},
                                                  format="json").status_code
+                # The Auditor reads every record, read-only (g24, the edit log): it may read these, never write.
+                if role == "Auditor" and method == "get":
+                    continue
                 if status != 403 and role != "Controller":
                     leaks.append((role, method, path, status))
         self.assertEqual(leaks, [])
