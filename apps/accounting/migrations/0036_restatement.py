@@ -8,7 +8,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("accounting", "0031_books_opening"),
+        ("accounting", "0035_tcs_declaration_form_follows_its_date"),
         ("core", "0042_documentnumbering"),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
