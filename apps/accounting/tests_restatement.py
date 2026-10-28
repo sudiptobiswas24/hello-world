@@ -315,6 +315,7 @@ NEED_NOT_ASK = {
     "hr.salaryadvance": "payroll, in the base currency; its payment asks at Payment.post",
     "hr.shortfallsettlement": "payroll, in the base currency; its payment asks at Payment.post",
     "hr.salarytransfer": "payroll, in the base currency; its payment asks at Payment.post",
+    "gst.paymentvoucher": "records the reverse-charge tax on a payment already posted (which asks at Payment.post); it posts no entry and moves nothing a document has open",
 }
 
 
