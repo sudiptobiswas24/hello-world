@@ -10,6 +10,7 @@ from django.utils import timezone
 from django.db.models import Q
 
 from apps.accounting.defaults import default_account
+from apps.accounting.restatement import AsksTheRestatement
 from apps.accounting.money import refuse_money_kept_as
 from apps.accounting.mixins import (
     PostedLineMixin,
@@ -4370,9 +4371,10 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         if self.posted:
             raise ValidationError("This bill is already posted.")
         # Into a day a standing restatement valued, it would be open there at its own rate (g24 review).
-        from apps.accounting.restatement import refuse_posting_behind_a_restatement
+        from apps.accounting.restatement import refuse_behind_a_restatement
 
-        refuse_posting_behind_a_restatement(self, self.bill_date)
+        refuse_behind_a_restatement([self], self.bill_date, f"{self.number or 'This bill'} is not posted on "
+                                                            f"{to_date(self.bill_date)}")
         # Asked again as it posts: the account may have been made a bank's since the draft named it.
         refuse_money_kept_as(self, "payable_account", changed_only=False)
         # What the order has been billed, and paid up front, is decided on
@@ -5796,7 +5798,8 @@ class BillLineTax(RecordedLineTax):
     line = models.ForeignKey(BillLine, on_delete=models.CASCADE, related_name="recorded_taxes")
 
 
-class PrepaymentApplication(AuditModel):
+class PrepaymentApplication(AsksTheRestatement, AuditModel):
+    RESTATES = ("bill",)
     """
     One drawdown of a prepayment bill against a real bill.
 

@@ -1263,6 +1263,10 @@ class Payment(AuditModel):
                 raise ValidationError(said)
 
         self.payment_date = to_date(self.payment_date)
+        # Money dated into a restated day would be open there at its own rate (the mirror of E).
+        from .restatement import refuse_behind_a_restatement
+
+        refuse_behind_a_restatement([self], self.payment_date, f"A payment is not posted on {self.payment_date}")
         if not self.number:
             self.number = DocumentSequence.next_for(
                 "accounting.payment", self.payment_date, name="Payments", prefix="PAY-"
@@ -1333,10 +1337,10 @@ class Payment(AuditModel):
         on_date = correction_date(on_date, self.payment_date, "A payment is not voided on", "it was made")
         # What it was, and what it settled, are restated as they stood on a day: voided on or before it, the
         # money on account or the document it paid would no longer be what was restated (g24).
-        from .restatement import refuse_moving_restated
+        from .restatement import refuse_behind_a_restatement
         from .settlement import allocations_of
 
-        refuse_moving_restated([self] + [row.settles()[0] for row in allocations_of(self)], on_date,
+        refuse_behind_a_restatement([self] + [row.settles()[0] for row in allocations_of(self)], on_date,
                                f"{self.number} is not voided on {on_date:%d-%m-%Y}")
         entry = self.journal_entry.create_reversal(
             entry_date=on_date, memo=memo or f"Void of payment {self.number}"
