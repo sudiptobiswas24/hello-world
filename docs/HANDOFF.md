@@ -316,13 +316,28 @@ built.
        - pip needs tblib, or the parallel runner dies silently on the first
          failure ("tracebacks cannot be pickled"); it is pinned now.
        - Agents never `git stash`: worktrees share one stash.
-   - **g24, in flight (started 26 October):** three agents, briefs
-     docs/handoff/g24_{audit,statutory,rcm}.md, base d76ef6f, worktrees
-     /home/user/work/fix_{audit,statutory,rcm}, integration tree
-     /home/user/work/g24tree, gate logs /home/user/gate-logs-g24. The year-end
-     items (closing-rate restatement, tax depreciation at written-down value)
-     follow as a second round, once the audit trail is in. Register and
-     handoff commits are made in the integration tree only.
+   - **g24 is pushed (b6b763b gated, 29 October), all six lanes green on one
+     tip:** SQLite 8113, 230 skipped, 1 expected failure (O385); PostgreSQL
+     8113; Asia/Kolkata 8113; migration-tagged 46; vitest 55. 69 commits. It
+     holds the audit trail (two layers, two database roles), the statutory
+     figures confirmed before use with a go-live line per engine, TAN and the
+     2025 Act's names, GST reverse charge, the year-end restatement and tax
+     depreciation by block, and the empty-attachments backup. Each part was
+     reviewed and every blocker fixed; left as rows O385 to O391.
+     - What the gate found, each fixed with a test that fails without it: the
+       payment voucher and the year-end sentinel; the Auditor's reads; a
+       migration's historical write labelled through the wrong state.
+     - Lessons for the next gate:
+       - pg-b took 7,719 s against its 9,000 s cap and the mig lane 6,120 s
+         against 6,900: split pg-b or raise both caps before g25, or a green
+         gate times out.
+       - scripts/gate/gateline.py reads "OK (skipped=N)" only: with expected
+         failures in the line it reported 0 skipped. g24 was finalized with a
+         fixed copy; fix the script itself in g25's first commit.
+       - Agents built from one base clash on migration numbers every round:
+         renumber at integration, the later agent's after the earlier.
+       - Run one agent at a time when the usage limit is near (the owner's
+         instruction, 28 October); every stop so far lost nothing committed.
    - **g24, go-live statutory and the audit trail (decided 26 October, from
      docs/handoff/reports/odoo19_gap_analysis_oct26.md).** The re-done Odoo 19
      comparison found the 16 go-live build items of 14 October 12 built and 4
