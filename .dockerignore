@@ -1,0 +1,12 @@
+.git
+.venv
+**/__pycache__
+*.pyc
+db.sqlite3
+staticfiles
+backups
+imports
+.env
+*.log
+frontend/node_modules
+apps/web/static/web

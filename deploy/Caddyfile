@@ -1,0 +1,9 @@
+# ERP_SITE is the address people type. A public domain name gets a real
+# certificate automatically. A name or address on the plant's own network
+# needs ERP_TLS="tls internal", and each tablet and PC must trust Caddy's
+# root certificate once (RUNBOOK.md, "HTTPS on the plant network").
+{$ERP_SITE} {
+	{$ERP_TLS}
+	encode gzip
+	reverse_proxy web:8000
+}
