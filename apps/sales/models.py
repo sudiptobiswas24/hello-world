@@ -4500,6 +4500,10 @@ class Delivery(AuditModel):
                                  help_text="The transporter's lorry receipt.")
     lr_date = models.DateField(null=True, blank=True, editable=False)
     vehicle_number = models.CharField(max_length=15, blank=True, editable=False)
+    # The weighbridge slip of the truck it left on (L17): recorded like the transport, before or after posting.
+    weighing = models.ForeignKey(
+        "inventory.Weighing", null=True, blank=True, on_delete=models.PROTECT, related_name="deliveries",
+        editable=False)
     # What the customer signed for: cement plants pay from their own
     # receipt, and a disputed delivery is argued from this.
     received_on = models.DateField(null=True, blank=True, editable=False)
@@ -4566,6 +4570,22 @@ class Delivery(AuditModel):
         self.lr_date = to_date(lr_date)
         self.vehicle_number = normalise_vehicle(vehicle_number) if vehicle_number else ""
         super().save(update_fields=["transporter", "lr_number", "lr_date", "vehicle_number", "updated_at"])
+
+    @serialised("weighing")
+    def record_weighing(self, weighing):
+        """
+        The weighing of the truck it left on: an outward visit's, complete and not replaced. Written
+        past the posted guard, as the transport is, since it changes nothing the delivery moved.
+        """
+        from apps.inventory.gate import check_weighing_for
+
+        if self.reverses_id:
+            raise ValidationError("A return comes back on its own truck; record it on the delivery out.")
+        if weighing is not None:
+            check_weighing_for(weighing, inward=False)
+        self.weighing = weighing
+        super().save(update_fields=["weighing", "updated_at"])
+        return self
 
     def _was_posted_in_db(self):
         if not self.pk:

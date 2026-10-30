@@ -25,6 +25,7 @@ class FixedAssetSerializer(ExtensibleSerializerMixin, serializers.ModelSerialize
     accumulated = serializers.SerializerMethodField()
     net_book_value = serializers.SerializerMethodField()
     monthly_charge = serializers.SerializerMethodField()
+    out_on_pass = serializers.SerializerMethodField()
 
     class Meta:
         model = FixedAsset
@@ -33,10 +34,20 @@ class FixedAssetSerializer(ExtensibleSerializerMixin, serializers.ModelSerialize
                   "salvage_value", "life_months", "depreciated_before", "opening_depreciation", "status", "disposed_on",
                   "capitalisation_entry", "disposal_entry", "reinstatement_entry", "accumulated",
                   "net_book_value", "monthly_charge", "category_name", "vendor_name", "extra",
-                  "asset_account", "accumulated_account", "method", "tax_block", "disposal_proceeds"]
+                  "asset_account", "accumulated_account", "method", "tax_block", "disposal_proceeds",
+                  "out_on_pass"]
         read_only_fields = ["number", "bill_line", "status", "disposed_on",
                             "capitalisation_entry", "disposal_entry", "reinstatement_entry",
                             "asset_account", "accumulated_account", "method", "disposal_proceeds"]
+
+    def get_out_on_pass(self, obj):
+        """The returnable gate pass it is out on (L18), read through the pass's own pointer: out until back."""
+        for line in obj.gate_pass_lines.filter(gate_pass__status="out", gate_pass__kind="returnable"):
+            if line.outstanding() > 0:
+                gate_pass = line.gate_pass
+                return {"id": gate_pass.pk, "number": gate_pass.number, "party": gate_pass.party_name,
+                        "expected_return_date": gate_pass.expected_return_date}
+        return None
 
     def get_accumulated(self, obj):
         return obj.accumulated()

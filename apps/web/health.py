@@ -268,6 +268,22 @@ def _negative_stock(day):
                     rows, "/stores/negative")
 
 
+def _vehicles_in_too_long(day):
+    """A vehicle still in the gate register past the company's hours: it left with no out-entry, or stands."""
+    from apps.core.models import Company
+    from apps.inventory.gate import open_too_long
+
+    hours = Company.get().gate_visit_open_hours
+    visits = list(open_too_long())
+    rows = [{"label": f"{visit.number} {visit.vehicle_number}, in since "
+                      f"{timezone.localtime(visit.in_at):%d %b %H:%M}", "href": f"/stores/gate/{visit.pk}"}
+            for visit in visits[:SHOW]]
+    return _finding(not visits, len(visits),
+                    f"No vehicle has been in for more than {hours} hours." if not visits
+                    else f"{len(visits)} vehicle(s) in for more than {hours} hours: record the out-entry.",
+                    rows, "/stores/gate")
+
+
 def _closed_periods(day):
     from apps.accounting.models import AccountingPeriod, JournalEntry
 
@@ -401,6 +417,7 @@ PROBES = [
     Probe("stock", "Stock agrees with the ledger", _stock),
     Probe("negative_stock", "No shelf below nothing", _negative_stock),
     Probe("fixed_assets", "Fixed assets agree with the ledger", _fixed_assets),
+    Probe("vehicles_in", "No vehicle left without an out-entry", _vehicles_in_too_long),
     Probe("closed_periods", "Closed months stayed closed", _closed_periods),
     Probe("invoice_numbers", "Invoice numbers run without a gap", _invoice_numbers),
     Probe("self_invoices", "Reverse-charge supplies have their self-invoices", _self_invoices),

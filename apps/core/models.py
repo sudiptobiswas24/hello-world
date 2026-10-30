@@ -1821,6 +1821,13 @@ class Company(AuditModel):
         help_text="Liability account holding money taken up front, before the goods are "
                   "delivered and the revenue is earned.",
     )
+    gate_visit_open_hours = models.PositiveIntegerField(
+        default=12, help_text="A vehicle still in the gate register after this many hours shows on the health check.")
+    claims_recoverable_account = models.ForeignKey(
+        "accounting.Account", null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="Asset account holding what a transporter owes for goods short on the weighbridge, until "
+                  "they pay or it is set off against their freight.",
+    )
 
     class Meta:
         verbose_name_plural = "company"

@@ -249,6 +249,12 @@ export const MODULES: Module[] = [
         detail: () => import("../modules/purchasing/GoodsReceiptForm"),
       },
       {
+        path: "weight-claims", label: "Weight claims", permission: "purchasing.view_weightclaim",
+        create: "purchasing.add_weightclaim",
+        keywords: "weighbridge shortage short claim transporter supplier", load: () => import("../modules/purchasing/WeightClaims"),
+        detail: () => import("../modules/purchasing/WeightClaimForm"),
+      },
+      {
         path: "receive-by-scan", label: "Receive by scan", permission: "purchasing.add_goodsreceipt",
         also: ["purchasing.view_purchaseorder", "inventory.view_warehouse"],
         keywords: "scan barcode gate receive purchase order", load: () => import("../modules/purchasing/ReceiveByScan"),
@@ -1156,6 +1162,21 @@ export const MODULES: Module[] = [
         path: "counts", label: "Stock counts", permission: "inventory.view_stockcount", create: "inventory.add_stockcount",
         keywords: "physical count stocktake verification", load: () => import("../modules/stores/Counts"),
         detail: () => import("../modules/stores/CountForm"),
+      },
+      {
+        path: "gate", label: "Gate register", permission: "inventory.view_gatevisit", create: "inventory.add_gatevisit",
+        keywords: "vehicle truck lorry in out security gate weighbridge", load: () => import("../modules/stores/GateVisits"),
+        detail: () => import("../modules/stores/GateVisitForm"),
+      },
+      {
+        path: "weighings", label: "Weighbridge slips", permission: "inventory.view_weighing", hidden: true,
+        keywords: "weighbridge gross tare net weight", load: () => import("../modules/stores/GateVisits"),
+        detail: () => import("../modules/stores/WeighingForm"),
+      },
+      {
+        path: "gate-passes", label: "Gate passes", permission: "inventory.view_gatepass", create: "inventory.add_gatepass",
+        keywords: "returnable non returnable repair pass rgp nrgp", load: () => import("../modules/stores/GatePasses"),
+        detail: () => import("../modules/stores/GatePassForm"),
       },
       {
         path: "transfers", label: "Transfers", permission: "inventory.view_stocktransfer", create: "inventory.add_stocktransfer",

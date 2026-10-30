@@ -355,6 +355,7 @@ ROLES = {
         # The voucher is issued with the payment, by whoever pays (s.31(3)(g)).
         *crud("gst", "paymentvoucher", actions=("add", "view")),
         *view("accounting", "tdssection", "tdsrate"),
+        *view("purchasing", "weightclaim"),
     ],
     "Warehouse Staff": [
         *REFERENCE,
@@ -369,6 +370,8 @@ ROLES = {
         *crud("sales", "delivery"),
         *crud("sales", "deliveryline"),
         "sales.post_delivery",
+        # A receipt or a delivery names the weighbridge slip of its truck.
+        *view("inventory", "gatevisit", "weighing"),
         # A new batch is named as it comes in.
         *crud("inventory", "lot", actions=("add", "change", "view")),
         # What to receive against and what to ship.
@@ -409,6 +412,32 @@ ROLES = {
         *view("manufacturing", "workorder", "workorderoperation"),
         # Told when a batch is held for the Quality Manager: the to-do opens the inspection.
         *view("quality", "inspection", "reading"),
+        # The gate: passes signed off before the vehicle leaves, and a weight typed when the scale cannot.
+        *view("inventory", "gatevisit", "weighing", "gatepass", "gatepassline", "gatepassreturn"),
+        "inventory.approve_gatepass",
+        *crud("inventory", "weighing", actions=("change",)),
+        "inventory.type_weight",
+    ],
+    # -- the gate (L17, L18) ---------------------------------------------
+    # The guard records vehicles in and out, weighs them, writes the passes and takes back what returns.
+    # Nothing priced: no item master, no asset register, no parties (a pass names items and assets
+    # through its own pickers, by code and name), and no typed weight (the Stores Manager's).
+    "Security Guard": [
+        *crud("inventory", "gatevisit", actions=("add", "change", "view")),
+        *crud("inventory", "weighing", actions=("add", "change", "view")),
+        *crud("inventory", "gatepass", actions=("add", "change", "view")),
+        *full("inventory", "gatepassline"),
+        *crud("inventory", "gatepassreturn", actions=("add", "change", "view")),
+    ],
+    # Who raises a claim for goods short on the weighbridge and settles it, by a debit note on the
+    # supplier's bill or a recovery from the transporter.
+    "Purchase Manager": [
+        *REFERENCE,
+        *view("purchasing", "purchaseorder", "purchaseorderline", "goodsreceipt", "goodsreceiptline", "bill",
+              "billline"),
+        *crud("purchasing", "weightclaim", actions=("add", "change", "view")),
+        "purchasing.settle_weightclaim",
+        *view("inventory", "gatevisit", "weighing"),
     ],
     # -- the plant ------------------------------------------------------
     "Production Supervisor": [
