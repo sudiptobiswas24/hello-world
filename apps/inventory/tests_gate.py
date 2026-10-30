@@ -33,7 +33,7 @@ class GateTestCase(AssetTestCase):
         self.stores = self.client_as("Stores Manager")
 
     def client_as(self, role):
-        user = User.objects.create_user(role.replace(" ", "_").lower())
+        user = User.objects.create_user("api_" + role.replace(" ", "_").lower())
         user.groups.add(Group.objects.get(name=role))
         client = APIClient()
         client.force_authenticate(user)

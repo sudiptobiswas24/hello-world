@@ -44,7 +44,7 @@ class WeighedReceiptTestCase:
                                grni_account=self.grni, default_payable_account=self.payable,
                                claims_recoverable_account=self.claims)
         self.manager = APIClient()
-        user = User.objects.create_user("purchase_manager")
+        user = User.objects.create_user("api_purchase_manager")
         user.groups.add(Group.objects.get(name="Purchase Manager"))
         self.manager.force_authenticate(user)
         self.typist = User.objects.create_user("typist")
