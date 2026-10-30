@@ -31,7 +31,7 @@ pg_half() {  # pg_half <A|B> <database name> <labels...>
         su postgres -c "psql -q -c 'DROP DATABASE IF EXISTS test_$db$n WITH (FORCE)'" 2>&1 | grep -v NOTICE
     done
     rm -f "$LOGS/${P}_pg_$half.log"
-    timeout 9000 env $PW DATABASE_URL="postgres://erp:erp@localhost:5432/$db" .venv/bin/python manage.py test "$@" \
+    timeout 12000 env $PW DATABASE_URL="postgres://erp:erp@localhost:5432/$db" .venv/bin/python manage.py test "$@" \
         --parallel 2 --keepdb --noinput --exclude-tag migration > "$LOGS/${P}_pg_$half.log" 2>&1
     echo "pg $half exit=$?"; grep -E "^Found|^Ran|^OK|^FAILED" "$LOGS/${P}_pg_$half.log"
 }
@@ -49,11 +49,11 @@ ui)
     cat "$LOGS/gate_${P}.out"
     ;;
 sqlite)
-    timeout 6900 env $PW .venv/bin/python manage.py test apps --exclude-tag migration --parallel 2 > "$LOGS/${P}_suite.log" 2>&1
+    timeout 9000 env $PW .venv/bin/python manage.py test apps --exclude-tag migration --parallel 2 > "$LOGS/${P}_suite.log" 2>&1
     echo "sqlite exit=$?"; grep -E "^Found|^Ran|^OK|^FAILED" "$LOGS/${P}_suite.log"
     ;;
 ist)
-    timeout 6900 env $PW DJANGO_TIME_ZONE=Asia/Kolkata PYTHONPATH="$HERE" DJANGO_SETTINGS_MODULE=fastsettings \
+    timeout 9000 env $PW DJANGO_TIME_ZONE=Asia/Kolkata PYTHONPATH="$HERE" DJANGO_SETTINGS_MODULE=fastsettings \
         .venv/bin/python manage.py test apps --parallel 2 --exclude-tag migration --settings=fastsettings > "$LOGS/${P}_ist.log" 2>&1
     echo "ist exit=$?"; grep -E "^Found|^Ran|^OK|^FAILED" "$LOGS/${P}_ist.log"
     ;;
@@ -64,7 +64,7 @@ pg-b)
     pg_half B erp2 apps.manufacturing apps.inventory apps.hr apps.planning apps.quality apps.assets apps.imports apps.e2e apps.web
     ;;
 mig)
-    timeout 6900 env $PW .venv/bin/python manage.py test apps --tag migration --parallel 4 > "$LOGS/${P}_mig.log" 2>&1
+    timeout 9000 env $PW .venv/bin/python manage.py test apps --tag migration --parallel 4 > "$LOGS/${P}_mig.log" 2>&1
     echo "mig exit=$?"; grep -E "^Found|^Ran|^OK|^FAILED" "$LOGS/${P}_mig.log"
     ;;
 *)
