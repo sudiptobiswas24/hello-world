@@ -96,7 +96,8 @@ class ProbeTests(HealthTestCase):
         self.assertEqual([(row["key"], row["ok"], row["count"]) for row in findings],
                          [("trial_balance", True, 0), ("entries_balanced", True, 0), ("receivables", True, 0),
                           ("payables", True, 0), ("stock", True, 0), ("negative_stock", True, 0),
-                          ("fixed_assets", True, 0), ("closed_periods", True, 0), ("invoice_numbers", True, 0),
+                          ("fixed_assets", True, 0), ("vehicles_in", True, 0), ("closed_periods", True, 0),
+                          ("invoice_numbers", True, 0),
                           ("self_invoices", True, 0), ("payment_vouchers", True, 0), ("gst_cash_ledger", True, 0),
                           # The database's own log of the books: PostgreSQL's; on SQLite it cannot be proved.
                           ("books_change_log", True if connection.vendor == "postgresql" else None, 0)])

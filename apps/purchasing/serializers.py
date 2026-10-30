@@ -1,3 +1,4 @@
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from rest_framework import serializers
 
@@ -13,6 +14,7 @@ from .models import (
     PurchaseOrder,
     PurchaseOrderLine,
     SubcontractComponent,
+    WeightClaim,
 )
 from apps.core.customfields import ExtensibleSerializerMixin
 
@@ -241,6 +243,8 @@ class GoodsReceiptSerializer(serializers.ModelSerializer):
     lines = GoodsReceiptLineSerializer(many=True, read_only=True)
     order_number = serializers.CharField(source="purchase_order.number", read_only=True)
     vendor_name = serializers.CharField(source="purchase_order.vendor.name", read_only=True)
+    weighing_number = serializers.CharField(source="weighing.number", read_only=True, default="")
+    weight = serializers.SerializerMethodField()
 
     class Meta:
         model = GoodsReceipt
@@ -259,5 +263,33 @@ class GoodsReceiptSerializer(serializers.ModelSerializer):
             "objection",
             "objection_removed_on",
             "lines",
+            "weighing",
+            "weighing_number",
+            "documented_weight_kg",
+            "weight",
         ]
         read_only_fields = ["reverses", "posted", "posted_at", "objected_on", "objection", "objection_removed_on"]
+
+    def get_weight(self, receipt):
+        """The weighbridge's net beside the invoice weight and what was received, in the stocking unit."""
+        try:
+            comparison = receipt.weight_comparison()
+        except DjangoValidationError:
+            return None
+        return comparison
+
+
+class WeightClaimSerializer(serializers.ModelSerializer):
+    receipt_number = serializers.CharField(source="receipt.number", read_only=True)
+    vendor_name = serializers.CharField(source="receipt.purchase_order.vendor.name", read_only=True)
+    transporter_name = serializers.CharField(source="transporter.name", read_only=True, default="")
+    debit_note_number = serializers.CharField(source="debit_note.number", read_only=True, default="")
+
+    class Meta:
+        model = WeightClaim
+        fields = ["id", "number", "receipt", "receipt_number", "vendor_name", "against", "transporter",
+                  "transporter_name", "raised_on", "quantity", "value", "note", "status", "debit_note",
+                  "debit_note_number", "recovery_entry", "recovery_reversal", "settled_on", "withdrawn_on",
+                  "withdraw_reason"]
+        read_only_fields = ["number", "value", "status", "debit_note", "recovery_entry", "recovery_reversal",
+                            "settled_on", "withdrawn_on", "withdraw_reason"]

@@ -6941,6 +6941,13 @@ class GoodsReceipt(AuditModel):
                   "did.",
     )
     reference = models.CharField(max_length=64, blank=True)
+    # The weighbridge (L17): the truck's weighing, and what the supplier's invoice or challan says it carried.
+    weighing = models.ForeignKey(
+        "inventory.Weighing", null=True, blank=True, on_delete=models.PROTECT, related_name="goods_receipts",
+        help_text="The weighbridge slip of the vehicle that brought it.")
+    documented_weight_kg = models.DecimalField(
+        max_digits=12, decimal_places=3, null=True, blank=True,
+        help_text="The weight the supplier's invoice or challan says, in kilogrammes.")
     # MSMED Act s.2(b): an objection in writing within 15 days of delivery
     # moves acceptance to the day it is removed. A routine inspection is
     # not one (O160). Recorded on the posted receipt by record_objection().
@@ -6981,7 +6988,10 @@ class GoodsReceipt(AuditModel):
         constraints = [
             models.UniqueConstraint(
                 fields=["number"], condition=~Q(number=""), name="unique_goods_receipt_number"
-            )
+            ),
+            # One truck's weighing is one receipt's: two compared with one net would each claim its shortage.
+            models.UniqueConstraint(fields=["weighing"], condition=Q(reverses__isnull=True, weighing__isnull=False),
+                                    name="one_receipt_per_weighing"),
         ]
 
     def __str__(self):
@@ -7099,6 +7109,56 @@ class GoodsReceipt(AuditModel):
             raise ValidationError("Posted goods receipts cannot be deleted. Create a return instead.")
         super().delete(*args, **kwargs)
 
+    def weight_comparison(self, lines=None, check=False):
+        """
+        The weighbridge's net beside the invoice or challan weight and what was received, all in the
+        item's stocking unit through its own unit conversion (L17). None without a weighing.
+
+        `check` (as it posts, under the visit's lock): the weighing is usable, the receipt carries one
+        item, and it receives no more than was weighed, give or take the item's tolerance: stock booked
+        beyond what the truck held is stock that never came.
+        """
+        from apps.inventory.gate import check_weighing_for
+        from apps.manufacturing.daily import kilogramme
+
+        if not self.weighing_id:
+            return None
+        weighing = check_weighing_for(self.weighing, inward=True) if check else self.weighing
+        lines = list(self.lines.select_related("order_line__item", "order_line__uom")) if lines is None else lines
+        items = {line.order_line.item_id for line in lines}
+        if len(items) != 1:
+            if check:
+                raise ValidationError("A receipt weighed on the weighbridge carries one item: weigh each apart.")
+            return None
+        item = lines[0].order_line.item
+        kg = kilogramme()
+        if kg is None:
+            raise ValidationError("There is no kilogramme unit to weigh in.")
+        net_kg = weighing.net_kg()
+        received = sum((item.to_stock_quantity(line.quantity_received, line.order_line.uom) for line in lines),
+                       Decimal("0"))
+        if net_kg is None:
+            return None
+        net = item.to_stock_quantity(net_kg, kg)
+        documented = (item.to_stock_quantity(self.documented_weight_kg, kg)
+                      if self.documented_weight_kg is not None else None)
+        tolerance = item.weight_tolerance_percent
+        allowance = (documented if documented is not None else net) * tolerance / 100
+        shortage = documented - net if documented is not None else None
+        if check:
+            if self.documented_weight_kg is None:
+                raise ValidationError({"documented_weight_kg": "Write the weight the invoice or challan says."})
+            if received > net + allowance:
+                raise ValidationError(
+                    f"{weighing.number} weighed {format(net.normalize(), 'f')} {item.uom} net; "
+                    f"{format(received.normalize(), 'f')} {item.uom} cannot be received on it.")
+        return {
+            "weighing": weighing.number, "typed": weighing.typed(), "unit": str(item.uom),
+            "net_kg": net_kg, "net": net, "documented_kg": self.documented_weight_kg, "documented": documented,
+            "received": received, "shortage": shortage, "tolerance_percent": tolerance, "allowance": allowance,
+            "beyond_tolerance": shortage is not None and shortage > allowance,
+        }
+
     def received_by(self):
         """
         The logins that received these goods: whoever keyed the receipt or
@@ -7180,6 +7240,9 @@ class GoodsReceipt(AuditModel):
                         f"exceed the ordered quantity ({line.order_line.quantity}; "
                         f"{already_received} already received)."
                     )
+
+        if not is_return and self.weighing_id:
+            self.weight_comparison(lines, check=True)
 
         if self.purchase_order.is_drop_ship():
             return self._post_drop_ship(lines, is_return=is_return)
@@ -9276,6 +9339,7 @@ class ReceiptInspection(AuditModel):
 
 from .tds import TdsChallan, TdsDeduction  # noqa: E402,F401
 from .freight import FreightDelivery  # noqa: E402,F401
+from .weight_claims import WeightClaim  # noqa: E402,F401
 
 
 # A tax added to or taken off a confirmed order's line asks the policy again (review F3).

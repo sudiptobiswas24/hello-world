@@ -600,6 +600,7 @@ class DeliveryViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.Model
         # decision, beside posting it.
         "backorder": "sales.post_delivery",
         "transport": "sales.change_delivery",
+        "weighed": "sales.change_delivery",
         "received": "sales.change_delivery",
         "send": "sales.change_delivery",
         "unacknowledged": "sales.view_delivery",
@@ -688,6 +689,16 @@ class DeliveryViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.Model
         transporter = record_or_404(Party, given, "transporter", optional=True)
         delivery.record_transport(transporter, request.data.get("lr_number") or "",
                                   request.data.get("lr_date") or None, request.data.get("vehicle_number") or "")
+        return Response(self.get_serializer(delivery).data)
+
+    @action(detail=True, methods=["post"])
+    def weighed(self, request, pk=None):
+        """The weighbridge slip of the truck it left on: {weighing}, or null to take it off."""
+        from apps.inventory.models import Weighing
+
+        delivery = self.get_object()
+        weighing = record_or_404(Weighing, request.data.get("weighing"), "weighing", optional=True)
+        delivery.record_weighing(weighing)
         return Response(self.get_serializer(delivery).data)
 
     @action(detail=True, methods=["post"])

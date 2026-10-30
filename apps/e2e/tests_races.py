@@ -2822,3 +2822,63 @@ class FilingATaxYearAsAMachineIsDisposedOfRaceTests(RaceCase):
     def test_disposed_first_the_filed_year_counts_it(self):
         outcomes = self.race_them(file_first=False)
         self.assertEqual(outcomes, ["done", "done"])
+
+
+@tag("race")
+@unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
+class TheGateRaceTests(RaceCase):
+    """The gate (L17, L18): one vehicle weighed twice at once, and a pass approved as its vehicle leaves."""
+
+    def setUp(self):
+        from django.contrib.auth.models import Permission, User
+
+        from apps.core.models import Company, UnitOfMeasure
+        from apps.inventory.models import Item
+
+        Company.objects.create(name="Plant")
+        self.approver = User.objects.create_user("stores_manager")
+        self.approver.user_permissions.add(Permission.objects.get(codename="approve_gatepass"))
+        self.item = Item.objects.create(sku="ROLLER", name="Guide roller",
+                                        uom=UnitOfMeasure.objects.create(code="pcs", name="Piece"))
+
+    def visit(self, purpose):
+        from apps.inventory.gate import GateVisit
+
+        return GateVisit.objects.create(vehicle_number="MH12AB1234", driver_name="Ramesh", purpose=purpose)
+
+    def test_a_vehicle_is_weighed_once_however_many_press_weigh(self):
+        from apps.inventory.gate import GateVisit, Weighing
+
+        visit = self.visit("inward_order")
+        outcomes = race(Weighing, *[lambda: GateVisit.objects.get(pk=visit.pk).start_weighing("WB-1")] * 2)
+        self.once(outcomes)
+        # Refused in words, as the second sees the first's weighing: not the database's constraint.
+        self.assertIn("is being weighed already", [o for o in outcomes if o != "done"][0])
+        self.assertEqual(Weighing.objects.filter(visit=visit).count(), 1)
+
+    def test_a_pass_approved_as_its_vehicle_leaves_goes_with_it_or_waits_for_the_next(self):
+        from apps.inventory.gate import GatePass, GatePassLine, GateVisit, PassStatus, VisitStatus
+
+        for approving_first in (True, False):
+            with self.subTest(approving_first=approving_first):
+                visit = self.visit("gate_pass")
+                made = GatePass.objects.create(kind="returnable", party_name="Rewinders", visit=visit,
+                                               expected_return_date=datetime.date(2099, 1, 1))
+                GatePassLine.objects.create(gate_pass=made, item=self.item, quantity=Decimal("3"))
+                approve = lambda: GatePass.objects.get(pk=made.pk).approve(self.approver)
+                leave = lambda: GateVisit.objects.get(pk=visit.pk).check_out()
+                first, second = (approve, leave) if approving_first else (leave, approve)
+                outcomes = race_in_order((GatePass, GateVisit), first, second)
+                made.refresh_from_db()
+                visit.refresh_from_db()
+                if approving_first:
+                    # The vehicle waited for the approval, saw it, and took the pass with it.
+                    self.assertEqual(outcomes, ["done", "done"])
+                    self.assertEqual((visit.status, made.status), (VisitStatus.OUT, PassStatus.OUT))
+                    self.assertEqual(made.out_at, visit.out_at)
+                    self.assertLess(made.approved_at, visit.out_at)
+                else:
+                    # It asked first, saw the pass unapproved, and stayed; the approval came after.
+                    self.assertIn("is not approved", outcomes[0])
+                    self.assertEqual(outcomes[1], "done")
+                    self.assertEqual((visit.status, made.status), (VisitStatus.IN, PassStatus.APPROVED))

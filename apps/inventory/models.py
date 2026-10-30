@@ -273,6 +273,10 @@ class Item(Extensible, AuditModel):
         help_text="Expense account charged when this item is sold. Falls back to the company default.",
     )
     is_active = models.BooleanField(default=True)
+    weight_tolerance_percent = models.DecimalField(
+        max_digits=5, decimal_places=2, default=Decimal("0.50"),
+        help_text="How far the weighbridge's net may fall short of the invoice or challan weight before the "
+                  "shortage is a claim, in per cent of that weight.")
 
     class Meta:
         ordering = ["sku"]
@@ -1233,4 +1237,11 @@ from .transfers import (  # noqa: E402,F401
     StockTransferLine,
     StockTransferStep,
     TransferStatus,
+)
+from .gate import (  # noqa: E402,F401
+    GatePass,
+    GatePassLine,
+    GatePassReturn,
+    GateVisit,
+    Weighing,
 )

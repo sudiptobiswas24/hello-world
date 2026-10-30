@@ -852,3 +852,38 @@ def _serialise_aging(report):
               "bills": [_bill_row(entry) for entry in bucket["bills"]]}
         for key, bucket in report.items()
     }
+
+
+from .models import WeightClaim  # noqa: E402
+from .serializers import WeightClaimSerializer  # noqa: E402
+
+
+class WeightClaimViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    """Goods short on the weighbridge: raised, settled by a debit note or a recovery, or withdrawn (L17)."""
+
+    serializer_class = WeightClaimSerializer
+    queryset = WeightClaim.objects.select_related("receipt__purchase_order__vendor", "transporter", "debit_note")
+    http_method_names = ["get", "post", "head", "options"]
+    filter_fields = ["status", "against", "receipt"]
+    search_fields = ["number", "receipt__number", "receipt__purchase_order__vendor__name"]
+    date_field = "raised_on"
+    ordering_fields = ["raised_on", "number"]
+    action_permission_map = {
+        "settle": "purchasing.settle_weightclaim",
+        "withdraw": "purchasing.change_weightclaim",
+    }
+
+    @action(detail=True, methods=["post"])
+    def settle(self, request, pk=None):
+        """{bill_line, on_date, supplier_note_number} against the supplier; {on_date} against the transporter."""
+        claim = self.get_object()
+        bill_line = record_or_404(BillLine, request.data.get("bill_line"), "bill_line", optional=True)
+        claim.settle(bill_line=bill_line, on_date=request.data.get("on_date") or None,
+                     supplier_note_number=request.data.get("supplier_note_number") or "")
+        return Response(self.get_serializer(claim).data)
+
+    @action(detail=True, methods=["post"])
+    def withdraw(self, request, pk=None):
+        claim = self.get_object()
+        claim.withdraw(reason=request.data.get("reason") or "", on_date=request.data.get("on_date") or None)
+        return Response(self.get_serializer(claim).data)
