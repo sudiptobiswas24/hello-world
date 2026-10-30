@@ -33,9 +33,11 @@ export default function WeighingForm() {
       ]}
       actions={[
         { label: "Gross from the scale", path: "record", permission: "inventory.change_weighing", primary: true,
-          when: missing("gross"), done: "Gross weighed", body: () => ({ side: "gross", source: "scale" }) },
+          when: missing("gross"), done: "Gross weighed", body: () => ({ side: "gross" }),
+          url: (record) => `/api/manufacturing/weighbridge/${String(record.id)}/from-scale/` },
         { label: "Tare from the scale", path: "record", permission: "inventory.change_weighing", primary: true,
-          when: missing("tare"), done: "Tare weighed", body: () => ({ side: "tare", source: "scale" }) },
+          when: missing("tare"), done: "Tare weighed", body: () => ({ side: "tare" }),
+          url: (record) => `/api/manufacturing/weighbridge/${String(record.id)}/from-scale/` },
         { label: "Type a weight", path: "record", permission: "inventory.type_weight",
           when: (row) => missing("gross")(row) || missing("tare")(row), done: "Typed",
           fields: [
