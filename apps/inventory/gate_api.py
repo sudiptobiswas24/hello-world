@@ -177,7 +177,8 @@ class WeighingViewSet(AuditableViewSetMixin, viewsets.ReadOnlyModelViewSet):
 
     @action(detail=True, methods=["post"])
     def record(self, request, pk=None):
-        """{side: gross|tare, source: scale|typed, kg, reason, note}; typed needs inventory.type_weight."""
+        """A typed weight: {side: gross|tare, source: typed, kg, reason, note}; needs inventory.type_weight.
+        From the scale: /api/manufacturing/weighbridge/{id}/from-scale/, where the readings are."""
         weighing = self.get_object()
         weighing.record(request.data.get("side"), request.data.get("source"), kg=request.data.get("kg"),
                         reason=request.data.get("reason") or "", note=request.data.get("note") or "",

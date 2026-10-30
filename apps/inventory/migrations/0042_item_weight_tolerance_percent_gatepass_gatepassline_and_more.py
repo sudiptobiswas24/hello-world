@@ -12,7 +12,6 @@ class Migration(migrations.Migration):
     dependencies = [
         ("assets", "0008_tax_depreciation_by_block"),
         ("inventory", "0041_stock_value_permission"),
-        ("manufacturing", "0087_fabric_roll_lot_protected"),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 
@@ -547,17 +546,6 @@ class Migration(migrations.Migration):
                     ),
                 ),
                 (
-                    "gross_reading",
-                    models.OneToOneField(
-                        blank=True,
-                        editable=False,
-                        null=True,
-                        on_delete=django.db.models.deletion.PROTECT,
-                        related_name="gross_weighing",
-                        to="manufacturing.scalereading",
-                    ),
-                ),
-                (
                     "gross_typed_by",
                     models.ForeignKey(
                         blank=True,
@@ -577,17 +565,6 @@ class Migration(migrations.Migration):
                         on_delete=django.db.models.deletion.PROTECT,
                         related_name="replaced_by",
                         to="inventory.weighing",
-                    ),
-                ),
-                (
-                    "tare_reading",
-                    models.OneToOneField(
-                        blank=True,
-                        editable=False,
-                        null=True,
-                        on_delete=django.db.models.deletion.PROTECT,
-                        related_name="tare_weighing",
-                        to="manufacturing.scalereading",
                     ),
                 ),
                 (

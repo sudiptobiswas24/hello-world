@@ -10,12 +10,15 @@ from decimal import Decimal
 from django.contrib.auth.models import Group, User
 from django.core.exceptions import ValidationError
 from django.core.management import call_command
+from django.db import connection
+from django.db.migrations.executor import MigrationExecutor
+from django.test import TestCase, TransactionTestCase, tag
 from django.utils import timezone
 from rest_framework.test import APIClient
 
 from apps.assets.tests import AssetTestCase
 from apps.core.models import Company, UnitOfMeasure
-from apps.manufacturing.station_scale import post_reading
+from apps.manufacturing.station_scale import ScaleReading, post_reading
 
 from .gate import GatePass, GateVisit, PassStatus, VisitStatus, Weighing, overdue_passes
 from .models import Item, MovementType, StockMovement, Warehouse
@@ -50,8 +53,12 @@ class GateTestCase(AssetTestCase):
             "transporter_name": "Speedy Roadways", "purpose": purpose, "reference": "PO-2026-00001",
             "carried": "400 bags polymer", "in_at": "2020-01-01T00:00:00Z"}, format="json"), 201)
 
-    def weigh(self, visit, side, source, kg=None, client=None, **extra):
-        return (client or self.guard).post(f"/api/inventory/weighings/{visit}/record/",
+    def weigh(self, weighing, side, source, kg=None, client=None, **extra):
+        if source == "scale":
+            # Where the readings are: the bridge holds the reading and marks it used (manufacturing).
+            return (client or self.guard).post(f"/api/manufacturing/weighbridge/{weighing}/from-scale/",
+                                               {"side": side}, format="json")
+        return (client or self.guard).post(f"/api/inventory/weighings/{weighing}/record/",
                                            {"side": side, "source": source, "kg": kg, **extra}, format="json")
 
 
@@ -101,6 +108,13 @@ class WeighingTests(GateTestCase):
         post_reading("WB-1", "25860.000", True)
         gross = self.ok(self.weigh(weighing["id"], "gross", "scale"))
         self.assertEqual((gross["gross_kg"], gross["gross_source"]), ("25860.000", "scale"))
+        reading = ScaleReading.objects.get()
+        self.assertEqual((reading.weighing_id, reading.weighed_side), (weighing["id"], "gross"),
+                         "the reading holds the pointer; the weighing keeps its figures")
+        self.assertEqual(Weighing.objects.get(pk=weighing["id"]).gross_at, reading.read_at)
+        refused = self.guard.post(f"/api/inventory/weighings/{weighing['id']}/record/",
+                                  {"side": "tare", "source": "scale", "kg": "1"}, format="json")
+        self.assertIn("taken from the weighbridge's reading", str(refused.data), "no figure sent as the scale's")
         # The guard may not type a weight; the Stores Manager may, with a reason.
         refused = self.weigh(weighing["id"], "tare", "typed", "15920", reason="scale_offline")
         self.assertEqual(refused.status_code, 400)
@@ -314,3 +328,66 @@ class TheGuardSeesNoPricesTests(GateTestCase):
         self.assertEqual(set(assets[0]), {"id", "number", "name"})
         for url in ("/api/inventory/gate-visits/", "/api/inventory/weighings/", "/api/inventory/gate-passes/"):
             self.assertEqual(self.guard.get(url).status_code, 200, url)
+
+
+class InventoryImportsNothingFromManufacturingTests(TestCase):
+    """manufacturing depends on inventory; inventory naming manufacturing back is a cycle (g25 review)."""
+
+    def test_no_inventory_module_imports_manufacturing_anywhere_in_it(self):
+        from apps.core.management.commands.audit_invariants import Command, source_of
+
+        self.assertEqual(Command().imports_against_the_module_graph({"inventory": source_of("inventory")}), [])
+
+    def test_the_check_sees_one_inside_a_function(self):
+        from pathlib import Path
+
+        from apps.core.management.commands.audit_invariants import Command
+
+        planted = {Path("apps/inventory/planted.py"): "def weigh():\n    from apps.manufacturing.station_scale "
+                                                      "import take_reading\n    import apps.manufacturing.daily\n"}
+        found = Command().imports_against_the_module_graph({"inventory": planted})
+        self.assertEqual([detail for _, detail in found], [
+            "apps/inventory/planted.py:2 imports apps.manufacturing.station_scale: inventory may not depend on it.",
+            "apps/inventory/planted.py:3 imports apps.manufacturing.daily: inventory may not depend on it."])
+
+
+@tag("migration")
+class ThePointerCarriedToTheReadingMigrationTests(TransactionTestCase):
+    """manufacturing 0088 over a database that ran the first draft of inventory 0042 (the weighing pointing at its readings)."""
+
+    BEFORE = [("manufacturing", "0087_fabric_roll_lot_protected"),
+              ("inventory", "0042_item_weight_tolerance_percent_gatepass_gatepassline_and_more")]
+    AFTER = [("manufacturing", "0088_scale_reading_names_its_weighing")]
+
+    def test_each_reading_is_given_the_weighing_that_named_it_and_the_stray_columns_go(self):
+        executor = MigrationExecutor(connection)
+        executor.migrate(self.BEFORE)
+        old = executor.loader.project_state(self.BEFORE).apps
+        with connection.cursor() as cursor:
+            for side in ("gross", "tare"):
+                cursor.execute(f"ALTER TABLE inventory_weighing ADD COLUMN {side}_reading_id integer NULL")
+        Reading = old.get_model("manufacturing", "ScaleReading")
+        moment = timezone.now()
+        gross, tare, untouched = (Reading.objects.create(scale_code="WB-1", gross_kg=kg, stable=True, read_at=moment)
+                                  for kg in (D("25860"), D("15920"), D("100")))
+        Visit = old.get_model("inventory", "GateVisit")
+        visit = Visit.objects.create(number="GATE-1", vehicle_number="MH12AB1234", driver_name="R",
+                                     purpose="inward_order", in_at=moment)
+        weighing = old.get_model("inventory", "Weighing").objects.create(number="WB-1", visit=visit)
+        with connection.cursor() as cursor:
+            cursor.execute("UPDATE inventory_weighing SET gross_reading_id = %s, tare_reading_id = %s WHERE id = %s",
+                           [gross.pk, tare.pk, weighing.pk])
+        executor = MigrationExecutor(connection)
+        executor.migrate(self.AFTER)
+        new = executor.loader.project_state(self.AFTER).apps.get_model("manufacturing", "ScaleReading")
+        self.assertEqual(sorted(new.objects.values_list("pk", "weighing_id", "weighed_side")),
+                         sorted([(gross.pk, weighing.pk, "gross"), (tare.pk, weighing.pk, "tare"),
+                                 (untouched.pk, None, "")]))
+        with connection.cursor() as cursor:
+            columns = {c.name for c in connection.introspection.get_table_description(cursor, "inventory_weighing")}
+        self.assertFalse({"gross_reading_id", "tare_reading_id"} & columns)
+        # And back: the pointer goes with its field; the readings stay.
+        executor = MigrationExecutor(connection)
+        executor.migrate([("manufacturing", "0087_fabric_roll_lot_protected")])
+        self.assertEqual(old.get_model("manufacturing", "ScaleReading").objects.count(), 3)
+        MigrationExecutor(connection).migrate(MigrationExecutor(connection).loader.graph.leaf_nodes())

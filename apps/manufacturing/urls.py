@@ -8,6 +8,7 @@ from .tape_settings_api import TapeRunSettingViewSet
 
 from . import views
 from .station_views import LoomStationViewSet, ScaleReadingViewSet, StationReportViewSet
+from .weighbridge_api import WeighbridgeViewSet
 from .complaint_views import ComplaintViewSet, CorrectiveActionViewSet, QualityAlertViewSet
 from .views import (
     BomSubstituteViewSet,
@@ -115,6 +116,7 @@ router.register("operator-yield", OperatorYieldViewSet, basename="operator-yield
 router.register("lot-trace", LotTraceViewSet, basename="lot-trace")
 router.register("stations", LoomStationViewSet, basename="station")
 router.register("scale-readings", ScaleReadingViewSet, basename="scale-reading")
+router.register("weighbridge", WeighbridgeViewSet, basename="weighbridge")
 router.register("job-work-challans", JobWorkChallanViewSet)
 router.register("job-work-lines", JobWorkLineViewSet)
 router.register("job-work-losses", JobWorkLossViewSet)

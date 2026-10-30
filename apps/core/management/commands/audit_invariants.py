@@ -129,6 +129,7 @@ class Command(BaseCommand):
         findings += self.drawdowns_from_todays_setting(labels, sources)
         findings += self.opening_kinds_brought_in_twice()
         findings += self.writes_without_an_event()
+        findings += self.imports_against_the_module_graph(sources)
         # Every app answers requests, not only those the other checks read: the office's own reports (apps/web)
         # read a margin from the query unseen (review_sechr F2).
         others = [] if options["apps"] else sorted(
@@ -165,6 +166,31 @@ class Command(BaseCommand):
 
         "core.tables_without_their_trigger": "the daily health check's (apps/web/health.py), which is not audited",
     }
+
+    # Modules an app may not import, at module level or inside a function: the graph is acyclic and the
+    # dependent side holds the pointer (CLAUDE.md). manufacturing depends on inventory (items, stock, its
+    # migrations), so inventory naming manufacturing is a cycle: the weighing once pointed at a scale reading.
+    IMPORTS_FORBIDDEN = {
+        "inventory": ("manufacturing",),
+    }
+
+    def imports_against_the_module_graph(self, sources):
+        """Any import, anywhere in a module (a function's own included), of an app its app may not depend on."""
+        import ast
+
+        findings = []
+        for label, forbidden in self.IMPORTS_FORBIDDEN.items():
+            for path, text in sorted(sources.get(label, {}).items()):
+                if "test" in Path(path).name:
+                    continue
+                for node in ast.walk(ast.parse(text)):
+                    names = ([node.module or ""] if isinstance(node, ast.ImportFrom)
+                             else [alias.name for alias in node.names] if isinstance(node, ast.Import) else [])
+                    for name in names:
+                        if any(name == f"apps.{other}" or name.startswith(f"apps.{other}.") for other in forbidden):
+                            findings.append(("import against the module graph",
+                                             f"{path}:{node.lineno} imports {name}: {label} may not depend on it."))
+        return findings
 
     RAW_WRITE = re.compile(r"""execute(?:many)?\(\s*[rfbu]*["']{1,3}\s*(?:INSERT|UPDATE|DELETE|TRUNCATE|MERGE)\b""", re.I)
 

@@ -24,7 +24,6 @@ Three documents, all kept at the gate:
   on the shelf's books, and the pass says where it is.
 """
 
-import types
 from decimal import Decimal
 
 from django.conf import settings
@@ -217,9 +216,6 @@ class Weighing(AuditModel):
     gross_kg = models.DecimalField(max_digits=12, decimal_places=3, null=True, blank=True, editable=False)
     gross_at = models.DateTimeField(null=True, blank=True, editable=False)
     gross_source = models.CharField(max_length=8, choices=WeightSource.choices, blank=True, editable=False)
-    gross_reading = models.OneToOneField(
-        "manufacturing.ScaleReading", null=True, blank=True, on_delete=models.PROTECT,
-        related_name="gross_weighing", editable=False)
     gross_reason = models.CharField(max_length=16, choices=TYPED_REASONS, blank=True, editable=False)
     gross_note = models.CharField(max_length=255, blank=True, editable=False)
     gross_typed_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.PROTECT,
@@ -227,9 +223,6 @@ class Weighing(AuditModel):
     tare_kg = models.DecimalField(max_digits=12, decimal_places=3, null=True, blank=True, editable=False)
     tare_at = models.DateTimeField(null=True, blank=True, editable=False)
     tare_source = models.CharField(max_length=8, choices=WeightSource.choices, blank=True, editable=False)
-    tare_reading = models.OneToOneField(
-        "manufacturing.ScaleReading", null=True, blank=True, on_delete=models.PROTECT,
-        related_name="tare_weighing", editable=False)
     tare_reason = models.CharField(max_length=16, choices=TYPED_REASONS, blank=True, editable=False)
     tare_note = models.CharField(max_length=255, blank=True, editable=False)
     tare_typed_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.PROTECT,
@@ -239,8 +232,8 @@ class Weighing(AuditModel):
     replaces = models.OneToOneField("self", null=True, blank=True, on_delete=models.PROTECT,
                                     related_name="replaced_by", editable=False)
 
-    STEPS = {"gross_kg", "gross_at", "gross_source", "gross_reading", "gross_reason", "gross_note",
-             "gross_typed_by", "tare_kg", "tare_at", "tare_source", "tare_reading", "tare_reason", "tare_note",
+    STEPS = {"gross_kg", "gross_at", "gross_source", "gross_reason", "gross_note",
+             "gross_typed_by", "tare_kg", "tare_at", "tare_source", "tare_reason", "tare_note",
              "tare_typed_by", "replaced_at", "replace_reason", "updated_at"}
 
     class Meta:
@@ -294,12 +287,7 @@ class Weighing(AuditModel):
     def locked_before_it(self):
         return [GateVisit(pk=self.visit_id)]
 
-    @serialised("gross_kg", "tare_kg", "replaced_at", held_first=True)
-    def record(self, side, source, kg=None, reason="", note="", by=None, at=None):
-        """
-        The gross or the tare. From the scale: the weighbridge's latest settled reading, fresh and
-        unused, as a station weighs. Typed: by somebody who may, with a reason, and marked typed.
-        """
+    def _check_side(self, side):
         if side not in ("gross", "tare"):
             raise ValidationError("Weigh the gross or the tare.")
         visit = GateVisit.objects.get(pk=self.visit_id)
@@ -310,47 +298,59 @@ class Weighing(AuditModel):
             raise ValidationError(f"{self.number} was replaced; weigh on the weighing that replaced it.")
         if getattr(self, f"{side}_kg") is not None:
             raise ValidationError(f"{self.number} has its {side} weight; replace the weighing if it was wrong.")
-        at = at or timezone.now()
-        reading = None
-        if source == WeightSource.SCALE:
-            from apps.manufacturing.station_scale import take_reading
 
-            if not self.scale_code:
-                raise ValidationError("Say which scale the weighbridge is, or type the weight.")
-            reading = take_reading(types.SimpleNamespace(scale_code=self.scale_code), at)
-            if reading.net_kg is not None:
-                raise ValidationError(f"Scale {self.scale_code} sends net weights; a weighbridge weighs the whole "
-                                      "vehicle. Set the indicator to gross, or type the weight.")
-            kg = reading.gross_kg
-            reason, note, typer = "", "", None
-        elif source == WeightSource.TYPED:
-            if by is None or not by.has_perm("inventory.type_weight"):
-                raise ValidationError("A typed weight needs somebody who may type one.")
-            if reason not in dict(TYPED_REASONS):
-                raise ValidationError({"reason": "Give the reason the scale was not used."})
-            if reason == "other" and not (note or "").strip():
-                raise ValidationError({"note": "Say what the other reason was."})
-            try:
-                kg = Decimal(str(kg))
-            except Exception:  # noqa: BLE001 - anything not a number is refused in words
-                raise ValidationError({"kg": "A weight is a number of kilogrammes."}) from None
-            if not kg.is_finite() or kg <= 0:
-                raise ValidationError({"kg": "A weight is a number of kilogrammes, more than nothing."})
-            if kg != kg.quantize(Decimal("0.001")):
-                raise ValidationError({"kg": "A weighbridge reads to the gramme at most."})
-            typer = by
-        else:
-            raise ValidationError("Say whether the weight is from the scale or typed.")
+    def _write(self, side, kg, at, source, reason="", note="", typer=None):
         other = self.tare_kg if side == "gross" else self.gross_kg
         if other is not None and (kg <= other if side == "gross" else kg >= other):
             raise ValidationError(f"The gross ({kg if side == 'gross' else other} kg) must be more than the tare "
                                   f"({other if side == 'gross' else kg} kg).")
-        values = {"kg": kg, "at": at, "source": source, "reading": reading, "reason": reason,
-                  "note": (note or "").strip()[:255], "typed_by": typer}
+        values = {"kg": kg, "at": at, "source": source, "reason": reason, "note": (note or "").strip()[:255],
+                  "typed_by": typer}
         for name, value in values.items():
             setattr(self, f"{side}_{name}", value)
         super().save(update_fields=[f"{side}_{name}" for name in values] + ["updated_at"])
         return self
+
+    @serialised("gross_kg", "tare_kg", "replaced_at", held_first=True)
+    def record(self, side, source, kg=None, reason="", note="", by=None, at=None):
+        """
+        A typed gross or tare: by somebody who may, with a reason, and marked typed. A weight from the
+        scale is not taken here: the scale bridge (apps.manufacturing.station_scale.weigh_from_bridge)
+        locks its reading, refuses one already used, and calls from_scale(); the reading keeps the
+        pointer to this weighing, and the weighing keeps the reading's figures as its own facts.
+        """
+        if source == WeightSource.SCALE:
+            raise ValidationError("A weight from the scale is taken from the weighbridge's reading "
+                                  "(the bridge's own action), not sent as a figure.")
+        if source != WeightSource.TYPED:
+            raise ValidationError("Say whether the weight is from the scale or typed.")
+        self._check_side(side)
+        if by is None or not by.has_perm("inventory.type_weight"):
+            raise ValidationError("A typed weight needs somebody who may type one.")
+        if reason not in dict(TYPED_REASONS):
+            raise ValidationError({"reason": "Give the reason the scale was not used."})
+        if reason == "other" and not (note or "").strip():
+            raise ValidationError({"note": "Say what the other reason was."})
+        try:
+            kg = Decimal(str(kg))
+        except Exception:  # noqa: BLE001 - anything not a number is refused in words
+            raise ValidationError({"kg": "A weight is a number of kilogrammes."}) from None
+        if not kg.is_finite() or kg <= 0:
+            raise ValidationError({"kg": "A weight is a number of kilogrammes, more than nothing."})
+        if kg != kg.quantize(Decimal("0.001")):
+            raise ValidationError({"kg": "A weighbridge reads to the gramme at most."})
+        return self._write(side, kg, at or timezone.now(), WeightSource.TYPED, reason, note, by)
+
+    @serialised("gross_kg", "tare_kg", "replaced_at", held_first=True)
+    def from_scale(self, side, kg, read_at):
+        """
+        The figures of a bridge reading, recorded as this weighing's own: its weight and the moment the
+        scale reported it. Called by the scale bridge once it holds the reading (weigh_from_bridge).
+        """
+        self._check_side(side)
+        if not self.scale_code:
+            raise ValidationError("Say which scale the weighbridge is, or type the weight.")
+        return self._write(side, kg, read_at, WeightSource.SCALE)
 
     @serialised("replaced_at", held_first=True)
     @takes_back

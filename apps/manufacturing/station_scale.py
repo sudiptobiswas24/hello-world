@@ -26,6 +26,7 @@ and a reason, exactly as at a station with no bridge.
 """
 
 import datetime
+import types
 from decimal import Decimal, InvalidOperation
 
 from django.core.exceptions import ValidationError
@@ -57,9 +58,21 @@ class ScaleReading(AuditModel):
                   "the same reading, answered as the first time (review F8).")
     stable = models.BooleanField()
     read_at = models.DateTimeField(help_text="When the server received it.")
+    # The weighbridge slip this reading weighed (L17). The pointer is here, on the dependent side:
+    # manufacturing depends on inventory, never the other way round, and the weighing keeps the
+    # reading's figures as its own facts.
+    weighing = models.ForeignKey(
+        "inventory.Weighing", null=True, blank=True, on_delete=models.PROTECT, related_name="scale_readings",
+        editable=False)
+    weighed_side = models.CharField(max_length=5, blank=True, editable=False,
+                                    choices=[("gross", "Gross"), ("tare", "Tare")])
 
     class Meta:
         ordering = ["-read_at", "-id"]
+        constraints = [
+            models.UniqueConstraint(fields=["weighing", "weighed_side"], condition=models.Q(weighing__isnull=False),
+                                    name="one_reading_per_side_of_a_weighing"),
+        ]
 
     def __str__(self):
         return f"{self.scale_code} {self.kg()} kg {self.weighed_as()} at {timezone.localtime(self.read_at):%H:%M:%S}"
@@ -71,8 +84,10 @@ class ScaleReading(AuditModel):
         return "net" if self.net_kg is not None else "gross"
 
     def used_by(self):
-        """The roll or doff this reading weighed, if any."""
-        for name in ("fabric_roll", "tape_doff", "film_roll", "process_roll", "gross_weighing", "tare_weighing"):
+        """The roll, doff or weighbridge slip this reading weighed, if any."""
+        if self.weighing_id:
+            return self.weighing
+        for name in ("fabric_roll", "tape_doff", "film_roll", "process_roll"):
             try:
                 return getattr(self, name)
             except models.ObjectDoesNotExist:
@@ -151,6 +166,35 @@ def take_reading(station, at):
         raise ValidationError(f"This reading already weighed {what}. Take it off and put "
                               "the next one on.")
     return reading
+
+
+def weigh_from_bridge(weighing, side, at=None):
+    """
+    The gross or tare of a weighbridge slip from its scale's bridge: the latest settled, fresh reading,
+    held, refused if anything has used it, a gross frame (a weighbridge weighs the whole vehicle). The
+    weighing records the reading's weight and time as its own facts (Weighing.from_scale), and the
+    reading keeps the pointer to the weighing it weighed.
+    """
+    from django.db import transaction
+
+    from apps.core.models import lock_rows
+    from apps.inventory.models import GateVisit
+
+    at = at or timezone.now()
+    with transaction.atomic():
+        # The visit, then the slip, as Weighing's own steps hold them; then the reading (latest()).
+        lock_rows(GateVisit(pk=weighing.visit_id), refresh=False)
+        lock_rows(weighing)
+        if not weighing.scale_code:
+            raise ValidationError("Say which scale the weighbridge is, or type the weight.")
+        reading = take_reading(types.SimpleNamespace(scale_code=weighing.scale_code), at)
+        if reading.net_kg is not None:
+            raise ValidationError(f"Scale {weighing.scale_code} sends net weights; a weighbridge weighs the whole "
+                                  "vehicle. Set the indicator to gross, or type the weight.")
+        weighing.from_scale(side, reading.gross_kg, reading.read_at)
+        reading.weighing, reading.weighed_side = weighing, side
+        reading.save(update_fields=["weighing", "weighed_side", "updated_at"])
+        return weighing
 
 
 def _kg(value):
