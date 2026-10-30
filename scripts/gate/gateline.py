@@ -20,10 +20,11 @@ P = sys.argv[1]
 def result(name):
     text = open(os.path.join(LOGS, name)).read()
     ran = re.search(r"^Ran (\d+) tests?", text, re.M)
-    ok = re.search(r"^OK( \(skipped=(\d+)\))?", text, re.M)
+    # "OK", "OK (skipped=N)" or "OK (skipped=N, expected failures=M)": g24 read the last as 0 skipped.
+    ok = re.search(r"^OK(?: \((?:skipped=(\d+))?[^)]*\))?$", text, re.M)
     if not ran or not ok or re.search(r"^FAILED", text, re.M):
         raise SystemExit(f"{name}: not green")
-    return int(ran.group(1)), int(ok.group(2) or 0)
+    return int(ran.group(1)), int(ok.group(1) or 0)
 
 
 sq, sq_skip = result(f"{P}_suite.log")
