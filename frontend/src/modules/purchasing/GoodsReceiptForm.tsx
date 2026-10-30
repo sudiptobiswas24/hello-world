@@ -35,7 +35,19 @@ interface Receipt {
   posted: boolean;
   reverses: number | null;
   lines: ReceiptLine[];
+  weighing: number | null;
+  weighing_number: string;
+  documented_weight_kg: string | null;
+  weight: WeightComparison | null;
 }
+
+/** The weighbridge's net beside the invoice weight and what was received, in the item's stocking unit. */
+interface WeightComparison {
+  weighing: string; typed: boolean; unit: string; net: string; documented: string | null; received: string;
+  shortage: string | null; allowance: string; tolerance_percent: string; beyond_tolerance: boolean;
+}
+
+interface WeighingRow { id: number; number: string; vehicle_number: string; state: string; net_kg: string | null }
 
 interface Warehouse {
   id: number;
@@ -58,6 +70,7 @@ export default function GoodsReceiptForm() {
   const { can } = useAccess();
   const record = useRecord<Receipt>(ENDPOINT, id);
   const warehouses = useReference<Warehouse>("/api/inventory/warehouses/");
+  const weighings = useReference<WeighingRow>("/api/inventory/weighings/", undefined, can("inventory.view_weighing"));
   const act = useAct<Receipt>();
   const [returning, setReturning] = useState<Record<number, string> | null>(null);
   const [debit, setDebit] = useState(true);
@@ -111,6 +124,32 @@ export default function GoodsReceiptForm() {
           <Field label="Order">{(fid) => <output id={fid}><Link to={`/purchasing/orders/${receipt.purchase_order}`}>{receipt.order_number || "Open the order"}</Link></output>}</Field>
           <Field label="Date">{(fid) => <output id={fid}>{date(receipt.receipt_date)}</output>}</Field>
           <Field label="Reference">{(fid) => <output id={fid}>{receipt.reference || "—"}</output>}</Field>
+          <Field label="Weighbridge slip">{(fid) => (!receipt.posted && can("purchasing.change_goodsreceipt")
+            && can("inventory.view_weighing")) ? (
+              <select id={fid} className="cell-input" value={receipt.weighing ?? ""}
+                onChange={(event) => void act.run("PATCH", `${ENDPOINT}${receipt.id}/`,
+                  { weighing: event.target.value ? Number(event.target.value) : null })}>
+                <option value="">Not weighed</option>
+                {(weighings.data ?? []).filter((row) => row.state === "weighed" || row.id === receipt.weighing).map((row) => (
+                  <option key={row.id} value={row.id}>{row.number} · {row.vehicle_number} · {row.net_kg} kg net</option>
+                ))}
+              </select>
+            ) : <output id={fid}>{receipt.weighing_number || "—"}</output>}</Field>
+          <Field label="Invoice weight (kg)">{(fid) => (!receipt.posted && can("purchasing.change_goodsreceipt")) ? (
+            <CommitDecimal value={receipt.documented_weight_kg ?? ""} places={3} label="Invoice weight (kg)"
+              onCommit={(value) => void act.run("PATCH", `${ENDPOINT}${receipt.id}/`, { documented_weight_kg: value || null })} />
+          ) : <output id={fid}>{receipt.documented_weight_kg ? quantity(receipt.documented_weight_kg) : "—"}</output>}</Field>
+          {receipt.weight && (
+            <Field label="Weighed">{(fid) => (
+              <output id={fid} className="weight-comparison">
+                {quantity(receipt.weight!.net)} {receipt.weight!.unit} net{receipt.weight!.typed ? " (typed)" : ""}
+                {receipt.weight!.documented && <>; invoice {quantity(receipt.weight!.documented)}</>}
+                ; received {quantity(receipt.weight!.received)}
+                {receipt.weight!.shortage && <>; short {quantity(receipt.weight!.shortage)}
+                  {receipt.weight!.beyond_tolerance ? ", beyond the tolerance: a claim" : ", within the tolerance"}</>}
+              </output>
+            )}</Field>
+          )}
           {receipt.reverses && <Field label="Sends back">{(fid) => <output id={fid}><Link to={`/purchasing/goods-in/${receipt.reverses}`}>The original receipt</Link></output>}</Field>}
         </div>
 

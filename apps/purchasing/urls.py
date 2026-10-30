@@ -28,6 +28,7 @@ from .views import (
     GoodsReceiptViewSet,
     PurchaseOrderLineViewSet,
     PurchaseOrderViewSet,
+    WeightClaimViewSet,
 )
 
 router = DefaultRouter()
@@ -43,6 +44,7 @@ router.register(
 router.register("bill-lines", BillLineViewSet)
 router.register("goods-receipts", GoodsReceiptViewSet)
 router.register("goods-receipt-lines", GoodsReceiptLineViewSet)
+router.register("weight-claims", WeightClaimViewSet)
 router.register("vendor-prices", VendorPriceViewSet)
 router.register("vendor-profiles", VendorProfileViewSet)
 router.register("vendors", NewVendorViewSet, basename="new-vendor")

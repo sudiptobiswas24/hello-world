@@ -72,7 +72,7 @@ class ScaleReading(AuditModel):
 
     def used_by(self):
         """The roll or doff this reading weighed, if any."""
-        for name in ("fabric_roll", "tape_doff", "film_roll", "process_roll"):
+        for name in ("fabric_roll", "tape_doff", "film_roll", "process_roll", "gross_weighing", "tare_weighing"):
             try:
                 return getattr(self, name)
             except models.ObjectDoesNotExist:
@@ -147,7 +147,8 @@ def take_reading(station, at):
         raise ValidationError(f"Scale {scale} reads {reading.kg()} kg: nothing is on it.")
     used = reading.used_by()
     if used is not None:
-        raise ValidationError(f"This reading already weighed {used.lot.code}. Take it off and put "
+        what = used.lot.code if hasattr(used, "lot") else str(used)
+        raise ValidationError(f"This reading already weighed {what}. Take it off and put "
                               "the next one on.")
     return reading
 

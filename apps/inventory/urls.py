@@ -21,6 +21,8 @@ from .views import (
     WarehouseViewSet,
 )
 
+from .gate_api import GatePassLineViewSet, GatePassViewSet, GateVisitViewSet, WeighingViewSet  # noqa: E402
+
 router = DefaultRouter()
 router.register("warehouses", WarehouseViewSet)
 router.register("items", ItemViewSet)
@@ -39,6 +41,10 @@ router.register("stock-count-lines", StockCountLineViewSet)
 router.register("stock-transfers", StockTransferViewSet)
 router.register("stock-transfer-lines", StockTransferLineViewSet)
 router.register("stock-reservations", StockReservationViewSet)
+router.register("gate-visits", GateVisitViewSet)
+router.register("weighings", WeighingViewSet)
+router.register("gate-passes", GatePassViewSet)
+router.register("gate-pass-lines", GatePassLineViewSet)
 router.register("stock-reports", StockReportViewSet, basename="stock-report")
 
 urlpatterns = router.urls
