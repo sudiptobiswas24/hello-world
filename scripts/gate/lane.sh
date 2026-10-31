@@ -64,7 +64,9 @@ pg-b)
     pg_half B erp2 apps.manufacturing apps.inventory apps.hr apps.planning apps.quality apps.assets apps.imports apps.e2e apps.web
     ;;
 mig)
-    timeout 9000 env $PW .venv/bin/python manage.py test apps --tag migration --parallel 4 > "$LOGS/${P}_mig.log" 2>&1
+    # Three workers: each loads every app's migration state and grew to 4.4 GB in g25, and a fourth
+    # was killed for memory on a 16 GB machine; the runner then waited for its tests for good.
+    timeout 12000 env $PW .venv/bin/python manage.py test apps --tag migration --parallel 3 > "$LOGS/${P}_mig.log" 2>&1
     echo "mig exit=$?"; grep -E "^Found|^Ran|^OK|^FAILED" "$LOGS/${P}_mig.log"
     ;;
 *)
