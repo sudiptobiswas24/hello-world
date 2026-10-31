@@ -48,6 +48,17 @@ class AssetStatus(models.TextChoices):
     CANCELLED = "cancelled", "Cancelled"
 
 
+# Asked before an asset is disposed of, by modules that hold something against it (a gate pass it is out on).
+# Each raises to refuse. Here so assets asks without importing whoever answers (assets depends on accounting
+# and core only).
+DISPOSAL_GUARDS = []
+
+
+def register_disposal_guard(guard):
+    if guard not in DISPOSAL_GUARDS:
+        DISPOSAL_GUARDS.append(guard)
+
+
 class AssetCategory(AuditModel):
     """
     The accounts and default life a class of asset shares.
@@ -690,6 +701,8 @@ class FixedAsset(Extensible, AuditModel):
             raise ValidationError("This asset has already been disposed of.")
         if self.status != AssetStatus.IN_SERVICE:
             raise ValidationError("Only an asset in service can be disposed of.")
+        for guard in DISPOSAL_GUARDS:
+            guard(self)
         on_date = correction_date(on_date, self.acquisition_date, f"{self} is not disposed of on", "it was acquired")
         from .tax import refuse_in_filed_year
 

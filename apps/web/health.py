@@ -284,6 +284,22 @@ def _vehicles_in_too_long(day):
                     rows, "/stores/gate")
 
 
+def _passes_not_out(day):
+    """An approved gate pass not checked out within the company's gate hours: it went without an out-entry."""
+    from apps.core.models import Company
+    from apps.inventory.gate import approved_not_out
+
+    hours = Company.get().gate_visit_open_hours
+    passes = list(approved_not_out())
+    rows = [{"label": f"{each.number} to {each.party_name}, approved "
+                      f"{timezone.localtime(each.approved_at):%d %b %H:%M}", "href": f"/stores/gate-passes/{each.pk}"}
+            for each in passes[:SHOW]]
+    return _finding(not passes, len(passes),
+                    f"No approved pass has waited more than {hours} hours to go out." if not passes
+                    else f"{len(passes)} approved pass(es) not checked out at the gate after {hours} hours.",
+                    rows, "/stores/gate-passes")
+
+
 def _closed_periods(day):
     from apps.accounting.models import AccountingPeriod, JournalEntry
 
@@ -418,6 +434,7 @@ PROBES = [
     Probe("negative_stock", "No shelf below nothing", _negative_stock),
     Probe("fixed_assets", "Fixed assets agree with the ledger", _fixed_assets),
     Probe("vehicles_in", "No vehicle left without an out-entry", _vehicles_in_too_long),
+    Probe("passes_not_out", "No approved pass went without its check-out", _passes_not_out),
     Probe("closed_periods", "Closed months stayed closed", _closed_periods),
     Probe("invoice_numbers", "Invoice numbers run without a gap", _invoice_numbers),
     Probe("self_invoices", "Reverse-charge supplies have their self-invoices", _self_invoices),

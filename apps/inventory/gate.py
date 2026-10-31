@@ -37,7 +37,7 @@ from apps.core.models import (
     takes_back, to_date,
 )
 
-from .models import Item, StockMovement
+from .models import Item, MovementType, StockMovement
 
 
 def _vehicle(number):
@@ -138,7 +138,7 @@ class GateVisit(AuditModel):
         return Weighing.objects.create(visit=self, scale_code=(scale_code or "").strip())
 
     @serialised("status")
-    def check_out(self):
+    def check_out(self, by=None):
         """The out-entry: the vehicle leaves, with the passes approved for it."""
         if self.status != VisitStatus.IN:
             raise ValidationError(f"{self.number} is {self.get_status_display().lower()}.")
@@ -157,7 +157,7 @@ class GateVisit(AuditModel):
         self.status = VisitStatus.OUT
         super().save(update_fields=["out_at", "status", "updated_at"])
         for each in passes:
-            each._go_out(self.out_at)
+            each._go_out(self.out_at, by)
         return self
 
     @serialised("status")
@@ -420,7 +420,10 @@ class GatePass(AuditModel):
     approved_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.PROTECT,
                                     related_name="+", editable=False)
     approved_at = models.DateTimeField(null=True, blank=True, editable=False)
-    out_at = models.DateTimeField(null=True, blank=True, editable=False)
+    out_at = models.DateTimeField(null=True, blank=True, editable=False,
+                                  help_text="The gate's clock as it went out: with its vehicle, or carried out on foot.")
+    checked_out_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.PROTECT,
+                                       related_name="+", editable=False, help_text="The guard who let it out.")
     cancelled_at = models.DateTimeField(null=True, blank=True, editable=False)
     cancel_reason = models.CharField(max_length=255, blank=True, editable=False)
 
@@ -469,9 +472,15 @@ class GatePass(AuditModel):
 
     @serialised("status", "visit", held_first=True)
     def approve(self, by):
-        """Signed off by a role that may, before the vehicle leaves."""
+        """
+        Signed off by a role that may, never by whoever wrote it or its lines (core approvals: the maker does
+        not approve), before the vehicle leaves. Approving sends nothing out: only the gate's check-out does.
+        """
+        from apps.core.approvals import authors, check_not_raised_by
+
         if by is None or not by.has_perm("inventory.approve_gatepass"):
             raise ValidationError("Approving a gate pass needs somebody who may.")
+        check_not_raised_by(by, authors(self, "lines"), self)
         if self.status != PassStatus.DRAFT:
             raise ValidationError(f"{self.number} is {self.get_status_display().lower()}.")
         if self.visit_id and GateVisit.objects.get(pk=self.visit_id).status != VisitStatus.IN:
@@ -494,11 +503,28 @@ class GatePass(AuditModel):
         super().save(update_fields=["status", "approved_by", "approved_at", "updated_at"])
         return self
 
-    def _go_out(self, at):
-        """Out with its vehicle (GateVisit.check_out, which holds this pass)."""
+    def _go_out(self, at, by=None):
+        """Out at the gate: with its vehicle (GateVisit.check_out, which holds this pass), or on foot (check_out)."""
         self.status = PassStatus.OUT
         self.out_at = at
-        super().save(update_fields=["status", "out_at", "updated_at"])
+        self.checked_out_by = by
+        super().save(update_fields=["status", "out_at", "checked_out_by", "updated_at"])
+
+    @serialised("status", "visit", held_first=True)
+    def check_out(self, by=None):
+        """
+        A pass carried out on foot: checked out at the gate, with the gate's clock and the guard. One on a
+        vehicle goes out with the vehicle's out-entry instead. The asset reads as out, and the pass can go
+        overdue, only from here.
+        """
+        if self.visit_id:
+            raise ValidationError(f"{self.number} goes out on {GateVisit.objects.get(pk=self.visit_id)}: record the "
+                                  "vehicle's out-entry.")
+        if self.status != PassStatus.APPROVED:
+            raise ValidationError(f"{self.number} is {self.get_status_display().lower()}; a pass goes out once "
+                                  "approved.")
+        self._go_out(timezone.now(), by)
+        return self
 
     @serialised("status", held_first=True)
     @takes_back
@@ -562,6 +588,32 @@ class GatePass(AuditModel):
         if status != self.status:
             self.status = status
             super().save(update_fields=["status", "updated_at"])
+
+
+def approved_not_out(hours=None, now=None):
+    """Passes approved more than the company's gate hours ago and still not checked out at the gate."""
+    from apps.core.models import Company
+
+    hours = Company.get().gate_visit_open_hours if hours is None else hours
+    now = now or timezone.now()
+    return GatePass.objects.filter(status=PassStatus.APPROVED,
+                                   approved_at__lt=now - timezone.timedelta(hours=hours)).order_by("approved_at")
+
+
+def refuse_disposing_of_an_asset_on_a_pass(asset):
+    """
+    Asked by FixedAsset.dispose() (registered at inventory's ready()): an asset approved on a pass, or out on
+    a returnable one and not back, is not disposed of. Bring it back, or cancel the pass, first.
+    """
+    for line in GatePassLine.objects.filter(asset_id=asset.pk, gate_pass__status__in=[
+            PassStatus.APPROVED, PassStatus.OUT]).select_related("gate_pass").order_by("pk"):
+        gate_pass = line.gate_pass
+        if gate_pass.status == PassStatus.APPROVED:
+            raise ValidationError(f"{asset} is approved to go out on {gate_pass}: cancel the pass before disposing "
+                                  "of it.")
+        if line.outstanding() > 0:
+            raise ValidationError(f"{asset} is out on {gate_pass} with {gate_pass.party_name} and not back: record "
+                                  "its return before disposing of it.")
 
 
 def overdue_passes(today=None):
@@ -637,6 +689,10 @@ class GatePassLine(AuditModel):
         movement = StockMovement.objects.get(pk=self.movement_id)
         if movement.item_id != self.item_id or movement.quantity >= 0:
             raise ValidationError(f"{self.label()}: that movement did not take this item off the shelf.")
+        if movement.movement_type not in (MovementType.ISSUE, MovementType.ADJUSTMENT):
+            # A transfer moves stock between our own warehouses: it never took it out of the plant.
+            raise ValidationError(f"{self.label()}: that movement was a {movement.get_movement_type_display().lower()}, "
+                                  "within the plant; name the delivery, write-off or challan that took it out.")
         covered = GatePassLine.objects.filter(movement_id=self.movement_id).exclude(
             gate_pass__status=PassStatus.CANCELLED).exclude(pk=self.pk).filter(
             gate_pass__status__in=[PassStatus.APPROVED, PassStatus.OUT]).aggregate(
@@ -645,15 +701,30 @@ class GatePassLine(AuditModel):
             raise ValidationError(f"{self.label()}: that movement took {(-movement.quantity).normalize():f} off the "
                                   f"shelf, and {covered.normalize():f} of it is on other passes.")
 
+    def _passes_asked(self):
+        """The pass it is on now and, for a line that stood, the pass it stood on: both must be drafts."""
+        stored = None if self._state.adding else GatePassLine.objects.filter(pk=self.pk).first()
+        return stored, {self.gate_pass_id} | ({stored.gate_pass_id} if stored is not None else set())
+
     def save(self, *args, **kwargs):
-        if not GatePass.objects.filter(pk=self.gate_pass_id, status=PassStatus.DRAFT).exists():
+        stored, passes = self._passes_asked()
+        if stored is not None and stored.gate_pass_id != self.gate_pass_id:
+            raise ValidationError({"gate_pass": "A line stays on the pass it was written on; remove it and write "
+                                                "it on the other."})
+        if GatePass.objects.filter(pk__in=passes).exclude(status=PassStatus.DRAFT).exists():
             raise ValidationError("A pass's lines change only while it is a draft.")
-        if self.asset_id and self.quantity is None:
-            self.quantity = Decimal("1")
+        if self.asset_id:
+            from apps.assets.models import AssetStatus
+
+            if self.asset.status == AssetStatus.DISPOSED:
+                raise ValidationError({"asset": f"{self.asset} was disposed of: it is not ours to send out."})
+            if self.quantity is None:
+                self.quantity = Decimal("1")
         super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):
-        if not GatePass.objects.filter(pk=self.gate_pass_id, status=PassStatus.DRAFT).exists():
+        _, passes = self._passes_asked()
+        if GatePass.objects.filter(pk__in=passes).exclude(status=PassStatus.DRAFT).exists():
             raise ValidationError("A pass's lines change only while it is a draft.")
         super().delete(*args, **kwargs)
 

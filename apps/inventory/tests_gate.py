@@ -20,7 +20,9 @@ from apps.assets.tests import AssetTestCase
 from apps.core.models import Company, UnitOfMeasure
 from apps.manufacturing.station_scale import ScaleReading, post_reading
 
-from .gate import GatePass, GateVisit, PassStatus, VisitStatus, Weighing, overdue_passes
+from apps.assets.models import FixedAsset
+
+from .gate import GatePass, GatePassLine, GateVisit, PassStatus, VisitStatus, Weighing, overdue_passes
 from .models import Item, MovementType, StockMovement, Warehouse
 
 D = Decimal
@@ -32,6 +34,9 @@ class GateTestCase(AssetTestCase):
         call_command("setup_roles", verbosity=0)
         self.kg = UnitOfMeasure.objects.create(code="kg", name="Kilogram", category="weight")
         self.polymer = Item.objects.create(sku="PP-RAFFIA", name="Polypropylene raffia", uom=self.kg)
+        from apps.quality.calibration import Instrument
+
+        Instrument.objects.create(code="WB-1", name="Weighbridge", interval_days=365, is_weighbridge=True)
         self.guard = self.client_as("Security Guard")
         self.stores = self.client_as("Stores Manager")
 
@@ -409,3 +414,121 @@ class ThePointerCarriedToTheReadingMigrationTests(TransactionTestCase):
         executor = MigrationExecutor(connection)
         executor.migrate([("manufacturing", "0087_fabric_roll_lot_protected")])
         self.assertEqual(old.get_model("manufacturing", "ScaleReading").objects.count(), 3)
+
+
+class ReviewFixesTests(GateTestCase):
+    """g25 review: F1 disposal, F2 check-out on foot, F4 weighbridge register, F5 lines, U2 movement kind, U5 damage."""
+
+    def setUp(self):
+        super().setUp()
+        self.lathe = self.asset()
+        self.controller = self.client_as("Controller")
+
+    def pass_for(self, visit=None, kind="returnable", **line):
+        made = GatePass.objects.create(kind=kind, party_name="Shree Rewinding Works", visit=visit,
+                                       expected_return_date=timezone.localdate() + datetime.timedelta(days=7)
+                                       if kind == "returnable" else None)
+        GatePassLine.objects.create(gate_pass=made, **(line or {"asset": self.lathe, "quantity": D("1")}))
+        return made
+
+    def test_an_asset_on_a_pass_is_not_disposed_of_and_a_disposed_one_goes_on_no_pass(self):
+        made = self.pass_for()
+        made.approve(self.stores.user)
+        with self.assertRaisesMessage(ValidationError, "is approved to go out on"):
+            self.lathe.dispose(on_date=datetime.date(2026, 7, 1))
+        self.ok(self.guard.post(f"/api/inventory/gate-passes/{made.pk}/leave/"))
+        with self.assertRaisesMessage(ValidationError, "not back"):
+            FixedAsset.objects.get(pk=self.lathe.pk).dispose(on_date=datetime.date(2026, 7, 1))
+        line = made.lines.get()
+        self.ok(self.guard.post(f"/api/inventory/gate-passes/{made.pk}/returned/",
+                                {"line": line.pk, "quantity": "1", "condition": "damaged", "note": "winding burnt"},
+                                format="json"))
+        # Back damaged: the register asks for an impairment review; nothing is written down from the pass.
+        read = self.ok(self.controller.get(f"/api/assets/assets/{self.lathe.pk}/"))
+        self.assertEqual((read["damaged_on_return"]["impairment_review"], read["damaged_on_return"]["note"],
+                          read["status"], read["out_on_pass"]), (True, "winding burnt", "in_service", None))
+        FixedAsset.objects.get(pk=self.lathe.pk).dispose(on_date=datetime.date(2026, 7, 1))
+        draft = GatePass.objects.create(kind="returnable", party_name="X")
+        refused = self.guard.post("/api/inventory/gate-pass-lines/", {"gate_pass": draft.pk, "asset": self.lathe.pk,
+                                                                      "quantity": "1"}, format="json")
+        self.assertEqual(refused.status_code, 400)
+        self.assertIn("was disposed of", str(refused.data))
+
+    def test_approving_sends_nothing_out_a_pass_on_foot_is_checked_out_by_the_guard(self):
+        made = self.pass_for()
+        made.approve(self.stores.user)
+        self.assertIsNone(self.ok(self.controller.get(f"/api/assets/assets/{self.lathe.pk}/"))["out_on_pass"])
+        GatePass.objects.filter(pk=made.pk).update(expected_return_date=timezone.localdate() - datetime.timedelta(1))
+        self.assertEqual(list(overdue_passes()), [], "not overdue before it went")
+        from apps.web.health import integrity
+
+        finding = lambda: next(row for row in integrity(fresh=True)["findings"] if row["key"] == "passes_not_out")
+        self.assertEqual(finding()["count"], 0)
+        GatePass.objects.filter(pk=made.pk).update(approved_at=timezone.now() - datetime.timedelta(hours=13))
+        self.assertEqual((finding()["ok"], finding()["count"]), (False, 1))
+        out = self.ok(self.guard.post(f"/api/inventory/gate-passes/{made.pk}/leave/"))
+        self.assertEqual((out["status"], out["checked_out_by"]), ("out", self.guard.user.pk))
+        self.assertEqual(self.ok(self.controller.get(f"/api/assets/assets/{self.lathe.pk}/"))["out_on_pass"]["number"],
+                         made.number)
+        self.assertEqual(list(overdue_passes()), [GatePass.objects.get(pk=made.pk)])
+        self.assertEqual(finding()["count"], 0)
+        on_a_lorry = self.pass_for(visit=GateVisit.objects.create(vehicle_number="MH12AB1", driver_name="R",
+                                                                 purpose="gate_pass"),
+                                   item=self.polymer, quantity=D("2"))
+        on_a_lorry.approve(self.stores.user)
+        refused = self.guard.post(f"/api/inventory/gate-passes/{on_a_lorry.pk}/leave/")
+        self.assertIn("record the vehicle's out-entry", str(refused.data))
+
+    def test_the_maker_does_not_approve(self):
+        both = User.objects.create_user("both")
+        both.groups.add(Group.objects.get(name="Security Guard"), Group.objects.get(name="Stores Manager"))
+        made = GatePass.objects.create(kind="returnable", party_name="X", created_by=both,
+                                       expected_return_date=timezone.localdate())
+        GatePassLine.objects.create(gate_pass=made, item=self.polymer, quantity=D("1"))
+        with self.assertRaisesMessage(ValidationError, "somebody else approves it"):
+            made.approve(both)
+
+    def test_only_a_registered_weighbridge_weighs_a_vehicle(self):
+        from apps.quality.calibration import Instrument
+
+        line_scale = Instrument.objects.create(code="TAPE-LINE-3", name="Doff scale", interval_days=180)
+        post_reading("TAPE-LINE-3", "42", True)
+        visit = self.visit()
+        weighing = self.ok(self.guard.post(f"/api/inventory/gate-visits/{visit['id']}/weigh/",
+                                           {"scale_code": "TAPE-LINE-3"}, format="json"), 201)
+        refused = self.weigh(weighing["id"], "gross", "scale")
+        self.assertIn("is not a weighbridge", str(refused.data))
+        self.assertIsNone(ScaleReading.objects.get().weighing_id, "the station's reading is left for its roll")
+        url = f"/api/quality/instruments/{line_scale.pk}/weighbridge/"
+        self.assertEqual(self.guard.post(url, {"is_weighbridge": True}, format="json").status_code, 403)
+        self.assertTrue(self.ok(self.controller.post(url, {"is_weighbridge": True}, format="json"))["is_weighbridge"])
+        self.assertEqual(self.ok(self.weigh(weighing["id"], "gross", "scale"))["gross_kg"], "42.000")
+
+    def test_a_line_stays_on_its_pass_and_a_signed_pass_takes_no_line_changes(self):
+        made = self.pass_for(item=self.polymer, quantity=D("10"))
+        made.approve(self.stores.user)
+        line = made.lines.get()
+        draft = GatePass.objects.create(kind="returnable", party_name="Y")
+        self.guard.patch(f"/api/inventory/gate-pass-lines/{line.pk}/", {"gate_pass": draft.pk}, format="json")
+        self.assertEqual(GatePassLine.objects.get(pk=line.pk).gate_pass_id, made.pk)
+        moved = GatePassLine.objects.get(pk=line.pk)
+        moved.gate_pass = draft
+        with self.assertRaisesMessage(ValidationError, "stays on the pass"):
+            moved.save()
+        self.assertEqual(self.guard.delete(f"/api/inventory/gate-pass-lines/{line.pk}/").status_code, 400)
+        self.assertEqual(self.guard.post("/api/inventory/gate-pass-lines/", {"gate_pass": made.pk, "item": self.polymer.pk,
+                                                                             "quantity": "1"}, format="json").status_code, 400)
+        self.assertEqual(made.lines.count(), 1)
+
+    def test_stock_leaving_for_good_names_a_movement_that_took_it_out_not_a_transfer(self):
+        warehouse = Warehouse.objects.create(code="RM", name="Raw")
+        StockMovement.objects.create(item=self.polymer, warehouse=warehouse, uom=self.kg, quantity=D("5"),
+                                     movement_type=MovementType.ADJUSTMENT, document_quantity=D("5"),
+                                     unit_cost=D("95"), value=D("475"), occurred_at=timezone.now(), reference="ADJ-0")
+        moved = StockMovement.objects.create(item=self.polymer, warehouse=warehouse, uom=self.kg, quantity=D("-5"),
+                                             movement_type=MovementType.TRANSFER_OUT, document_quantity=D("-5"),
+                                             unit_cost=D("95"), value=D("-475"), occurred_at=timezone.now(),
+                                             reference="TRF-1")
+        made = self.pass_for(kind="non_returnable", item=self.polymer, quantity=D("5"), movement=moved)
+        with self.assertRaisesMessage(ValidationError, "within the plant"):
+            made.approve(self.stores.user)

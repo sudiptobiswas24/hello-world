@@ -47,6 +47,9 @@ class WeighedReceiptTestCase:
         user = User.objects.create_user("api_purchase_manager")
         user.groups.add(Group.objects.get(name="Purchase Manager"))
         self.manager.force_authenticate(user)
+        from apps.quality.calibration import Instrument
+
+        Instrument.objects.create(code="WB-1", name="Weighbridge", interval_days=365, is_weighbridge=True)
         self.typist = User.objects.create_user("typist")
         self.typist.user_permissions.add(Permission.objects.get(codename="type_weight"))
 

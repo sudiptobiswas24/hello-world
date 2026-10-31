@@ -4581,6 +4581,10 @@ class Delivery(AuditModel):
 
         if self.reverses_id:
             raise ValidationError("A return comes back on its own truck; record it on the delivery out.")
+        if self.posted and self.weighing_id and getattr(weighing, "pk", None) != self.weighing_id:
+            # What left is weighed on the slip it was posted with: unlinked, the slip could be replaced or its
+            # visit cancelled under a delivery that went out on it (g25 review U4).
+            raise ValidationError(f"{self.number} went out weighed on {self.weighing.number}; that stands.")
         if weighing is not None:
             check_weighing_for(weighing, inward=False)
         self.weighing = weighing
