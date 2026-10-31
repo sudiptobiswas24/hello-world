@@ -34,7 +34,7 @@ class GateReviewRaces(fx.WeighedReceiptTestCase, RaceCase):
         self.receipt(self.order("100", "95"), "100", None, documented=None)
         mv = StockMovement.objects.create(item=self.polymer, warehouse=self.warehouse, movement_type="out",
                                           uom=self.kg, quantity=D("-10"), document_quantity=D("10"),
-                                          unit_cost=D("95")) if True else None
+                                          unit_cost=D("95"), occurred_at=__import__("django.utils.timezone", fromlist=["x"]).now())
         passes = []
         for n in ("MH12AB1", "MH12AB2"):
             v = GateVisit.objects.create(vehicle_number=n, driver_name="R", purpose="gate_pass")
