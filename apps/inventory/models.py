@@ -274,7 +274,7 @@ class Item(Extensible, AuditModel):
     )
     is_active = models.BooleanField(default=True)
     weight_tolerance_percent = models.DecimalField(
-        max_digits=5, decimal_places=2, default=Decimal("0.50"),
+        max_digits=5, decimal_places=2, default=Decimal("0.50"), db_default=Decimal("0.50"),
         help_text="How far the weighbridge's net may fall short of the invoice or challan weight before the "
                   "shortage is a claim, in per cent of that weight.")
 
