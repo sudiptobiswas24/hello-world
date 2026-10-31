@@ -167,11 +167,20 @@ class Command(BaseCommand):
         "core.tables_without_their_trigger": "the daily health check's (apps/web/health.py), which is not audited",
     }
 
-    # Modules an app may not import, at module level or inside a function: the graph is acyclic and the
-    # dependent side holds the pointer (CLAUDE.md). manufacturing depends on inventory (items, stock, its
-    # migrations), so inventory naming manufacturing is a cycle: the weighing once pointed at a scale reading.
+    # The module graph as CLAUDE.md's architecture rules write it down: what an app may not import, at module level
+    # or inside a function. The dependent side holds the pointer and the graph is acyclic: core is the kernel and
+    # imports no module; accounting serves both trading modules and imports neither; assets depends on accounting
+    # and core only; manufacturing, purchasing and sales depend on inventory, never the other way round (the
+    # weighing once pointed at a scale reading: g25).
     IMPORTS_FORBIDDEN = {
-        "inventory": ("manufacturing",),
+        "core": tuple(app for app in OUR_APPS if app != "core"),
+        "accounting": ("sales", "purchasing"),
+        "assets": tuple(app for app in OUR_APPS if app not in ("assets", "accounting", "core")),
+        "inventory": ("manufacturing", "purchasing", "sales"),
+    }
+    # Files that read every app on purpose, with the reason.
+    IMPORTS_ALLOWED_IN = {
+        "apps/core/management/commands/audit_invariants.py": "the auditor reads every app to check it",
     }
 
     def imports_against_the_module_graph(self, sources):
@@ -181,7 +190,7 @@ class Command(BaseCommand):
         findings = []
         for label, forbidden in self.IMPORTS_FORBIDDEN.items():
             for path, text in sorted(sources.get(label, {}).items()):
-                if "test" in Path(path).name:
+                if "test" in Path(path).name or str(path) in self.IMPORTS_ALLOWED_IN:
                     continue
                 for node in ast.walk(ast.parse(text)):
                     names = ([node.module or ""] if isinstance(node, ast.ImportFrom)
