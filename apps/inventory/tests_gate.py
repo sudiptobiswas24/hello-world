@@ -331,24 +331,35 @@ class TheGuardSeesNoPricesTests(GateTestCase):
 
 
 class InventoryImportsNothingFromManufacturingTests(TestCase):
-    """manufacturing depends on inventory; inventory naming manufacturing back is a cycle (g25 review)."""
+    """The module graph CLAUDE.md writes down, read off every import (g25 review: F6)."""
 
-    def test_no_inventory_module_imports_manufacturing_anywhere_in_it(self):
-        from apps.core.management.commands.audit_invariants import Command, source_of
+    def test_no_app_imports_against_the_graph_anywhere_in_it(self):
+        from apps.core.management.commands.audit_invariants import Command, app_sources
 
-        self.assertEqual(Command().imports_against_the_module_graph({"inventory": source_of("inventory")}), [])
+        self.assertEqual(Command().imports_against_the_module_graph(app_sources()), [])
 
-    def test_the_check_sees_one_inside_a_function(self):
+    def test_the_check_sees_each_kind_planted_inside_a_function(self):
         from pathlib import Path
 
         from apps.core.management.commands.audit_invariants import Command
 
-        planted = {Path("apps/inventory/planted.py"): "def weigh():\n    from apps.manufacturing.station_scale "
-                                                      "import take_reading\n    import apps.manufacturing.daily\n"}
-        found = Command().imports_against_the_module_graph({"inventory": planted})
-        self.assertEqual([detail for _, detail in found], [
+        planted = {
+            "core": "apps.accounting.models", "accounting": "apps.sales.models", "assets": "apps.inventory.gate",
+            "inventory": "apps.manufacturing.station_scale",
+        }
+        sources = {label: {Path(f"apps/{label}/planted.py"): f"def weigh():\n    from {module} import x\n"}
+                   for label, module in planted.items()}
+        sources["inventory"][Path("apps/inventory/planted_too.py")] = (
+            "import apps.purchasing.models\nfrom apps.sales import models\n")
+        found = sorted(detail for _, detail in Command().imports_against_the_module_graph(sources))
+        self.assertEqual(found, sorted([
+            "apps/core/planted.py:2 imports apps.accounting.models: core may not depend on it.",
+            "apps/accounting/planted.py:2 imports apps.sales.models: accounting may not depend on it.",
+            "apps/assets/planted.py:2 imports apps.inventory.gate: assets may not depend on it.",
             "apps/inventory/planted.py:2 imports apps.manufacturing.station_scale: inventory may not depend on it.",
-            "apps/inventory/planted.py:3 imports apps.manufacturing.daily: inventory may not depend on it."])
+            "apps/inventory/planted_too.py:1 imports apps.purchasing.models: inventory may not depend on it.",
+            "apps/inventory/planted_too.py:2 imports apps.sales: inventory may not depend on it.",
+        ]))
 
 
 def _migrated_to_the_leaves():
