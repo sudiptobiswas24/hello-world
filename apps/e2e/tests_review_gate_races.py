@@ -32,7 +32,8 @@ class GateReviewRaces(fx.WeighedReceiptTestCase, RaceCase):
         from apps.inventory.models import StockMovement
         su = User.objects.create_superuser("s", "s@x.com", "p")
         self.receipt(self.order("100", "95"), "100", None, documented=None)
-        mv = StockMovement.objects.create(item=self.polymer, warehouse=self.warehouse, movement_type="out",
+        mv = StockMovement.objects.create(item=self.polymer, warehouse=self.warehouse, movement_type="issue",  # "out" is no movement type (fix_gate: an issue takes it out)
+                                         
                                           uom=self.kg, quantity=D("-10"), document_quantity=D("10"),
                                           unit_cost=D("95"), occurred_at=__import__("django.utils.timezone", fromlist=["x"]).now())
         passes = []

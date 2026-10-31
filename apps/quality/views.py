@@ -186,9 +186,20 @@ class InstrumentViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     queryset = Instrument.objects.prefetch_related("measures")
     serializer_class = InstrumentSerializer
-    filter_fields = ["is_active"]
+    filter_fields = ["is_active", "is_weighbridge"]
     search_fields = ["code", "name", "serial_number"]
     ordering_fields = ["code"]
+    action_permission_map = {"weighbridge": "quality.set_weighbridge"}
+
+    @action(detail=True, methods=["post"])
+    def weighbridge(self, request, pk=None):
+        """{is_weighbridge: true|false}: whether this scale weighs vehicles at the gate."""
+        from apps.core.api import flag
+
+        instrument = self.get_object()
+        instrument.is_weighbridge = flag(request.data, "is_weighbridge", True)
+        instrument.save(update_fields=["is_weighbridge", "updated_at"])
+        return Response(self.get_serializer(instrument).data)
 
     @action(detail=False, methods=["get"])
     def due(self, request):

@@ -23,6 +23,12 @@ class ClaimProbes(WeighedReceiptTestCase, TestCase):
         return self.manager.post(f"/api/purchasing/weight-claims/{claim['id']}/settle/", body, format="json")
 
     def test_c1_supplier_claim_when_the_bill_price_differs_from_the_order_price(self):
+        # The bill can only be built at 96 inside a price tolerance, with a variance account to take the 1.00 a kg
+        # (fix_gate: the probe errored building its fixture; the claim's arithmetic is what it asks).
+        from apps.core.models import Company
+
+        Company.objects.update(purchase_price_tolerance_percent=D("5"), purchase_price_variance_account=Account.objects.create(
+            code="5900", name="Price variance", account_type=AccountType.EXPENSE))
         line = self.order()
         received = self.receipt(line, "9940", self.weighing())
         bill_line = self.bill(line, "10000", "96")
@@ -185,13 +191,13 @@ class PassProbes(WeighedReceiptTestCase, TestCase):
                                      expected_return_date=datetime.date(2099, 1, 1))
         GatePassLine.objects.create(gate_pass=gp, item=item, quantity=D("3"))
         su = User.objects.create_superuser("s", "s@x.com", "p")
-        try:
-            gp.approve(su)
-        except ValidationError:
-            return
-        # approved with no vehicle: no code path takes it OUT, so it never reads as out or overdue
-        self.assertFalse(hasattr(GatePass, "go_out_without_a_vehicle"))
-        self.fail("approved with no vehicle: status=%s and nothing can ever send it out" % GatePass.objects.get(pk=gp.pk).status)
+        # Decided (coordinator, g25 review F2): approving sends nothing out; a pass with no vehicle is carried out
+        # on foot and checked out at the gate, and only that makes it out. The probe now asserts that path exists.
+        gp.approve(su)
+        self.assertEqual(GatePass.objects.get(pk=gp.pk).status, "approved", "approving sent it out")
+        GatePass.objects.get(pk=gp.pk).check_out(by=su)
+        out = GatePass.objects.get(pk=gp.pk)
+        self.assertEqual((out.status, out.checked_out_by_id), ("out", su.pk), "nothing can ever send it out")
 
     def _asset(self):
         from apps.accounting.models import BooksOpening

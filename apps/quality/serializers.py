@@ -134,7 +134,8 @@ class InstrumentSerializer(serializers.ModelSerializer):
     class Meta:
         model = Instrument
         fields = ["id", "code", "name", "serial_number", "location", "interval_days",
-                  "measures", "range_low", "range_high", "is_active"]
+                  "measures", "range_low", "range_high", "is_active", "is_weighbridge"]
+        read_only_fields = ["is_weighbridge"]
 
 
 class CalibrationSerializer(serializers.ModelSerializer):

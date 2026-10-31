@@ -58,9 +58,14 @@ class Instrument(AuditModel):
         max_digits=18, decimal_places=6, null=True, blank=True,
         help_text="What it was calibrated across. A reading outside it was never checked.")
     is_active = models.BooleanField(default=True)
+    is_weighbridge = models.BooleanField(
+        default=False, editable=False,
+        help_text="A weighbridge: its code is the scale code its bridge posts, and only such a scale weighs a "
+                  "vehicle at the gate. Set by the Controller or maintenance (quality.set_weighbridge).")
 
     class Meta:
         ordering = ["code"]
+        permissions = [("set_weighbridge", "Can say which scale is a weighbridge")]
         constraints = [
             models.CheckConstraint(check=Q(interval_days__gt=0),
                                    name="instrument_interval_positive"),

@@ -18,6 +18,14 @@ export default function InstrumentForm() {
         { key: "range_low", label: "Reads from", kind: "decimal" },
         { key: "range_high", label: "Reads up to", kind: "decimal" },
         { key: "is_active", label: "Active", kind: "bool", initial: true },
+        { key: "is_weighbridge", label: "Weighbridge", kind: "bool", readOnly: true, existingOnly: true,
+          show: (row) => (row.is_weighbridge ? "Yes: it weighs vehicles at the gate" : "No") },
+      ]}
+      actions={[
+        { label: "Mark as the weighbridge", path: "weighbridge", permission: "quality.set_weighbridge",
+          when: (row) => !row.is_weighbridge, done: "Marked", body: () => ({ is_weighbridge: true }) },
+        { label: "Not a weighbridge", path: "weighbridge", permission: "quality.set_weighbridge",
+          when: (row) => Boolean(row.is_weighbridge), done: "Unmarked", body: () => ({ is_weighbridge: false }) },
       ]}
       panels={[{
         title: "Calibrations", permission: "quality.view_calibration",

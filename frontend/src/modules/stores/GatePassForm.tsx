@@ -36,6 +36,8 @@ export default function GatePassForm() {
       ]}
       actions={[
         { label: "Approve", path: "approve", permission: "inventory.approve_gatepass", primary: true, when: draft, done: "Approved" },
+        { label: "Out on foot", path: "leave", permission: "inventory.change_gatepass", primary: true,
+          when: (row) => row.status === "approved" && !row.visit, done: "Out" },
         { label: "Back in", path: "returned", permission: "inventory.add_gatepassreturn", primary: true, when: out, done: "Recorded",
           fields: (record) => [
             { key: "line", label: "What", kind: "choice",

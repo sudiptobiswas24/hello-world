@@ -16,7 +16,7 @@ from apps.core.api import flag, record_or_404
 from apps.core.audit import AuditableViewSetMixin
 
 from .gate import (
-    GatePass, GatePassLine, GatePassReturn, GateVisit, Weighing, WeightSource, open_too_long, overdue_passes,
+    GatePass, GatePassLine, GatePassReturn, GateVisit, Weighing, WeightSource, approved_not_out, open_too_long, overdue_passes,
 )
 from .models import Item
 
@@ -91,6 +91,13 @@ class GatePassLineSerializer(serializers.ModelSerializer):
         fields = ["id", "gate_pass", "item", "asset", "description", "quantity", "movement", "label", "returned",
                   "outstanding", "returns"]
 
+    def get_fields(self):
+        fields = super().get_fields()
+        if self.instance is not None and not isinstance(self.instance, (list, tuple)) and hasattr(self.instance, "pk"):
+            # Written on one pass, a line stays on it (g25 review F5): moved, it left the pass that took it out.
+            fields["gate_pass"].read_only = True
+        return fields
+
     def get_label(self, line):
         return line.label()
 
@@ -112,8 +119,8 @@ class GatePassSerializer(serializers.ModelSerializer):
         model = GatePass
         fields = ["id", "number", "kind", "pass_date", "party_name", "purpose", "expected_return_date", "visit",
                   "visit_number", "vehicle_number", "status", "approved_by", "approved_by_name", "approved_at",
-                  "out_at", "cancelled_at", "cancel_reason", "overdue", "lines"]
-        read_only_fields = ["number", "status", "approved_by", "approved_at", "out_at", "cancelled_at",
+                  "out_at", "checked_out_by", "cancelled_at", "cancel_reason", "overdue", "lines"]
+        read_only_fields = ["number", "status", "approved_by", "approved_at", "out_at", "checked_out_by", "cancelled_at",
                             "cancel_reason"]
 
     def get_approved_by_name(self, gate_pass):
@@ -147,7 +154,7 @@ class GateVisitViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def leave(self, request, pk=None):
         visit = self.get_object()
-        visit.check_out()
+        visit.check_out(by=request.user)
         return Response(self.get_serializer(visit).data)
 
     @action(detail=True, methods=["post"])
@@ -198,12 +205,13 @@ class GatePassViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     serializer_class = GatePassSerializer
     http_method_names = ["get", "post", "patch", "put", "head", "options"]
     filter_fields = ["status", "kind", "visit"]
-    extra_params = ["overdue"]
+    extra_params = ["overdue", "waiting"]
     search_fields = ["number", "party_name", "purpose"]
     date_field = "pass_date"
     ordering_fields = ["pass_date", "number", "expected_return_date"]
     action_permission_map = {
         "approve": "inventory.approve_gatepass",
+        "leave": "inventory.change_gatepass",
         "cancel": "inventory.change_gatepass",
         "returned": "inventory.add_gatepassreturn",
         "cancel_return": "inventory.change_gatepassreturn",
@@ -213,12 +221,22 @@ class GatePassViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         rows = super().get_queryset()
         if flag(self.request.query_params, "overdue", False):
             rows = rows.filter(pk__in=overdue_passes().values("pk"))
+        if flag(self.request.query_params, "waiting", False):
+            # Approved and not checked out within the company's gate hours: the health check lists them too.
+            rows = rows.filter(pk__in=approved_not_out().values("pk"))
         return rows
 
     @action(detail=True, methods=["post"])
     def approve(self, request, pk=None):
         gate_pass = self.get_object()
         gate_pass.approve(by=request.user)
+        return Response(self.get_serializer(gate_pass).data)
+
+    @action(detail=True, methods=["post"])
+    def leave(self, request, pk=None):
+        """A pass carried out on foot, checked out at the gate by the guard; one on a vehicle leaves with it."""
+        gate_pass = self.get_object()
+        gate_pass.check_out(by=request.user)
         return Response(self.get_serializer(gate_pass).data)
 
     @action(detail=True, methods=["post"])

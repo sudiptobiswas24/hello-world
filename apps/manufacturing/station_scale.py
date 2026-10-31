@@ -187,6 +187,13 @@ def weigh_from_bridge(weighing, side, at=None):
         lock_rows(weighing)
         if not weighing.scale_code:
             raise ValidationError("Say which scale the weighbridge is, or type the weight.")
+        from apps.quality.calibration import Instrument
+
+        # Only a scale the register marks as a weighbridge weighs a vehicle: any other's latest reading is a
+        # roll or a doff, and taking it would burn the reading its station is waiting for (g25 review F4).
+        if not Instrument.objects.filter(code=weighing.scale_code, is_weighbridge=True, is_active=True).exists():
+            raise ValidationError(f"Scale {weighing.scale_code} is not a weighbridge in the instrument register: "
+                                  "a vehicle is weighed on a weighbridge, or its weight typed.")
         reading = take_reading(types.SimpleNamespace(scale_code=weighing.scale_code), at)
         if reading.net_kg is not None:
             raise ValidationError(f"Scale {weighing.scale_code} sends net weights; a weighbridge weighs the whole "

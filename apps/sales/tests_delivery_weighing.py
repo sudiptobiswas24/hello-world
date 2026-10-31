@@ -49,6 +49,24 @@ class DeliveryWeighingTests(SalesTestCase):
 
         with self.assertRaisesMessage(ValidationError, "named by"):
             visit.cancel("entered twice")
-        # Taken off again (the wrong truck), and the visit can then be put right.
-        self.assertEqual(self.weigh(delivery, None).data["weighing"], None)
-        visit.cancel("entered twice")
+        # Posted on it, the slip stands: neither taken off nor swapped for another (g25 review U4).
+        self.assertEqual(self.weigh(delivery, None).status_code, 400)
+        self.assertEqual(self.weigh(delivery, self.weighing(vehicle="MH12AB4444")).status_code, 400)
+        delivery.refresh_from_db()
+        self.assertEqual(delivery.weighing_id, weighing.pk)
+
+    def test_a_draft_delivery_may_name_another_slip_before_it_goes(self):
+        from datetime import date
+        from decimal import Decimal
+
+        from .models import Delivery, DeliveryLine
+
+        order = self.make_order()
+        draft = Delivery.objects.create(sales_order=order, delivery_date=date(2026, 3, 3))
+        DeliveryLine.objects.create(delivery=draft, order_line=order.lines.first(), warehouse=self.warehouse,
+                                    quantity_shipped=Decimal("10"))
+        first, second = self.weighing(vehicle="MH12AB5555"), self.weighing(vehicle="MH12AB6666")
+        self.assertEqual(self.weigh(draft, first).status_code, 200)
+        self.assertEqual(self.weigh(draft, second).data["weighing"], second.pk)
+        self.assertEqual(self.weigh(draft, None).data["weighing"], None)
+        GateVisit.objects.get(pk=first.visit_id).cancel("the other truck took it")
