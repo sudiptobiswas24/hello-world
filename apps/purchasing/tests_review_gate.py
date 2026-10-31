@@ -343,3 +343,30 @@ class MoreProbes(WeighedReceiptTestCase, TestCase):
             gp.record_return(ln, "6.0001")
         gp.record_return(ln, "6", condition="damaged", note="bent shaft")
         self.assertEqual(GatePass.objects.get(pk=gp.pk).status, "returned")
+
+
+class LineProbes(WeighedReceiptTestCase, TestCase):
+    def test_p8_a_line_cannot_be_moved_off_a_pass_that_is_out(self):
+        su = User.objects.create_superuser("s", "s@x.com", "p")
+        c = APIClient(); c.force_authenticate(su)
+        item = Item.objects.create(sku="R1", name="Roller", uom=self.kg)
+        v = GateVisit.objects.create(vehicle_number="MH12AB1", driver_name="R", purpose="gate_pass")
+        out = GatePass.objects.create(kind="returnable", party_name="X", visit=v, pass_date=DAY,
+                                      expected_return_date=DAY)
+        ln = GatePassLine.objects.create(gate_pass=out, item=item, quantity=D("10"))
+        out.approve(su); GateVisit.objects.get(pk=v.pk).check_out()
+        draft = GatePass.objects.create(kind="returnable", party_name="Y", pass_date=DAY, expected_return_date=DAY)
+        r = c.patch(f"/api/inventory/gate-pass-lines/{ln.pk}/", {"gate_pass": draft.pk}, format="json")
+        ln.refresh_from_db()
+        self.assertEqual(ln.gate_pass_id, out.pk, f"line of a pass that is out moved to a draft: {r.status_code}")
+
+    def test_p9_a_line_cannot_be_edited_on_an_approved_pass_via_api(self):
+        su = User.objects.create_superuser("s", "s@x.com", "p")
+        c = APIClient(); c.force_authenticate(su)
+        item = Item.objects.create(sku="R1", name="Roller", uom=self.kg)
+        v = GateVisit.objects.create(vehicle_number="MH12AB1", driver_name="R", purpose="gate_pass")
+        gp = GatePass.objects.create(kind="returnable", party_name="X", visit=v, pass_date=DAY, expected_return_date=DAY)
+        ln = GatePassLine.objects.create(gate_pass=gp, item=item, quantity=D("10"))
+        gp.approve(su)
+        c.patch(f"/api/inventory/gate-pass-lines/{ln.pk}/", {"quantity": "99"}, format="json")
+        ln.refresh_from_db(); self.assertEqual(ln.quantity, D("10"))
