@@ -80,6 +80,8 @@ ROLES = {
         # deliberately NOT accounting.post_journalentry
     ],
     "Controller": [
+        *view("quality", "instrument"),
+        "quality.set_weighbridge",
         # They keep the ledger, the inventory account included, so they see the stock figures behind it:
         # an item's standard cost, a run's costs, what stock is worth (O348, decided in g23b).
         "inventory.view_stock_value",
@@ -476,6 +478,9 @@ ROLES = {
     "Maintenance": [
         *REFERENCE,
         *HOW_IT_IS_MADE,
+        # Which scale is the weighbridge (g25 review F4): the instrument register's flag, nothing else of it.
+        *view("quality", "instrument"),
+        "quality.set_weighbridge",
         *view("inventory", "stockmovement", "stockposition", "storagebin", "stockadjustment"),
         "inventory.view_stock_value",
         *view("hr", "employee"),

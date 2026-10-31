@@ -113,6 +113,11 @@ class WeightClaim(AuditModel):
         lock_rows(PurchaseOrder(pk=receipt.purchase_order_id), receipt)
         if not receipt.posted or receipt.reverses_id:
             raise ValidationError("A claim is raised on a posted receipt of goods in.")
+        if all(line.quantity_returned() >= line.quantity_received for line in receipt.lines.all()):
+            # The goods went back to the supplier: what they billed beyond it is settled with them on the
+            # return's debit note, not claimed from the weighbridge's shortage (g25 review c3).
+            raise ValidationError(f"{receipt.number} was returned to the supplier in full: settle the rest of their "
+                                  "bill with them.")
         if self.against == ClaimAgainst.TRANSPORTER and self.transporter_id is None:
             raise ValidationError({"transporter": "Say which transporter the claim is against."})
         if self.against == ClaimAgainst.SUPPLIER:
