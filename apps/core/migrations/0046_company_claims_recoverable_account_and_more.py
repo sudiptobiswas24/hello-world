@@ -28,6 +28,7 @@ class Migration(migrations.Migration):
             model_name="company",
             name="gate_visit_open_hours",
             field=models.PositiveIntegerField(
+                db_default=12,
                 default=12,
                 help_text="A vehicle still in the gate register after this many hours shows on the health check.",
             ),

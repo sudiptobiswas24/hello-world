@@ -21,6 +21,7 @@ class Migration(migrations.Migration):
             name="weight_tolerance_percent",
             field=models.DecimalField(
                 decimal_places=2,
+                db_default=Decimal("0.50"),
                 default=Decimal("0.50"),
                 help_text="How far the weighbridge's net may fall short of the invoice or challan weight before the shortage is a claim, in per cent of that weight.",
                 max_digits=5,

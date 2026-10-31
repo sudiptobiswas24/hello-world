@@ -351,6 +351,11 @@ class InventoryImportsNothingFromManufacturingTests(TestCase):
             "apps/inventory/planted.py:3 imports apps.manufacturing.daily: inventory may not depend on it."])
 
 
+def _migrated_to_the_leaves():
+    executor = MigrationExecutor(connection)
+    executor.migrate(executor.loader.graph.leaf_nodes())
+
+
 @tag("migration")
 class ThePointerCarriedToTheReadingMigrationTests(TransactionTestCase):
     """manufacturing 0088 over a database that ran the first draft of inventory 0042 (the weighing pointing at its readings)."""
@@ -360,6 +365,9 @@ class ThePointerCarriedToTheReadingMigrationTests(TransactionTestCase):
     AFTER = [("manufacturing", "0088_scale_reading_names_its_weighing")]
 
     def test_each_reading_is_given_the_weighing_that_named_it_and_the_stray_columns_go(self):
+        # Registered before anything moves: a failure anywhere below still leaves the database at the leaves,
+        # where the next migration test in this worker expects it (a mixed plan otherwise).
+        self.addCleanup(_migrated_to_the_leaves)
         executor = MigrationExecutor(connection)
         executor.migrate(self.BEFORE)
         old = executor.loader.project_state(self.BEFORE).apps
@@ -390,4 +398,3 @@ class ThePointerCarriedToTheReadingMigrationTests(TransactionTestCase):
         executor = MigrationExecutor(connection)
         executor.migrate([("manufacturing", "0087_fabric_roll_lot_protected")])
         self.assertEqual(old.get_model("manufacturing", "ScaleReading").objects.count(), 3)
-        MigrationExecutor(connection).migrate(MigrationExecutor(connection).loader.graph.leaf_nodes())
