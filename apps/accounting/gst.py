@@ -30,6 +30,7 @@ import re
 
 from django.core.exceptions import ValidationError
 from django.db import models
+from django.utils import timezone
 
 from apps.core.models import AuditModel
 
@@ -497,3 +498,51 @@ def gst_taxes(profile, taxes, place=None):
     if state != settings.state or profile.gst_registration == GstRegistration.SEZ:
         return settings.interstate_position.map_taxes(taxes)
     return list(taxes)
+
+
+class GstReturnFiled(AuditModel):
+    """
+    A GST return as filed on the portal: which, for which month, the day, and the acknowledgement.
+    Recorded by the person who filed it, since nothing here files (apps/gst/returns.py). What a filed
+    return reported is then not taken back from under it: a bill of entry whose IGST credit a filed
+    GSTR-3B claimed is not voided (L21).
+    """
+
+    RETURNS = [("gstr1", "GSTR-1"), ("gstr3b", "GSTR-3B")]
+
+    return_name = models.CharField(max_length=8, choices=RETURNS)
+    period = models.CharField(max_length=7, help_text="YYYY-MM")
+    filed_on = models.DateField()
+    arn = models.CharField(max_length=32, blank=True, help_text="The portal's acknowledgement reference number.")
+
+    class Meta:
+        ordering = ["-period", "return_name"]
+        constraints = [
+            models.UniqueConstraint(fields=["return_name", "period"], name="one_filing_per_return_and_month"),
+        ]
+
+    def __str__(self):
+        return f"{self.get_return_name_display()} {self.period}"
+
+    def save(self, *args, **kwargs):
+        import re
+
+        if not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", self.period or ""):
+            raise ValidationError({"period": "A month, as YYYY-MM."})
+        if not self._state.adding:
+            raise ValidationError("A filing is recorded as it was made; it is not edited.")
+        if self.filed_on and self.filed_on > timezone.localdate():
+            raise ValidationError({"filed_on": "That day has not come."})
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError("A filed return stays filed: amend it in a later return.")
+
+
+def refuse_in_a_filed_return(day, doing, name="gstr3b"):
+    """Refuse `doing` to what `day`'s month reported in a return already filed."""
+    period = f"{day:%Y-%m}"
+    filed = GstReturnFiled.objects.filter(return_name=name, period=period).first()
+    if filed is not None:
+        raise ValidationError(f"{doing}: its credit is in {filed}, filed on {filed.filed_on}. "
+                              "Correct it in a later return instead.")

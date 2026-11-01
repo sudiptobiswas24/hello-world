@@ -2577,6 +2577,15 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
         help_text="Where a non-stocked line lands when this order is billed.",
     )
     taxes = models.ManyToManyField(Tax, blank=True, related_name="purchase_order_lines")
+    # Polymer bought on a circular (L16): the contract it is priced on, and the index it took.
+    rate_contract = models.ForeignKey(
+        "purchasing.PurchaseRateContract", null=True, blank=True, on_delete=models.PROTECT,
+        related_name="order_lines",
+        help_text="Priced on this contract: its index on the order's date, less the agreed discount a kg.")
+    contract_index_value = models.DecimalField(
+        max_digits=12, decimal_places=4, null=True, blank=True, editable=False,
+        help_text="The index value the line was priced at, kept: a circular revised later is a rate "
+                  "difference against this, never a new price.")
 
     def party_for_tax(self):
         return self.order.vendor
@@ -2744,6 +2753,14 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
             # line is still a draft, rather than when the goods are on the
             # dock and the order is confirmed.
             self.item.check_uom(self.uom)
+        from .rate_contracts import contract_for, price_on_contract
+
+        if not self.rate_contract_id and self.unit_price is None and self.item_id and not self.is_charge():
+            # No price typed, and the supplier holds a rate contract for the item on the order's day:
+            # it is priced there, before any price list (L16).
+            self.rate_contract = contract_for(self.order, self.item)
+        if self.rate_contract_id:
+            price_on_contract(self)
         if self.unit_price is None and not self.is_charge() and self.item_id:
             self.unit_price = resolve_purchase_price(
                 self.item, self.order.vendor, quantity=self.quantity,
@@ -3287,6 +3304,9 @@ def vendor_invoice_key(number, day):
 # What else a posted debit note takes back, registered by the module that knows (purchasing imports
 # neither gst nor anything after it): gst cancels the self-invoice of a supply wholly debited back.
 DEBIT_NOTE_FOLLOW_UPS = []
+# What a posted bill sets going elsewhere, each fn(bill) inside its transaction: a rate-difference
+# note lands its value on the goods once its supplementary bill or debit note posts (L16).
+AFTER_BILL_POSTED = []
 
 
 def register_debit_note_follow_up(follow_up):
@@ -4543,6 +4563,8 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         # as an asset nobody ever clears.
         if apply_prepayments:
             self.apply_available_prepayments(on_date=self.bill_date)
+        for follow_up in AFTER_BILL_POSTED:
+            follow_up(self)
 
     def _record_landed_cost(self):
         """
@@ -5293,14 +5315,16 @@ class BillLine(PostedLineMixin, TaxedLineMixin, AuditModel):
         return self.booked_amount() - self.amount_given_back() - self.landed_cost_allocated() - capitalised
 
     @transaction.atomic
-    def allocate_landed_cost(self, receipt_lines, on_date=None):
+    def allocate_landed_cost(self, receipt_lines, on_date=None, basis="value"):
         """
         Spread this charge over goods received on *other* bills.
 
-        Split by the value of what was received, which is the defensible
-        default: a container's freight follows the value it carried when
-        nothing better is known. Weight or volume would be better and the
-        system does not hold either.
+        Split by `basis` (LandedBasis, L23): the value of what was received,
+        the default, since a container's freight follows the value it
+        carried when nothing better is known; the quantity in the stocking
+        unit; or the weight in kilogrammes, which is what freight on
+        polymer follows. land_on_receipts is the one way it lands, shared
+        with the bill of entry's duty and a rate-difference note.
 
         The charge already expensed when its own bill posted, since there
         was nothing on that bill to absorb it, so this moves it: Dr
@@ -5332,64 +5356,14 @@ class BillLine(PostedLineMixin, TaxedLineMixin, AuditModel):
                 "it is in their cost already."
             )
 
-        lines = [line for line in receipt_lines]
-        for line in lines:
-            if not line.receipt.posted or line.receipt.is_return():
-                raise ValidationError(
-                    "Landed cost can only be applied to goods actually received."
-                )
-            if not line.order_line.item.track_inventory:
-                raise ValidationError(
-                    f"{line.order_line.item} is not stocked; there is nothing to add "
-                    "the cost to."
-                )
-        if not lines:
-            raise ValidationError("Name the goods this cost should land on.")
-
+        receipt_lines = goods_to_land_on(receipt_lines)
         # In base, and net of what debit notes gave back: what the freight account still holds.
         total = self.landed_cost_unallocated()
         if total <= 0:
             raise ValidationError("This charge has already been allocated in full, or given back.")
-
-        values = [
-            round_money(line.quantity_received * (line.order_line.unit_price or Decimal("0")))
-            for line in lines
-        ]
-        basis = sum(values, Decimal("0"))
-        if basis <= 0:
-            raise ValidationError("Those receipt lines have no value to spread the cost over.")
-
-        # Every shelf of every line at once, in key order, before the first is landed on: line by
-        # line, two charges onto the same two receipt lines listed the other way round each held one
-        # line's shelf and wanted the other's, and PostgreSQL ended one as a deadlock (O182).
-        lock_positions((line.order_line.item, place) for line in lines for place, _there in line.positions())
-        applications, remaining = [], total
-        for index, (line, value) in enumerate(zip(lines, values)):
-            is_last = index == len(lines) - 1
-            share = remaining if is_last else round_money(total * value / basis)
-            remaining -= share
-            if share <= 0:
-                continue
-            applications.append(self._apply_landed_cost(line, share, on_date))
-        return applications
-
-    def _apply_landed_cost(self, receipt_line, amount, on_date):
-        item = receipt_line.order_line.item
-        memo = f"Landed cost from {self.bill.number} onto {item}"
-        entry = _landed_cost_entry(on_date, self.bill.number, memo)
-        movements, elsewhere, went = land_on_goods(receipt_line, amount, self.bill.number, memo, entry, on_date)
-        _post_landed_cost(
-            item, self.posted_account or self.expense_account, amount,
-            on_shelf=sum((movement.value_adjustment for movement in movements), Decimal("0")),
-            date=on_date, reference=self.bill.number, memo=memo, elsewhere=elsewhere, entry=entry,
-        )
-        application = LandedCostApplication.objects.create(
-            charge_line=self, receipt_line=receipt_line, amount=amount,
-            date=on_date, journal_entry=entry, went=went,
-        )
-        # What each shelf took, kept: its release takes it back off there.
-        application.movements.set(movements)
-        return application
+        return land_on_receipts(
+            receipt_lines, total, basis, on_date, reference=self.bill.number,
+            account=self.posted_account or self.expense_account, source={"charge_line": self})
 
     @transaction.atomic
     def capitalise_as_asset(self, category, name="", in_service_date=None,
@@ -9104,6 +9078,121 @@ def _post_landed_cost(item, expense, amount, on_shelf, date, reference, memo, un
     return entry
 
 
+class LandedBasis(models.TextChoices):
+    """What a landed cost is split by (L23), kept on each application it makes."""
+
+    VALUE = "value", "Value received"
+    QUANTITY = "quantity", "Quantity in the stocking unit"
+    WEIGHT = "weight", "Weight in kilogrammes"
+
+
+def goods_to_land_on(receipt_lines):
+    """The receipt lines a cost may land on: posted goods in, of stocked items, at least one."""
+    lines = list(receipt_lines)
+    for line in lines:
+        if not line.receipt.posted or line.receipt.is_return():
+            raise ValidationError("Landed cost can only be applied to goods actually received.")
+        if not line.order_line.item.track_inventory:
+            raise ValidationError(f"{line.order_line.item} is not stocked; there is nothing to add the cost to.")
+    if not lines:
+        raise ValidationError("Name the goods this cost should land on.")
+    return lines
+
+
+def weight_in_kg(receipt_line):
+    """
+    What a receipt line weighed, in kilogrammes (L23): the weighbridge's net where its receipt names
+    a weighing, shared over the receipt's lines by what each received (a weighed receipt carries one
+    item, so they are one measure); otherwise the quantity received through the item's own unit
+    conversion. None when neither answers: the caller refuses, never falls back to value.
+    """
+    from apps.manufacturing.daily import kilogramme
+
+    order_line = receipt_line.order_line
+    item = order_line.item
+    receipt = receipt_line.receipt
+    net = receipt.weighing.net_kg() if receipt.weighing_id else None
+    if net is not None:
+        lines = list(receipt.lines.select_related("order_line__item", "order_line__uom").order_by("pk"))
+        received = sum((line.order_line.item.to_stock_quantity(line.quantity_received, line.order_line.uom)
+                        for line in lines), Decimal("0"))
+        if received > 0:
+            return net * item.to_stock_quantity(receipt_line.quantity_received, order_line.uom) / received
+    kg = kilogramme()
+    if kg is None:
+        return None
+    try:
+        return item.to_stock_quantity(receipt_line.quantity_received, order_line.uom) / item.unit_factor(kg)
+    except ValidationError:
+        return None
+
+
+def landing_weights(lines, basis):
+    """Each line's weight under `basis`, unrounded: total first, divide last (land_on_receipts)."""
+    if basis == LandedBasis.VALUE:
+        return [round_money(line.quantity_received * (line.order_line.unit_price or Decimal("0"))) for line in lines]
+    if basis == LandedBasis.QUANTITY:
+        return [line.order_line.item.to_stock_quantity(line.quantity_received, line.order_line.uom)
+                for line in lines]
+    if basis == LandedBasis.WEIGHT:
+        weights = [weight_in_kg(line) for line in lines]
+        unweighed = [line for line, weight in zip(lines, weights) if not weight]
+        if unweighed:
+            names = ", ".join(f"{line.receipt.number} {line.order_line.item}" for line in unweighed)
+            raise ValidationError(
+                f"{names}: no weight in kilogrammes, from a weighing or a unit conversion. Give the item a "
+                "conversion to kg, or split this cost by value or quantity instead.")
+        return weights
+    raise ValidationError({"basis": f"{basis!r} is not a basis: value, quantity or weight."})
+
+
+@transaction.atomic
+def land_on_receipts(receipt_lines, total, basis, on_date, reference, account, source):
+    """
+    Land `total` (in base; negative takes value off, a polymer price that fell) on goods received,
+    split by `basis`: the one way a cost lands on received goods, for a charge allocated from
+    another bill, a bill of entry's duty and a rate-difference note (L23, L21, L16). On each line it
+    goes where the goods are now (land_on_goods): shelf, run, or cost of sales. `account` is where
+    the cost sits until it lands, credited here and kept on the application, so the release gives it
+    back there. `source` names what landed it: {"charge_line"|"bill_of_entry"|"rate_difference": row}.
+    Total first, divide last; the last line takes what is left.
+    """
+    on_date = to_date(on_date) or timezone.localdate()
+    basis = basis or LandedBasis.VALUE
+    lines = goods_to_land_on(receipt_lines)
+    if not total:
+        raise ValidationError("There is nothing to land.")
+    weights = landing_weights(lines, basis)
+    whole = sum(weights, Decimal("0"))
+    if whole <= 0:
+        raise ValidationError(f"Those receipt lines have no {LandedBasis(basis).label.lower()} to spread the cost over.")
+    # Every shelf of every line at once, in key order, before the first is landed on: line by
+    # line, two charges onto the same two receipt lines listed the other way round each held one
+    # line's shelf and wanted the other's, and PostgreSQL ended one as a deadlock (O182).
+    lock_positions((line.order_line.item, place) for line in lines for place, _there in line.positions())
+    applications, remaining = [], total
+    for index, (line, weight) in enumerate(zip(lines, weights)):
+        is_last = index == len(lines) - 1
+        share = remaining if is_last else round_money(total * weight / whole)
+        remaining -= share
+        if not share:
+            continue
+        item = line.order_line.item
+        memo = f"Landed cost from {reference} onto {item}"
+        entry = _landed_cost_entry(on_date, reference, memo)
+        movements, elsewhere, went = land_on_goods(line, share, reference, memo, entry, on_date)
+        _post_landed_cost(
+            item, account, share, on_shelf=sum((movement.value_adjustment for movement in movements), Decimal("0")),
+            date=on_date, reference=reference, memo=memo, elsewhere=elsewhere, entry=entry)
+        application = LandedCostApplication.objects.create(
+            receipt_line=line, amount=share, date=on_date, journal_entry=entry, went=went, basis=basis,
+            weight=weight, account=account, **source)
+        # What each shelf took, kept: its release takes it back off there.
+        application.movements.set(movements)
+        applications.append(application)
+    return applications
+
+
 class LandedByItsBill(AuditModel):
     """
     Where a bill's own capitalised charge went on one receipt line's goods
@@ -9176,12 +9265,28 @@ class LandedCostApplication(AuditModel):
     """
 
     charge_line = models.ForeignKey(
-        BillLine, on_delete=models.PROTECT, related_name="landed_cost_applications"
+        BillLine, null=True, blank=True, on_delete=models.PROTECT, related_name="landed_cost_applications"
     )
+    # What else lands a cost through land_on_receipts (L21, L16); exactly one source names it.
+    bill_of_entry = models.ForeignKey(
+        "purchasing.BillOfEntry", null=True, blank=True, on_delete=models.PROTECT, related_name="landings",
+        editable=False)
+    rate_difference = models.ForeignKey(
+        "purchasing.RateDifferenceNote", null=True, blank=True, on_delete=models.PROTECT, related_name="landings",
+        editable=False)
     receipt_line = models.ForeignKey(
         GoodsReceiptLine, on_delete=models.PROTECT, related_name="landed_costs"
     )
-    amount = models.DecimalField(max_digits=18, decimal_places=2)
+    amount = models.DecimalField(max_digits=18, decimal_places=2,
+                                 help_text="In base; negative where a rate-difference note took value off.")
+    basis = models.CharField(max_length=10, choices=LandedBasis.choices, default=LandedBasis.VALUE, editable=False,
+                             help_text="What the cost was split by, as it was (L23).")
+    weight = models.DecimalField(max_digits=24, decimal_places=8, null=True, blank=True, editable=False,
+                                 help_text="This line's weight under the basis as the split read it: value, "
+                                           "stocking-unit quantity or kilogrammes.")
+    account = models.ForeignKey(
+        Account, null=True, blank=True, on_delete=models.PROTECT, related_name="+", editable=False,
+        help_text="Where the cost sat until it landed, credited then; the release gives it back there.")
     date = models.DateField()
     journal_entry = models.ForeignKey(
         JournalEntry, on_delete=models.PROTECT, related_name="+", editable=False
@@ -9208,11 +9313,32 @@ class LandedCostApplication(AuditModel):
     class Meta:
         ordering = ["-date", "-id"]
         constraints = [
-            models.CheckConstraint(check=Q(amount__gt=0), name="landed_cost_amount_positive"),
+            models.CheckConstraint(check=~Q(amount=0), name="landed_cost_amount_not_zero"),
+            models.CheckConstraint(check=Q(amount__gt=0) | Q(rate_difference__isnull=False),
+                                   name="landed_cost_negative_only_for_a_fall"),
+            models.CheckConstraint(
+                check=(Q(charge_line__isnull=False, bill_of_entry__isnull=True, rate_difference__isnull=True)
+                       | Q(charge_line__isnull=True, bill_of_entry__isnull=False, rate_difference__isnull=True)
+                       | Q(charge_line__isnull=True, bill_of_entry__isnull=True, rate_difference__isnull=False)),
+                name="landed_cost_has_one_source"),
         ]
 
     def __str__(self):
-        return f"{self.charge_line} -> {self.receipt_line} ({self.amount})"
+        return f"{self.source()} -> {self.receipt_line} ({self.amount})"
+
+    def source(self):
+        return self.charge_line or self.bill_of_entry or self.rate_difference
+
+    def source_reference(self):
+        if self.charge_line_id:
+            return self.charge_line.bill.number
+        return self.source().number
+
+    def credited_account(self):
+        """Where the cost sat before it landed: kept on the application; read off the line for those before."""
+        if self.account_id:
+            return self.account
+        return self.charge_line.posted_account or self.charge_line.expense_account
 
     def is_released(self):
         return bool(self.released_entry_id)
@@ -9249,7 +9375,7 @@ class LandedCostApplication(AuditModel):
             landed = [self.stock_movement]
         from apps.manufacturing.orders import AddedCost
 
-        memo = f"Landed cost released from {self.charge_line.bill.number}"
+        memo = f"Landed cost released from {self.source_reference()}"
         entry = JournalEntry.objects.create(date=on_date, reference=self.journal_entry.reference,
                                             memo=f"Landed cost released from {item}")
         # Off every shelf it is on now (O42), out of the runs it went into
@@ -9257,9 +9383,9 @@ class LandedCostApplication(AuditModel):
         # a bill's own landed charge takes too.
         off_shelf, elsewhere = take_back_landed(
             item, landed, AddedCost.objects.filter(journal_entry=self.journal_entry).select_related("work_order"),
-            self.amount, self.amount, entry, on_date, memo, self.charge_line.bill.number, went=self.went)
+            self.amount, self.amount, entry, on_date, memo, self.source_reference(), went=self.went)
         entry = _post_landed_cost(
-            item, self.charge_line.posted_account or self.charge_line.expense_account,
+            item, self.credited_account(),
             self.amount, on_shelf=off_shelf,
             date=on_date,
             reference=self.journal_entry.reference,
@@ -9382,3 +9508,10 @@ from .weight_claims import WeightClaim  # noqa: E402,F401
 
 # A tax added to or taken off a confirmed order's line asks the policy again (review F3).
 asks_its_policy_when_taxes_change(PurchaseOrderLine)
+from .imports import BillOfEntry, BillOfEntryLine, CustomsValuationDefault  # noqa: E402,F401
+from .rate_contracts import (  # noqa: E402,F401
+    PurchaseRateContract, RateContractLine, RateDifferenceLine, RateDifferenceNote,
+)
+from .rate_contracts import _land_rate_differences  # noqa: E402
+
+AFTER_BILL_POSTED.append(_land_rate_differences)

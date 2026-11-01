@@ -124,8 +124,11 @@ class ALineWithNoTaxIsRefused(UntaxedLinesTestCase):
 
 class ABillNeedsItsTaxesAndTheVendorsNumber(UntaxedLinesTestCase):
     def draft_bill(self, reference="GHP/26/0412", taxes=True):
+        # A regular registrant's bill with an expense line to copy: the demo also holds an import, and a bill
+        # priced on a rate contract, whose lines clear the accrual and name no expense account.
         posted = Bill.objects.filter(posted=True, is_prepayment=False, is_opening_balance=False,
-                                     lines__item__sku="PP-RAFFIA").first() or \
+                                     lines__item__sku="PP-RAFFIA", vendor__tax_profile__gst_registration="regular",
+                                     lines__expense_account__isnull=False).first() or \
             Bill.objects.filter(posted=True, is_prepayment=False, is_opening_balance=False).first()
         bill = Bill.objects.create(vendor=posted.vendor, payable_account=posted.payable_account,
                                    bill_date=posted.bill_date, reference=reference)

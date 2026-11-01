@@ -113,9 +113,10 @@ class ReceiptInspectionAdmin(RowHeldAdminMixin, admin.ModelAdmin):
 
 @admin.register(LandedCostApplication)
 class LandedCostApplicationAdmin(RowHeldAdminMixin, admin.ModelAdmin):
-    list_display = ("charge_line", "receipt_line", "amount", "date", "is_released")
+    list_display = ("source", "receipt_line", "amount", "basis", "date", "is_released")
     readonly_fields = (
-        "charge_line", "receipt_line", "amount", "date",
+        "charge_line", "bill_of_entry", "rate_difference", "receipt_line", "amount", "basis", "weight", "account",
+        "date",
         "journal_entry", "stock_movement", "released_entry",
     )
 

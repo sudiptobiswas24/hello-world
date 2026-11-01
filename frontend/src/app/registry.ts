@@ -255,6 +255,26 @@ export const MODULES: Module[] = [
         detail: () => import("../modules/purchasing/WeightClaimForm"),
       },
       {
+        // Goods imported, cleared through customs (L21).
+        path: "bills-of-entry", label: "Bills of entry", permission: "purchasing.view_billofentry",
+        create: "purchasing.add_billofentry", keep: "purchasing.change_billofentry",
+        keywords: "import customs duty bcd sws igst be icegate port assessable", load: () => import("../modules/purchasing/BillsOfEntry"),
+        detail: () => import("../modules/purchasing/BillOfEntryForm"),
+      },
+      {
+        // Polymer bought on a maker's circular (L16).
+        path: "rate-contracts", label: "Rate contracts", permission: "purchasing.view_purchaseratecontract",
+        create: "purchasing.add_purchaseratecontract", keep: "purchasing.change_purchaseratecontract",
+        keywords: "polymer circular index contract discount", load: () => import("../modules/purchasing/RateContracts"),
+        detail: () => import("../modules/purchasing/RateContractForm"),
+      },
+      {
+        path: "rate-differences", label: "Rate-difference notes", permission: "purchasing.view_ratedifferencenote",
+        create: "purchasing.add_ratedifferencenote",
+        keywords: "polymer circular revised back-dated supplementary debit note", load: () => import("../modules/purchasing/RateDifferences"),
+        detail: () => import("../modules/purchasing/RateDifferenceForm"),
+      },
+      {
         path: "receive-by-scan", label: "Receive by scan", permission: "purchasing.add_goodsreceipt",
         also: ["purchasing.view_purchaseorder", "inventory.view_warehouse"],
         keywords: "scan barcode gate receive purchase order", load: () => import("../modules/purchasing/ReceiveByScan"),
@@ -1363,6 +1383,13 @@ export const MODULES: Module[] = [
         create: "accounting.add_letterofundertaking",
         keywords: "lut letter of undertaking export igst arn rule 96a", load: () => import("../modules/settings/Luts"),
         detail: () => import("../modules/settings/LutForm"),
+      },
+      {
+        // A GST return as filed on the portal: what it claimed is not taken back (L21).
+        path: "gst-returns-filed", label: "GST returns filed", permission: "accounting.view_gstreturnfiled",
+        create: "accounting.add_gstreturnfiled",
+        keywords: "gstr-3b gstr-1 filed arn return", load: () => import("../modules/settings/GstReturnsFiled"),
+        detail: () => import("../modules/settings/GstReturnFiledForm"),
       },
       {
         // What setup_indian_books seeded, for the accountant to review (O239).

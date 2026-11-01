@@ -42,7 +42,7 @@ LOGINS = [
     ("rohit", "Sales manager", "AR Manager, Line Manager"),
     ("imran", "Sales executive", "Sales Rep: sees only their own customers"),
     ("priya", "Sales executive, south and export", "Sales Rep"),
-    ("ravi", "Purchase officer", "Purchasing Clerk, AP Manager"),
+    ("ravi", "Purchase officer", "Purchasing Clerk, AP Manager, Purchase Manager"),
     ("sunita", "Stores keeper", "Stores Manager, Warehouse Staff"),
     ("suresh", "Production supervisor", "Production Supervisor, Planner, Process Engineer"),
     ("meena", "Quality inspector", "Quality Inspector, Quality Manager"),
@@ -392,7 +392,7 @@ class Command(BaseCommand):
             priya = person("103", "Priya Nair", "SALES", "Sales executive, south and export", d(2023, 3, 1), "priya",
                            ["Sales Rep", "Employee Self Service"])
             ravi = person("201", "Ravi Kulkarni", "PURCH", "Purchase officer", d(2020, 8, 1), "ravi",
-                          ["Purchasing Clerk", "AP Manager"])
+                          ["Purchasing Clerk", "AP Manager", "Purchase Manager"])
             sunita = person("202", "Sunita Pawar", "PURCH", "Stores keeper", d(2021, 2, 15), "sunita",
                             ["Stores Manager", "Warehouse Staff"])
             suresh = person("301", "Suresh Patil", "PROD", "Production supervisor", d(2018, 4, 1), "suresh",
@@ -618,6 +618,54 @@ class Command(BaseCommand):
             buy(granule, on(2026, 9, 29), [(virgin, "12000", "116")], bill=False, part="0.5")
             buy(threads, day(-3), [(thread, "300", "262")], receive=False)
             buy(liner, day(-1), [(liner_film, "3000", "124")], receive=False)
+
+        with step("Polymer imported through customs, and polymer bought on a circular"):
+            # L21: a container of polymer from overseas, received and billed in dollars; its bill of entry is
+            # the accountant's to enter from the BE customs gave. The duty is owed to the customs house.
+            acc("2460", "Customs duty payable", "liability")
+            acc("5160", "Customs duty", "expense")
+            gulf_polymers = party("V-GULFP", "Gulf Polymers FZE", "vendor", "Jebel Ali", "", None, net30,
+                                  ("Imran", "Sheikh", "Sales"), "sales@gulfpolymers.example", currency=usd,
+                                  gst_registration="overseas")
+            party("V-CUSTOMS", "Commissioner of Customs (Port), Kolkata", "vendor", "Kolkata", "700001", None,
+                  net15, ("Duty", "Desk", "ICEGATE"), "icegate@customs.example")
+            imported = PO.objects.create(vendor=gulf_polymers, order_date=day(-30), currency=usd)
+            for it, qty, price in ((virgin, "25000", "1.10"), (filler, "18000", "1.25")):
+                POLine.objects.create(order=imported, item=it, uom=it.uom, quantity=D(qty), unit_price=D(price),
+                                      warehouse=plant)
+            imported.confirm()
+            landed = imported.create_receipt(receipt_date=day(-12), warehouse=plant)
+            landed.post()
+            import_bill = imported.create_bill(ap, bill_date=day(-12), reference="GPF/26/0912")
+            import_bill.post()
+            # Paid by telegraphic transfer in dollars, as the supplier's terms ask.
+            remitted = Payment.objects.create(party=gulf_polymers, direction="disbursement", amount=import_bill.total(),
+                                              payment_date=day(-10), currency=usd, bank_account=bank,
+                                              counterpart_account=ap, reference="TT 0912")
+            remitted.post()
+            M("purchasing.BillPayment").objects.create(bill=import_bill, payment=remitted, amount=import_bill.total(),
+                                                       date=day(-10))
+            # L16: the maker's circular for raffia, a contract with Granule House at 1.50 off it, and an order
+            # priced there, received in three lots and billed. A revision back-dated is the Purchase Manager's.
+            Index, Value = M("sales.PriceIndex"), M("sales.PriceIndexValue")
+            circular = Index.objects.create(code="RIL-H030SG", name="Reliance raffia H030SG circular (Kolkata)")
+            Value.objects.create(index=circular, valid_from=day(-45), value=D("100.0000"), published_on=day(-45))
+            contract = M("purchasing.PurchaseRateContract").objects.create(
+                vendor=granule, index=circular, discount_per_kg=D("1.50"), valid_from=day(-45), valid_to=day(60),
+                note="Raffia at the circular less 1.50 a kg")
+            M("purchasing.RateContractLine").objects.create(contract=contract, item=virgin, quantity_kg=D("60000"))
+            on_circular = PO.objects.create(vendor=granule, order_date=day(-28), currency=inr)
+            # No price typed: the contract prices it, the circular on the order's day less the discount.
+            POLine.objects.create(order=on_circular, item=virgin, uom=kg, quantity=D("18000"), warehouse=plant,
+                                  expected_date=day(-21)).taxes.set(gst18)
+            on_circular.confirm()
+            for when, qty in ((day(-26), "6000"), (day(-22), "7000"), (day(-18), "5000")):
+                lot = on_circular.create_receipt(receipt_date=when, warehouse=plant)
+                for row in lot.lines.all():
+                    row.quantity_received = D(qty)
+                    row.save()
+                lot.post()
+            on_circular.create_bill(ap, bill_date=day(-17), reference="GRAN/2610/118").post()
 
         with step("Requisitions, and one out for quotes with three answers"):
             Requisition, RequisitionLine = M("purchasing.PurchaseRequisition"), M("purchasing.PurchaseRequisitionLine")
