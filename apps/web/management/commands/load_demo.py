@@ -200,6 +200,9 @@ class Command(BaseCommand):
             bad_debts = acc("5820", "Bad debts", "expense")
             fx_loss = acc("5830", "Exchange loss", "expense")
             depreciation = acc("5900", "Depreciation", "expense")
+            # The other sides of a stock adjustment (O403); 5300 here is power, so these sit beside it.
+            written_off = acc("5250", "Stock written off", "expense")
+            found_on_count = acc("4200", "Stock found on count", "income")
             M("core.Company").objects.create(
                 name="Deccan Polysacks Pvt Ltd", legal_name="Deccan Polysacks Private Limited",
                 email="accounts@deccanpolysacks.example", phone="+91 20 6712 4400", website="deccanpolysacks.example",
@@ -242,6 +245,16 @@ class Command(BaseCommand):
                 filed_on=on(2026, 3, 24), valid_from=on(2026, 4, 1), valid_to=on(2027, 3, 31))
 
         with step("Warehouses, bins, items and the opening stock"):
+            # A count's difference and a write-off need a reason to book against (O403), and an export customer a
+            # country.
+            from apps.core.countries import seed_countries
+
+            seed_countries()
+            for code, name, account, direction in (("DAMAGE", "Damaged or spoilt", written_off, "decrease"),
+                                                   ("SHORT", "Short on count", written_off, "decrease"),
+                                                   ("FOUND", "Found on count", found_on_count, "increase")):
+                M("inventory.AdjustmentReason").objects.create(code=code, name=name, account=account,
+                                                               direction=direction)
             Warehouse, Bin, Item = M("inventory.Warehouse"), M("inventory.StorageBin"), M("inventory.Item")
             plant = Warehouse.objects.create(code="PLANT", name="Chakan plant")
             godown = Warehouse.objects.create(code="FG", name="Finished goods godown", requires_bins=True)
@@ -250,8 +263,12 @@ class Command(BaseCommand):
                                                       ("B-01", "Aisle B, bay 1"), ("B-02", "Aisle B, bay 2")], start=1)}
 
             def item(sku, name, uom, cost, price=None, hsn=""):
-                return Item.objects.create(sku=sku, name=name, uom=uom, standard_cost=D(cost),
+                made = Item.objects.create(sku=sku, name=name, uom=uom, standard_cost=D(cost),
                                            sale_price=D(price) if price else None, hsn_code=hsn)
+                # What a line typed on screen takes (O395): every good here bears 18%, as the demo's lines do.
+                made.sales_taxes.set(gst18)
+                made.purchase_taxes.set(gst18)
+                return made
 
             virgin = item("PP-RAFFIA", "PP raffia granule, homopolymer", kg, "112", hsn="39021000")
             filler = item("CACO3-MB", "Calcium carbonate filler masterbatch", kg, "38", hsn="38249900")
@@ -389,8 +406,10 @@ class Command(BaseCommand):
             anita = person("601", "Anita Deshmukh", "ACCT", "Accountant", d(2017, 10, 1), "anita",
                            ["Controller", "Bookkeeper", "GST Officer"])
             kiran = person("602", "Kiran Shetty", "ACCT", "HR and payroll", d(2021, 6, 1), "kiran", ["HR Admin", "Payroll Officer"])
+            # Who keeps the gate register and passes (L17, L18): the demo had no one, so nobody in it could (O405).
+            raju = person("203", "Raju Gaikwad", "PURCH", "Security guard", d(2022, 4, 1), "raju", ["Security Guard"])
             for employee, boss in ((imran, rohit), (priya, rohit), (mahesh, suresh), (lakshmi, suresh), (ganesh, suresh),
-                                   (sunita, ravi), (ravi, anita), (suresh, anita), (meena, suresh), (vikas, suresh),
+                                   (sunita, ravi), (raju, ravi), (ravi, anita), (suresh, anita), (meena, suresh), (vikas, suresh),
                                    (kiran, anita), (rohit, anita)):
                 employee.manager = boss
                 employee.save()
@@ -887,7 +906,7 @@ class Command(BaseCommand):
                     "ravi": ("38000", "11000"), "sunita": ("21000", "6000"), "suresh": ("48000", "14000"),
                     "302": ("18500", "5000"), "303": ("17800", "5000"), "304": ("17200", "5000"),
                     "meena": ("29000", "8500"), "vikas": ("26000", "7500"), "anita": ("52000", "15000"),
-                    "kiran": ("36000", "10000")}.items():
+                    "kiran": ("36000", "10000"), "raju": ("16000", "4500")}.items():
                 for component, amount in ((basic, basic_pay), (hra, rent_allowance), (pf, "12"), (pt, "200"), (epf, "12")):
                     Pay.objects.create(employee=people[key], component=component, amount=D(amount),
                                        effective_from=datetime.date(2026, 4, 1))

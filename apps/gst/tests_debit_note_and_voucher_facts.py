@@ -141,7 +141,7 @@ class VouchersInTheReturn(adv.AdvanceTestCase):
     def test_table_13_counts_a_receipt_voucher_and_a_refund_voucher_as_their_own_natures(self):
         order = self.job_work()
         deposit = self.advance(order, day=adv.OCT)
-        note = deposit.create_credit_note(amount=D("1180"))
+        note = deposit.create_credit_note(amount=D("1180"), on_date=adv.OCT + datetime.timedelta(days=10))
         result = gstr1(*OCTOBER)
         kinds = [(row["kind"], row.get("from"), row.get("to"), row.get("count")) for row in result["documents"]]
         names = " ".join(str(row) for row in result["documents"])
@@ -154,7 +154,7 @@ class VouchersInTheReturn(adv.AdvanceTestCase):
     def test_table_11_has_the_advance_and_takes_off_the_refund(self):
         order = self.job_work()
         deposit = self.advance(order, day=adv.OCT)
-        note = deposit.create_credit_note(amount=D("1180"))
+        note = deposit.create_credit_note(amount=D("1180"), on_date=adv.OCT + datetime.timedelta(days=10))
         result = gstr1(*OCTOBER)
         rows = result["advances_received"]
         taxable = sum((r["taxable"] for r in rows), D("0"))
@@ -170,7 +170,7 @@ class VouchersInTheReturn(adv.AdvanceTestCase):
         from .tests_tax_invoice import printed_text
 
         deposit = self.advance(self.job_work(), day=adv.OCT)
-        note = deposit.create_credit_note(amount=D("1180"))
+        note = deposit.create_credit_note(amount=D("1180"), on_date=adv.OCT + datetime.timedelta(days=10))
         text = " ".join(" ".join(printed_text(render_invoice_pdf, deposit)).split())
         text_note = " ".join(" ".join(printed_text(render_invoice_pdf, note)).split())
         needs = {

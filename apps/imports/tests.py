@@ -428,7 +428,9 @@ class GoLiveCheckTests(ImportTestCase):
         ready, said = self.check()
         self.assertFalse(ready)
         for expected in ("FAIL  Account: bank", "FAIL  Roles", "setup_roles",
-                         "WARN  GST", "Not ready"):
+                         "WARN  GST", "Not ready",
+                         # O403: neither existed on a fresh plant, and nothing said so.
+                         "FAIL  Stock adjustment reasons", "setup_stores", "WARN  Countries"):
             self.assertIn(expected, said)
 
     def test_a_configured_installation_is_ready_and_names_what_to_read(self):
@@ -452,6 +454,11 @@ class GoLiveCheckTests(ImportTestCase):
         clerk = User.objects.create_user("clerk")
         clerk.groups.add(Group.objects.get(name="Sales Rep"))
         User.objects.create_user("idle")
+        # A configured plant can book a count's difference (O403).
+        from apps.inventory.adjustments import AdjustmentReason
+
+        shrink = Account.objects.create(code="5300", name="Stock written off", account_type=AccountType.EXPENSE)
+        AdjustmentReason.objects.create(code="SHORT", name="Short on count", account=shrink, direction="decrease")
         ready, said = self.check()
         self.assertTrue(ready, said)
         self.assertIn("ok    Trial balance", said)

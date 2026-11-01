@@ -7,6 +7,8 @@ was never recorded and never reclaimed — the company simply paid it and
 buried it in the expense.
 """
 
+import itertools
+
 import datetime
 from decimal import Decimal
 
@@ -28,6 +30,9 @@ from .models import Bill, BillLine, PurchaseOrderLine
 from .tests_lifecycle import PurchasingLifecycleTestCase
 
 
+# A regular registrant's bill carries its invoice number (O396); one each, as the duplicate check asks.
+INVOICE_NUMBERS = itertools.count(1)
+
 class PurchaseTaxTestCase(PurchasingLifecycleTestCase):
     def setUp(self):
         super().setUp()
@@ -47,7 +52,7 @@ class PurchaseTaxTestCase(PurchasingLifecycleTestCase):
     def taxed_bill(self, quantity="10", price="5", taxes=None):
         bill = Bill.objects.create(
             vendor=self.vendor, bill_date=datetime.date(2026, 1, 10),
-            payable_account=self.payable,
+            payable_account=self.payable, reference=f"INV/{next(INVOICE_NUMBERS)}",
         )
         line = BillLine.objects.create(
             bill=bill, item=self.item, quantity=Decimal(quantity),

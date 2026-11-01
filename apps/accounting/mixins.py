@@ -458,12 +458,28 @@ class TaxedLineMixin(models.Model):
     def subtotal(self):
         return self.net_amount()
 
+    # "sales" or "purchase": which of an item's default taxes a line of this kind takes (O395).
+    TAX_SIDE = None
+
     def party_for_tax(self):
         """
         The party whose fiscal position governs this line — the customer on
         a sales document, the vendor on a purchase one. Set by subclasses.
         """
         return None
+
+    def default_taxes(self):
+        """
+        The taxes this line takes when it names none: its item's for its
+        side, active ones only. The party's fiscal position then maps them
+        as it maps any line's (effective_taxes). Nothing for a line with no
+        item, or a kind of line that has not said its side.
+        """
+        item = getattr(self, "item", None)
+        if item is None or self.TAX_SIDE not in ("sales", "purchase"):
+            return []
+        taxes = item.sales_taxes if self.TAX_SIDE == "sales" else item.purchase_taxes
+        return list(taxes.filter(is_active=True))
 
     def fixed_tax_amounts(self):
         """

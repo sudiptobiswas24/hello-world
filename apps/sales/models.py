@@ -1013,6 +1013,9 @@ class SalesOrder(PlacedWhereTheGoodsGo, Extensible, TaxedDocumentMixin, ChangesW
                 "what they send, or make it an ordinary sale."
             )
         refuse_credit_hold(self.customer, "no order of theirs is confirmed")
+        from apps.accounting.gst import refuse_untaxed_lines
+
+        refuse_untaxed_lines(self.lines.all(), self.customer, f"{self.number or 'This order'} is not confirmed")
         # The limit weighs every confirmed order of theirs: two confirmed at
         # once each found the other not there yet, and together went over.
         lock_rows(self.customer, refresh=False)
@@ -1374,6 +1377,7 @@ class SuppliedItem(AuditModel):
 
 
 class SalesOrderLine(TaxedLineMixin, AuditModel):
+    TAX_SIDE = "sales"  # which of an item's default taxes it takes (O395)
     order = models.ForeignKey(SalesOrder, related_name="lines", on_delete=models.CASCADE)
     item = models.ForeignKey(
         Item, null=True, blank=True, on_delete=models.PROTECT, related_name="sales_order_lines"
@@ -2893,6 +2897,12 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
         refuse_money_kept_as(self, "receivable_account", changed_only=False)
         # The address may have been edited since the draft was saved.
         self.check_place()
+        # A note takes back what was posted, at its taxes; an advance against goods bears no GST; an opening
+        # balance carries what the old books did (O395).
+        if not (self.is_credit_note() or self.is_down_payment or self.is_opening_balance):
+            from apps.accounting.gst import refuse_untaxed_lines
+
+            refuse_untaxed_lines(self.lines.all(), self.customer, f"{self.number or 'This invoice'} is not posted")
         # What the order has already been billed, and taken up front, is
         # read below and decided on; two invoices for one order posting
         # at once must not both see the same room. Every order a line
@@ -3071,7 +3081,9 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
         if self.is_credit_note():
             raise ValidationError("Cannot issue a credit note against a credit note.")
         if self.is_down_payment:
-            return self._credit_deposit(memo, quantities, amount)
+            # Dated as asked, as any credit note is: a refund made on 31 October and entered on 1 November
+            # went into November's return, the date dropped on this path alone.
+            return self._credit_deposit(memo, quantities, amount, on_date=on_date)
         if amount is not None:
             raise ValidationError("An invoice is credited by the quantities of its lines, not by an amount.")
 
@@ -3328,7 +3340,7 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
                 f"more would exceed the order total of {order.total_words(worth)}."
             )
 
-    def _credit_deposit(self, memo, quantities, amount=None):
+    def _credit_deposit(self, memo, quantities, amount=None, on_date=None):
         """
         Give back what is left of a down payment, or `amount` of it: the
         customer cut the order, and keeps the deposit for what remains.
@@ -3362,7 +3374,10 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
             amount = left
         net = self.advance_net_for(amount)
         line = self.lines.get()  # One, by _check_deposit_shape().
-        credit_note = self._credit_note()
+        # Never before the advance it gives back, nor on a day still to come: the forward path's rule.
+        on_date = correction_date(on_date, self.invoice_date, f"{self.number} is not given back on",
+                                  "it was received")
+        credit_note = self._credit_note(on_date=on_date)
         returned = InvoiceLine.objects.create(
             invoice=credit_note,
             credits_line=line,
@@ -3464,6 +3479,7 @@ INVOICE_FIGURES = (
 
 
 class InvoiceLine(PostedLineMixin, TaxedLineMixin, AuditModel):
+    TAX_SIDE = "sales"  # which of an item's default taxes it takes (O395)
     invoice = models.ForeignKey(Invoice, related_name="lines", on_delete=models.CASCADE)
     held_base = models.DecimalField(
         max_digits=18, decimal_places=2, null=True, blank=True, editable=False,
@@ -5997,6 +6013,7 @@ class Quotation(PlacedWhereTheGoodsGo, TaxedDocumentMixin, AuditModel):
 
 
 class QuotationLine(TaxedLineMixin, AuditModel):
+    TAX_SIDE = "sales"  # which of an item's default taxes it takes (O395)
     quotation = models.ForeignKey(Quotation, related_name="lines", on_delete=models.CASCADE)
     item = models.ForeignKey(
         Item, null=True, blank=True, on_delete=models.PROTECT, related_name="quotation_lines"
@@ -6379,6 +6396,7 @@ class RecurringInvoice(AuditModel):
 
 
 class RecurringInvoiceLine(TaxedLineMixin, AuditModel):
+    TAX_SIDE = "sales"  # which of an item's default taxes it takes (O395)
     schedule = models.ForeignKey(
         RecurringInvoice, related_name="lines", on_delete=models.CASCADE
     )

@@ -19,7 +19,7 @@ import { DataTable, type Column } from "./DataTable";
 type Row = Record<string, unknown> & { id: number };
 
 export type FieldKind =
-  | "text" | "textarea" | "decimal" | "money" | "integer" | "date" | "time" | "bool" | "choice" | "ref" | "pick";
+  | "text" | "textarea" | "decimal" | "money" | "integer" | "date" | "time" | "bool" | "choice" | "ref" | "refs" | "pick";
 
 /**
  * One box on a record. `ref` is a short master read whole (machines, work
@@ -166,14 +166,26 @@ export interface RecordScreenProps {
   smart?: (record: Row) => SmartDef[];
 }
 
+/**
+ * A record's own date, which starts at today as an order's does (O407): 83 of 144 New forms opened with every date
+ * blank, an adjustment's and a count's own among them. Not a window (valid from, to), a due date, or a "done on",
+ * where blank means "not yet".
+ */
+const OWN_DATE = new Set([
+  "date", "adjustment_date", "count_date", "transfer_date", "receipt_date", "delivery_date", "bill_date",
+  "invoice_date", "payment_date", "order_date", "request_date", "issue_date", "shift_date", "loss_date",
+  "received_on", "spent_on", "reported_on", "inspected_on", "worked_on", "visit_date", "claim_date",
+]);
+
 function blank(fields: FieldDef[]): Row {
   const row: Row = { id: 0 };
   for (const field of fields) {
     if (field.readOnly || field.existingOnly) continue;
     row[field.key] = field.initial !== undefined ? field.initial
       : field.kind === "bool" ? false
-      : field.kind === "date" && field.initial === undefined ? null
+      : field.kind === "date" && field.initial === undefined ? (OWN_DATE.has(field.key) ? today() : null)
       : field.kind === "ref" || field.kind === "pick" || field.kind === "decimal" || field.kind === "money" || field.kind === "integer" ? null
+      : field.kind === "refs" ? []
       : field.kind === "choice" ? field.choices?.[0]?.[0] ?? ""
       : "";
   }
@@ -194,6 +206,12 @@ export function shown(field: FieldDef, record: Row, refs: Row[] | undefined): Re
     case "ref": {
       const row = refs?.find((r) => r.id === value);
       return row && field.ref ? field.ref.label(row) : `#${String(value)}`;
+    }
+    case "refs": {
+      const ids = (value as number[]) ?? [];
+      if (!ids.length) return "—";
+      if (!refs) return "…";
+      return ids.map((one) => { const row = refs.find((r) => r.id === one); return row && field.ref ? field.ref.label(row) : `#${one}`; }).join(", ");
     }
     default: return String(value);
   }
@@ -235,6 +253,26 @@ export function Input({ field, value, set, id, refs, invalid }: {
           {(refs ?? []).map((row) => <option key={row.id} value={row.id}>{field.ref!.label(row)}</option>)}
         </select>
       );
+    case "refs": {
+      // Several of a short master, each a box to tick: an item's default taxes (O395).
+      const chosen = new Set((value as number[] | null) ?? []);
+      return (
+        <fieldset id={id} className="check-list" aria-label={field.label}>
+          {(refs ?? []).map((row) => (
+            <label key={row.id}>
+              <input type="checkbox" checked={chosen.has(row.id as number)}
+                onChange={(e) => {
+                  const next = new Set(chosen);
+                  if (e.target.checked) next.add(row.id as number); else next.delete(row.id as number);
+                  set([...next]);
+                }} />
+              {field.ref!.label(row)}
+            </label>
+          ))}
+          {refs && refs.length === 0 && <span className="muted">None to choose.</span>}
+        </fieldset>
+      );
+    }
     case "pick":
       return (
         <RecordPicker<Row> id={id} endpoint={field.pick!.endpoint} value={(value as number | null) ?? null}
@@ -252,7 +290,7 @@ export function Input({ field, value, set, id, refs, invalid }: {
  */
 export function useRefs(fields: FieldDef[]): Record<string, Row[] | undefined> {
   const { can } = useAccess();
-  const wanted = fields.filter((field) => field.kind === "ref" && field.ref);
+  const wanted = fields.filter((field) => (field.kind === "ref" || field.kind === "refs") && field.ref);
   const reads = useQueries({
     queries: wanted.map((field) => ({
       queryKey: ["reference", field.ref!.endpoint, field.ref!.query],
@@ -349,6 +387,18 @@ export function RecordScreen(props: RecordScreenProps) {
 
   const mayEdit = isNew ? Boolean(permissions.add && can(permissions.add))
     : Boolean(permissions.change && can(permissions.change)) && (!editable || editable(saved!));
+  // Someone who may read the list but not add to it was shown an empty record that could not be filled, and no
+  // word why (O408): a store keeper's "Vehicle in".
+  if (isNew && !mayEdit) {
+    return (
+      <div className="error-panel" role="alert">
+        <h2>Not allowed</h2>
+        <p>Your roles do not include making one of these. Whoever keeps them can, or an administrator can add the
+          role to your login.</p>
+        <p><Link to={back}>Back to the list</Link></p>
+      </div>
+    );
+  }
   const value = draft.value;
   // A picker reads its list; whoever may not read it sees the value, not a box.
   const open = (field: FieldDef) =>

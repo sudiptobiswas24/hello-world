@@ -476,11 +476,17 @@ tbody tr:last-child td { border-bottom: 0; }
 .lines form.close-short { display: flex; gap: 6px; align-items: center; }
 .lines form.close-short input { height: 28px; min-width: 180px; }
 .lines .closed-short small { color: var(--ink-3); }
-.cell-input { width: 100%; max-width: 120px; height: 30px; padding: 0 6px; border: 1px solid transparent; border-radius: 5px; background: transparent; text-align: right; font-family: var(--mono); font-size: 13px; }
+/* Drawn as a box, not as text: a delivery's quantity looked fixed, so nobody shipped part of an order (O397). */
+.cell-input { width: 100%; max-width: 120px; height: 30px; padding: 0 6px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); text-align: right; font-family: var(--mono); font-size: 13px; }
 .cell-input:hover { border-color: var(--line-strong); }
 .cell-input:focus { outline: none; border-color: var(--accent); background: var(--surface); box-shadow: 0 0 0 2px var(--accent-soft); }
-.tax-select { height: 30px; max-width: 140px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); }
-.tax-select:focus { height: 90px; position: relative; z-index: 2; }
+.tax-picker { position: relative; display: inline-block; }
+.tax-chosen { height: 30px; padding: 0 8px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); color: var(--ink); font: inherit; font-size: 13px; white-space: nowrap; cursor: pointer; }
+.tax-chosen.none { color: var(--warn); border-color: var(--warn); background: var(--warn-soft); }
+span.tax-chosen.none { display: inline-block; line-height: 28px; cursor: default; }
+.tax-list { position: absolute; z-index: 20; top: calc(100% + 4px); left: 0; min-width: 220px; margin: 0; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; background: var(--surface); border: 1px solid var(--line-strong); border-radius: 8px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12); }
+.tax-list label, .check-list label { display: flex; gap: 8px; align-items: center; white-space: nowrap; }
+.check-list { margin: 0; padding: 0; border: 0; display: flex; flex-wrap: wrap; gap: 6px 18px; }
 .empty-line { color: var(--ink-3); text-align: center; height: 48px; }
 .add-line { display: grid; grid-template-columns: 1fr 120px auto; gap: 8px; padding: 10px 0 0; }
 .add-line .qty { height: 36px; border: 1px solid var(--line-strong); border-radius: 7px; padding: 0 10px; text-align: right; }

@@ -10,6 +10,8 @@ charges no GST, and the company owes it and claims it back.
   from an unregistered agency the tax is owed all the same
 """
 
+import itertools
+
 from decimal import Decimal as D
 
 from django.core.exceptions import ValidationError
@@ -23,6 +25,9 @@ from .tests import DAY, GstReturnTestCase, gstin
 
 SEPTEMBER = (DAY.replace(day=1), DAY.replace(day=30))
 
+
+# A regular registrant's bill carries its invoice number (O396); one each, as the duplicate check asks.
+INVOICE_NUMBERS = itertools.count(1)
 
 class ReverseChargeTests(GstReturnTestCase):
     def setUp(self):
@@ -40,7 +45,8 @@ class ReverseChargeTests(GstReturnTestCase):
         self.agency = self.party("GTA", role=PartyRole.VENDOR, gstin=gstin("29AABCV4444D1Z"))
 
     def freight_bill(self, vendor=None, amount="10000"):
-        bill = Bill.objects.create(vendor=vendor or self.agency, bill_date=DAY, payable_account=self.ap)
+        bill = Bill.objects.create(vendor=vendor or self.agency, bill_date=DAY, payable_account=self.ap,
+                                   reference=f"INV/{next(INVOICE_NUMBERS)}")
         line = BillLine.objects.create(bill=bill, charge=self.freight, quantity=D("1"), unit_price=D(amount),
                                        expense_account=self.expense)
         line.taxes.set([self.gta_igst])
