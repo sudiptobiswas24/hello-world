@@ -129,7 +129,7 @@ class Forecast(AuditModel):
                 item_id=self.item_id, order__status=OrderStatus.CONFIRMED,
                 charge__isnull=True,
             )
-            .filter(Q(warehouse=self.warehouse) | Q(warehouse__isnull=True))
+            .filter(Warehouse.named_or_defaulted(self.warehouse))
             .select_related("order", "item", "uom")
         )
         return sum(

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { useAct, useReference } from "../api/hooks";
 import { TaxPicker } from "./TaxPicker";
@@ -6,6 +6,8 @@ import { aboveZero } from "../lib/decimal";
 import { money, quantity } from "../lib/format";
 import { CommitDecimal, DecimalInput } from "./fields";
 import { RecordPicker } from "./RecordPicker";
+import { defaultReceiving, usableWarehouse } from "./WarehouseChoice";
+import { useAccess } from "../auth/me";
 
 export interface TradeLine {
   id: number;
@@ -56,7 +58,9 @@ interface Centre { id: number; code: string; name: string }
  * A new line needs only an item and a quantity: the server resolves the
  * price from the price list, as it would for a line typed in elsewhere.
  */
-export function Lines({ lines, endpoint, parent, parentId, editable, extra = [], withUom, side = "sales", closable, centres }: {
+interface Place { id: number; code: string; name: string; [field: string]: unknown }
+
+export function Lines({ lines, endpoint, parent, parentId, editable, extra = [], withUom, side = "sales", closable, centres, receiving }: {
   lines: TradeLine[];
   endpoint: string; // /api/sales/sales-order-lines/
   parent: string; // "order", "quotation", "invoice"
@@ -70,6 +74,11 @@ export function Lines({ lines, endpoint, parent, parentId, editable, extra = [],
   closable?: boolean;
   /** Purchase lines name the cost centre their expense is for (accounting/analytic.py). */
   centres?: boolean;
+  /**
+   * A purchase line is asked where it is received, defaulted to the default receiving warehouse: one naming none
+   * is planned there only, and a planner in another warehouse was told to cancel what the plant needed (O415).
+   */
+  receiving?: boolean;
 }) {
   const act = useAct();
   const taxes = useReference<Tax>("/api/accounting/taxes/");
@@ -83,6 +92,14 @@ export function Lines({ lines, endpoint, parent, parentId, editable, extra = [],
   // agreed price. Typed, it is the price, which is how a purchase with no
   // agreed price is bought at all.
   const [price, setPrice] = useState("");
+  const { can } = useAccess();
+  const places = useReference<Place>("/api/inventory/warehouses/", undefined,
+    Boolean(receiving && editable && can("inventory.view_warehouse")));
+  const usable = (places.data ?? []).filter(usableWarehouse);
+  const [place, setPlace] = useState<number | null>(null);
+  useEffect(() => {
+    if (place === null && places.data) setPlace(defaultReceiving(places.data));
+  }, [places.data, place]);
 
   const patch = (line: TradeLine, change: Partial<TradeLine>) => {
     const changed = Object.entries(change).some(([key, value]) => JSON.stringify(line[key]) !== JSON.stringify(value));
@@ -94,6 +111,7 @@ export function Lines({ lines, endpoint, parent, parentId, editable, extra = [],
     const body: Record<string, unknown> = { [parent]: parentId, item: item.id, quantity: qty };
     if (withUom) body.uom = item.uom;
     if (price) body.unit_price = price;
+    if (receiving && place !== null) body.warehouse = place;
     const outcome = await act.run("POST", endpoint, body, { done: `${item.name} added` });
     if (outcome.ok) {
       setItem(null);
@@ -203,6 +221,12 @@ export function Lines({ lines, endpoint, parent, parentId, editable, extra = [],
           <DecimalInput value={qty} onChange={setQty} aria-label="Quantity to add" className="qty" />
           <DecimalInput value={price} onChange={setPrice} places={2} aria-label="Unit price to add" className="qty"
             placeholder={side === "purchase" ? "Agreed price" : "List price"} />
+          {receiving && places.data && (
+            <select aria-label="Received at" value={place ?? ""} onChange={(e) => setPlace(Number(e.target.value) || null)}>
+              <option value="">Received at…</option>
+              {usable.map((w) => <option key={w.id} value={w.id}>{w.code} · {w.name}</option>)}
+            </select>
+          )}
           <button type="submit" className="btn" disabled={!item || act.pending}>Add line</button>
         </form>
       )}

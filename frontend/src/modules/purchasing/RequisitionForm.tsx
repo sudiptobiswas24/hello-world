@@ -1,5 +1,5 @@
 import { RecordScreen } from "../../views/RecordScreen";
-import { ACCOUNT, ITEM, REQUESTER, UOM, VENDOR, WAREHOUSE, status } from "./refs";
+import { ACCOUNT, ITEM, REQUESTER, UOM, VENDOR, WAREHOUSE, defaultReceiving, status } from "./refs";
 
 type Row = Record<string, unknown> & { id: number };
 const is = (...states: string[]) => (row: Row) => states.includes(String(row.status));
@@ -65,7 +65,8 @@ export default function RequisitionForm() {
             { key: "quantity", label: "Quantity", kind: "decimal" },
             { key: "estimated_price", label: "About, each", kind: "money", hint: "An estimate, not an agreed price" },
             { key: "expense_account", label: "Budget account", kind: "pick", pick: ACCOUNT },
-            { key: "warehouse", label: "Wanted at", kind: "ref", ref: WAREHOUSE },
+            { key: "warehouse", label: "Wanted at", kind: "ref", ref: WAREHOUSE, initialFrom: defaultReceiving,
+              hint: "Planned for this warehouse only" },
             { key: "suggested_vendor", label: "Vendor in mind", kind: "pick", pick: VENDOR },
           ],
           body: (values, record) => ({ ...values, requisition: record.id }) },

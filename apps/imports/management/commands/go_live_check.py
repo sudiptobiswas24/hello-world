@@ -70,6 +70,13 @@ def checks():
 
     if not Warehouse.objects.exists():
         add(FAIL, "Warehouses", "None. Make at least one before anything is received.")
+    active = Warehouse.objects.filter(is_active=True)
+    if active.count() >= 2 and Warehouse.default_receiving() is None:
+        # O415: a purchase or requisition line naming no warehouse belongs to the default receiving warehouse
+        # only; with none, it is planned nowhere, and before that it was counted in every one.
+        add(FAIL, "Default receiving warehouse",
+            f"{active.count()} active warehouses and none receives by default, so a purchase or requisition line "
+            "naming no warehouse is planned in none of them: mark one under Stores > Warehouses.")
 
     # O403: a fresh plant had neither, and nothing said so until a count could not be booked.
     from apps.core.models import Country

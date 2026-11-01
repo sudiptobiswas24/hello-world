@@ -35,9 +35,13 @@ owned and valued and no run may draw on them.
 
 **Inbound to where it is going.** A purchase line and a requisition
 line name the warehouse they are for, and count only there. One that
-names none (entered before they could) still counts as inbound to
-whichever warehouse is being planned, which is right on one site. A
-drop-ship order never comes here and never counts.
+names none (typed before the screens asked) belongs to the default
+receiving warehouse (Warehouse.default_receiving) and counts there only.
+Counted in whichever warehouse was being planned, it was supply to the
+finished-goods godown too, and planning FG advised cancelling the raw
+material requisitions and the polymer order (O415). A sales line naming
+none is demand there the same way. A drop-ship order never comes here
+and never counts.
 
 **Stock that expires before it is used is not cover.** Batches are
 drawn first-expired-first-out; whatever a batch would still hold on
@@ -54,6 +58,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from apps.core.models import to_date
+from apps.inventory.models import Warehouse
 from apps.inventory.tracking import TrackingMode, free_lots_at
 from apps.manufacturing.bom import default_bom_for, drawn
 from apps.manufacturing.orders import WorkOrder, WorkOrderStatus
@@ -222,7 +227,7 @@ def sales_demand(item, warehouse, on_date):
         # Q, not warehouse__in=[warehouse, None]: Django drops None from an
         # IN list, and a confirmed line with no warehouse named was never
         # planned at all.
-        .filter(Q(warehouse=warehouse) | Q(warehouse__isnull=True))
+        .filter(Warehouse.named_or_defaulted(warehouse))
         .select_related("order", "item", "uom")
     )
     lines = list(lines)
@@ -272,7 +277,7 @@ def job_work_left_out(item, warehouse):
     lines = SalesOrderLine.objects.filter(
         item=item, order__status=OrderStatus.CONFIRMED, order__is_job_work=True,
         charge__isnull=True,
-    ).filter(Q(warehouse=warehouse) | Q(warehouse__isnull=True)).exclude(
+    ).filter(Warehouse.named_or_defaulted(warehouse)).exclude(
         work_orders__status__in=[WorkOrderStatus.DRAFT, WorkOrderStatus.RELEASED])
     return [line for line in lines if line.quantity_open_in_stock_units() > 0]
 
@@ -393,7 +398,7 @@ def purchase_supply(item, warehouse, on_date):
             # comes here, and counting it hid the shortage it leaves.
             order__drop_ship_for__isnull=True,
         )
-        .filter(Q(warehouse=warehouse) | Q(warehouse__isnull=True))
+        .filter(Warehouse.named_or_defaulted(warehouse))
         .select_related("order", "item", "uom")
     )
     for line in lines:
@@ -492,7 +497,7 @@ def requisition_supply(item, warehouse, on_date):
     rows = []
     lines = (
         PurchaseRequisitionLine.objects.filter(item=item)
-        .filter(Q(warehouse=warehouse) | Q(warehouse__isnull=True))
+        .filter(Warehouse.named_or_defaulted(warehouse))
         .exclude(requisition__status__in=dead)
         .select_related("requisition", "item", "uom")
     )
@@ -957,7 +962,7 @@ def _candidates(warehouse, planned_on, horizon_end):
     items = {}
     for line in SalesOrderLine.objects.filter(
         item__isnull=False, order__status=OrderStatus.CONFIRMED, charge__isnull=True
-    ).filter(Q(warehouse=warehouse) | Q(warehouse__isnull=True)).select_related("item", "order"):
+    ).filter(Warehouse.named_or_defaulted(warehouse)).select_related("item", "order"):
         if line.promised_date() <= horizon_end:
             items[line.item_id] = line.item
     for component in WorkOrderComponent.objects.filter(

@@ -39,6 +39,9 @@ class InboundTestCase(PlanningTestCase):
     def setUp(self):
         super().setUp()
         self.godown = Warehouse.objects.create(code="G2", name="Second godown")
+        # O415: a line naming no warehouse belongs to the default receiving warehouse, and only there.
+        self.plant.receives_by_default = True
+        self.plant.save()
 
     def purchase(self, quantity, warehouse=None, **order_extra):
         order = PurchaseOrder.objects.create(vendor=self.vendor, order_date=TODAY,
@@ -56,11 +59,13 @@ class InboundTestCase(PlanningTestCase):
 
 class GoingWhereItIsGoingTests(InboundTestCase):
     def test_counted_only_at_the_warehouse_it_is_for(self):
+        # O415: the 100 naming no warehouse is the default receiving warehouse's, the plant's, and not the
+        # godown's as well. This read 300 at the godown before, encoding the double count.
         self.purchase("300", self.plant)
         self.purchase("200", self.godown)
         self.purchase("100")
         self.assertEqual((self.inbound(), self.inbound(self.godown)),
-                         (Decimal("400"), Decimal("300")))
+                         (Decimal("400"), Decimal("200")))
 
     def test_a_drop_ship_never_comes_here(self):
         sale = self.sell(self.virgin, "500", self.day(20)).order
@@ -76,9 +81,9 @@ class GoingWhereItIsGoingTests(InboundTestCase):
             PurchaseRequisitionLine.objects.create(requisition=requisition, item=self.virgin,
                                                    uom=self.kg, quantity=Decimal(quantity),
                                                    warehouse=warehouse)
-        total = sum((row.quantity for row in requisition_supply(self.virgin, self.plant, TODAY)),
-                    Decimal("0"))
-        self.assertEqual(total, Decimal("80"))
+        total = lambda warehouse: sum((row.quantity for row in requisition_supply(self.virgin, warehouse, TODAY)),
+                                      Decimal("0"))
+        self.assertEqual((total(self.plant), total(self.godown)), (Decimal("80"), Decimal("20")))
 
 
 class CarriedThroughTests(InboundTestCase):
