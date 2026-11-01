@@ -44,6 +44,8 @@ export interface ListViewProps<T> {
   create?: { href: string; permission: string };
   /** A run over many records (send the reminders now due), asked first in words. */
   actions?: ListAction[];
+  /** Under "No … yet.": how the first rows come, where it is not by New on this screen. */
+  emptyHint?: ReactNode;
 }
 
 export interface ListAction {
@@ -176,7 +178,7 @@ export function cell<T>(column: Column<T>, row: T): ReactNode {
  * ahead so paging forward is immediate.
  */
 export function ListView<T>(props: ListViewProps<T>) {
-  const { title, endpoint, columns, facets = [], rowKey, rowHref, searchHint, fixed, noun, create, actions = [] } = props;
+  const { title, endpoint, columns, facets = [], rowKey, rowHref, searchHint, fixed, noun, create, actions = [], emptyHint } = props;
   const { can } = useAccess();
   const act = useAct<unknown>();
   const [params, setParams] = useSearchParams();
@@ -442,7 +444,10 @@ export function ListView<T>(props: ListViewProps<T>) {
                   <button type="button" onClick={() => setParams(new URLSearchParams())}>Show all {noun[1]}</button>
                 </>
               ) : (
-                <p>No {noun[1]} yet.</p>
+                <>
+                  <p>No {noun[1]} yet.</p>
+                  {emptyHint && <p className="muted">{emptyHint}</p>}
+                </>
               )}
             </div>
           )}

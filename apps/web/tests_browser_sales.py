@@ -295,7 +295,7 @@ class SalesInTheBrowserTests(BrowserTestCase):
         expect(related.get_by_role("link", name=re.compile(r"^2\s*Orders"))).to_be_visible()
         expect(related.get_by_role("link", name=re.compile(r"^1\s*To ship"))).to_be_visible()
         # Deliveries are the store's: a count of what the AR Manager may not read is not offered.
-        expect(related.get_by_role("link", name=re.compile(r"Deliveries$"))).to_have_count(0)
+        expect(related.locator("a").filter(has_text=re.compile(r"Deliveries$"))).to_have_count(0)
         related.get_by_role("link", name=re.compile(r"Orders$")).first.click()
         page.wait_for_url(re.compile(rf"/sales/orders\?customer={self.customer.pk}$"))
         expect(page.locator("table tbody tr")).to_have_count(2)

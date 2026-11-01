@@ -37,7 +37,18 @@ const routes: RouteObject[] = [
               return [
                 { path: `${module.key}/${screen.path}`, lazy: async () => ({ Component: (await screen.load()).default }) },
                 ...(detail
-                  ? [{ path: `${module.key}/${screen.path}/:id`, lazy: async () => ({ Component: (await detail()).default }) }]
+                  ? [{
+                    path: `${module.key}/${screen.path}/:id`,
+                    // A record's number, or "new" where the screen makes one. Anything else hung on
+                    // "Opening..." with nothing asked: /production/work-orders/new, where runs come
+                    // only from the plan, read "new" as a record and never fetched it.
+                    loader: ({ params }: { params: { id?: string } }) => {
+                      const id = params.id ?? "";
+                      if (!/^\d+$/.test(id) && !(id === "new" && screen.create)) throw new Response("", { status: 404 });
+                      return null;
+                    },
+                    lazy: async () => ({ Component: (await detail()).default }),
+                  }]
                   : []),
                 ...(edit
                   ? [{ path: `${module.key}/${screen.path}/:id/edit`, lazy: async () => ({ Component: (await edit()).default }) }]

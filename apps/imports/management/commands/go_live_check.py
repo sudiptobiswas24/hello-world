@@ -114,13 +114,25 @@ def _statutory(add):
 
     from apps.hr.statutory_check import statutory_gaps
 
+    # What happens meanwhile, said as it is. "Nothing under it can post" was said of every engine, and a pay
+    # run posted with no minimum wage loaded: the minimum wage is read by the bonus alone, no wage is checked
+    # against it yet (gap H2, L33), and PF and overtime work at the code's own figures until a row exists.
+    meanwhile = {
+        "Minimum wage": "until then the bonus cannot be worked out, and no wage is checked against the "
+                        "minimum (that check is not built yet)",
+        "PF": "with none loaded a pay run works at the code's own wage ceilings, which may not be the law; "
+              "loaded and not confirmed, it is refused",
+        "Overtime": "with none loaded overtime is paid at the code's own multiple, which may not be the law; "
+                    "loaded and not confirmed, it is refused",
+    }
     for engine, used, missing in statutory_gaps(timezone.localdate()):
         if not used:
             continue
         if missing:
             add(FAIL, f"Statutory: {engine}",
                 f"No confirmed figure covers today for {', '.join(missing)}. Load them (python manage.py "
-                "setup_statutory) and have the Controller confirm each, or nothing under it can post.")
+                "setup_statutory) and have the Controller confirm each; "
+                + meanwhile.get(engine, "until then what reads it is refused") + ".")
         else:
             add(OK, f"Statutory: {engine}", "confirmed figures cover today")
 

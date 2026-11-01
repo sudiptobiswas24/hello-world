@@ -142,7 +142,7 @@ export default function PayRunForm() {
               <table>
                 <thead><tr><th scope="col">Person</th><th scope="col" className="k-money">Gross</th><th scope="col" className="k-money">Deductions</th><th scope="col" className="k-money">Net</th><th scope="col" className="k-money">Employer cost</th><th scope="col">Paid</th></tr></thead>
                 <tbody>
-                  {(slips.data?.rows ?? []).map((slip) => (
+                  {slips.isLoading ? <tr className="skeleton"><td colSpan={6}><span /></td></tr> : (slips.data?.rows ?? []).map((slip) => (
                     <tr key={slip.id}>
                       <td><strong>{slip.employee}</strong> {slip.name}</td>
                       <td className="k-money">{money(slip.gross)}</td>

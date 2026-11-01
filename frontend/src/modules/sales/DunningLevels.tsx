@@ -17,9 +17,9 @@ export default function DunningLevels() {
       endpoint="/api/sales/dunning-levels/"
       columns={columns}
       rowKey={(row) => row.id}
-      rowHref={(row) => `/sales/dunning-levels/${row.id}`}
+      rowHref={(row) => `/sales/reminder-levels/${row.id}`}
       searchHint="Name"
-      create={{ href: "/sales/dunning-levels/new", permission: "sales.add_dunninglevel" }}
+      create={{ href: "/sales/reminder-levels/new", permission: "sales.add_dunninglevel" }}
     />
   );
 }

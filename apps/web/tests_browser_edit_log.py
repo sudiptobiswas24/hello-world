@@ -30,4 +30,4 @@ class EditLogInTheBrowserTests(BrowserTestCase):
     def test_a_rep_is_not_offered_it(self):
         call_command("setup_roles", verbosity=0)
         page = self.sign_in(self.person("Sales Rep"), "/app/settings")
-        expect(page.get_by_role("link", name="Edit log")).to_have_count(0)
+        expect(self.links(page, "Edit log")).to_have_count(0)

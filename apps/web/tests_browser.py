@@ -11,6 +11,7 @@ import contextlib
 import datetime
 import os
 import pickle
+import re
 import sqlite3
 import threading
 import time
@@ -313,6 +314,16 @@ class BrowserMixin:
             expect(page.get_by_role("navigation", name="Modules")).to_be_visible()
         return page
 
+    def links(self, page, name):
+        """Every link named exactly `name`, shown or folded into a closed menu.
+
+        A module's screens sit in menus (O392), and Playwright's role lookup
+        skips what is hidden: get_by_role("link", ...).to_have_count(0) passes
+        for a screen offered under a closed menu, so an absence asserted that
+        way proves nothing. apps/web/tests.py refuses the form; ask this.
+        """
+        return page.locator("a").filter(has_text=re.compile(rf"^\s*{re.escape(name)}\s*$"))
+
     def rows(self):
         return self.page.locator("tbody tr:not(.skeleton)")
 
@@ -376,6 +387,56 @@ class OfficeApplicationTests(BrowserTestCase):
         expect(page.get_by_role("heading", name="Customers")).to_be_visible()
         expect(self.rows()).to_have_count(2)
 
+    def test_every_screen_of_a_module_is_reachable_from_its_bar(self):
+        """Sales offers more screens than a 1366-pixel bar holds. The bar
+        scrolled sideways without a sign, so Customers and Receivables by age
+        sat past its edge, a label cut in half (O392). They are in menus by
+        group now, and what still does not fit is under More."""
+        page = self.sign_in(self.person("AR Manager"), "/app/sales/invoices")
+        bar = page.get_by_role("navigation", name="Sales screens")
+        clipped = page.evaluate("""() => [...document.querySelectorAll('nav.tabs > a, nav.tabs > .tabs-more')]
+            .filter((tab) => tab.getBoundingClientRect().right > tab.closest('nav').getBoundingClientRect().right + 1).length""")
+        self.assertEqual(clipped, 0)
+        # The screen shown is under its group, and the group says so.
+        invoicing = bar.get_by_role("button", name="Invoicing")
+        expect(invoicing).to_have_class("active")
+        # Every screen is a link in the navigation, shown or folded.
+        self.assertGreater(bar.locator("a").count(), bar.locator(":scope > a").count())
+        bar.get_by_role("button", name="Reporting").click()
+        aging = bar.get_by_role("menuitem", name="Receivables by age")
+        expect(aging).to_be_visible()
+        aging.click()
+        page.wait_for_url("**/sales/aging")
+        expect(bar.get_by_role("button", name="Reporting")).to_have_class("active")
+        expect(page.locator(".tabs-menu:visible")).to_have_count(0)
+        self.assertEqual(self.problems, [])
+
+    def test_an_address_naming_no_record_says_so(self):
+        """Deliveries are made from an order, never New: /sales/deliveries/new
+        read "new" as a record, asked nothing and showed "Opening..." for
+        good, as /production/work-orders/new did for a planner (O404)."""
+        page = self.sign_in(self.person("Warehouse Staff"), "/app/sales/deliveries/new")
+        expect(page.get_by_role("heading", name="No such screen")).to_be_visible()
+        page.goto(f"{self.live_server_url}/app/sales/deliveries/twelve")
+        expect(page.get_by_role("heading", name="No such screen")).to_be_visible()
+        self.problems.clear()  # the two 404s asked for above
+
+    def test_a_phone_keeps_the_modules_on_screen(self):
+        """At phone width the module rail becomes a bar along the bottom. A
+        long list grew the page past the screen and squeezed the bar to an
+        empty 8-pixel strip below it: no module could be reached but by Go to."""
+        page = self.page
+        # Short enough that the list runs past the screen, which is what squeezed the bar.
+        page.set_viewport_size({"width": 390, "height": 420})
+        self.sign_in(self.person("AR Manager"), "/app/sales/customers")
+        expect(self.rows().first).to_be_visible()
+        rail = page.get_by_role("navigation", name="Modules")
+        box = rail.bounding_box()
+        self.assertGreaterEqual(box["height"], 40)
+        self.assertLessEqual(box["y"] + box["height"], 420 + 1)
+        rail.get_by_role("link", name="Home").click()
+        expect(page.get_by_role("heading", name="Good", exact=False)).to_be_visible()
+
     def test_only_what_the_role_opens_is_offered(self):
         """The store dispatches against orders, so it reads orders and
         customers; what was billed is not its business."""
@@ -383,7 +444,7 @@ class OfficeApplicationTests(BrowserTestCase):
         expect(page.get_by_role("link", name="Orders", exact=True)).to_be_visible()
         expect(page.get_by_role("link", name="Deliveries", exact=True)).to_be_visible()
         expect(page.get_by_role("link", name="Customers")).to_be_visible()
-        expect(page.get_by_role("link", name="Invoices")).to_have_count(0)
+        expect(self.links(page, "Invoices")).to_have_count(0)
 
         # Typed into the address bar anyway: the server refuses it.
         page.goto(f"{self.live_server_url}/app/sales/invoices")

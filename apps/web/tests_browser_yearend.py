@@ -112,9 +112,9 @@ class YearEndInTheBrowserTests(BrowserTestCase):
         self.usd_invoice()
         bookkeeper = self.person("Bookkeeper")
         page = self.sign_in(bookkeeper, "/app/accounts/trial-balance")
-        expect(page.get_by_role("link", name="Trial balance").first).to_be_visible()
-        expect(page.get_by_role("link", name="Restate foreign balances")).to_have_count(0)
-        expect(page.get_by_role("link", name="Tax depreciation by block")).to_have_count(0)
+        expect(self.links(page, "Trial balance").first).to_be_attached()
+        expect(self.links(page, "Restate foreign balances")).to_have_count(0)
+        expect(self.links(page, "Tax depreciation by block")).to_have_count(0)
         client = APIClient()
         client.force_authenticate(bookkeeper)
         self.assertEqual(client.post("/api/accounting/restatements/restate/", {"as_of": "2026-03-31"},

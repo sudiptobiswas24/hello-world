@@ -102,7 +102,7 @@ export default function WorkOrderForm() {
 
       <Sheet>
         <div className="field-grid">
-          <Field label="Makes">{(fid) => <output id={fid}><strong>{order.item_sku}</strong> {order.item_name}</output>}</Field>
+          <Field label="Makes">{(fid) => <output id={fid}><span><strong>{order.item_sku}</strong> {order.item_name}</span></output>}</Field>
           <Field label="Quantity">{(fid) => <output id={fid}>{quantity(order.quantity_ordered)} ordered · {quantity(order.quantity_produced)} made</output>}</Field>
           <Field label="Where">{(fid) => <output id={fid}>{order.work_centre_code || "—"}</output>}</Field>
           <Field label="When">{(fid) => <output id={fid}>{date(order.scheduled_start)} – {date(order.scheduled_end)}</output>}</Field>

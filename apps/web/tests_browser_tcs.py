@@ -77,8 +77,8 @@ class TcsInTheBrowserTests(BrowserMixin, TcsTestCase, StaticLiveServerTestCase):
         rep = self.login_for("Sales Rep")
         page = self.sign_in(rep, "/app/")
         expect(page.get_by_role("link", name="Customers")).to_be_visible()
-        expect(page.get_by_role("link", name="TCS collected")).to_have_count(0)
-        expect(page.get_by_role("link", name="TCS challans")).to_have_count(0)
+        expect(self.links(page, "TCS collected")).to_have_count(0)
+        expect(self.links(page, "TCS challans")).to_have_count(0)
         client = Client()
         client.force_login(rep)
         self.assertEqual([client.get(url).status_code for url in (

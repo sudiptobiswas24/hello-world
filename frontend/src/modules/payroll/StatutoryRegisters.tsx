@@ -46,7 +46,7 @@ export default function StatutoryRegisters() {
               <th scope="col">Schedule</th>
             </tr></thead>
             <tbody>
-              {(report.data?.rows ?? []).map((row) => (
+              {report.isLoading ? <tr className="skeleton"><td colSpan={9}><span /></td></tr> : (report.data?.rows ?? []).map((row) => (
                 <tr key={`${row.run}-${row.employee}`}>
                   <td>{row.run}</td>
                   <td><strong>{row.employee}</strong> {row.name}</td>

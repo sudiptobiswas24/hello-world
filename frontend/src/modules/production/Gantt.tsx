@@ -11,23 +11,32 @@ interface Slot {
 
 const ROW = 34;
 const LABEL = 160;
-const WIDTH = 900;
+const WIDTH = 1000;
+const RIGHT = 130; // room for the last time on the axis and a label beside a bar that ends late
 const HOUR = 3_600_000;
+const ON_TIME = "#2a6fb0";
+const LATE = "#c0392b";
 
 /**
  * The machine schedule as bars on one time line: each machine a row,
  * each step a bar from its start to its finish, what finishes after it
  * is due in red. The same schedule the table shows, drawn.
+ *
+ * Said on the page (O393): what the two colours mean, how many held steps
+ * are not drawn (they were left out without a word), and a bar too narrow
+ * for its run's number carries it beside it rather than nowhere.
  */
 export default function Gantt() {
   const board = useGet<Record<string, Slot[]>>("/api/manufacturing/dispatch/");
   if (board.isError) return <ErrorPanel error={board.error} retry={() => void board.refetch()} />;
   const machines = Object.entries(board.data ?? {});
-  const slots = machines.flatMap(([, rows]) => rows).filter((slot) => !slot.held);
+  const every = machines.flatMap(([, rows]) => rows);
+  const slots = every.filter((slot) => !slot.held);
+  const held = every.length - slots.length;
   const times = slots.flatMap((slot) => [Date.parse(slot.start), Date.parse(slot.finish)]).filter((t) => !Number.isNaN(t));
   const from = times.length ? Math.min(...times) : Date.now();
   const to = times.length ? Math.max(from + HOUR, ...times) : from + 24 * HOUR;
-  const scale = (WIDTH - LABEL) / (to - from);
+  const scale = (WIDTH - LABEL - RIGHT) / (to - from);
   const x = (t: number) => LABEL + (t - from) * scale;
   const ticks: number[] = [];
   const step = (to - from) > 3 * 24 * HOUR ? 24 * HOUR : (to - from) > 12 * HOUR ? 6 * HOUR : HOUR;
@@ -39,6 +48,13 @@ export default function Gantt() {
         <h1>Machine Gantt</h1>
         <Link className="btn" to="/production/schedule">As a table</Link>
       </header>
+      {machines.length > 0 && (
+        <p className="legend">
+          <span><i style={{ background: ON_TIME }} /> Finishes by its due date</span>
+          <span><i style={{ background: LATE }} /> Finishes after it is due</span>
+          {held > 0 && <span className="muted">{held} held {held === 1 ? "step is" : "steps are"} not drawn: see the table</span>}
+        </p>
+      )}
       {board.isPending && <div className="loading">Scheduling…</div>}
       {board.data && machines.length === 0 && <div className="empty"><p>Nothing released to schedule.</p></div>}
       {machines.length > 0 && (
@@ -63,8 +79,10 @@ export default function Gantt() {
                     return (
                       <g key={`${slot.work_order}-${slot.sequence}`}>
                         <title>{`${slot.run} · ${slot.item} · ${slot.operation}: ${dateTime(slot.start)} to ${dateTime(slot.finish)}${slot.due ? `, due ${slot.due}` : ""}${slot.late ? " (late)" : ""}`}</title>
-                        <rect x={left} y={y + 4} width={width} height={ROW - 12} rx={3} fill={slot.late ? "#c0392b" : "#2a6fb0"} opacity={0.85} />
-                        {width > 60 && <text x={left + 4} y={y + ROW / 2} dominantBaseline="middle" fill="#fff">{slot.run}</text>}
+                        <rect x={left} y={y + 4} width={width} height={ROW - 12} rx={3} fill={slot.late ? LATE : ON_TIME} opacity={0.85} />
+                        {width > 110
+                          ? <text x={left + 4} y={y + ROW / 2} dominantBaseline="middle" fill="#fff">{slot.run}</text>
+                          : <text x={left + width + 4} y={y + ROW / 2} dominantBaseline="middle" fill="#333">{slot.run}</text>}
                       </g>
                     );
                   })}
