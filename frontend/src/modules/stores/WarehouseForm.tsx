@@ -28,6 +28,7 @@ export default function WarehouseForm() {
         { key: "quality_warehouse", label: "Quality warehouse", kind: "ref", ref: WAREHOUSE, hint: "Where goods wait to be looked at" },
         { key: "allow_negative_stock", label: "Allow negative stock", kind: "bool", initial: false, hint: "Permit shipping more than is on hand (backorders, in-transit stock)" },
         { key: "is_active", label: "Active", kind: "bool", initial: true },
+        { key: "receives_by_default", label: "Receives by default", kind: "bool", initial: false, hint: "Where a purchase or requisition line naming no warehouse is received and planned; one warehouse at most" },
         { key: "held_for", label: "Held for", kind: "pick", pick: PARTY, hint: "Set when the stock here is a customer's, sent to be worked on" },
       ]}
     />

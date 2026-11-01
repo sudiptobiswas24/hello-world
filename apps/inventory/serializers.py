@@ -37,8 +37,13 @@ class WarehouseSerializer(serializers.ModelSerializer):
             "is_quarantine", "is_transit", "requires_bins",
             "receipt_route", "input_warehouse", "quality_warehouse",
             "allow_negative_stock", "is_active",
-            "held_for",
+            "held_for", "receives_by_default",
         ]
+        # The one-default constraint is said by Warehouse.save(), naming the warehouse that has it; DRF's own
+        # check of it said "warehouse with this receives by default already exists" (O415). The database
+        # constraint still holds two saves at once to one.
+        validators = []
+        extra_kwargs = {"receives_by_default": {"validators": []}}
 
     def to_representation(self, warehouse):
         data = super().to_representation(warehouse)

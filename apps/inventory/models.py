@@ -73,12 +73,47 @@ class Warehouse(AuditModel):
         help_text="Permit shipping more than is on hand (backorders, in-transit stock).",
     )
     is_active = models.BooleanField(default=True)
+    receives_by_default = models.BooleanField(
+        default=False,
+        help_text="Where goods are received when a purchase order line or a requisition names no "
+                  "warehouse: planning counts such a line here and nowhere else (O415). One at most.",
+    )
 
     class Meta:
         ordering = ["code"]
+        constraints = [
+            models.UniqueConstraint(fields=["receives_by_default"], condition=Q(receives_by_default=True),
+                                    name="one_default_receiving_warehouse"),
+        ]
 
     def __str__(self):
         return f"{self.code} - {self.name}"
+
+    @classmethod
+    def default_receiving(cls):
+        """
+        The warehouse a line naming none is received into and planned in: the one marked, or on a site with
+        a single active warehouse, that one. None where there are two or more and none is marked, which
+        go_live_check fails: such a line then belongs to no warehouse's plan rather than to every one's.
+        """
+        marked = cls.objects.filter(receives_by_default=True, is_active=True).first()
+        if marked is not None:
+            return marked
+        active = list(cls.objects.filter(is_active=True)[:2])
+        return active[0] if len(active) == 1 else None
+
+    @classmethod
+    def named_or_defaulted(cls, warehouse, field="warehouse"):
+        """
+        A filter for the lines that belong to `warehouse`: those naming it, and, in the default receiving
+        warehouse only, those naming none (O415). Counted in every warehouse, a requisition naming none was
+        supply to the finished-goods godown too, and its plan advised cancelling the polymer the plant needed.
+        """
+        named = Q(**{field: warehouse})
+        default = cls.default_receiving()
+        if default is not None and warehouse is not None and default.pk == warehouse.pk:
+            return named | Q(**{f"{field}__isnull": True})
+        return named
 
     def owner(self):
         """Whose stock this is, when it is not the company's."""
@@ -174,6 +209,13 @@ class Warehouse(AuditModel):
                     f"Stock has moved through {self.code}; whose it holds cannot change. "
                     "Open another warehouse."
                 )
+        if self.receives_by_default:
+            if not self.is_active:
+                raise ValidationError(f"{self.code} is the default receiving warehouse and cannot be made "
+                                      "inactive: mark another one as the default first.")
+            other = Warehouse.objects.filter(receives_by_default=True).exclude(pk=self.pk).first()
+            if other is not None:
+                raise ValidationError(f"{other.code} is already the default receiving warehouse: clear it there first.")
         super().save(*args, **kwargs)
 
 
