@@ -88,7 +88,7 @@ class BooksInTheBrowserTests(BrowserTestCase):
 
     def test_the_books_are_not_a_reps_to_read(self):
         page = self.sign_in(self.person("Sales Rep"), "/app/")
-        expect(page.get_by_role("link", name="Accounts")).to_have_count(0)
+        expect(self.links(page, "Accounts")).to_have_count(0)
         page.goto(self.url(f"/accounts/chart/{self.bank.pk}"))
         expect(page.get_by_role("heading", name="Not allowed")).to_be_visible()
         self.problems.clear()  # the refusal is the point here
@@ -201,27 +201,27 @@ class TheChartKeptOnScreenTests(BrowserTestCase):
         officer = self.new_page()
         self.sign_in(self.person("GST Officer"), "/app/accounts/chart", page=officer)
         expect(officer.locator("tbody tr", has_text="SBI cash credit, Nagpur")).to_have_count(1)
-        expect(officer.get_by_role("link", name="New", exact=True)).to_have_count(0)
+        expect(self.links(officer, "New")).to_have_count(0)
         officer.goto(self.url(f"/accounts/chart/{made.pk}"))
         expect(officer.locator(".doc-head h1")).to_have_text("1030 · SBI cash credit, Nagpur")
-        expect(officer.get_by_role("link", name="Edit", exact=True)).to_have_count(0)
+        expect(self.links(officer, "Edit")).to_have_count(0)
 
         # A rep reads the chart too, and is offered neither: the form typed in
         # shows the account and changes nothing, and its ledger is not a rep's.
         rep = self.new_page()
         self.sign_in(self.person("Sales Rep"), "/app/accounts/chart", page=rep)
         expect(rep.locator("tbody tr", has_text="SBI cash credit, Nagpur")).to_have_count(1)
-        expect(rep.get_by_role("link", name="New", exact=True)).to_have_count(0)
+        expect(self.links(rep, "New")).to_have_count(0)
         rep.goto(self.url(f"/accounts/chart/{made.pk}/edit"))
         expect(rep.locator(".doc-head h1")).to_have_text("1030 · SBI cash credit, Nagpur")
         expect(rep.locator("main output").first).to_be_visible()
         expect(rep.get_by_role("checkbox")).to_have_count(0)
-        expect(rep.get_by_role("link", name="Ledger", exact=True)).to_have_count(0)
+        expect(self.links(rep, "Ledger")).to_have_count(0)
         rep.wait_for_load_state("networkidle")
         self.assertEqual(self.problems, [])
         rep.goto(self.url(f"/accounts/chart/{made.pk}"))
         expect(rep.get_by_role("heading", name="Not allowed")).to_be_visible()
-        expect(rep.get_by_role("link", name="Edit", exact=True)).to_have_count(0)
+        expect(self.links(rep, "Edit")).to_have_count(0)
         self.problems.clear()  # the ledger's refusal is the point here
 
 

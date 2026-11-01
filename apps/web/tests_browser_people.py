@@ -302,7 +302,7 @@ class PayrollScreensInTheBrowserTests(BrowserTestCase):
         self.assertEqual(EmployeePayDetails.objects.get(employee=person).ifsc, "SBIN0001234")
         manager = self.sign_in(self.person("Line Manager"), "/app/payroll/employees", page=self.new_page())
         expect(manager.get_by_role("heading", name="Employees")).to_be_visible()
-        expect(manager.get_by_role("link", name="Bank and PAN")).to_have_count(0)
+        expect(self.links(manager, "Bank and PAN")).to_have_count(0)
         self.assertEqual(self.problems, [])
 
     def test_a_statutory_figure_entered_on_screen(self):

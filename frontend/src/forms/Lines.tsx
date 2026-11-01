@@ -73,7 +73,8 @@ export function Lines({ lines, endpoint, parent, parentId, editable, extra = [],
   const act = useAct();
   const taxes = useReference<Tax>("/api/accounting/taxes/");
   const offered = (taxes.data ?? []).filter((tax) => tax.is_active && (tax.scope === "both" || tax.scope === side));
-  const taxCode = (id: number) => taxes.data?.find((tax) => tax.id === id)?.code ?? `#${id}`;
+  // While the taxes load a line says so, not a row id (#1, #2) nobody can read (O394).
+  const taxCode = (id: number) => (taxes.data ? taxes.data.find((tax) => tax.id === id)?.code ?? `#${id}` : "…");
 
   const [item, setItem] = useState<Item | null>(null);
   const [qty, setQty] = useState("1");

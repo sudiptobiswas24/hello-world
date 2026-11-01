@@ -204,7 +204,7 @@ class Command(BaseCommand):
                 name="Deccan Polysacks Pvt Ltd", legal_name="Deccan Polysacks Private Limited",
                 email="accounts@deccanpolysacks.example", phone="+91 20 6712 4400", website="deccanpolysacks.example",
                 bank_name="HDFC Bank, Chakan", bank_account_number="50200012345678", bank_ifsc="HDFC0001234",
-                base_currency=inr, fiscal_year_start_month=4,
+                base_currency=inr, fiscal_year_start_month=4, tan="PNED04821F",
                 default_inventory_account=stock_acc, default_cogs_account=cogs, grni_account=grni,
                 settlement_discount_account=discounts, bad_debt_account=bad_debts, default_revenue_account=sales_sacks,
                 default_receivable_account=ar, default_payable_account=ap, default_bank_account=bank,

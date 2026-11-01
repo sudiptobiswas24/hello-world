@@ -16,9 +16,9 @@ export default function ItemAttributes() {
       endpoint="/api/inventory/item-attributes/"
       columns={columns}
       rowKey={(row) => row.id}
-      rowHref={(row) => `/stores/attributes/${row.id}`}
+      rowHref={(row) => `/stores/item-attributes/${row.id}`}
       searchHint="Code or name"
-      create={{ href: "/stores/attributes/new", permission: "inventory.add_itemattribute" }}
+      create={{ href: "/stores/item-attributes/new", permission: "inventory.add_itemattribute" }}
     />
   );
 }

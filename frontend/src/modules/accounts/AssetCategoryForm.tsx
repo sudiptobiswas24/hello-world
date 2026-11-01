@@ -9,7 +9,7 @@ export default function AssetCategoryForm() {
   return (
     <RecordScreen
       endpoint="/api/assets/categories/"
-      back="/accounts/categories"
+      back="/accounts/asset-categories"
       backLabel="Asset categories"
       newTitle="New asset category"
       heading={(row) => String(row.code ?? "") + " · " + String(row.name ?? "")}

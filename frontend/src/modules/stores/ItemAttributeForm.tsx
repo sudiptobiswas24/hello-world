@@ -5,7 +5,7 @@ export default function ItemAttributeForm() {
   return (
     <RecordScreen
       endpoint="/api/inventory/item-attributes/"
-      back="/stores/attributes"
+      back="/stores/item-attributes"
       backLabel="Item attributes"
       newTitle="New item attribute"
       heading={(row) => String(row.code ?? "") + " · " + String(row.name ?? "")}

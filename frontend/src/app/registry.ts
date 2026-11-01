@@ -117,7 +117,7 @@ export const MODULES: Module[] = [
         detail: () => import("../modules/sales/InvoiceForm"),
       },
       {
-        path: "claims", label: "Claims", permission: "sales.view_invoice",
+        path: "claims", label: "Claims", permission: "sales.view_invoice", create: "sales.post_invoice",
         keywords: "claim torn short weight rate dispute deduction quality cost", load: () => import("../modules/sales/Claims"),
         detail: () => import("../modules/sales/ClaimForm"),
       },
@@ -430,7 +430,7 @@ export const MODULES: Module[] = [
         detail: () => import("../modules/production/MasterScheduleForm"),
       },
       {
-        path: "planning-settings", label: "Planning settings", permission: "planning.view_planningsettings",
+        path: "planning-settings", label: "Planning settings", permission: "planning.view_planningsettings", create: "planning.add_planningsettings",
         keep: "planning.change_planningsettings",
         keywords: "horizon fence lead time requisition", load: () => import("../modules/production/PlanningSettingsList"),
         detail: () => import("../modules/production/PlanningSettingsForm"),
@@ -1095,7 +1095,7 @@ export const MODULES: Module[] = [
         detail: () => import("../modules/payroll/PayComponentForm"),
       },
       {
-        path: "leave-policies", label: "Leave policies", permission: "hr.view_leavepolicy",
+        path: "leave-policies", label: "Leave policies", permission: "hr.view_leavepolicy", create: "hr.add_leavepolicy",
         keywords: "leave entitlement days", load: () => import("../modules/payroll/LeavePolicies"),
         detail: () => import("../modules/payroll/LeavePolicyForm"),
       },
@@ -1295,7 +1295,7 @@ export const MODULES: Module[] = [
         detail: () => import("../modules/settings/ProblemForm"),
       },
       {
-        path: "company", label: "Company", permission: "core.view_company",
+        path: "company", label: "Company", permission: "core.view_company", create: "core.add_company",
         keep: "core.change_company",
         keywords: "base currency default accounts fiscal year gstin", load: () => import("../modules/settings/CompanyList"),
         detail: () => import("../modules/settings/CompanyForm"),

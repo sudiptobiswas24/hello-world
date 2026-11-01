@@ -83,5 +83,5 @@ class ReverseChargeInTheBrowserTests(BrowserMixin, ReverseChargeCashTestCase, St
         expect(page.locator("tbody")).to_contain_text("500.00")
         page.goto(f"{self.live_server_url}/app/accounts/gst-challans")
         expect(page.locator("tbody")).to_contain_text("12345678901234")
-        expect(page.get_by_role("link", name=re.compile("New"))).to_have_count(0)
+        expect(page.locator("a").filter(has_text=re.compile("New"))).to_have_count(0)
         self.assertEqual(self.problems, [])

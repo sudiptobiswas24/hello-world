@@ -6,6 +6,7 @@ import { MODULES, offered, screenUrl } from "../app/registry";
 import { useAccess } from "../auth/me";
 import { CommandPalette, type Command } from "./CommandPalette";
 import { Icon } from "./Icon";
+import { ModuleTabs } from "./ModuleTabs";
 import { forgetEveryKeptDraft } from "../forms/useDraft";
 import { DraftOffer, SessionClock } from "./SessionClock";
 
@@ -132,11 +133,7 @@ export function Shell() {
             {current && <span>{current.label}</span>}
           </div>
           {current && (
-            <nav className="tabs" aria-label={`${current.label} screens`}>
-              {current.screens.map((screen) => (
-                <NavLink key={screen.path} to={screenUrl(current, screen)}>{screen.label}</NavLink>
-              ))}
-            </nav>
+            <ModuleTabs module={current} />
           )}
           <button type="button" className="goto" onClick={() => setPalette(true)}>
             <span>Go to…</span>
