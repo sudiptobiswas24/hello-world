@@ -3,16 +3,17 @@ Audit probe (audit2_stores): the demo plant's "Stock agrees with the ledger" aft
 write-ups at figures that do not come out even.
 """
 
-import datetime
 from decimal import Decimal
 from io import StringIO
 
 from django.test import TestCase
+from django.utils import timezone
 
 from apps.accounting.models import Account, AccountType
 from apps.inventory.models import (
     AdjustmentDirection, AdjustmentReason, Item, StockAdjustment, StockAdjustmentLine, Warehouse)
 from apps.web.health import integrity
+from apps.web.management.commands.load_demo import Story
 
 from .tests_load_demo import load
 
@@ -30,10 +31,13 @@ class TheHealthCheckAfterAwkwardAdjustments(TestCase):
                                              direction=AdjustmentDirection.INCREASE)
         plant = Warehouse.objects.get(code__iexact="PLANT") if Warehouse.objects.filter(code__iexact="PLANT").exists() \
             else Warehouse.objects.order_by("pk").first()
+        # A story date, moved as the loader moves it: a literal July 2026 falls in a month the demo
+        # has closed once the story's calendar runs past it.
+        story_day = Story(timezone.localdate()).on(2026, 7, 2)
         for sku, q in (("PP-RAFFIA", "0.3337"), ("UV-MB", "1.0001"), ("TAPE-900", "7.7777"), ("SACK-CEM50", "3")):
             item = Item.objects.get(sku=sku)
             for reason, sign, cost in ((down, -1, None), (up, 1, "111.1111")):
-                a = StockAdjustment.objects.create(adjustment_date=datetime.date(2026, 7, 2), warehouse=plant,
+                a = StockAdjustment.objects.create(adjustment_date=story_day, warehouse=plant,
                                                    reason=reason)
                 StockAdjustmentLine.objects.create(adjustment=a, item=item, uom=item.uom, quantity=D(q) * sign,
                                                    unit_cost=D(cost) if cost else None)
