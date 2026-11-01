@@ -23,7 +23,7 @@ export const GROUPS: Record<string, [string, string[]][]> = {
     ["Bills", ["bills", "payments", "bills-of-entry"]],
     ["Vendors", ["vendors", "vendor-prices"]],
     ["Reporting", ["aging", "vendor-scorecard"]],
-    ["Configuration", ["reorder-rules", "budgets", "approval-policies"]],
+    ["Configuration", ["reorder-rules", "budgets", "approval-policies", "customs-valuation"]],
   ],
   production: [
     ["Shop floor", ["work-orders", "board", "schedule", "gantt", "issues", "output", "time", "bales", "rolls", "rebatches"]],
