@@ -424,14 +424,33 @@ class GoLiveCheckTests(ImportTestCase):
         except CommandError as error:
             return False, out.getvalue() + str(error)
 
+    def unconfirmed_customs_defaults(self):
+        """As migration 0087 loads them; made here, since a run without migrations has none."""
+        from apps.purchasing.imports import CustomsValuationDefault
+
+        CustomsValuationDefault.objects.get_or_create(valid_from=datetime.date(2017, 9, 26), defaults={
+            "freight_percent": Decimal("20"), "insurance_percent": Decimal("1.125"),
+            "citation": "Customs Valuation Rules 2007, r.10(2)", "confirmed": False})
+
     def test_what_breaks_the_first_day_fails_it_and_says_how_to_mend_it(self):
+        self.unconfirmed_customs_defaults()
         ready, said = self.check()
         self.assertFalse(ready)
         for expected in ("FAIL  Account: bank", "FAIL  Roles", "setup_roles",
                          "WARN  GST", "Not ready",
                          # O403: neither existed on a fresh plant, and nothing said so.
-                         "FAIL  Stock adjustment reasons", "setup_stores", "WARN  Countries"):
+                         "FAIL  Stock adjustment reasons", "setup_stores", "WARN  Countries",
+                         # L21: loaded unconfirmed, and nothing said so or offered a screen to confirm them on.
+                         "WARN  Customs valuation defaults", "Freight 20% and insurance 1.125% of FOB"):
             self.assertIn(expected, said)
+
+    def test_customs_valuation_defaults_once_confirmed_are_not_mentioned(self):
+        from apps.purchasing.imports import CustomsValuationDefault
+
+        self.unconfirmed_customs_defaults()
+        CustomsValuationDefault.objects.update(confirmed=True)
+        _ready, said = self.check()
+        self.assertNotIn("Customs valuation defaults", said)
 
     def test_a_configured_installation_is_ready_and_names_what_to_read(self):
         from django.contrib.auth.models import Group, User
