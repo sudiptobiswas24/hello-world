@@ -208,6 +208,23 @@ class AutoMatchTests(ReconciliationTestCase):
         self.assertEqual(matched, [])
         self.assertEqual(len(statement.unresolved_lines()), 1)
 
+    def test_a_line_it_may_not_match_is_listed_and_the_rest_are_matched(self):
+        """O414: one line on a voided receipt stopped the run, and the bank charges beside it went unmatched."""
+        returned = self.receipt("1000", on=datetime.date(2026, 1, 5))
+        # Voided after the statement's month, as the demo's was: on the statement's days it stood.
+        returned.void(memo="Recalled", on_date=datetime.date(2026, 2, 3))
+        self.disbursement("250", on=datetime.date(2026, 1, 6))
+        statement = self.statement("0", "750")
+        refused = self.line(statement, "1000", on=datetime.date(2026, 1, 6))
+        self.line(statement, "-250", on=datetime.date(2026, 1, 7))
+
+        not_matched = []
+        matched = statement.auto_match(not_matched=not_matched)
+
+        self.assertEqual([line.amount for line in matched], [Decimal("-250")])
+        self.assertEqual([line for line, _why in not_matched], [refused])
+        self.assertIn("voided", not_matched[0][1])
+
     def test_a_distant_date_is_not_matched(self):
         self.receipt("1000", on=datetime.date(2026, 1, 1))
         statement = self.statement("0", "1000")

@@ -131,8 +131,12 @@ class BankStatementViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def auto_match(self, request, pk=None):
         statement = self.get_object()
-        matched = _refused(statement.auto_match)
-        return Response({"matched": len(matched)})
+        not_matched = []
+        matched = _refused(lambda: statement.auto_match(not_matched=not_matched))
+        # What it could not take, and why, to be matched by hand (O414).
+        return Response({"matched": len(matched), "not_matched": [
+            {"line": line.pk, "date": line.date, "description": line.description, "amount": line.amount, "why": why}
+            for line, why in not_matched]})
 
     def _line(self, statement, request):
         line = record_or_404(BankStatementLine, request.data.get("line"), "line")

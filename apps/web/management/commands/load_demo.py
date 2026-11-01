@@ -895,12 +895,14 @@ class Command(BaseCommand):
                                              expense_account=wages, sequence=10, reduces_for_unpaid_leave=True)
             hra = Component.objects.create(code="HRA", name="House rent allowance", kind="earning", basis="fixed",
                                            expense_account=wages, sequence=20)
+            # Marked, so the monthly ECR finds its members (O411): unmarked, it came back an empty file.
             pf = Component.objects.create(code="PF", name="Provident fund (employee)", kind="deduction", basis="percent",
-                                          liability_account=pf_payable, sequence=50)
+                                          liability_account=pf_payable, sequence=50, statutory="pf")
             pt = Component.objects.create(code="PT", name="Professional tax", kind="deduction", basis="fixed",
                                           liability_account=pt_payable, sequence=60)
             epf = Component.objects.create(code="EPF", name="Provident fund (employer)", kind="employer_cost", basis="percent",
-                                           expense_account=employer_pf, liability_account=pf_payable, sequence=70)
+                                           expense_account=employer_pf, liability_account=pf_payable, sequence=70,
+                                           statutory="pf_employer")
             for key, (basic_pay, rent_allowance) in {
                     "rohit": ("62000", "18000"), "imran": ("32000", "9000"), "priya": ("34000", "9500"),
                     "ravi": ("38000", "11000"), "sunita": ("21000", "6000"), "suresh": ("48000", "14000"),

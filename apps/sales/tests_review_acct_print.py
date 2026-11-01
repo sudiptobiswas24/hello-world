@@ -101,7 +101,7 @@ class ReprintReadsWhatWasIssued(Probe):
 
     def test_unit_renamed(self):
         self.reprint_says(lambda i: UnitOfMeasure.objects.filter(pk=self.sack.uom_id).update(code="KGM"),
-                          ["100.00 kg"], ["100.00 KGM"])
+                          ["100 kg"], ["100 KGM"])
 
     def test_rate_changed(self):
         self.reprint_says(lambda i: Tax.objects.filter(code__in=["CGST9", "SGST9"]).update(rate=D("6")),

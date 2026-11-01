@@ -1636,7 +1636,7 @@ class BankStatement(AuditModel):
         self.closed_at = None
         super(BankStatement, self).save(update_fields=["closed", "closed_at", "updated_at"])
 
-    def auto_match(self, tolerance_days=5):
+    def auto_match(self, tolerance_days=5, not_matched=None):
         """
         Match the obvious ones: same signed amount, same account, a date
         close by, and the payment not already matched.
@@ -1644,6 +1644,11 @@ class BankStatement(AuditModel):
         Deliberately conservative. An automatic match that is wrong is
         worse than no match, because nobody looks at it again — so two
         candidates for the same line means neither is taken.
+
+        A match its own rules refuse (a voided payment the bank never took)
+        is that line's alone (O414): one such line stopped the whole run and
+        left the plain bank charges unmatched too. Each is tried in its own
+        savepoint; `not_matched`, when given, collects (line, why).
         """
         matched = []
         for line in self.lines.all():
@@ -1660,7 +1665,13 @@ class BankStatement(AuditModel):
             ]
             if len(candidates) == 1:
                 match, what = candidates[0]
-                match(what)
+                try:
+                    with transaction.atomic():
+                        match(what)
+                except ValidationError as refusal:
+                    if not_matched is not None:
+                        not_matched.append((line, " ".join(refusal.messages)))
+                    continue
                 matched.append(line)
         return matched
 

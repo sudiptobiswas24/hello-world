@@ -377,4 +377,4 @@ class ThePrintOfAScrapInvoice(Base):
         for copy in ("original", "duplicate", "triplicate"):
             text = " ".join(" ".join(printed_text(render_invoice_pdf, invoice, copy)).split())
             with self.subTest(copy=copy):
-                self.assertIn("TCS collected u/s 206C(1) @ 1% on 106,200.00 1,062.00", text)
+                self.assertIn("TCS collected u/s 206C(1) @ 1% on 1,06,200.00 1,062.00", text)
