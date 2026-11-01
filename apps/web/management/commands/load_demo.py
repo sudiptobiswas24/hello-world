@@ -502,6 +502,9 @@ class Command(BaseCommand):
             sell(kaveri, on(2026, 9, 22), [(fert, "36000", "14.20")])
             sell(sahyadri, on(2026, 9, 28), [(cement, "135000", "9.90")])
             sell(malwa, on(2026, 10, 1), [(rice, "18000", "11.40")])
+            # O416: one export left open, so the aging carries a dollar invoice at the rate it was booked at and
+            # still foots to the receivable. Paid, every foreign figure is gone by the time anyone reads one.
+            sell(gulf, on(2026, 10, 6), [(fert, "6000", "0.19")], currency=usd)
             short.create_credit_note(quantities={short.lines.first(): D("2400")}, memo="2,400 sacks short-stitched, credited")
             # Open orders: to ship this week, two of them drafted from the godown's bins.
             open_cement = order(sahyadri, day(-2), [(cement, "120000", "9.90")])
@@ -645,6 +648,14 @@ class Command(BaseCommand):
             remitted.post()
             M("purchasing.BillPayment").objects.create(bill=import_bill, payment=remitted, amount=import_bill.total(),
                                                        date=day(-10))
+            # O416: the next container, landed and billed, and not yet remitted: the payable holds it at the rate
+            # its bill was booked at, and the aging has to say the same in rupees.
+            following = PO.objects.create(vendor=gulf_polymers, order_date=day(-15), currency=usd)
+            POLine.objects.create(order=following, item=filler, uom=filler.uom, quantity=D("16000"), unit_price=D("1.25"),
+                                  warehouse=plant)
+            following.confirm()
+            following.create_receipt(receipt_date=day(-4), warehouse=plant).post()
+            following.create_bill(ap, bill_date=day(-4), reference="GPF/26/0951").post()
             # L16: the maker's circular for raffia, a contract with Granule House at 1.50 off it, and an order
             # priced there, received in three lots and billed. A revision back-dated is the Purchase Manager's.
             Index, Value = M("sales.PriceIndex"), M("sales.PriceIndexValue")

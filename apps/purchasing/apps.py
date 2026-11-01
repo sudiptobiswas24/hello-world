@@ -27,6 +27,17 @@ class PurchasingConfig(AppConfig):
                         .exclude(currency_id=Company.get().base_currency_id).order_by("pk"))
 
         register_restatement_source(foreign_bills)
+
+        from apps.accounting.balances import BalanceSide, register_balance_side
+        from apps.accounting.models import PaymentDirection
+
+        from .models import BILL_FIGURES, Bill, not_paid_in_full, payable_accounts
+
+        register_balance_side(BalanceSide(
+            name="payable", model=Bill, row_key="bill", rows_key="bills", party_field="vendor",
+            date_field="bill_date", notes_field="debits", figures=BILL_FIGURES,
+            not_paid_in_full=not_paid_in_full, control_accounts=payable_accounts,
+            settles=PaymentDirection.DISBURSEMENT, sign=-1))
         register_allocation_model(BillPayment)
         register_payment_check(refuse_held_payment)
         register_void_follow_up(undo_what_it_settled)

@@ -750,17 +750,19 @@ def unapplied(payments):
 def standing_on_account(payments):
     """
     Of `payments`, the money no document has taken and still stands, as
-    (received, paid out): a customer's receipt not yet matched to its
+    (received, paid out) in the base currency, each at the rate its
+    payment posted at (O416): a customer's receipt not yet matched to its
     invoices, a payment to a vendor ahead of the bill. It sits in the
     control account all the same, so a balance that leaves it out tells the
     party they owe what they have paid.
     """
     received = paid_out = Decimal("0")
-    for payment in unapplied(payments.filter(posted=True, voided_entry__isnull=True)):
+    for payment in unapplied(payments.filter(posted=True, voided_entry__isnull=True).select_related("currency")):
+        base = in_base(payment.unallocated, payment.currency, payment.payment_date, rate=payment.exchange_rate)
         if payment.direction == PaymentDirection.RECEIPT:
-            received += payment.unallocated
+            received += base
         else:
-            paid_out += payment.unallocated
+            paid_out += base
     return received, paid_out
 
 

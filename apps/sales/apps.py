@@ -30,6 +30,17 @@ class SalesConfig(AppConfig):
                         .exclude(currency_id=Company.get().base_currency_id).order_by("pk"))
 
         register_restatement_source(foreign_invoices)
+
+        from apps.accounting.balances import BalanceSide, register_balance_side
+        from apps.accounting.models import PaymentDirection
+
+        from .models import INVOICE_FIGURES, Invoice, not_paid_in_full, receivable_accounts
+
+        register_balance_side(BalanceSide(
+            name="receivable", model=Invoice, row_key="invoice", rows_key="invoices", party_field="customer",
+            date_field="invoice_date", notes_field="credits", figures=INVOICE_FIGURES,
+            not_paid_in_full=not_paid_in_full, control_accounts=receivable_accounts,
+            settles=PaymentDirection.RECEIPT, sign=1))
         register_allocation_model(InvoicePayment)
         register_void_follow_up(undo_what_it_settled)
         register_party_scope(SalesScope())

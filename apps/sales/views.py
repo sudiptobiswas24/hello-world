@@ -498,33 +498,23 @@ class InvoiceViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.ModelV
     @action(detail=False, methods=["get"])
     def aging(self, request):
         """AR aging: outstanding invoices bucketed by days overdue."""
+        from apps.accounting.balances import money_of, restated_row
+
         buckets = ar_aging(as_of=request.query_params.get("as_of"), invoices=self.get_queryset())
+
+        def row(entry):
+            if "restatement" in entry:  # on a restatement's own day, what it moved the receivable by (O416)
+                return restated_row(entry)
+            if "payment" in entry:  # money received that no invoice has taken (O412)
+                payment = entry["payment"]
+                return {"id": payment.pk, "number": payment.number, "customer": str(payment.party),
+                        **money_of(entry), "kind": "receipt"}
+            invoice = entry["invoice"]
+            return {"id": invoice.pk, "number": invoice.number, "customer": str(invoice.customer),
+                    **money_of(entry), "kind": "credit_note" if invoice.credits_id else "invoice"}
+
         return Response({
-            key: {
-                "count": bucket["count"],
-                "total": bucket["total"],
-                "invoices": [
-                    {
-                        "id": entry["invoice"].pk,
-                        "number": entry["invoice"].number,
-                        "customer": str(entry["invoice"].customer),
-                        "due_date": entry["invoice"].due_date,
-                        "days_overdue": entry["days_overdue"],
-                        "amount_due": entry["amount_due"],
-                        "kind": "credit_note" if entry["invoice"].credits_id else "invoice",
-                    } if "invoice" in entry else {
-                        # Money received that no invoice has taken (O412).
-                        "id": entry["payment"].pk,
-                        "number": entry["payment"].number,
-                        "customer": str(entry["payment"].party),
-                        "due_date": entry["payment"].payment_date,
-                        "days_overdue": 0,
-                        "amount_due": entry["amount_due"],
-                        "kind": "receipt",
-                    }
-                    for entry in bucket["invoices"]
-                ],
-            }
+            key: {"count": bucket["count"], "total": bucket["total"], "invoices": [row(entry) for entry in bucket["invoices"]]}
             for key, bucket in buckets.items()
         })
 
