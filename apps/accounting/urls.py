@@ -1,6 +1,6 @@
 from rest_framework.routers import DefaultRouter
 
-from .lut_api import LetterOfUndertakingViewSet, SeededDefaultViewSet
+from .lut_api import GstReturnFiledViewSet, LetterOfUndertakingViewSet, SeededDefaultViewSet
 from .tds_api import TcsDeclarationViewSet, TcsRateViewSet, TcsSectionViewSet, TdsRateViewSet, TdsSectionViewSet
 
 from .banking_api import BankStatementLineViewSet, BankStatementViewSet
@@ -29,6 +29,7 @@ from .views import (
 router = DefaultRouter()
 router.register("accounts", AccountViewSet)
 router.register("letters-of-undertaking", LetterOfUndertakingViewSet)
+router.register("gst-returns-filed", GstReturnFiledViewSet)
 router.register("seeded-defaults", SeededDefaultViewSet)
 router.register("cost-centres", CostCentreViewSet)
 router.register("periods", AccountingPeriodViewSet)

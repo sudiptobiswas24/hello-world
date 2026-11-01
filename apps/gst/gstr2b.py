@@ -38,7 +38,7 @@ NEAR = Decimal("1.00")
 KINDS = [("invoice", "Invoice"), ("credit_note", "Credit note"), ("debit_note", "Debit note")]
 FIGURES = ("taxable", *HEADS, "value")
 # Tables of the download that are not supplier invoices: counted, not read.
-OTHER_TABLES = ("isd", "isda", "impg", "impgsez", "ecom", "ecoma")
+OTHER_TABLES = ("isd", "isda", "impgsez", "ecom", "ecoma")
 
 
 class Gstr2bStatement(AuditModel):
@@ -92,6 +92,42 @@ class Gstr2bLine(models.Model):
 
     def itc(self):
         return sum((getattr(self, head) for head in HEADS), ZERO)
+
+
+class Gstr2bImport(models.Model):
+    """
+    One bill of entry in the 2B's IMPG table: IGST paid at customs on goods imported, which the portal
+    takes from ICEGATE. Matched with the books' bills of entry by port, number and date (L21).
+    """
+
+    statement = models.ForeignKey(Gstr2bStatement, on_delete=models.CASCADE, related_name="imports")
+    port_code = models.CharField(max_length=6)
+    be_number = models.CharField(max_length=16)
+    be_date = models.DateField(null=True, blank=True)
+    taxable = models.DecimalField(max_digits=18, decimal_places=2, default=ZERO)
+    igst = models.DecimalField(max_digits=18, decimal_places=2, default=ZERO)
+    cess = models.DecimalField(max_digits=18, decimal_places=2, default=ZERO)
+    amended = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ["port_code", "be_date", "be_number"]
+        constraints = [
+            models.UniqueConstraint(fields=["statement", "port_code", "be_number", "be_date"],
+                                    name="one_2b_import_per_bill_of_entry"),
+        ]
+
+    def __str__(self):
+        return f"BE {self.be_number} {self.port_code}"
+
+
+def _import_row(entry):
+    number = str(entry.get("benum") or "").strip()
+    if not number:
+        raise ValidationError({"text": ["An IMPG entry has no bill of entry number."]})
+    return {"port_code": str(entry.get("portcode") or entry.get("portcd") or "").strip().upper()[:6],
+            "be_number": number[:16], "be_date": _day(entry.get("bedt")), "taxable": _decimal(entry.get("txval")),
+            "igst": _decimal(entry.get("igst")), "cess": _decimal(entry.get("cess")),
+            "amended": str(entry.get("isamd") or "N").upper() == "Y"}
 
 
 # -- reading the file ----------------------------------------------------
@@ -162,6 +198,17 @@ def _read_json(text):
                 lines.append(_line(supplier, kind, entry.get("ntnum"), entry.get("dt"), entry))
     skipped = [f"{table}: {len(docdata[table])} supplier(s) not read" for table in OTHER_TABLES if docdata.get(table)]
     return header, lines, skipped
+
+
+def read_imports(text):
+    """The IMPG table's bills of entry of a 2B download, as rows; a CSV of supplier sheets carries none."""
+    text = (text or "").lstrip("\ufeff \r\n\t")
+    if not text.startswith("{"):
+        return []
+    payload = json.loads(text)
+    data = payload.get("data", payload) if isinstance(payload, dict) else {}
+    docdata = data.get("docdata") if isinstance(data, dict) else None
+    return [_import_row(entry) for entry in (docdata or {}).get("impg") or []]
 
 
 ROLES = {
@@ -264,8 +311,9 @@ def keep(period, text, *, user=None, replace=False):
     if header["gstin"] and header["gstin"] != settings.gstin:
         raise ValidationError({"text": [f"This file is for GSTIN {header['gstin']}; the registration here is "
                                         f"{settings.gstin}."]})
-    if not lines:
-        raise ValidationError({"text": ["The file holds no supplier invoices or notes."]})
+    imports = read_imports(text)
+    if not lines and not imports:
+        raise ValidationError({"text": ["The file holds no supplier invoices, notes or bills of entry."]})
     existing = Gstr2bStatement.objects.filter(period=period).first()
     if existing is not None and not replace:
         raise ValidationError({"period": [f"{period}'s GSTR-2B is already kept, with {existing.lines.count()} "
@@ -282,6 +330,9 @@ def keep(period, text, *, user=None, replace=False):
             source="json" if text.lstrip("﻿ \r\n\t").startswith("{") else "csv",
             created_by=user, updated_by=user)
         Gstr2bLine.objects.bulk_create([Gstr2bLine(statement=statement, **line) for line in unique.values()])
+        # An amended entry carries the same bill of entry: the later wins.
+        entries = OrderedDict(((row["port_code"], row["be_number"], row["be_date"]), row) for row in imports)
+        Gstr2bImport.objects.bulk_create([Gstr2bImport(statement=statement, **row) for row in entries.values()])
     return statement, skipped
 
 
@@ -436,4 +487,47 @@ def reconcile(period):
         if line.statement.period == period and line.itc_available:
             totals["filed"] += (-1 if line.kind == "credit_note" else 1) * line.itc()
     result["totals"] = totals
+    result["imports"] = reconcile_imports(period, fy_start, end, statements)
+    return result
+
+
+def _be_key(port, number, day):
+    return (str(port or "").strip().upper(), str(number or "").strip().lstrip("0"), day)
+
+
+def reconcile_imports(period, fy_start, end, statements):
+    """
+    The IMPG table against the posted bills of entry of the year to the month's end (L21): matched by
+    port, number and date, the IGST compared; a bill of entry the portal has not shown is credit taken
+    at risk; an IMPG entry with no bill of entry booked is credit not yet taken.
+    """
+    from apps.purchasing.imports import standing_entries
+
+    rows = list(Gstr2bImport.objects.filter(statement__period__in=statements).select_related("statement"))
+    waiting = {_be_key(row.port_code, row.be_number, row.be_date): row for row in rows}
+    result = {"matched": [], "differs": [], "at_risk": [], "not_booked": [],
+              "totals": {"booked": ZERO, "filed": ZERO, "at_risk": ZERO, "not_booked": ZERO}}
+    for entry in standing_entries(fy_start, end).order_by("be_date", "pk"):
+        igst = entry.totals()["igst"]
+        booked = {"id": entry.pk, "number": entry.number, "be_number": entry.be_number, "be_date": entry.be_date,
+                  "port_code": entry.port_code, "igst": igst, "assessable": entry.totals()["assessable_value"]}
+        if entry.be_date >= month(period)[0]:
+            result["totals"]["booked"] += igst
+        row = waiting.pop(_be_key(entry.port_code, entry.be_number, entry.be_date), None)
+        if row is None:
+            result["at_risk"].append({"entry": booked, "line": None})
+            result["totals"]["at_risk"] += igst
+            continue
+        filed = {"id": row.pk, "statement": row.statement.period, "port_code": row.port_code,
+                 "be_number": row.be_number, "be_date": row.be_date, "igst": row.igst, "taxable": row.taxable,
+                 "amended": row.amended}
+        difference = row.igst - igst
+        pair = {"entry": booked, "line": filed, "difference": difference}
+        (result["matched"] if abs(difference) <= NEAR else result["differs"]).append(pair)
+    for row in sorted(waiting.values(), key=lambda line: (line.statement.period, line.port_code, line.be_number)):
+        result["not_booked"].append({"entry": None, "line": {
+            "id": row.pk, "statement": row.statement.period, "port_code": row.port_code, "be_number": row.be_number,
+            "be_date": row.be_date, "igst": row.igst, "taxable": row.taxable, "amended": row.amended}})
+        result["totals"]["not_booked"] += row.igst
+    result["totals"]["filed"] = sum((row.igst for row in rows if row.statement.period == period), ZERO)
     return result

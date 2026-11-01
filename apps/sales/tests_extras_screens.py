@@ -51,7 +51,11 @@ class PriceIndexTests(ExtrasTestCase):
         rep = self.as_user(self.rep_a)
         read = rep.get(url)
         self.assertEqual(read.status_code, 200, read.content)
-        self.assertEqual(read.json(), [{"valid_from": "2026-09-01", "value": "104.5000"}])
+        # Published today unless the circular's own day is given (L16: a back-dated revision is a second row).
+        from django.utils import timezone
+
+        self.assertEqual(read.json(), [{"valid_from": "2026-09-01", "value": "104.5000",
+                                        "published_on": str(timezone.localdate())}])
         self.assertEqual(rep.post(url, {"valid_from": "2026-10-01", "value": "99"}, format="json").status_code, 403)
         self.assertEqual(PriceIndexValue.objects.filter(index=index).count(), 1)
 

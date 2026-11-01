@@ -31,7 +31,19 @@ from .views import (
     WeightClaimViewSet,
 )
 
+from .imports_api import (
+    BillOfEntryLineViewSet, BillOfEntryViewSet, CustomsValuationDefaultViewSet, PurchaseRateContractViewSet,
+    RateContractLineViewSet, RateDifferenceLineViewSet, RateDifferenceNoteViewSet,
+)
+
 router = DefaultRouter()
+router.register("bills-of-entry", BillOfEntryViewSet)
+router.register("bill-of-entry-lines", BillOfEntryLineViewSet)
+router.register("customs-valuation-defaults", CustomsValuationDefaultViewSet)
+router.register("rate-contracts", PurchaseRateContractViewSet)
+router.register("rate-contract-lines", RateContractLineViewSet)
+router.register("rate-differences", RateDifferenceNoteViewSet)
+router.register("rate-difference-lines", RateDifferenceLineViewSet)
 router.register("purchase-orders", PurchaseOrderViewSet)
 router.register("purchase-order-lines", PurchaseOrderLineViewSet)
 router.register("bills", BillViewSet)

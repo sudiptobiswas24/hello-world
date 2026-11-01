@@ -101,10 +101,11 @@ class PriceIndexViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
             if valid_from is None:
                 raise DRFValidationError({"valid_from": ["A date, YYYY-MM-DD."]})
             value = number(request.data, "value", field=PriceIndexValue._meta.get_field("value"))
+            published_on = parse_date(str(request.data.get("published_on") or "")) or None
             _run(PriceIndexValue.objects.create, index=index, valid_from=valid_from,
-                 value=value)
-        return Response([{"valid_from": row.valid_from, "value": str(row.value)}
-                         for row in index.values.all()],
+                 value=value, published_on=published_on)
+        return Response([{"valid_from": row.valid_from, "value": str(row.value), "published_on": row.published_on}
+                         for row in index.values.order_by("-valid_from", "-published_on", "-id")],
                         status=201 if request.method == "POST" else 200)
 
 

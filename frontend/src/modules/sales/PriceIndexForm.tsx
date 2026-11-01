@@ -24,12 +24,14 @@ export default function PriceIndexForm() {
         columns: [
           { key: "valid_from", label: "From", kind: "date", width: "9rem" },
           { key: "value", label: "Value", kind: "quantity" },
+          { key: "published_on", label: "Published", kind: "date", width: "9rem" },
         ],
         adder: { label: "Publish a value", permission: "sales.add_priceindexvalue",
           url: (index) => `/api/sales/price-indices/${String(index.id)}/values/`,
           fields: [
             { key: "valid_from", label: "From", kind: "date" },
             { key: "value", label: "Value", kind: "decimal" },
+            { key: "published_on", label: "Published on", kind: "date", hint: "Blank is today; a circular revised back-dated is a second value from the same day" },
           ],
           body: (values) => values },
       }]}
