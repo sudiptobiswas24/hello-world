@@ -67,3 +67,24 @@ class SeededDefaultViewSet(AuditableViewSetMixin, viewsets.ReadOnlyModelViewSet)
         row.reviewed_by, row.reviewed_on = request.user, timezone.localdate()
         row.save(update_fields=["reviewed_by", "reviewed_on", "updated_at"])
         return Response(self.get_serializer(row).data)
+
+
+from .gst import GstReturnFiled  # noqa: E402
+
+
+class GstReturnFiledSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = GstReturnFiled
+        fields = ["id", "return_name", "period", "filed_on", "arn"]
+
+
+class GstReturnFiledViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    """A GST return as filed on the portal, recorded by whoever filed it: what it reported stays (L21)."""
+
+    queryset = GstReturnFiled.objects.all()
+    serializer_class = GstReturnFiledSerializer
+    http_method_names = ["get", "post", "head", "options"]
+    filter_fields = ["return_name", "period"]
+    search_fields = ["period", "arn"]
+    date_field = "filed_on"
+    ordering_fields = ["period", "filed_on"]

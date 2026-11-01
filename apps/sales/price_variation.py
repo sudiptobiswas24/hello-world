@@ -49,6 +49,24 @@ PER_UNIT = Decimal("0.000001")
 
 from apps.core.models import takes_back  # noqa: E402  (O354: a correction step)
 
+
+def variation_per_unit(base_value, index_value, kg_per_unit, pass_through_percent=HUNDRED, threshold_percent=ZERO):
+    """
+    What one unit moves by when the index stands at `index_value` against `base_value`: the move
+    times the polymer kilogrammes in a unit times the share passed on, to six places; nothing inside
+    the threshold. The one arithmetic a sack's price clause and a polymer rate contract's
+    rate-difference note both vary by (L16, mistake 5).
+    """
+    move = index_value - base_value
+    if abs(move) <= base_value * threshold_percent / HUNDRED:
+        return ZERO
+    return (move * kg_per_unit * pass_through_percent / HUNDRED).quantize(PER_UNIT)
+
+
+def varied_amount(quantity, per_unit):
+    """A row's amount: quantity times the variation a unit, rounded once, at the end."""
+    return round_money(quantity * per_unit) + 0
+
 class PriceIndex(AuditModel):
     code = models.CharField(max_length=32, unique=True)
     name = models.CharField(max_length=255)
@@ -60,7 +78,12 @@ class PriceIndex(AuditModel):
         return self.code
 
     def value_on(self, on_date):
-        row = self.values.filter(valid_from__lte=to_date(on_date)).order_by("-valid_from").first()
+        """
+        The value in force on `on_date`, as now known: the latest from on or before it, and of a day the
+        makers revised back-dated, the revision published last (L16).
+        """
+        row = self.values.filter(valid_from__lte=to_date(on_date)).order_by(
+            "-valid_from", models.F("published_on").desc(nulls_last=True), "-id").first()
         if row is None:
             raise ValidationError(f"{self} has no value published on or before {on_date}.")
         return row.value
@@ -71,12 +94,18 @@ class PriceIndexValue(AuditModel):
     valid_from = models.DateField()
     value = models.DecimalField(max_digits=12, decimal_places=4,
                                 help_text="Per kilogramme of polymer.")
+    published_on = models.DateField(
+        null=True, blank=True,
+        help_text="The day the circular was issued. A circular revised back-dated is a second value from "
+                  "the same day, published later; blank on values entered before revisions were kept.")
 
     class Meta:
         ordering = ["index", "-valid_from"]
         constraints = [
-            models.UniqueConstraint(fields=["index", "valid_from"],
+            models.UniqueConstraint(fields=["index", "valid_from"], condition=Q(published_on__isnull=True),
                                     name="one_index_value_a_day"),
+            models.UniqueConstraint(fields=["index", "valid_from", "published_on"],
+                                    name="one_index_revision_a_day"),
             models.CheckConstraint(check=Q(value__gt=0), name="index_value_positive"),
         ]
 
@@ -87,6 +116,10 @@ class PriceIndexValue(AuditModel):
         if not self._state.adding:
             raise ValidationError("A published value is what it was; enter a new one from "
                                   "the date it changed.")
+        if self.published_on is None:
+            self.published_on = timezone.localdate()
+        if to_date(self.published_on) > timezone.localdate():
+            raise ValidationError({"published_on": "That day has not come."})
         super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):
@@ -136,11 +169,8 @@ class PriceVariationClause(AuditModel):
 
     def variation_per_unit(self, index_value):
         """What one unit moves by at this index value: nothing inside the threshold."""
-        move = index_value - self.base_value
-        if abs(move) <= self.base_value * self.threshold_percent / HUNDRED:
-            return ZERO
-        return (move * self.polymer_kg_per_unit * self.pass_through_percent
-                / HUNDRED).quantize(PER_UNIT)
+        return variation_per_unit(self.base_value, index_value, self.polymer_kg_per_unit,
+                                  self.pass_through_percent, self.threshold_percent)
 
 
 class PriceVariationBill(AuditModel):
@@ -258,7 +288,7 @@ def rows_for(order, start, end):
         rows.append({
             "delivery": line.delivery, "delivery_line": line, "order_line": line.order_line,
             "index": clause.index, "quantity": quantity, "index_value": value,
-            "variation_per_unit": per_unit, "amount": round_money(quantity * per_unit),
+            "variation_per_unit": per_unit, "amount": varied_amount(quantity, per_unit),
         })
     return rows
 

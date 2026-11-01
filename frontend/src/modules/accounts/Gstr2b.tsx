@@ -18,10 +18,54 @@ interface LineSide extends Figures {
   kind: string; itc_available: boolean; reason: string; reverse_charge: boolean; irn: string;
 }
 interface Pair { bill: BillSide | null; line: LineSide | null; difference?: Figures }
+interface EntrySide { id: number; number: string; be_number: string; be_date: string; port_code: string; igst: string; assessable: string }
+interface ImpgSide { id: number; statement: string; port_code: string; be_number: string; be_date: string | null; igst: string; taxable: string; amended: boolean }
+interface ImportPair { entry: EntrySide | null; line: ImpgSide | null; difference?: string }
+interface Imports {
+  matched: ImportPair[]; differs: ImportPair[]; at_risk: ImportPair[]; not_booked: ImportPair[];
+  totals: { booked: string; filed: string; at_risk: string; not_booked: string };
+}
+
+/** GSTR-2B's IMPG table against the bills of entry booked (L21): IGST paid at customs. */
+function ImportsSection({ imports }: { imports: Imports }) {
+  const rows: [string, ImportPair][] = [
+    ...imports.matched.map((row) => ["Matched", row] as [string, ImportPair]),
+    ...imports.differs.map((row) => ["IGST differs", row] as [string, ImportPair]),
+    ...imports.at_risk.map((row) => ["At risk: not in any 2B", row] as [string, ImportPair]),
+    ...imports.not_booked.map((row) => ["In the 2B, no bill of entry", row] as [string, ImportPair]),
+  ];
+  return (
+    <section className="statement-section">
+      <h2>Imports: bills of entry against IMPG</h2>
+      <p className="muted">IGST credit taken on a bill of entry the 2B has not shown: {money(imports.totals.at_risk)}. In the 2B with no bill of entry booked: {money(imports.totals.not_booked)}.</p>
+      <div className="table-wrap">
+        <table>
+          <thead><tr><th scope="col">State</th><th scope="col">Port</th><th scope="col">BE number</th><th scope="col">BE date</th><th scope="col">Ours</th><th scope="col" className="k-money">IGST booked</th><th scope="col" className="k-money">IGST in 2B</th><th scope="col" className="k-money">Difference</th></tr></thead>
+          <tbody>
+            {rows.map(([state, row]) => {
+              const side = row.entry ?? row.line!;
+              return (
+                <tr key={`${state}-${row.entry?.id ?? ""}-${row.line?.id ?? ""}`}>
+                  <td className={state.startsWith("Matched") ? "" : "bad"}>{state}</td>
+                  <td>{side.port_code}</td><td>{side.be_number}</td><td>{date(side.be_date)}</td>
+                  <td>{row.entry ? <Link to={`/purchasing/bills-of-entry/${row.entry.id}`}>{row.entry.number}</Link> : ""}</td>
+                  <td className="k-money">{row.entry ? money(row.entry.igst) : ""}</td>
+                  <td className="k-money">{row.line ? money(row.line.igst) : ""}</td>
+                  <td className="k-money">{row.difference !== undefined ? money(row.difference) : ""}</td>
+                </tr>
+              );
+            })}
+            {rows.length === 0 && <tr><td colSpan={8} className="muted">No bill of entry this year, and no IMPG entry in the 2B.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
 interface Report {
   period: string;
   statement: { id: number; period: string; gstin: string; generated_on: string | null; lines: number } | null;
-  matched: Pair[]; differs: Pair[]; not_in_2b: Pair[]; not_booked: Pair[];
+  matched: Pair[]; differs: Pair[]; not_in_2b: Pair[]; not_booked: Pair[]; imports?: Imports;
   totals: { filed: string; booked: string; matched: string; waiting: string; not_booked: string };
   notes: string[];
 }
@@ -174,6 +218,7 @@ export default function Gstr2b() {
                   </table>
                 </div>
               </section>
+              {data.imports && <ImportsSection imports={data.imports} />}
             </>
           )}
         </>

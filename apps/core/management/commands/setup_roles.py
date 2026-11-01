@@ -358,6 +358,13 @@ ROLES = {
         *crud("gst", "paymentvoucher", actions=("add", "view")),
         *view("accounting", "tdssection", "tdsrate"),
         *view("purchasing", "weightclaim"),
+        # Import accounting (L21): the bill of entry is booked and voided here, its duty paid like any bill.
+        *crud("purchasing", "billofentry", actions=("add", "change", "delete", "view")),
+        *crud("purchasing", "billofentryline", actions=("change", "delete", "view")),
+        "purchasing.post_billofentry",
+        *crud("purchasing", "customsvaluationdefault", actions=("add", "change", "view")),
+        *view("purchasing", "goodsreceiptline", "purchaseratecontract", "ratedifferencenote", "ratedifferenceline"),
+        *view("accounting", "gstreturnfiled"),
     ],
     "Warehouse Staff": [
         *REFERENCE,
@@ -440,6 +447,14 @@ ROLES = {
         *crud("purchasing", "weightclaim", actions=("add", "change", "view")),
         "purchasing.settle_weightclaim",
         *view("inventory", "gatevisit", "weighing"),
+        # Polymer bought on circulars (L16): the contracts, the circulars as published, and the supplier's
+        # rate-difference notes, drafted for the AP Manager to post.
+        *crud("purchasing", "purchaseratecontract"),
+        *crud("purchasing", "ratecontractline"),
+        *crud("purchasing", "ratedifferencenote", actions=("add", "change", "view")),
+        *view("purchasing", "ratedifferenceline"),
+        *crud("sales", "priceindex", actions=("add", "view")),
+        *crud("sales", "priceindexvalue", actions=("add", "view")),
     ],
     # -- the plant ------------------------------------------------------
     "Production Supervisor": [
@@ -718,6 +733,15 @@ for _role, _extra in (
         ("Quality Manager", ["purchasing.view_vendorprofile", "purchasing.change_vendorprofile",
                              "purchasing.set_vendor_standing"])):
     ROLES[_role] = [*ROLES[_role], *_extra]
+
+# Imports and polymer on circulars (L21, L16): the Controller reads all three; the GST Officer reads the
+# bills of entry the IMPG table is matched with, and records the returns filed.
+ROLES["Controller"] = [*ROLES["Controller"], *view(
+    "purchasing", "billofentry", "billofentryline", "customsvaluationdefault", "purchaseratecontract",
+    "ratecontractline", "ratedifferencenote", "ratedifferenceline"), *view("accounting", "gstreturnfiled"),
+    *view("sales", "priceindex", "priceindexvalue")]
+ROLES["GST Officer"] = [*ROLES["GST Officer"], *view("purchasing", "billofentry", "billofentryline"),
+                        *crud("accounting", "gstreturnfiled", actions=("add", "view"))]
 
 
 # Files kept with a record are everyone's to read and add where they may

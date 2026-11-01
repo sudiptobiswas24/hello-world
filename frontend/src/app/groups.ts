@@ -18,9 +18,9 @@ export const GROUPS: Record<string, [string, string[]][]> = {
     ["Configuration", ["reminder-levels"]],
   ],
   purchasing: [
-    ["Orders", ["requisitions", "to-quote", "rfqs", "orders", "blanket-orders", "reorder"]],
+    ["Orders", ["requisitions", "to-quote", "rfqs", "orders", "blanket-orders", "reorder", "rate-contracts", "rate-differences"]],
     ["Receiving", ["goods-in", "receive-by-scan", "weight-claims", "unbilled-freight"]],
-    ["Bills", ["bills", "payments"]],
+    ["Bills", ["bills", "payments", "bills-of-entry"]],
     ["Vendors", ["vendors", "vendor-prices"]],
     ["Reporting", ["aging", "vendor-scorecard"]],
     ["Configuration", ["reorder-rules", "budgets", "approval-policies"]],
@@ -81,7 +81,7 @@ export const GROUPS: Record<string, [string, string[]][]> = {
   ],
   settings: [
     ["People", ["logins", "role-proposals"]],
-    ["Company", ["company", "numbering", "gst-registrations", "licences", "luts", "custom-fields"]],
+    ["Company", ["company", "numbering", "gst-registrations", "licences", "luts", "gst-returns-filed", "custom-fields"]],
     ["Taxes", ["taxes", "tax-groups", "fiscal-positions", "tds-sections", "tds-rates", "tcs-sections", "tcs-rates"]],
     ["Masters", ["currencies", "exchange-rates", "countries", "units", "payment-terms", "party-tags", "charge-types"]],
     ["System", ["health", "edit-log", "problems", "import", "seeded-defaults"]],

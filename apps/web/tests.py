@@ -442,6 +442,10 @@ class EveryCollectionIsKeptOnAScreenTests(TestCase):
 
     # Every collection no screen keeps, and why it needs none.
     NO_SCREEN = {
+        "/api/purchasing/customs-valuation-defaults/": (
+            "Dated statutory figures (CVR 2007 r.10(2)), seeded by migration and confirmed by the customs "
+            "broker; read by the bill of entry, which prints the rule it took on its own screen (L21)."
+        ),
         "/api/core/party-roles/": (
             "Read only. A party is made in its role, from the customer or vendor list or by HR, "
             "and a second trading role is given on the party page (parties/<id>/roles/)."
