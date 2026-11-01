@@ -50,6 +50,23 @@ pg_isready -q || service postgresql start                              # role er
 
 ## 2. Next steps, in order
 
+**g25 in flight (1 November 2026).** Integration tree /home/user/work/g25tree, backed up at
+claude/erp-g25-integration; nothing of it is pushed to the working branch yet. Holds: round A (gate register,
+passes, weighbridge, review fixes), the interface sweep's fixes (cc1975a), the tax patch (f0289bc: items'
+default taxes, untaxed taxable lines and unnumbered bills refused, an advance's refund dated as asked), the
+outputs patch (cf52f6e: PDFs in lakhs without the missing rupee glyph, the empty ECR refused, agings footed
+with a credits group, bank auto-match line by line). Every lane of the gate is still to run on it.
+Order from here:
+1. Round B (docs/handoff/g25_purchasing_imports.md), one Opus agent; its brief names the new tax rules.
+2. O415 before round C: a supply line with no warehouse counts in every warehouse's plan, which advises
+   cancelling material the plant needs. The fix is in the row.
+3. Round C (L28 certificates of analysis, L9 scanning), then the six-lane gate on one tip, finalize, push.
+4. Open from the 1 November checks: O401 (a document saved before its lines), O405 (the demo shows a third
+   of the plant: specifications, inspections, stations, bank details, disposal accounts). Report:
+   docs/handoff/reports/drilldown_nov01.md.
+Every round now drives its flows in the browser and reads its outputs before reporting (fix_common.md).
+
+
 g18 is pushed (7b9473a, 11 October), all six lanes green on one tip. It holds:
 - fix wave 1: security and roles, trading-document rules, statutory, and
   quality and production, each reviewed before it joined (reports in
