@@ -21,6 +21,16 @@ docs/RISKS.md "Later items", apps/purchasing/models.py `allocate_landed_cost` an
   - the weighing from round A (apps/inventory, a receipt may name one) and the unit conversion;
   - PriceIndex and PriceIndexValue (apps/sales/price_variation.py). purchasing may import sales;
     accounting and core may not import either (`imports_against_the_module_graph` checks it).
+  - From 1 November (O395, O396), in the tip you start from:
+    - an item declares its default taxes (Item.sales_taxes, purchase_taxes); a line that names
+      none takes them;
+    - accounting.gst.refuse_untaxed_lines refuses a line whose item declares taxes but which names
+      none; on the purchase side, only for a vendor whose invoice carries GST (accounting.gst.charges_gst:
+      a regular registrant). An overseas supplier's bill carries no GST, so neither rule touches it:
+      the import IGST is the bill of entry's;
+    - a bill from a regular registrant is not posted without the vendor's invoice number (Bill.post);
+    - a rate-difference note is a supplementary bill or a debit note, so both rules apply to it: give
+      its lines their taxes, and the supplier's note number as its reference.
 
 ## Order, and why
 L23 first: the bill of entry's duty and the freight on polymer both land through it. Then L21, then
