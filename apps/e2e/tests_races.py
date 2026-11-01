@@ -2902,7 +2902,11 @@ class ImportRaceTests(RaceCase):
 
         self.import_order()
         draft = self.entry()
-        self.once(race(JournalEntry, *[lambda: BillOfEntry.objects.get(pk=draft.pk).post()] * 2))
+        outcomes = race(JournalEntry, *[lambda: BillOfEntry.objects.get(pk=draft.pk).post()] * 2)
+        self.once(outcomes)
+        # Refused by its own status, read under the lock. Without the lock the duty bill's duplicate-invoice
+        # check stops the second one instead: the books come out right, and this test would prove nothing.
+        self.assertIn(" is posted", next(o for o in outcomes if o != "done"))
         draft.refresh_from_db()
         self.assertEqual(draft.landings.count(), 2)
         self.assertEqual(self.balance(self.duty_payable), Decimal("-1214364.00"))
@@ -2929,19 +2933,31 @@ class ImportRaceTests(RaceCase):
                                                                   reason="Wrong port")
         outcomes = race_in_order((BillPayment, JournalEntry), *((pay, void) if paying_first else (void, pay)))
         bill.refresh_from_db()
-        return outcomes, bill, total
+        posted.refresh_from_db()
+        from apps.accounting.settlement import unapplied
+
+        left = unapplied(Payment.objects.filter(pk=payment.pk)).first()
+        return outcomes, bill, posted.void_note, left.unallocated if left else Decimal("0"), total
+
+    # Either way round the customs duty payable ends at +12,14,364.00, a debit: the bill credited it
+    # 12,14,364.00, the payment debited it 12,14,364.00 and the void's debit note debited it again. The
+    # customs house holds money of ours. Paid first, that is the debit note's refund due; voided first, it is
+    # the payment's money still unallocated. (The refund is on the note: a bill's refund_due() is always 0.)
 
     def test_a_bill_of_entry_voided_as_its_duty_is_paid(self):
-        outcomes, bill, total = self.voided_and_paid(paying_first=True)
-        # Paid, then voided: the debit note leaves the customs house owing the duty back.
+        outcomes, bill, note, unallocated, total = self.voided_and_paid(paying_first=True)
         self.assertEqual(outcomes, ["done", "done"])
-        self.assertEqual(bill.refund_due(), total)
-        # The payable account's balance after the race is not asserted: on PostgreSQL it read 0.00 where I
-        # expected 12,14,364.00, not yet explained (report, fix_imports.md).
+        self.assertEqual(note.refund_due(), total)
+        self.assertEqual(bill.amount_due(), Decimal("0"))
+        self.assertEqual(unallocated, Decimal("0"))
+        self.assertEqual(self.balance(self.duty_payable), total)
 
     def test_duty_paid_as_its_bill_of_entry_is_voided(self):
-        outcomes, bill, _total = self.voided_and_paid(paying_first=False)
+        outcomes, bill, note, unallocated, total = self.voided_and_paid(paying_first=False)
         # Voided first: nothing is left to pay, and the payment is refused in words.
         self.assertEqual(outcomes[0], "done")
         self.assertTrue(outcomes[1].startswith("refused"), outcomes)
         self.assertEqual(bill.amount_due(), Decimal("0"))
+        self.assertEqual(note.refund_due(), Decimal("0"))
+        self.assertEqual(unallocated, total)
+        self.assertEqual(self.balance(self.duty_payable), total)
