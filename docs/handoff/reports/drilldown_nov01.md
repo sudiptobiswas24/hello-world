@@ -54,11 +54,10 @@ Both have green model and API tests. Both appear only when the screen is used as
   - the polymer price clause and dispatch schedule.
 - **Defects:**
   - O395 (no tax).
-  - O397: a delivery's quantity cannot be changed on its draft, so a part shipment cannot be made from
-    the screen.
+  - O397: a quantity typed in a table has no border, so a delivery's reads as fixed and a part shipment
+    looks impossible. It is not: the box is there.
   - O400: an empty draft order reads "Dispatched: Done".
   - O401: a document must be created before its lines.
-  - O406: no "receive payment" on an invoice.
   - The delivery address is filled from the customer and cannot be chosen on the order.
 - **Odoo has, here missing:**
   - quotation templates;
@@ -214,7 +213,8 @@ Both have green model and API tests. Both appear only when the screen is used as
 1. **O395 and O396, now in g25.** They make the books wrong on the first day of real use.
 2. **O403: seed countries and standard adjustment reasons** in setup_indian_books, and say so in the
    empty choice.
-3. **O397, O398 and O401:** part shipment, the receipt's reference, and lines before the first save.
+3. **O397, O398 and O401:** table boxes that read as text, the receipt's reference, and lines before the
+   first save.
    These are the daily friction of stores and sales.
 4. **O405: a demo that shows the plant's own features.** The specifications, inspections and a gate
    login are what a buyer of this system asks to see first.
@@ -225,3 +225,8 @@ Both have green model and API tests. Both appear only when the screen is used as
 
 The suite passing said none of this. The two books defects were found by using the screens, which is
 the one test that had not been run.
+
+
+**Correction (same day).** O406 (no "receive payment" on an invoice) was withdrawn: the button is there, as a
+link, and the probe counted buttons only. O397 was reworded: a delivery's quantity can be changed; the box has no
+border, so it reads as text.
