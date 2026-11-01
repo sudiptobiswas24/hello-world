@@ -293,6 +293,32 @@ class BillOfEntryTests(ImportPlantTestCase):
         with self.assertRaisesMessage(ValidationError, "GSTR-3B 2026-10"):
             entry.void(on_date=datetime.date(2026, 10, 21), reason="late")
 
+    def test_the_customs_broker_s_figures_are_confirmed_on_screen_and_a_posted_entry_keeps_what_it_took(self):
+        """
+        The defaults were loaded unconfirmed with no screen: nobody could confirm them (L21). The AP Manager
+        confirms or corrects them; a bill of entry posted before keeps the figures and the rule it printed.
+        """
+        from apps.purchasing.imports import CustomsValuationDefault
+
+        self.import_order()
+        posted = self.entry()  # freight given, insurance left to the rule
+        posted.post()
+        posted.refresh_from_db()
+        taken, rule = posted.insurance_taken, posted.valuation_rule
+        self.assertIn("insurance 1.125% of FOB", rule)
+        self.assertIn("unconfirmed", rule)
+        standing = CustomsValuationDefault.on(posted.be_date)
+        url = f"/api/purchasing/customs-valuation-defaults/{standing.pk}/"
+        self.assertEqual(self.client_as("Purchase Manager").patch(url, {"confirmed": True},
+                                                                  format="json").status_code, 403)
+        self.assertEqual(self.client_as("Controller").get(url).status_code, 200)
+        changed = self.client_as("AP Manager").patch(url, {"confirmed": True, "insurance_percent": "1"}, format="json")
+        self.assertEqual(changed.status_code, 200, changed.content)
+        standing.refresh_from_db()
+        self.assertTrue(standing.confirmed)
+        posted.refresh_from_db()
+        self.assertEqual((posted.insurance_taken, posted.valuation_rule), (taken, rule))
+
     def test_through_the_api_as_the_people_who_do_it(self):
         self.import_order()
         body = {"be_number": "4417823", "be_date": "2026-10-06", "port_code": "INCCU1", "currency": self.usd.pk,

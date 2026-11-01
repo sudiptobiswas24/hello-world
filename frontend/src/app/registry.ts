@@ -262,6 +262,14 @@ export const MODULES: Module[] = [
         detail: () => import("../modules/purchasing/BillOfEntryForm"),
       },
       {
+        // What a bill of entry takes freight and insurance as when the actuals are not known (CVR 2007 r.10(2)).
+        // Loaded unconfirmed: the customs broker confirms them here (L21).
+        path: "customs-valuation", label: "Customs valuation defaults", permission: "purchasing.view_customsvaluationdefault",
+        create: "purchasing.add_customsvaluationdefault", keep: "purchasing.change_customsvaluationdefault",
+        keywords: "customs freight insurance assessable valuation rule 10 cif fob", load: () => import("../modules/purchasing/CustomsValuationDefaults"),
+        detail: () => import("../modules/purchasing/CustomsValuationDefaultForm"),
+      },
+      {
         // Polymer bought on a maker's circular (L16).
         path: "rate-contracts", label: "Rate contracts", permission: "purchasing.view_purchaseratecontract",
         create: "purchasing.add_purchaseratecontract", keep: "purchasing.change_purchaseratecontract",

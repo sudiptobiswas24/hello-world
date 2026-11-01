@@ -80,6 +80,7 @@ def checks():
     if not Country.objects.exists():
         add(WARN, "Countries", "None, so no export customer or overseas vendor can be given one: "
             "python manage.py setup_indian_books adds them.")
+    _customs(add)
 
     missing_roles = sorted(set(ROLES) - set(Group.objects.values_list("name", flat=True)))
     if missing_roles:
@@ -93,6 +94,22 @@ def checks():
     _books(add)
     _settings(add)
     return found
+
+
+def _customs(add):
+    """The freight and insurance a bill of entry takes when the actuals are unknown: loaded unconfirmed (L21)."""
+    from django.utils import timezone
+
+    from apps.purchasing.imports import CustomsValuationDefault
+
+    standing = CustomsValuationDefault.objects.filter(valid_from__lte=timezone.localdate()).order_by(
+        "-valid_from").first()
+    if standing is not None and not standing.confirmed:
+        add(WARN, "Customs valuation defaults",
+            f"Freight {standing.freight_percent.normalize():f}% and insurance "
+            f"{standing.insurance_percent.normalize():f}% of FOB, from {standing.valid_from:%d %b %Y}, are not "
+            "confirmed: a bill of entry with no actual figures takes them. Have the customs broker confirm or "
+            "correct them under Purchasing > Configuration > Customs valuation defaults.")
 
 
 def _gst(add):
