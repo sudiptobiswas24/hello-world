@@ -18,8 +18,9 @@ const columns: Column<Order>[] = [
   { key: "customer_name", label: "Customer" },
   { key: "order_date", label: "Date", kind: "date", sort: "order_date", width: "8rem" },
   { key: "total", label: "Total", kind: "money", width: "9rem" },
-  { key: "delivery_status", label: "Dispatched", width: "8rem", render: (row) => PROGRESS[row.delivery_status] ?? row.delivery_status },
-  { key: "invoice_status", label: "Invoiced", width: "8rem", render: (row) => PROGRESS[row.invoice_status] ?? row.invoice_status },
+  // A draft ships and bills nothing: an empty one read "Dispatched: Done", nothing being left to ship (O400).
+  { key: "delivery_status", label: "Dispatched", width: "8rem", render: (row) => row.status === "draft" ? "—" : PROGRESS[row.delivery_status] ?? row.delivery_status },
+  { key: "invoice_status", label: "Invoiced", width: "8rem", render: (row) => row.status === "draft" ? "—" : PROGRESS[row.invoice_status] ?? row.invoice_status },
   { key: "status", label: "State", kind: "status", width: "8rem" },
 ];
 

@@ -1,4 +1,5 @@
 import datetime
+import itertools
 from decimal import Decimal
 
 from django.contrib.auth.models import Permission, User
@@ -45,6 +46,8 @@ def gstin(first_fourteen):
 def D(value):
     return Decimal(value)
 
+
+INVOICE_NUMBERS = itertools.count(1)
 
 class GstReturnTestCase(TestCase):
     def setUp(self):
@@ -133,9 +136,10 @@ class GstReturnTestCase(TestCase):
         invoice.post()
         return invoice
 
-    def buy(self, vendor, price, quantity="1", taxes=None, reference=""):
+    def buy(self, vendor, price, quantity="1", taxes=None, reference=None):
+        # A regular registrant's bill carries its invoice number (O396): one each, unless the test names one.
         bill = Bill.objects.create(vendor=vendor, bill_date=DAY, payable_account=self.ap,
-                                   reference=reference)
+                                   reference=f"INV/{next(INVOICE_NUMBERS)}" if reference is None else reference)
         line = BillLine.objects.create(
             bill=bill, item=self.sack, quantity=D(quantity), unit_price=D(price),
             expense_account=self.expense,

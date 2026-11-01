@@ -169,7 +169,7 @@ class Month:
                                  ("5020", "Material variance", X), ("5030", "Scrap", X),
                                  ("5040", "Conversion absorbed", X), ("5050", "Conversion variance", X),
                                  ("1900", "Suspense", A), ("5200", "Bad debts", X),
-                                 ("5300", "Settlement discounts", X),
+                                 ("5310", "Settlement discounts", X),  # 5300 is the books setup's stock write-off (O403)
                                  ("2400", "Net pay payable", L), ("2410", "PF payable", L), ("2420", "ESI payable", L),
                                  ("2430", "PT payable", L), ("2440", "LWF payable", L), ("1400", "Salary advances", A),
                                  ("6000", "Wages", X), ("6100", "Employer contributions", X)):
@@ -184,7 +184,7 @@ class Month:
             default_inventory_account=acct["1300"], default_cogs_account=acct["5010"],
             grni_account=acct["2150"], customer_deposit_account=acct["2300"],
             purchase_price_variance_account=acct["5150"], fx_gain_account=acct["4900"],
-            fx_loss_account=acct["5910"], settlement_discount_account=acct["5300"],
+            fx_loss_account=acct["5910"], settlement_discount_account=acct["5310"],
             bad_debt_account=acct["5200"], net_pay_account=acct["2400"])
         self.terms = PaymentTerms.objects.create(code="N30", name="Net 30", net_days=30)
         self.kg = UnitOfMeasure.objects.create(code="kg", name="Kilogram", category=UnitOfMeasureCategory.WEIGHT)

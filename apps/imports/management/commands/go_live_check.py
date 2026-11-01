@@ -70,6 +70,17 @@ def checks():
     if not Warehouse.objects.exists():
         add(FAIL, "Warehouses", "None. Make at least one before anything is received.")
 
+    # O403: a fresh plant had neither, and nothing said so until a count could not be booked.
+    from apps.core.models import Country
+    from apps.inventory.adjustments import AdjustmentReason
+
+    if not AdjustmentReason.objects.filter(is_active=True).exists():
+        add(FAIL, "Stock adjustment reasons", "None, so no adjustment and no count's difference can be booked: "
+            "run python manage.py setup_stores, or make them under Stores > Configuration > Adjustment reasons.")
+    if not Country.objects.exists():
+        add(WARN, "Countries", "None, so no export customer or overseas vendor can be given one: "
+            "python manage.py setup_indian_books adds them.")
+
     missing_roles = sorted(set(ROLES) - set(Group.objects.values_list("name", flat=True)))
     if missing_roles:
         add(FAIL, "Roles", f"Missing {', '.join(missing_roles)}: run python manage.py setup_roles.")

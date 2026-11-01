@@ -2,7 +2,9 @@
 Set up a new company's Indian books: a chart of accounts, the GST taxes
 and tax groups for the current slabs, the intra- and inter-state fiscal
 positions (and export under LUT), and the TDS and TCS accounts, with the
-TCS section for scrap.
+TCS section for scrap. It adds the countries of ISO 3166-1 too, which
+nothing else does (O403); setup_stores then seeds the stock adjustment
+reasons against the two stock accounts made here.
 
 Everything it seeds is a default for the accountant to review, and is
 listed as one (accounting.SeededDefault) until it is marked reviewed:
@@ -52,6 +54,8 @@ ACCOUNTS = [
     ("2250", "TDS payable", L, False), ("2260", "TCS payable", L, False),
     ("3000", "Capital", E, False),
     ("4000", "Sales", I, False), ("4100", "Scrap sales", I, False),
+    # The other sides of a stock adjustment, for setup_stores' reasons (O403).
+    ("4200", "Stock found on count", I, False), ("5300", "Stock written off", X, False),
     ("5000", "Purchases", X, False), ("5100", "Freight inward", X, False), ("5900", "Round off", X, False),
 ]
 SLABS = [Decimal("0"), Decimal("5"), Decimal("18"), Decimal("40")]
@@ -60,7 +64,8 @@ SLABS = [Decimal("0"), Decimal("5"), Decimal("18"), Decimal("40")]
 # setup_statutory shares (accounting.statutory_load), unconfirmed: nothing is collected at either until the
 # accountant confirms it.
 # What each account a tax or section is wired into must be, by type and by what its name says (review F12).
-PURPOSES = {"1311": ("cgst",), "1312": ("sgst",), "1313": ("igst",), "2201": ("cgst",), "2202": ("sgst",),
+PURPOSES = {"4200": ("found",), "5300": ("written off", "write-off", "write off"),
+            "1311": ("cgst",), "1312": ("sgst",), "1313": ("igst",), "2201": ("cgst",), "2202": ("sgst",),
             "2203": ("igst",), "2250": ("tds",), "2260": ("tcs",)}
 
 
@@ -112,13 +117,19 @@ class Command(BaseCommand):
                 self.made.append(f"tax {tax.code}: reverse-charge credit waits in {WAITING}")
             if gstin:
                 self.gst_settings(gstin, FiscalPosition.objects.get(code="INTER"))
+            # The countries of ISO 3166-1 (O403): an export customer or overseas vendor had none to be given.
+            from apps.core.countries import seed_countries
+
+            countries_made, countries_kept = seed_countries()
         for line in self.made:
             self.stdout.write(f"seeded, to review: {line}")
         for line in self.kept:
             self.stdout.write(f"kept as it was: {line}")
         for line in self.collisions:
             self.stdout.write(f"collision, for the accountant: {line}")
+        self.stdout.write(f"{countries_made} countries added, {countries_kept} already there.")
         self.stdout.write(f"{len(self.made)} seeded for the accountant to review, {len(self.kept)} kept.")
+        self.stdout.write("Then: python manage.py setup_stores, for the stock adjustment reasons.")
 
     def seeded(self, instance, label):
         SeededDefault.objects.create(model=instance._meta.label_lower, object_id=instance.pk, label=label[:255])

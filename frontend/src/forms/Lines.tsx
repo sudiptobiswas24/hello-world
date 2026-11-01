@@ -1,6 +1,7 @@
 import { useState } from "react";
 
 import { useAct, useReference } from "../api/hooks";
+import { TaxPicker } from "./TaxPicker";
 import { aboveZero } from "../lib/decimal";
 import { money, quantity } from "../lib/format";
 import { CommitDecimal, DecimalInput } from "./fields";
@@ -138,16 +139,9 @@ export function Lines({ lines, endpoint, parent, parentId, editable, extra = [],
               </td>
               <td>
                 {editable ? (
-                  <select
-                    multiple
-                    className="tax-select"
-                    aria-label="Taxes"
-                    value={line.taxes.map(String)}
-                    onChange={(event) => patch(line, { taxes: Array.from(event.target.selectedOptions, (o) => Number(o.value)) })}
-                  >
-                    {offered.map((tax) => <option key={tax.id} value={tax.id}>{tax.code}</option>)}
-                  </select>
-                ) : line.taxes.map(taxCode).join(", ")}
+                  <TaxPicker chosen={line.taxes} offered={taxes.data ? offered : undefined} label="Taxes"
+                    onChange={(next) => patch(line, { taxes: next })} />
+                ) : line.taxes.length ? line.taxes.map(taxCode).join(", ") : <span className="tax-chosen none">No tax</span>}
               </td>
               {extra.map((column) => <td key={column.label} className="k-quantity">{column.render(line)}</td>)}
               {centres && (

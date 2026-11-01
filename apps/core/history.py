@@ -659,15 +659,36 @@ def changes_for(event):
     rows = []
     for name, change in sorted((event.changes or {}).items()):
         try:
-            label = str(model._meta.get_field(name).verbose_name) if model else name
+            field = model._meta.get_field(name) if model else None
+            label = str(field.verbose_name) if field is not None else name
         except Exception:  # noqa: BLE001 - a field since removed keeps its line under its name
-            label = name
+            field, label = None, name
         if change.get("changed"):
             rows.append({"field": name, "label": label, "from": None, "to": None, "secret": True})
         else:
             shown = _masked if SHOWN_MASKED.search(name) else _shown
-            rows.append({"field": name, "label": label, "from": shown(change.get("from")), "to": shown(change.get("to"))})
+            rows.append({"field": name, "label": label, "from": _worded(field, shown(change.get("from"))),
+                         "to": _worded(field, shown(change.get("to")))})
     return rows
+
+
+def _worded(field, value):
+    """
+    A kept value as the record's own page words it (O399): a choice by its
+    label, yes or no for a flag. The log keeps what was stored, "ex_works",
+    "false"; only the reading of it changes, so a label renamed later reads
+    the new way and nothing kept is touched.
+    """
+    if field is None or value in (None, ""):
+        return value
+    if getattr(field, "choices", None):
+        return str(dict(field.flatchoices).get(value, value))
+    if field.get_internal_type() == "BooleanField":
+        if value in (True, "true", "True"):
+            return "Yes"
+        if value in (False, "false", "False"):
+            return "No"
+    return value
 
 
 def _masked(value):

@@ -1326,6 +1326,7 @@ class BlanketOrder(AuditModel):
 
 
 class BlanketOrderLine(TaxedLineMixin, AuditModel):
+    TAX_SIDE = "purchase"  # which of an item's default taxes it takes (O395)
     blanket = models.ForeignKey(BlanketOrder, related_name="lines", on_delete=models.CASCADE)
     item = models.ForeignKey(Item, on_delete=models.PROTECT, related_name="blanket_lines")
     uom = models.ForeignKey(UnitOfMeasure, on_delete=models.PROTECT, related_name="+")
@@ -2088,6 +2089,10 @@ class PurchaseOrder(Extensible, TaxedDocumentMixin, ChangesWithinItsApproval, Ap
             raise ValidationError("Cannot confirm an order with no lines.")
         # Weighed in the base currency at its own date's rate, or not confirmed (review of O293).
         in_base(self.total(), self.currency, self.order_date)
+        from apps.accounting.gst import refuse_untaxed_lines
+
+        refuse_untaxed_lines(self.lines.all(), self.vendor, f"{self.number or 'This order'} is not confirmed",
+                             purchase=True)
         if PurchaseApprovalPolicy.active() is not None:
             # What is left on a budget weighs every confirmed order on it: two
             # confirmed at once each found it all there.
@@ -2500,6 +2505,7 @@ class PurchaseOrder(Extensible, TaxedDocumentMixin, ChangesWithinItsApproval, Ap
         return bill
 
 class PurchaseOrderLine(TaxedLineMixin, AuditModel):
+    TAX_SIDE = "purchase"  # which of an item's default taxes it takes (O395)
     order = models.ForeignKey(PurchaseOrder, related_name="lines", on_delete=models.CASCADE)
     item = models.ForeignKey(
         Item, null=True, blank=True, on_delete=models.PROTECT,
@@ -4431,6 +4437,21 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             from .tds import refuse_posting_without_a_rate
 
             refuse_posting_without_a_rate(self)
+        if not (self.is_debit_note() or self.is_prepayment or self.is_opening_balance):
+            # The input credit is claimed against the vendor's invoice number, and the check that refuses
+            # one invoice billed twice keys on it: a blank one passed both (O396). A note carries the
+            # supplier's credit note under its own rule; an advance has no invoice yet.
+            from apps.accounting.gst import GstSettings, charges_gst, refuse_untaxed_lines
+
+            # Under GST, from a vendor whose invoice carries the tax the credit is claimed on: the plant is
+            # registered, so every real bill from a regular registrant.
+            if GstSettings.active() is not None and charges_gst(self.vendor) and not self.reference.strip():
+                raise ValidationError({"reference": [
+                    f"{self.number or 'This bill'} is not posted without the vendor's invoice number: the "
+                    "input credit is claimed against it, and it is what tells this invoice from one billed "
+                    "twice."]})
+            refuse_untaxed_lines(self.lines.all(), self.vendor, f"{self.number or 'This bill'} is not posted",
+                                 purchase=True)
         if not self.number:
             if self.is_debit_note():
                 self.number = DocumentSequence.next_for(
@@ -5140,6 +5161,7 @@ BILL_FIGURES = (
 
 
 class BillLine(PostedLineMixin, TaxedLineMixin, AuditModel):
+    TAX_SIDE = "purchase"  # which of an item's default taxes it takes (O395)
     bill = models.ForeignKey(Bill, related_name="lines", on_delete=models.CASCADE)
     held_base = models.DecimalField(
         max_digits=18, decimal_places=2, null=True, blank=True, editable=False,

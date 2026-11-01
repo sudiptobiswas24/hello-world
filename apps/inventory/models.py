@@ -208,6 +208,21 @@ class Item(Extensible, AuditModel):
     )
     sku = models.CharField(max_length=64, unique=True)
     name = models.CharField(max_length=255)
+    # O395: what a line of this item is taxed at when it names nothing. A line typed on screen carried no
+    # tax at all, because nothing said what an item bears and the picker was too small to use: a rep's
+    # order of 2,24,000.00 was confirmed, shipped and invoiced with no GST. The intra-state pair is
+    # named here; the party's fiscal position turns it into IGST across a state line, or IGST 0 for an
+    # export, as it does for a line that names it.
+    sales_taxes = models.ManyToManyField(
+        "accounting.Tax", blank=True, related_name="+",
+        help_text="The taxes a sales line of this item takes when it names none: for a GST good, the "
+                  "intra-state pair (CGST and SGST); the customer's fiscal position maps them.",
+    )
+    purchase_taxes = models.ManyToManyField(
+        "accounting.Tax", blank=True, related_name="+",
+        help_text="The taxes a purchase line of this item takes when it names none, mapped by the "
+                  "vendor's fiscal position as a sale's are by the customer's.",
+    )
     hsn_code = models.CharField(
         max_length=8, blank=True,
         help_text="The tariff code tax law classifies this under — HSN for "
