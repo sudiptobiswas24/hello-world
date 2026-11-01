@@ -9,7 +9,7 @@ A Maharashtra plant (27), the e-invoice fixtures' figures
       SGST 9% 1,350.00, 17,700.00.
   P2  Karnataka buyer, inter-state: sacks 122,500.00 IGST 22,050.00,
       freight 3,000.00 IGST 540.00; taxable 125,500.00, IGST 22,590.00,
-      148,090.00. Delivered to a second Karnataka site.
+      1,48,090.00. Delivered to a second Karnataka site.
   P3  Export, 1,000 kg at 1.37 USD: 1,370.00. Under LUT no IGST; on
       payment, IGST 18% 246.60, 1,616.60.
   P4  Credit for 10 kg of P1: 1,500.00, CGST 135.00, SGST 135.00, 1,770.00.
@@ -89,7 +89,7 @@ class IntraStateTests(TaxInvoiceTestCase):
         for expected in ["Tax Invoice", "Original for recipient", invoice.number, "10 Sep 2026",
                          f"GSTIN {self.settings.gstin}", f"GSTIN {self.mh.tax_profile.gstin}",
                          "State Maharashtra (27)", "Place of supply", "Reverse charge", "63053300",
-                         "100.00 kg", "15,000.00", "CGST 9% 1,350.00", "SGST 9% 1,350.00",
+                         "100 kg", "15,000.00", "CGST 9% 1,350.00", "SGST 9% 1,350.00",
                          "CGST @ 9%", "SGST @ 9%", "17,700.00", "Plot 12, MIDC Chakan",
                          "3 Market Yard", "Authorised signatory",
                          "Total in words: Rupees seventeen thousand seven hundred only."]:
@@ -121,8 +121,8 @@ class InterStateTests(TaxInvoiceTestCase):
             ("996511", D("3000.00"), [("IGST", D("18"), D("540.00"))])])
         self.assertEqual(printed["delivery"]["address"], ["Plot 7, KIADB", "Dharwad Karnataka 580011"])
         text = self.text(invoice)
-        for expected in ["Karnataka (29)", "IGST 18% 22,050.00", "144,550.00", "IGST @ 18%", "22,590.00",
-                         "148,090.00", "DELIVERED TO", "Plot 7, KIADB",
+        for expected in ["Karnataka (29)", "IGST 18% 22,050.00", "1,44,550.00", "IGST @ 18%", "22,590.00",
+                         "1,48,090.00", "DELIVERED TO", "Plot 7, KIADB",
                          "less 2%"]:
             with self.subTest(expected=expected):
                 self.assertIn(expected, text)
@@ -231,7 +231,7 @@ class CreditNoteTests(TaxInvoiceTestCase):
         self.assertEqual(printed["taxes"], [("CGST", D("9"), D("135.00")), ("SGST", D("9"), D("135.00"))])
         self.assertEqual(printed["place_of_supply"], "Maharashtra (27)")
         text = self.text(note)
-        for expected in ["Credit Note", f"{invoice.number} dated 10 Sep 2026", "63053300", "10.00 kg",
+        for expected in ["Credit Note", f"{invoice.number} dated 10 Sep 2026", "63053300", "10 kg",
                          "1,500.00", "CGST @ 9%", "1,770.00"]:
             with self.subTest(expected=expected):
                 self.assertIn(expected, text)

@@ -26,6 +26,7 @@ from apps.core.approvals import (
     told,
     ApprovableMixin, ApprovalStatus, ChangesWithinItsApproval, asks_its_policy_when_taxes_change, authors,
 )
+from apps.core.documents import grouped
 from apps.core.history import EventKind, record
 from apps.core.recurrence import RecurrenceInterval, add_interval, run_date, still_to_take
 from apps.core.models import (
@@ -4424,6 +4425,9 @@ def ar_aging(as_of=None, invoices=None):
     """
     as_of = to_date(as_of) or timezone.localdate()
     buckets = {"current": [], "1-30": [], "31-60": [], "61-90": [], "90+": []}
+    # The caller's scope (a rep's own customers), kept before `invoices` becomes the unpaid ones below.
+    scoped = invoices is not None
+    base = Invoice.objects.all() if invoices is None else invoices
 
     invoices = (
         not_paid_in_full((Invoice.objects.all() if invoices is None else invoices)
@@ -4454,6 +4458,23 @@ def ar_aging(as_of=None, invoices=None):
                 "days_overdue": max(days, 0),
                 "amount_due": row["outstanding"],
             })
+
+    # O412: what customers are owed back, as outstanding_balance counts it, so the report foots to the
+    # ledger. Left out, an open credit note of 27,187.20 put the aging that much above the receivables.
+    credits = buckets["credits"] = []
+    for note in base.filter(posted=True, credits__isnull=False, invoice_date__lte=as_of).select_related(
+            "customer").prefetch_related(*INVOICE_FIGURES, *(f"credits__{f}" for f in INVOICE_FIGURES)):
+        refund = note.refund_due()
+        if refund > 0:
+            credits.append({"invoice": note, "due_date": note.invoice_date, "days_overdue": 0, "amount_due": -refund})
+    payments = Payment.objects.filter(counterpart_account__in=receivable_accounts(), payment_date__lte=as_of)
+    if scoped:
+        payments = payments.filter(party__in=base.values("customer"))
+    for payment in unapplied(payments.filter(posted=True, voided_entry__isnull=True)):
+        if payment.unallocated:
+            sign = -1 if payment.direction == PaymentDirection.RECEIPT else 1
+            credits.append({"payment": payment, "due_date": payment.payment_date, "days_overdue": 0,
+                            "amount_due": sign * payment.unallocated})
 
     return {
         key: {
@@ -5432,7 +5453,7 @@ class DunningLevel(AuditModel):
             "number": invoice.number,
             "customer": invoice.customer.name,
             "days": days_overdue,
-            "amount": f"{amount:,.2f}",
+            "amount": grouped(amount),  # lakhs, as the screens and the documents show them (O409)
             "due_date": due_date.strftime("%d %b %Y") if due_date else "",
         }
         return self.subject.format(**context), self.body.format(**context)

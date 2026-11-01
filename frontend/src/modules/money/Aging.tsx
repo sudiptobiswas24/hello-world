@@ -14,6 +14,8 @@ interface Entry {
   due_date: string;
   days_overdue: number;
   amount_due: string;
+  /** invoice, bill, credit_note, debit_note, receipt or payment (O412). */
+  kind?: string;
 }
 type Buckets = Record<string, { count: number; total: string; invoices?: Entry[]; bills?: Entry[] }>;
 
@@ -27,7 +29,10 @@ export interface AgingConfig {
 }
 
 const ORDER = ["current", "1-30", "31-60", "61-90", "90+"];
-const LABEL: Record<string, string> = { current: "Not yet due", "1-30": "1–30 days late", "31-60": "31–60", "61-90": "61–90", "90+": "Over 90" };
+// What the party is owed back (an open note) or has paid ahead (money no document has taken), negative: without
+// it the total was not the ledger's, an open credit note of 27,187.20 above it (O412).
+const ALL = [...ORDER, "credits"];
+const LABEL: Record<string, string> = { current: "Not yet due", "1-30": "1–30 days late", "31-60": "31–60", "61-90": "61–90", "90+": "Over 90", credits: "Credits not applied" };
 
 /** What is owed, by how late it is, as at a date: to us or by us. */
 export function AgingReport({ title, endpoint, documents, document, party, href }: AgingConfig) {
@@ -45,8 +50,11 @@ export function AgingReport({ title, endpoint, documents, document, party, href 
 
   const data = report.data;
   const overdue = data ? sum(ORDER.slice(1).map((key) => data[key]?.total)) : "0";
-  const owed = data ? sum(ORDER.map((key) => data[key]?.total)) : "0";
-  const rows = data ? (shown ? data[shown]?.[documents] ?? [] : ORDER.flatMap((key) => data[key]?.[documents] ?? [])) : [];
+  const owed = data ? sum(ALL.map((key) => data[key]?.total)) : "0";
+  const rows = data ? (shown ? data[shown]?.[documents] ?? [] : ALL.flatMap((key) => data[key]?.[documents] ?? [])) : [];
+  // Money on account opens its receipt or payment, not a document of the list.
+  const open = (row: Entry) => row.kind === "receipt" ? `/sales/receipts/${row.id}`
+    : row.kind === "payment" ? `/purchasing/payments/${row.id}` : href(row.id);
 
   return (
     <section className="report">
@@ -59,12 +67,12 @@ export function AgingReport({ title, endpoint, documents, document, party, href 
           <div className="tiles">
             <div className="tile"><span>Owed in all</span><strong>{data ? money(owed) : "…"}</strong></div>
             <div className="tile bad"><span>Overdue</span><strong>{data ? money(overdue) : "…"}</strong></div>
-            {ORDER.map((key) => (
+            {ALL.map((key) => (
               <button key={key} type="button" className={`tile pick${shown === key ? " on" : ""}`} aria-pressed={shown === key}
                 onClick={() => set("bucket", shown === key ? null : key)}>
                 <span>{LABEL[key]}</span>
                 <strong>{data ? money(data[key]?.total) : "…"}</strong>
-                <small>{data ? `${count(data[key]?.count ?? 0)} due` : ""}</small>
+                <small>{data ? `${count(data[key]?.count ?? 0)} ${key === "credits" ? "open" : "due"}` : ""}</small>
               </button>
             ))}
           </div>
@@ -74,7 +82,7 @@ export function AgingReport({ title, endpoint, documents, document, party, href 
               <tbody>
                 {report.isPending ? <tr className="skeleton"><td colSpan={5}><span /></td></tr> : rows.map((row, index) => (
                   <tr key={`${row.id}-${index}`}>
-                    <td><Link to={href(row.id)}>{row.number}</Link></td>
+                    <td><Link to={open(row)}>{row.number}</Link></td>
                     <td>{row[party]}</td>
                     <td>{date(row.due_date)}</td>
                     <td className="k-quantity">{row.days_overdue || ""}</td>

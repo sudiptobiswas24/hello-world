@@ -511,6 +511,16 @@ class InvoiceViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.ModelV
                         "due_date": entry["invoice"].due_date,
                         "days_overdue": entry["days_overdue"],
                         "amount_due": entry["amount_due"],
+                        "kind": "credit_note" if entry["invoice"].credits_id else "invoice",
+                    } if "invoice" in entry else {
+                        # Money received that no invoice has taken (O412).
+                        "id": entry["payment"].pk,
+                        "number": entry["payment"].number,
+                        "customer": str(entry["payment"].party),
+                        "due_date": entry["payment"].payment_date,
+                        "days_overdue": 0,
+                        "amount_due": entry["amount_due"],
+                        "kind": "receipt",
                     }
                     for entry in bucket["invoices"]
                 ],

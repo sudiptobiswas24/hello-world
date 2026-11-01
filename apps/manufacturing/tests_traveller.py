@@ -149,6 +149,17 @@ class TravellerPageTests(CoatingTestCase):
                      "Coating weight (at the coater)", "16.20", "3 pairs"):
             self.assertIn(text, page)
 
+    def test_its_dates_and_figures_read_as_the_documents_print_them(self):
+        """O413: "Nov. 2, 2026" and 40000 on a page whose every other date reads 02 Nov 2026."""
+        import datetime
+
+        type(self.lam_run).objects.filter(pk=self.lam_run.pk).update(
+            scheduled_start=datetime.datetime(2026, 11, 2, 6, tzinfo=datetime.timezone.utc),
+            scheduled_end=datetime.datetime(2026, 11, 3, 6, tzinfo=datetime.timezone.utc))
+        page = self.client.get(f"/api/manufacturing/work-orders/{self.lam_run.pk}/traveller/").content.decode()
+        self.assertIn("02 Nov 2026 to 03 Nov 2026", page)
+        self.assertNotIn("Nov. 2", page)
+
     def test_a_draft_is_refused(self):
         draft = WorkOrder.objects.create(item=self.lam_bag, bom=self.lam_spec.bom,
                                          quantity_ordered=Decimal("100"), uom=self.pcs,

@@ -2,7 +2,7 @@
 
 from reportlab.lib.units import mm
 
-from apps.core.documents import render_document, rupees_in_words
+from apps.core.documents import grouped, render_document, rupees_in_words
 
 from .payroll import ComponentKind
 
@@ -27,13 +27,13 @@ def payslip_pdf(slip):
         if line.kind == ComponentKind.EMPLOYER_COST:
             continue
         rows.append([line.description, "" if line.quantity is None else f"{line.quantity.normalize():f}",
-                     f"{earned:,.2f}" if earned != "" else "", f"{taken:,.2f}" if taken != "" else ""])
+                     grouped(earned) if earned != "" else "", grouped(taken) if taken != "" else ""])
     totals = [["Earnings", slip.gross()], ["Deductions", slip.deductions()], ["Net pay", slip.net()]]
     employer = [line for line in slip.lines.all() if line.kind == ComponentKind.EMPLOYER_COST]
     note = f"Net pay: {rupees_in_words(slip.net())}."
     if employer:
         note += " Paid by the employer besides: " + ", ".join(
-            f"{line.description} {line.amount:,.2f}" for line in employer) + "."
+            f"{line.description} {grouped(line.amount)}" for line in employer) + "."
     return render_document(
         heading="Payslip", document=slip, party=employee.party, address=None, meta=meta, totals=totals,
         party_label="EMPLOYEE", note=note, number=f"{run.number}-{employee.employee_number}" if run.number else "",

@@ -52,9 +52,54 @@ def address_block(address):
     return "" if address is None else address.formatted().replace("\n", "<br/>")
 
 
+def grouped(value, places=2, indian=True):
+    """
+    A figure with its thousands marked, the Indian way unless told otherwise:
+    17,64,000.00, not 1,764,000.00 (O409). Every PDF printed the western way
+    under an amount in words that said "seventeen lakh", while every screen
+    showed lakhs. The last three digits, then pairs.
+    """
+    value = Decimal(value)
+    text = f"{abs(value):.{places}f}"
+    whole, _, fraction = text.partition(".")
+    if indian and len(whole) > 3:
+        head, tail = whole[:-3], whole[-3:]
+        pairs = []
+        while len(head) > 2:
+            pairs.insert(0, head[-2:])
+            head = head[:-2]
+        whole = ",".join([head, *pairs, tail])
+    elif not indian:
+        whole = f"{int(whole):,}"
+    sign = "-" if value < 0 and Decimal(text) != 0 else ""
+    return sign + whole + (f".{fraction}" if fraction else "")
+
+
+def counted(quantity):
+    """A quantity as a document prints it: whole sacks as 18,00,000, a part as many places as it has, up to four."""
+    quantity = Decimal(quantity)
+    if quantity == quantity.to_integral_value():
+        return grouped(quantity, places=0)
+    places = min(max(-quantity.normalize().as_tuple().exponent, 1), 4)
+    return grouped(quantity, places=places)
+
+
 def money(amount, currency):
-    symbol = currency.symbol if currency and currency.symbol else ""
-    return f"{symbol}{amount:,.2f}"
+    """
+    Money as a document prints it (O409). Rupees in lakhs and no sign: the
+    letterhead fonts have no glyph for the rupee sign, which printed as a
+    black box before every amount, and the amount in words already says
+    "Rupees". Another currency, the western way, with its sign where the font
+    can draw it and its code where it cannot.
+    """
+    if currency is None or currency.code == "INR":
+        return grouped(amount)
+    symbol = currency.symbol or ""
+    try:
+        symbol.encode("cp1252")
+    except UnicodeEncodeError:
+        symbol = ""
+    return f"{symbol or currency.code + ' '}{grouped(amount, indian=False)}"
 
 
 def render_document(*, heading, document, party, address, meta, totals,
@@ -149,7 +194,7 @@ def render_document(*, heading, document, party, address, meta, totals,
             tax_names = ", ".join(tax.code for tax, _ in line.tax_amounts()) or "—"
             rows.append([
                 Paragraph(line.label(), style["body"]),
-                Paragraph(f"{line.quantity:,.2f}", style["right"]),
+                Paragraph(counted(line.quantity), style["right"]),
                 Paragraph(money(line.unit_price, currency), style["right"]),
                 Paragraph(
                     f"{line.discount_percent:,.0f}%" if line.discount_percent else "—",

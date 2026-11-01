@@ -181,8 +181,8 @@ class OnPaperAndInTheEInvoiceTests(TcsTestCase):
         self.assertEqual([(row["section"], row["rate"], row["base"], row["amount"]) for row in printed["tcs"]],
                          [("206C(1)", D("1"), D("106200.00"), D("1062.00"))])
         text = " ".join(" ".join(printed_text(render_invoice_pdf, invoice)).split())
-        self.assertIn("TCS collected u/s 206C(1) @ 1% on 106,200.00 1,062.00", text)
-        self.assertIn("107,262.00", text)
+        self.assertIn("TCS collected u/s 206C(1) @ 1% on 1,06,200.00 1,062.00", text)
+        self.assertIn("1,07,262.00", text)
         values = build(invoice)["ValDtls"]
         self.assertEqual((values["OthChrg"], values["RndOffAmt"], values["TotInvVal"]), (1062.0, 0.0, 107262.0))
 
@@ -293,7 +293,7 @@ class TheSectionTheLawNamesOnTheDayTests(TcsTestCase):
         self.assertEqual([row.section_code for row in (before.tcs_collected.get(), after.tcs_collected.get())],
                          ["206C(1)", "394(1)"])
         text = " ".join(" ".join(printed_text(render_invoice_pdf, after)).split())
-        self.assertIn("TCS collected u/s 394(1) @ 1% on 106,200.00", text)
+        self.assertIn("TCS collected u/s 394(1) @ 1% on 1,06,200.00", text)
         self.section.code = "RENAMED"
         self.section.save()
         self.assertEqual([row["section"] for row in tcs_return(datetime.date(2026, 7, 1), datetime.date(2026, 9, 30))],
