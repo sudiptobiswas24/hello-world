@@ -18,9 +18,9 @@ export default function AssetCategories() {
       endpoint="/api/assets/categories/"
       columns={columns}
       rowKey={(row) => row.id}
-      rowHref={(row) => `/accounts/categories/${row.id}`}
+      rowHref={(row) => `/accounts/asset-categories/${row.id}`}
       searchHint="Code or name"
-      create={{ href: "/accounts/categories/new", permission: "assets.add_assetcategory" }}
+      create={{ href: "/accounts/asset-categories/new", permission: "assets.add_assetcategory" }}
     />
   );
 }

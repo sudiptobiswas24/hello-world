@@ -317,6 +317,121 @@ class EverySmartButtonNarrowsItsListTests(TestCase):
         self.assertEqual(wrong, [])
 
 
+class EveryLinkNamesAScreenTests(TestCase):
+    """
+    A link in the application names a screen its module registers. Asset
+    categories, reminder levels and item attributes linked their rows, their
+    New button and their form's way back to /accounts/categories,
+    /sales/dunning-levels and /stores/attributes: no such screens, so every
+    row opened "No such screen" and nothing could be added from the list.
+    Found by opening every screen as each person; a list with no rows hid
+    two of the three.
+    """
+
+    def test_every_literal_link_is_registered_under_its_module(self):
+        import pathlib
+        import re
+
+        source = pathlib.Path(__file__).resolve().parents[2] / "frontend" / "src"
+        registry = (source / "app" / "registry.ts").read_text()
+        starts = [(m.start(), m.group(1)) for m in re.finditer(r'\n    key: "(\w+)"', registry)]
+        self.assertGreater(len(starts), 8)
+        screens = set()
+        for index, (at, module) in enumerate(starts):
+            block = registry[at: starts[index + 1][0] if index + 1 < len(starts) else len(registry)]
+            screens |= {f"{module}/{path}" for path in re.findall(r'path: "([^"]+)"', block)}
+        modules = {module for _, module in starts}
+        # Django's own pages, which share the Accounts module's prefix and are left by a full page load.
+        django = {"accounts/login", "accounts/logout", "accounts/second-factor"}
+        wrong, seen = [], 0
+        for path in source.rglob("*.ts*"):
+            if path.name == "registry.ts" or ".test." in path.name:
+                continue
+            for number, line in enumerate(path.read_text().splitlines(), 1):
+                for module, screen in re.findall(r'[`"\'](?:/app)?/([a-z]+)/([a-z0-9-]+)(?=[/`"\'?$])', line):
+                    if module not in modules or f"{module}/{screen}" in django:
+                        continue
+                    seen += 1
+                    if f"{module}/{screen}" not in screens:
+                        wrong.append(f"{path.relative_to(source)}:{number}: /{module}/{screen}")
+        self.assertGreater(seen, 100)
+        # A New link opens path/new, which the router offers only where the registry says the screen makes one:
+        # Claims, leave policies, planning settings and the company each offered New from the list alone, and
+        # the router refused them when it learnt to refuse an address that names no record (O404).
+        makers = set()
+        for index, (at, module) in enumerate(starts):
+            block = registry[at: starts[index + 1][0] if index + 1 < len(starts) else len(registry)]
+            for entry in re.split(r"\n      \{", block)[1:]:
+                path = re.search(r'path: "([^"]+)"', entry)
+                if path and "create:" in entry:
+                    makers.add(f"{module}/{path.group(1)}")
+        for path in source.rglob("*.tsx"):
+            for module, screen in re.findall(r'["`]/([a-z]+)/([a-z0-9-]+)/new["`?]', path.read_text()):
+                if module in modules and f"{module}/{screen}" not in makers:
+                    wrong.append(f"{path.relative_to(source)}: /{module}/{screen}/new, and the registry says it makes none")
+        self.assertEqual(wrong, [])
+
+
+class EveryScreenIsInOneGroupTests(TestCase):
+    """
+    The menus a module's screens are offered in (frontend/src/app/groups.ts,
+    O392): every screen a module offers is in exactly one, and every name
+    there is a screen of that module. A screen left out is still offered,
+    under Other, so this is what notices it.
+    """
+
+    def test_every_screen_is_grouped_once(self):
+        import pathlib
+        import re
+
+        source = pathlib.Path(__file__).resolve().parents[2] / "frontend" / "src" / "app"
+        registry = (source / "registry.ts").read_text()
+        starts = [(m.start(), m.group(1)) for m in re.finditer(r'\n    key: "(\w+)"', registry)]
+        offered = {}
+        for index, (at, module) in enumerate(starts):
+            block = registry[at: starts[index + 1][0] if index + 1 < len(starts) else len(registry)]
+            offered[module] = set()
+            for entry in re.split(r"\n      \{", block)[1:]:
+                path = re.search(r'path: "([^"]+)"', entry)
+                if path:
+                    offered[module].add((path.group(1), "hidden: true" in entry))
+        groups = (source / "groups.ts").read_text()
+        module_at = [(m.start(), m.group(1)) for m in re.finditer(r"\n  (\w+): \[", groups)]
+        self.assertEqual({module for _, module in module_at}, set(offered))
+        wrong = []
+        for index, (at, module) in enumerate(module_at):
+            block = groups[at: module_at[index + 1][0] if index + 1 < len(module_at) else len(groups)]
+            named = re.findall(r'"([a-z0-9-]+)"', re.sub(r'\["[^"]+", \[', "[", block))
+            known = {path for path, _ in offered[module]}
+            wrong += [f"{module}: {path} is no screen" for path in named if path not in known]
+            wrong += [f"{module}: {path} is in {named.count(path)} groups" for path in set(named) if named.count(path) > 1]
+            wrong += [f"{module}: {path} is in no group" for path, hidden in offered[module]
+                      if not hidden and path not in named]
+        self.assertEqual(sorted(wrong), [])
+
+
+class NoAbsenceIsAskedOfWhatIsShownTests(TestCase):
+    """
+    A screen folded into a closed menu (O392) is hidden, and Playwright's role
+    lookup skips hidden elements: expect(page.get_by_role("link", ...))
+    .to_have_count(0) passes for a screen the role is offered. Seven
+    permission checks were written that way. BrowserMixin.links() counts
+    shown and folded alike; this keeps the vacuous form out.
+    """
+
+    def test_no_browser_test_asks_a_link_absent_by_role(self):
+        import pathlib
+        import re
+
+        apps = pathlib.Path(__file__).resolve().parents[1]
+        found = []
+        for path in apps.rglob("tests_*.py"):
+            for number, line in enumerate(path.read_text().splitlines(), 1):
+                if re.search(r'get_by_role\("link"[^\n]*\)\)\.to_have_count\(0\)', line):
+                    found.append(f"{path.relative_to(apps)}:{number}")
+        self.assertEqual(found, [])
+
+
 class EveryCollectionIsKeptOnAScreenTests(TestCase):
     """
     The mirror of the test above. Fifty collections had an API and no

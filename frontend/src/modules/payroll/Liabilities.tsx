@@ -29,7 +29,7 @@ export default function Liabilities() {
           <table>
             <thead><tr><th scope="col">Account</th><th scope="col">Month</th><th scope="col" className="k-money">Deducted</th><th scope="col" className="k-money">Paid over</th><th scope="col" className="k-money">Owed</th><th scope="col">Due</th></tr></thead>
             <tbody>
-              {(report.data ?? []).map((row) => (
+              {report.isLoading ? <tr className="skeleton"><td colSpan={6}><span /></td></tr> : (report.data ?? []).map((row) => (
                 <tr key={`${row.account_code}-${row.period}`} className={row.overdue ? "late" : undefined}>
                   <td><strong>{row.account_code}</strong> {row.account_name}</td>
                   <td>{row.period.slice(0, 7)}</td>

@@ -22,6 +22,11 @@ export default function StatutoryFigures() {
       rowKey={(row) => row.id}
       rowHref={(row) => `/payroll/statutory-figures/${row.id}`}
       create={{ href: "/payroll/statutory-figures/new", permission: "hr.add_statutoryfigure" }}
+      emptyHint={<>
+        Until they are here and confirmed, a pay run, a bill that deducts TDS and an invoice that collects TCS are
+        refused. They are loaded from the dated files in statutory/ with <code>manage.py setup_statutory</code>, or
+        added one at a time with New, then confirmed here by the Controller.
+      </>}
     />
   );
 }

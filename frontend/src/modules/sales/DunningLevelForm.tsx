@@ -5,7 +5,7 @@ export default function DunningLevelForm() {
   return (
     <RecordScreen
       endpoint="/api/sales/dunning-levels/"
-      back="/sales/dunning-levels"
+      back="/sales/reminder-levels"
       backLabel="Reminder levels"
       newTitle="New reminder level"
       heading={(row) => String(row.name ?? "")}
