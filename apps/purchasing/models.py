@@ -107,8 +107,6 @@ from apps.accounting.settlement import (
     refuse_other_control_account,
     booked_beside,
     settlement_discount_to_take,
-    standing_on_account,
-    unapplied,
     withdraw_discount,
     undone_by_note,
 )
@@ -6520,25 +6518,18 @@ def billed_not_held(vendor=None):
 def vendor_balance(vendor):
     """
     Net position with this vendor: what is owed on bills, less cash they
-    owe back on debit notes.
+    owe back on debit notes, less what we paid ahead that no bill has
+    taken, in the base currency: each at the rate it posted at, as the
+    payable holds it (O416, accounting.balances, which sales'
+    outstanding_balance asks too). An unpaid USD 50,000 bill counted
+    50,000 beside rupees where the payable held 41,62,500.00.
 
     Signed, so a vendor who has been overpaid reads negative rather than
     silently as zero.
     """
-    bills = not_paid_in_full(Bill.objects.filter(
-        vendor=vendor, posted=True, debits__isnull=True
-    )).prefetch_related(*BILL_FIGURES)
-    owed = sum((bill.amount_due() for bill in bills), Decimal("0"))
+    from apps.accounting.balances import party_balance, side
 
-    notes = Bill.objects.filter(
-        vendor=vendor, posted=True, debits__isnull=False
-    ).prefetch_related(*BILL_FIGURES, *(f"debits__{f}" for f in BILL_FIGURES))
-    refundable = sum((note.refund_due() for note in notes), Decimal("0"))
-    # Paid ahead of the bill, or refunded to us before a debit note took it: in payables all the
-    # same, and the mirror of what a customer's balance counts.
-    received, paid_out = standing_on_account(
-        Payment.objects.filter(party=vendor, counterpart_account__in=payable_accounts()))
-    return owed - refundable - paid_out + received
+    return party_balance(side("payable"), vendor)
 
 
 @takes_back
@@ -6562,64 +6553,16 @@ def payable_accounts():
     return accounts | Account.objects.filter(pk=default) if default else accounts
 
 
-AGING_BUCKETS = ((1, 30), (31, 60), (61, 90))
-
-
 def ap_aging(as_of=None):
     """
-    Outstanding vendor bills bucketed by how overdue they are — the mirror
-    of ar_aging(), and the thing a company looks at before deciding what
-    it can afford to pay this week.
+    What is owed to vendors, by how late it is: the mirror of ar_aging(), and
+    the thing a company looks at before deciding what it can afford to pay
+    this week. In the base currency with each row's own currency beside it,
+    through the one accounting.balances.aging both sides ask (O416).
     """
-    as_of = to_date(as_of) or timezone.localdate()
-    buckets = {"current": [], "1-30": [], "31-60": [], "61-90": [], "90+": []}
+    from apps.accounting.balances import aging, side
 
-    bills = not_paid_in_full(Bill.objects.filter(posted=True, debits__isnull=True)).select_related(
-        "vendor", "currency").prefetch_related(*BILL_FIGURES)
-    for bill in bills:
-        if bill.amount_due() <= 0:
-            continue
-        # A row per outstanding installment, for the reason ar_aging gives.
-        for row in bill.installments():
-            if row["outstanding"] <= 0:
-                continue
-            days = (as_of - row["due_date"]).days
-            if days <= 0:
-                key = "current"
-            elif days > 90:
-                key = "90+"
-            else:
-                key = next(f"{lo}-{hi}" for lo, hi in AGING_BUCKETS if lo <= days <= hi)
-            buckets[key].append({
-                "bill": bill,
-                "due_date": row["due_date"],
-                "days_overdue": max(days, 0),
-                "amount_due": row["outstanding"],
-            })
-
-    # O412, the mirror of ar_aging's: what vendors owe back, as vendor_balance counts it.
-    credits = buckets["credits"] = []
-    for note in Bill.objects.filter(posted=True, debits__isnull=False, bill_date__lte=as_of).select_related(
-            "vendor").prefetch_related(*BILL_FIGURES, *(f"debits__{f}" for f in BILL_FIGURES)):
-        refund = note.refund_due()
-        if refund > 0:
-            credits.append({"bill": note, "due_date": note.bill_date, "days_overdue": 0, "amount_due": -refund})
-    for payment in unapplied(Payment.objects.filter(
-            counterpart_account__in=payable_accounts(), payment_date__lte=as_of, posted=True,
-            voided_entry__isnull=True)):
-        if payment.unallocated:
-            sign = -1 if payment.direction == PaymentDirection.DISBURSEMENT else 1
-            credits.append({"payment": payment, "due_date": payment.payment_date, "days_overdue": 0,
-                            "amount_due": sign * payment.unallocated})
-
-    return {
-        key: {
-            "count": len(entries),
-            "total": sum((entry["amount_due"] for entry in entries), Decimal("0")),
-            "bills": entries,
-        }
-        for key, entries in buckets.items()
-    }
+    return aging(side("payable"), as_of=as_of)
 
 
 def receipts_billed_by(order_line, excluding=None):

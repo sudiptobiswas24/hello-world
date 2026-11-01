@@ -833,17 +833,21 @@ class PurchasingReportViewSet(viewsets.ViewSet):
 
 
 def _bill_row(entry):
+    from apps.accounting.balances import money_of, restated_row
+
+    if "restatement" in entry:  # on a restatement's own day, what it moved the payable by (O416)
+        return restated_row(entry)
     if "payment" in entry:  # paid ahead of the bill, or refunded to us before a note took it (O412)
         payment = entry["payment"]
         return {"id": payment.pk, "number": payment.number, "reference": payment.reference,
-                "vendor": str(payment.party), "due_date": entry["due_date"], "days_overdue": 0,
-                "amount_due": str(entry["amount_due"]), "kind": "payment"}
+                "vendor": str(payment.party), **money_of(entry), "kind": "payment"}
     bill = entry["bill"]
+    if "currency" not in entry:
+        # A payment run's row: what is paid, in the bill's own currency, as the run groups it.
+        entry = {**entry, "currency": bill.currency.code if bill.currency_id else "", "due_in_currency": entry["amount_due"]}
     return {
-        "id": bill.pk, "number": bill.number, "reference": bill.reference,
-        "vendor": str(bill.vendor), "due_date": entry["due_date"],
-        "days_overdue": entry["days_overdue"], "amount_due": str(entry["amount_due"]),
-        "kind": "debit_note" if bill.debits_id else "bill",
+        "id": bill.pk, "number": bill.number, "reference": bill.reference, "vendor": str(bill.vendor),
+        **money_of(entry), "kind": "debit_note" if bill.debits_id else "bill",
     }
 
 
@@ -854,7 +858,7 @@ def _serialise_aging(report):
     had asked it with nothing owed.
     """
     return {
-        key: {"count": bucket["count"], "total": str(bucket["total"]),
+        key: {"count": bucket["count"], "total": bucket["total"],
               "bills": [_bill_row(entry) for entry in bucket["bills"]]}
         for key, bucket in report.items()
     }

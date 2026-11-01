@@ -116,7 +116,6 @@ from apps.accounting.settlement import (
     booked_beside,
     settlement_discount_to_take,
     entries_that_settled,
-    standing_on_account,
     take_settlement_discount,
     withdraw_discount,
     undone_by_note,
@@ -3908,21 +3907,16 @@ def bad_debt_report(start=None, end=None):
 def outstanding_balance(customer):
     """
     What this customer currently owes across all posted invoices, less
-    cash owed back to them on credit notes. Signed, as vendor_balance is:
-    a customer who has been over-credited reads negative.
+    cash owed back to them on credit notes and their money no invoice has
+    taken, in the base currency: each at the rate it posted at, as the
+    receivable holds it (O416, accounting.balances). Signed, as
+    vendor_balance is: a customer who has been over-credited reads negative.
+    Added at face value, a USD customer owing 50,000 read 50,000 beside
+    rupees.
     """
-    invoices = not_paid_in_full(Invoice.objects.filter(
-        customer=customer, posted=True, credits__isnull=True
-    )).prefetch_related(*INVOICE_FIGURES)
-    owed = sum((invoice.amount_due() for invoice in invoices), Decimal("0"))
-    notes = Invoice.objects.filter(
-        customer=customer, posted=True, credits__isnull=False
-    ).prefetch_related(*INVOICE_FIGURES, *(f"credits__{f}" for f in INVOICE_FIGURES))
-    # Money they sent that no invoice has taken yet is theirs against what they owe: left out, a
-    # customer who paid on account read as owing it, and their orders were held for credit.
-    received, paid_out = standing_on_account(
-        Payment.objects.filter(party=customer, counterpart_account__in=receivable_accounts()))
-    return owed - sum((note.refund_due() for note in notes), Decimal("0")) - received + paid_out
+    from apps.accounting.balances import party_balance, side
+
+    return party_balance(side("receivable"), customer)
 
 
 @takes_back
@@ -4042,60 +4036,15 @@ def committed_balance(customer):
     """
     Total exposure: what is owed, plus what has been promised but not yet
     billed. A limit that counted only posted invoices would wave through
-    any number of confirmed orders.
+    any number of confirmed orders. In the base currency, as the credit
+    limit is: committed_in_base, the one reading (O416).
     """
-    uninvoiced = Decimal("0")
-    orders = SalesOrder.objects.filter(
-        customer=customer, status=OrderStatus.CONFIRMED
-    ).prefetch_related(models.Prefetch("lines", queryset=SalesOrderLine.objects.prefetch_related(
-        "taxes", models.Prefetch("invoice_lines",
-                                 queryset=InvoiceLine.objects.select_related("invoice")))))
-    for order in orders:
-        for line in order.lines.all():
-            remaining = line.quantity_uninvoiced()
-            if remaining <= 0:
-                continue
-            share = remaining / line.quantity if line.quantity else Decimal("0")
-            uninvoiced += round_money(line.total() * share)
-
-    # A down payment is billed against an order whose lines are still
-    # uninvoiced, so the same money appears in both halves of the sum.
-    # Counting it twice would use up a customer's credit limit for taking
-    # money from them up front, which is backwards.
-    deposits = Invoice.objects.filter(
-        customer=customer, posted=True, is_down_payment=True
-    ).prefetch_related(*INVOICE_FIGURES)
-    outstanding_deposits = sum(
-        (deposit.deposit_unapplied() for deposit in deposits), Decimal("0")
-    )
-    return outstanding_balance(customer) + uninvoiced - outstanding_deposits
+    return committed_in_base(customer)
 
 
 def outstanding_in_base(customer):
-    """
-    outstanding_balance in the base currency: each invoice, note and payment
-    on account at the rate it was booked at, which is what the receivable
-    holds. Added at face value, dollars and euros made one figure that was
-    neither (O77).
-    """
-    def base(amount, rate):
-        return round_money(amount * (rate or Decimal("1")))
-
-    invoices = not_paid_in_full(Invoice.objects.filter(
-        customer=customer, posted=True, credits__isnull=True
-    )).prefetch_related(*INVOICE_FIGURES)
-    owed = sum((base(invoice.amount_due(), invoice.exchange_rate) for invoice in invoices), Decimal("0"))
-    notes = Invoice.objects.filter(
-        customer=customer, posted=True, credits__isnull=False
-    ).prefetch_related(*INVOICE_FIGURES, *(f"credits__{f}" for f in INVOICE_FIGURES))
-    refunds = sum((base(note.refund_due(), note.exchange_rate) for note in notes), Decimal("0"))
-    on_account = Decimal("0")
-    for payment in unapplied(Payment.objects.filter(
-            party=customer, counterpart_account__in=receivable_accounts(), posted=True,
-            voided_entry__isnull=True)):
-        sign = 1 if payment.direction == PaymentDirection.RECEIPT else -1
-        on_account += sign * base(payment.unallocated, payment.exchange_rate)
-    return owed - refunds - on_account
+    """outstanding_balance, which is in the base currency (O416); the name the credit screens ask by."""
+    return outstanding_balance(customer)
 
 
 def committed_in_base(customer):
@@ -4107,6 +4056,8 @@ def committed_in_base(customer):
     each was booked. Read at today's rate, one exposure figure was built
     from two kinds of rate.
     """
+    from apps.accounting.balances import in_base_as_booked
+
     uninvoiced = Decimal("0")
     orders = SalesOrder.objects.filter(
         customer=customer, status=OrderStatus.CONFIRMED
@@ -4123,8 +4074,7 @@ def committed_in_base(customer):
     deposits = Invoice.objects.filter(
         customer=customer, posted=True, is_down_payment=True
     ).prefetch_related(*INVOICE_FIGURES)
-    held = sum((round_money(deposit.deposit_unapplied() * (deposit.exchange_rate or Decimal("1")))
-                for deposit in deposits), Decimal("0"))
+    held = sum((in_base_as_booked(deposit, deposit.deposit_unapplied()) for deposit in deposits), Decimal("0"))
     return outstanding_in_base(customer) + uninvoiced - held
 
 
@@ -4412,78 +4362,16 @@ def send_statements(as_of=None, since=None, customers=None, send=True):
     return sent, skipped
 
 
-AGING_BUCKETS = ((1, 30), (31, 60), (61, 90))
-
-
 def ar_aging(as_of=None, invoices=None):
     """
-    Outstanding customer invoices bucketed by how overdue they are.
-
-    Note: amount_due is computed per invoice in Python rather than
-    annotated in SQL, so this is fine for reporting over thousands of
-    invoices but would need an annotated query at much larger volumes.
+    What customers owe, by how late it is, in the base currency with each
+    row's own currency beside it: accounting.balances.aging, which
+    purchasing's ap_aging asks too (O416). `invoices`, the caller's scope
+    (a rep's own customers).
     """
-    as_of = to_date(as_of) or timezone.localdate()
-    buckets = {"current": [], "1-30": [], "31-60": [], "61-90": [], "90+": []}
-    # The caller's scope (a rep's own customers), kept before `invoices` becomes the unpaid ones below.
-    scoped = invoices is not None
-    base = Invoice.objects.all() if invoices is None else invoices
+    from apps.accounting.balances import aging, side
 
-    invoices = (
-        not_paid_in_full((Invoice.objects.all() if invoices is None else invoices)
-                         .filter(posted=True, credits__isnull=True))
-        .select_related("customer", "currency", "payment_terms")
-        .prefetch_related(*INVOICE_FIGURES)
-    )
-    for invoice in invoices:
-        if invoice.amount_due() <= 0:
-            continue
-        # A row per outstanding installment, not per invoice: on a 50/50
-        # term the deposit can be badly overdue while the balance is not
-        # due for another month, and showing one line for the whole
-        # invoice would put all of it in the wrong bucket either way.
-        for row in invoice.installments():
-            if row["outstanding"] <= 0:
-                continue
-            days = (as_of - row["due_date"]).days
-            if days <= 0:
-                key = "current"
-            elif days > 90:
-                key = "90+"
-            else:
-                key = next(f"{lo}-{hi}" for lo, hi in AGING_BUCKETS if lo <= days <= hi)
-            buckets[key].append({
-                "invoice": invoice,
-                "due_date": row["due_date"],
-                "days_overdue": max(days, 0),
-                "amount_due": row["outstanding"],
-            })
-
-    # O412: what customers are owed back, as outstanding_balance counts it, so the report foots to the
-    # ledger. Left out, an open credit note of 27,187.20 put the aging that much above the receivables.
-    credits = buckets["credits"] = []
-    for note in base.filter(posted=True, credits__isnull=False, invoice_date__lte=as_of).select_related(
-            "customer").prefetch_related(*INVOICE_FIGURES, *(f"credits__{f}" for f in INVOICE_FIGURES)):
-        refund = note.refund_due()
-        if refund > 0:
-            credits.append({"invoice": note, "due_date": note.invoice_date, "days_overdue": 0, "amount_due": -refund})
-    payments = Payment.objects.filter(counterpart_account__in=receivable_accounts(), payment_date__lte=as_of)
-    if scoped:
-        payments = payments.filter(party__in=base.values("customer"))
-    for payment in unapplied(payments.filter(posted=True, voided_entry__isnull=True)):
-        if payment.unallocated:
-            sign = -1 if payment.direction == PaymentDirection.RECEIPT else 1
-            credits.append({"payment": payment, "due_date": payment.payment_date, "days_overdue": 0,
-                            "amount_due": sign * payment.unallocated})
-
-    return {
-        key: {
-            "count": len(entries),
-            "total": sum((entry["amount_due"] for entry in entries), Decimal("0")),
-            "invoices": entries,
-        }
-        for key, entries in buckets.items()
-    }
+    return aging(side("receivable"), as_of=as_of, documents=invoices)
 
 
 class Delivery(AuditModel):

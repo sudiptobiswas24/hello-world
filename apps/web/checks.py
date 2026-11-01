@@ -120,16 +120,21 @@ def _unbilled_freight(day):
 
 
 def _invoices_overdue(day, user=None):
+    from apps.accounting.balances import OVERDUE
     from apps.sales.models import Invoice, ar_aging
 
     invoices = _visible(Invoice.objects.all(), user, "customer")
-    return sum(bucket["count"] for key, bucket in ar_aging(as_of=day, invoices=invoices).items() if key != "current")
+    # The late bands only: credits and a restatement's line are not invoices late (O416).
+    report = ar_aging(as_of=day, invoices=invoices)
+    return sum(report[key]["count"] for key in OVERDUE)
 
 
 def _bills_overdue(day):
+    from apps.accounting.balances import OVERDUE
     from apps.purchasing.models import ap_aging
 
-    return sum(bucket["count"] for key, bucket in ap_aging(as_of=day).items() if key != "current")
+    report = ap_aging(as_of=day)
+    return sum(report[key]["count"] for key in OVERDUE)
 
 
 def _drafts(model, date_field, party=None):
