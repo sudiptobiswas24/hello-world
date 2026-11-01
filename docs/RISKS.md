@@ -317,6 +317,9 @@ missing), **minor**.
 | O401 | sales, purchasing | An order, invoice or bill must be created before a line can be added: Odoo fills the whole document and saves once. Two steps, and a half-made draft left behind whenever someone stops between them (seen 2026-11-01, drill-down) | usability | every document |
 | O405 | web | The demo cannot show the plant's own features: no fabric, tape, film or bag specifications (so no spec-built BOM), no inspection plans or inspections (so no SPC, AQL or certificates), no floor stations (so the shop-floor terminal, where operators record a run, cannot be shown), no energy meters, price indices, commission plans or leave allowances, no employee bank details (so no salary file), no disposal account on its asset categories (so no asset can be sold), and its PF and PT components are not marked statutory (O411). 225 of 347 tables are empty after it loads. Reasons, countries and a Security Guard were added in g25 (seen 2026-11-01, drill-down) | demo | every demonstration |
 | O415 | planning, purchasing | A requisition's lines, and a purchase order line typed on screen, name no warehouse (the screen never asks), and planning counts that supply against whichever warehouse it plans: planning FG advised cancelling six raw-material requisitions and the polymer order, and planning the plant ten. A planner taking the advice cancels the polymer the plant needs. The cause is a choice (mrp.py: a line with no warehouse counts in every warehouse, so it was never left unplanned), which double counts. Fix: an inventory-side default receiving warehouse (core may not point at a warehouse); a supply or demand line with none belongs there only; the PO line and requisition screens ask for it, defaulted (seen 2026-11-01, planning battery) | planning | every plan run |
+| O416 | sales, purchasing | ar_aging, ap_aging, outstanding_balance and vendor_balance add each document's amount due in its own currency: an unpaid USD 50,000 bill counts 50,000 beside rupees, where the payable holds 41,62,500.00. Every aging and party balance with a foreign document open is wrong, and the aging no longer foots to its control account. Both sides (mistake 5). Fix: each document's due in base at the rate it was booked (settlement.in_base), the restatement's difference shown as its own line so the total foots to the ledger (seen 2026-11-01, round B: the demo pays its import, which hides it) | accounting | every open foreign invoice or bill |
+| O417 | purchasing, inventory | A return to vendor takes stock out FIFO, while the landed-cost split reads which lot was returned from the receipt line it names: a landing after a partial return can land on the lot that left, or miss the one that stayed (seen 2026-11-01, round B report) | stores | a return before a late freight or duty bill |
+| O418 | interface | Fields in action dialogs (void, post with a date, re-assess) have no label tied to their input: a screen reader reads them blank and a test cannot find them by label (seen 2026-11-01, round B report) | none | every dialog |
 
 Upgrade notes, true of data made before the 8 October fixes:
 - Landed cost allocated before the stores fix releases to cost of sales, and old inventory differences stay where they were.
@@ -652,9 +655,11 @@ The plant's own practices (second pass, 14 October): what a woven-sack
 plant in India runs on that neither Odoo nor this ERP has yet. (?) waits
 on the owner's answer.
 
-- **L16 Polymer bought against price circulars:** purchase contracts
-  linked to the polymer makers' circulars, rate-difference notes from
-  suppliers, the mirror of the sales price indices.
+- ~~L16 Polymer bought against price circulars~~ — done in g25 round B:
+  purchase rate contracts priced on a PriceIndex less a discount, the index
+  kept on the order line; a back-dated circular drafts a supplementary bill
+  or a debit note that lands on the window's receipts by quantity. Not
+  covered: a note for only the kg kept (accountant to confirm, HANDOFF §2).
 - **L17 Weighbridge:** receipts and dispatches by truck weight (gross,
   tare, net), shortage against the invoice weight, claims on the supplier
   or transporter.
@@ -669,7 +674,14 @@ on the owner's answer.
   GSTR-1 table 6A, a packing list, the certificate of origin, export
   proceeds tracked to realisation (the eBRC, within the FEMA period), and
   an IGST refund claim where exports go with payment.
-- **L21 Import purchases** (the plant imports; owner, 14 October). There
+- ~~L21 Import purchases~~ — done in g25 round B: the bill of entry
+  (number, date, port, customs rate, assessable value with rule 10(2)
+  freight and insurance, BCD, SWS, IGST by line), duty landed on the goods
+  and owed to the customs house as a bill, void and re-assessment, refused
+  once its month's GSTR-3B is filed, IMPG matched on the 2B screen. The
+  overseas supplier's payable stays at its bill's rate. Not covered: duty
+  per line at each line's own rate (accountant to confirm). As first
+  written: (the plant imports; owner, 14 October). There
   already: duty and the customs broker's bills landed on the goods
   (LandedCostApplication). Missing: the bill of entry as a document (its
   number, date, port, assessable value at the customs rate, basic customs
@@ -678,7 +690,9 @@ on the owner's answer.
   the payable to the overseas supplier at its rate.
 - **L22 Billing and shipping policy per item:** ordered or delivered
   quantity billed, ship complete or in parts.
-- **L23 Landed cost by weight,** for freight on polymer.
+- ~~L23 Landed cost by weight~~ — done in g25 round B: an allocation names
+  its basis (value, quantity or kg: the weighed net, else the conversion),
+  kept on the application; a line with no weight refuses it by name.
 - ~~L24 Branch transfers~~ — not needed: the plant has no godowns in
   other states (owner, 14 October).
 - **L25 Machine counters** read automatically (loom picks, extruder kg),

@@ -55,13 +55,25 @@ claude/erp-g25-integration; nothing of it is pushed to the working branch yet. H
 passes, weighbridge, review fixes), the interface sweep's fixes (cc1975a), the tax patch (f0289bc: items'
 default taxes, untaxed taxable lines and unnumbered bills refused, an advance's refund dated as asked), the
 outputs patch (cf52f6e: PDFs in lakhs without the missing rupee glyph, the empty ECR refused, agings footed
-with a credits group, bank auto-match line by line). Every lane of the gate is still to run on it.
+with a credits group, bank auto-match line by line), and round B (dfadf5d, 73e4b2e, 98d0f09: landed cost by
+weight through one landing function, the bill of entry with IMPG matching, polymer rate contracts and
+rate-difference notes, customs valuation defaults on a screen). Every lane of the gate is still to run on it.
+Round B's report: /home/user/work/reports/fix_imports.md, with the review below.
+- Its PostgreSQL void/pay races were red as committed (a bill's refund_due() is always 0; the refund is on the
+  void's debit note) and its balance expectations wrong both ways; rewritten by hand (+12,14,364.00 either
+  order). Its post-once race passed without the lock it names; it now asserts the status refusal and fails
+  without it. On its tip: the full fast suite 8,240 OK with the browser tests, the sweep as every role, the
+  changed modules with migrations, audit_invariants clean. The 47 migration-tagged tests: see the gate.
+- For the accountant: duty landed over the whole BE or per line by each line's own rate; whether a supplier's
+  rate-difference note covers the kg received or only the kg kept; the difference read at the order's date;
+  which month's filed GSTR-3B stops a void. For the customs broker: rounding to the rupee per line, and the
+  20% freight / 1.125% insurance defaults (now confirmable under Purchasing > Configuration). For the GST
+  Officer: the IMPG field names in a real 2B download.
 Order from here:
-1. Round B (docs/handoff/g25_purchasing_imports.md), one Opus agent; its brief names the new tax rules.
-2. O415 before round C: a supply line with no warehouse counts in every warehouse's plan, which advises
+1. O415 before round C: a supply line with no warehouse counts in every warehouse's plan, which advises
    cancelling material the plant needs. The fix is in the row.
-3. Round C (L28 certificates of analysis, L9 scanning), then the six-lane gate on one tip, finalize, push.
-4. Open from the 1 November checks: O401 (a document saved before its lines), O405 (the demo shows a third
+2. Round C (L28 certificates of analysis, L9 scanning), then the six-lane gate on one tip, finalize, push.
+3. Open from the 1 November checks: O416 (agings in mixed currencies), O401 (a document saved before its lines), O405 (the demo shows a third
    of the plant: specifications, inspections, stations, bank details, disposal accounts). Report:
    docs/handoff/reports/drilldown_nov01.md.
 Every round now drives its flows in the browser and reads its outputs before reporting (fix_common.md).
