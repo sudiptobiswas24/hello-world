@@ -57,7 +57,43 @@ ACCOUNTS = [
     # The other sides of a stock adjustment, for setup_stores' reasons (O403).
     ("4200", "Stock found on count", I, False), ("5300", "Stock written off", X, False),
     ("5000", "Purchases", X, False), ("5100", "Freight inward", X, False), ("5900", "Round off", X, False),
+    # What the application itself books to, which a fresh install had no account for (seen on a first
+    # installation, 2 November): every one of these is a company default, wired below.
+    ("1360", "Claims recoverable from transporters", A, False), ("1410", "Advances to suppliers", A, False),
+    ("2150", "Goods received not invoiced", L, False), ("2300", "Advances from customers", L, False),
+    ("2400", "Salaries payable", L, False),
+    ("4310", "Discount received", I, False), ("4900", "Exchange gain", I, False),
+    ("5010", "Cost of goods sold", X, False), ("5150", "Purchase price variance", X, False),
+    ("5200", "Bad debts", X, False), ("5310", "Discount allowed", X, False), ("5910", "Exchange loss", X, False),
 ]
+# The company's defaults, each from the account seeded under its code, and the words an account already there under
+# that code must carry to be wired (a same-type account named for something else is not: a liability 2150 named
+# Rent payable is not where goods received and not billed wait).
+DEFAULTS = [
+    ("default_receivable_account", "1100", ("receivable", "debtor")),
+    ("default_payable_account", "2000", ("payable", "creditor")),
+    ("default_bank_account", "1200", ("bank",)),
+    ("default_revenue_account", "4000", ("sale", "revenue", "turnover")),
+    ("default_inventory_account", "1300", ("inventor", "stock")),
+    ("default_cogs_account", "5010", ("cost of goods", "cost of sales", "cogs")),
+    ("grni_account", "2150", ("not invoiced", "not billed", "grni")),
+    ("default_purchase_expense_account", "5000", ("purchase",)),
+    ("customer_deposit_account", "2300", ("advance", "deposit")),
+    ("vendor_prepayment_account", "1410", ("advance", "prepa")),
+    ("fx_gain_account", "4900", ("exchange", "forex", "fx")),
+    ("fx_loss_account", "5910", ("exchange", "forex", "fx")),
+    ("settlement_discount_account", "5310", ("discount",)),
+    ("settlement_discount_received_account", "4310", ("discount",)),
+    ("bad_debt_account", "5200", ("bad debt", "doubtful", "written off")),
+    ("purchase_price_variance_account", "5150", ("variance",)),
+    ("net_pay_account", "2400", ("salar", "wage", "net pay")),
+    ("claims_recoverable_account", "1360", ("claim",)),
+]
+# The plant's own currency, and those its imports and exports are most often priced in (ISO 4217).
+CURRENCIES = [("INR", "Indian rupee", "\u20b9"), ("USD", "US dollar", "$"), ("EUR", "Euro", "\u20ac"),
+              ("GBP", "Pound sterling", "\u00a3"), ("CNY", "Chinese yuan", "\u00a5"), ("JPY", "Japanese yen", "\u00a5"),
+              ("AED", "UAE dirham", "AED"), ("SGD", "Singapore dollar", "S$")]
+APRIL = 4
 SLABS = [Decimal("0"), Decimal("5"), Decimal("18"), Decimal("40")]
 # The goods TCS is collected on and its rates, named by the law of each day (206C(1) of the 1961 Act until 31 March
 # 2026, 394(1) of the 2025 Act from 1 April 2026), are rows of statutory/tcs_rates.csv, loaded by the loader
@@ -81,7 +117,12 @@ class Command(BaseCommand):
 
     def handle(self, *args, gstin=None, **options):
         self.made, self.kept, self.collisions = [], [], []
+        from apps.core.models import numbering_first
+
         with transaction.atomic():
+            # The company's numbering row first (O257): its default bank is held as it is saved, below, after the
+            # taxes, and the numbering row is the first lock of a transaction that takes it.
+            numbering_first()
             accounts = {code: self.account(code, name, kind, money) for code, name, kind, money in ACCOUNTS}
             intra, inter = {}, {}
             for slab in SLABS:
@@ -115,6 +156,7 @@ class Command(BaseCommand):
             for tax in Tax.objects.filter(reverse_charge=True, reverse_charge_waiting_account__isnull=True):
                 Tax.objects.filter(pk=tax.pk).update(reverse_charge_waiting_account=accounts[WAITING])
                 self.made.append(f"tax {tax.code}: reverse-charge credit waits in {WAITING}")
+            self.company(accounts)
             if gstin:
                 self.gst_settings(gstin, FiscalPosition.objects.get(code="INTER"))
             # The countries of ISO 3166-1 (O403): an export customer or overseas vendor had none to be given.
@@ -130,6 +172,58 @@ class Command(BaseCommand):
         self.stdout.write(f"{countries_made} countries added, {countries_kept} already there.")
         self.stdout.write(f"{len(self.made)} seeded for the accountant to review, {len(self.kept)} kept.")
         self.stdout.write("Then: python manage.py setup_stores, for the stock adjustment reasons.")
+
+    def company(self, accounts):
+        """
+        The company made ready to post, as an Indian plant keeps its books: rupees its base currency, its year from
+        April, and every default account the application books to wired from the chart above. A fresh install had
+        none of these (2 November): no currency to choose, the year from January, and seventeen accounts to pick by
+        hand before the first invoice could post. Only what is unset is set; the year is moved only while nothing is
+        posted, since every period and report already posted reads it.
+        """
+        from apps.accounting.models import JournalEntry
+        from apps.core.models import Company, Currency
+
+        currencies = {code: self.one(Currency, code, name=name, symbol=symbol) for code, name, symbol in CURRENCIES}
+        company = Company.get()
+        did = []
+        if company.base_currency_id is None:
+            base = Currency.objects.filter(is_base=True).first()
+            if base is None:
+                base = currencies["INR"]
+                base.is_base = True
+                base.save(update_fields=["is_base", "updated_at"])
+            company.base_currency = base
+            did.append(f"base currency {base.code}")
+        else:
+            self.kept.append(f"company base currency {company.base_currency.code}")
+        if company.fiscal_year_start_month != APRIL:
+            month = company.get_fiscal_year_start_month_display()
+            if JournalEntry.objects.exists():
+                self.kept.append(f"company year from {month}: entries are posted, so it is not moved")
+            else:
+                company.fiscal_year_start_month = APRIL
+                did.append(f"year from April (was {month})")
+        for field, code, words in DEFAULTS:
+            if getattr(company, f"{field}_id") is not None:
+                self.kept.append(f"company {field.replace('_', ' ')}")
+                continue
+            account = accounts[code]
+            made_now = any(line.startswith(f"account {account.code} ") for line in self.made)
+            if made_now or any(word in account.name.lower() for word in words):
+                setattr(company, field, account)
+                did.append(f"{field.replace('_', ' ')} {account.code}")
+            else:
+                self.collisions.append(
+                    f"company {field.replace('_', ' ')}: account {account.code} is {account.name!r}, not what it is "
+                    "for; left unset, choose it on Settings > Company")
+        if did:
+            company.save()
+            label = f"company {company.name}: " + "; ".join(did)
+            if SeededDefault.objects.filter(model=company._meta.label_lower, object_id=company.pk).exists():
+                self.made.append(label)
+            else:
+                self.seeded(company, label)
 
     def seeded(self, instance, label):
         SeededDefault.objects.create(model=instance._meta.label_lower, object_id=instance.pk, label=label[:255])
