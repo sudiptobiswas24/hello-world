@@ -53,3 +53,15 @@ You fix defects listed in docs/RISKS.md "Open defects", by their ids. You do not
   - defects seen and not fixed, each with file:line, a scenario with numbers, and its kind.
 - Return at most 10 lines: the commit count and tip, the ids closed, anything that blocks, and the report file's path. The integrator reads the file only when it needs the detail.
 - No praise.
+
+
+## Done means used, not only tested (1 November 2026)
+
+The two books defects of 1 November (a document typed on screen carried no GST; a bill posted without the
+vendor's invoice number), the broken tax invoice PDF and the empty PF ECR were all behind a green suite.
+Before reporting a round:
+- Drive each flow you built or touched in the browser, as the people who do it, forward and back, on the demo
+  plant (`load_demo`), and read the screens you leave behind.
+- Generate every document and file your flow produces (PDF, CSV, JSON, return) for a real record, and read
+  it back: the figures it prints against the database's, the layout at ten lakh and above.
+- Report what you drove and what you generated, with what each showed.
