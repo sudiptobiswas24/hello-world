@@ -108,6 +108,7 @@ from apps.accounting.settlement import (
     booked_beside,
     settlement_discount_to_take,
     standing_on_account,
+    unapplied,
     withdraw_discount,
     undone_by_note,
 )
@@ -6621,6 +6622,21 @@ def ap_aging(as_of=None):
                 "days_overdue": max(days, 0),
                 "amount_due": row["outstanding"],
             })
+
+    # O412, the mirror of ar_aging's: what vendors owe back, as vendor_balance counts it.
+    credits = buckets["credits"] = []
+    for note in Bill.objects.filter(posted=True, debits__isnull=False, bill_date__lte=as_of).select_related(
+            "vendor").prefetch_related(*BILL_FIGURES, *(f"debits__{f}" for f in BILL_FIGURES)):
+        refund = note.refund_due()
+        if refund > 0:
+            credits.append({"bill": note, "due_date": note.bill_date, "days_overdue": 0, "amount_due": -refund})
+    for payment in unapplied(Payment.objects.filter(
+            counterpart_account__in=payable_accounts(), payment_date__lte=as_of, posted=True,
+            voided_entry__isnull=True)):
+        if payment.unallocated:
+            sign = -1 if payment.direction == PaymentDirection.DISBURSEMENT else 1
+            credits.append({"payment": payment, "due_date": payment.payment_date, "days_overdue": 0,
+                            "amount_due": sign * payment.unallocated})
 
     return {
         key: {

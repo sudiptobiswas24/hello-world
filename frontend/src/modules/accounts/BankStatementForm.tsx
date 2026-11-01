@@ -57,7 +57,12 @@ export default function BankStatementForm() {
       links={[{ label: "Import the bank's file", same: true, href: (row) => `/accounts/bank-import?statement=${String(row.id)}`, when: (row) => !row.closed }]}
       actions={[
         { label: "Match the obvious", path: "auto_match", permission: "accounting.change_bankstatementline", when: (row) => !row.closed,
-          done: "Matched what had one payment of the same amount nearby" },
+          // What it could not take is said with why, to be matched by hand (O414).
+          done: (result) => {
+            const left = (result.not_matched as { description: string; why: string }[] | undefined) ?? [];
+            const matched = `Matched ${String(result.matched)} with one payment of the same amount nearby`;
+            return left.length ? `${matched}. Not matched: ${left.map((row) => `${row.description || "a line"} (${row.why})`).join("; ")}` : matched;
+          } },
         { label: "Match a line", path: "match", permission: "accounting.change_bankstatementline", when: (row) => !row.closed,
           done: "Matched",
           fields: (statement) => [

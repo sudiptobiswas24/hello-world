@@ -10,7 +10,7 @@ from django.core.exceptions import ValidationError
 from reportlab.lib.units import mm
 
 from apps.accounting.trade_terms import freight_meta
-from apps.core.documents import money, render_document, rupees_in_words
+from apps.core.documents import counted, money, render_document, rupees_in_words
 from apps.core.models import Company, to_date
 
 
@@ -299,13 +299,14 @@ def render_invoice_pdf(invoice, copy="original"):
             description += f"<br/>less {line['discount_percent'].normalize():f}%"
         rows.append([
             description, line["hsn"] or "—",
-            f"{line['quantity']:,.2f} {line['unit']}".strip(),
+            f"{counted(line['quantity'])} {line['unit']}".strip(),
             money(line["unit_price"], currency), money(line["taxable"], currency),
             "<br/>".join(f"{name} {_rate(rate)}<br/>{money(amount, currency)}"
                          for name, rate, amount in line["taxes"]) or "—",
             money(line["amount"], currency),
         ])
-    table = (header, rows, [38 * mm, 20 * mm, 22 * mm, 20 * mm, 25 * mm, 24 * mm, 25 * mm])
+    # Wide enough for a crore on one line: 1,76,40,000.00 broke into "1,764,000.0" over "0" (O409).
+    table = (header, rows, [31 * mm, 20 * mm, 22 * mm, 17 * mm, 28 * mm, 26 * mm, 30 * mm])
 
     totals = [["Taxable value", printed["taxable"]]]
     totals += [[f"{name} @ {_rate(rate)}", amount] for name, rate, amount in printed["taxes"]]
@@ -517,14 +518,14 @@ def render_delivery_pdf(delivery):
     rows, total = [], Decimal("0")
     for line in delivery.lines.select_related("order_line__item", "order_line__uom", "lot"):
         rows.append([line.order_line.label(), line.lot.code if line.lot_id else "—",
-                     f"{line.quantity_shipped:,.2f}", line.order_line.uom.code if line.order_line.uom_id else ""])
+                     counted(line.quantity_shipped), line.order_line.uom.code if line.order_line.uom_id else ""])
         total += line.quantity_shipped
     if not rows:
         rows.append(["No lines", "", "", ""])
     return render_document(
         heading="Return" if delivery.reverses_id else "Delivery Challan", document=delivery, party=customer,
         address=delivery.shipping_address or customer.shipping_address(), party_label="DELIVER TO",
-        meta=meta, totals=[["Total quantity", f"{total:,.2f}"]],
+        meta=meta, totals=[["Total quantity", counted(total)]],
         table=(header, rows, [92 * mm, 32 * mm, 28 * mm, 22 * mm]),
         note="Received the above goods in good condition." if not delivery.reverses_id else None,
     )
@@ -535,7 +536,7 @@ def render_pick_list_pdf(rows, *, heading, document, meta, where):
     header = ["Bin", "Goods", "Batch", "Quantity", "For"]
     body = [[row["bin"].code if row["bin"] else "—", f"{row['item'].sku} {row['item'].name}",
              row["lot"].code if row["lot"] else "—",
-             f"{row['quantity']:,.2f}" + (f" ({row['problem']})" if row["problem"] else ""),
+             counted(row['quantity']) + (f" ({row['problem']})" if row["problem"] else ""),
              ", ".join(row["for"])] for row in rows]
     if not body:
         body.append(["Nothing to pick", "", "", "", ""])

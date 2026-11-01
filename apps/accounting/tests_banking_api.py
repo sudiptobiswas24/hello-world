@@ -55,7 +55,7 @@ class BankingApiTests(ReconciliationTestCase):
         pk, (deposit, charge) = self.keyed_in(bookkeeper)
 
         matched = bookkeeper.post(f"{STATEMENTS}{pk}/auto_match/", {}, format="json")
-        self.assertEqual(matched.json(), {"matched": 1})
+        self.assertEqual(matched.json(), {"matched": 1, "not_matched": []})
         self.assertEqual(BankStatementLine.objects.get(pk=deposit["id"]).payment, self.received)
         report = bookkeeper.get(f"{STATEMENTS}{pk}/reconciliation/").json()
         self.assertEqual((report["ledger_balance"], report["unpresented_total"], report["unresolved_lines"],

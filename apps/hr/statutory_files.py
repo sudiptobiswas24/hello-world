@@ -198,10 +198,19 @@ def ecr_rows(run):
 
 
 def ecr_text(run):
+    rows = ecr_rows(run)
+    if not rows:
+        # The file handed over to upload: empty, it came back as done for a run of 13 that all had PF deducted
+        # (O411), the component deducting it not marked. Said, as a missing UAN is. The rows themselves stay
+        # readable empty: a month whose only slip is a leaver with no wage still has its registers.
+        raise ValidationError(
+            f"Nobody in {run.period_end:%B %Y}'s runs has a pay line marked as provident fund, so there is no ECR "
+            "to file. If PF was deducted, mark its component Statutory: Provident fund under People > Pay "
+            "components, and ask again.")
     return "".join(
         "#~#".join(str(row[key]) for key in ("uan", "name", "gross", "epf_wages", "eps_wages", "edli_wages",
                                               "epf", "eps", "epf_diff", "ncp_days", "refund")) + "\r\n"
-        for row in ecr_rows(run))
+        for row in rows)
 
 
 ESI_HEADINGS = [
