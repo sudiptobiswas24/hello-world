@@ -1,7 +1,7 @@
 import { useQueries } from "@tanstack/react-query";
 import { SmartButtons, type SmartDef } from "./SmartButtons";
 import { Trail, useKindOf } from "./Trail";
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 
 import { list, type Query } from "../api/client";
@@ -49,6 +49,8 @@ export interface FieldDef {
   wide?: boolean;
   /** What a new record starts with. */
   initial?: unknown;
+  /** What it starts with once its `ref` list has been read, where that decides it: the default receiving warehouse. */
+  initialFrom?: (refs: Row[]) => unknown;
   /** How it reads when it cannot be changed, if not the plain value. */
   show?: (record: Row) => ReactNode;
 }
@@ -316,6 +318,21 @@ function ActionForm({ action, record, endpoint, onClose }: {
     for (const field of fields) if (field.kind === "date" && field.initial === undefined) start[field.key] = today();
     return start;
   });
+  // A default the master list decides, filled once the list has come and only where nothing was chosen yet.
+  const loaded = fields.filter((field) => field.initialFrom && refs[field.key]).map((field) => field.key).join(",");
+  useEffect(() => {
+    setValues((current) => {
+      let next = current;
+      for (const field of fields) {
+        const rows = refs[field.key];
+        if (!field.initialFrom || !rows || (current[field.key] !== null && current[field.key] !== undefined)) continue;
+        const value = field.initialFrom(rows);
+        if (value !== null && value !== undefined) next = { ...next, [field.key]: value };
+      }
+      return next;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loaded]);
   const [errors, setErrors] = useState<Record<string, string[]>>({});
   const act = useAct<Row>();
   const navigate = useNavigate();

@@ -256,7 +256,8 @@ class Command(BaseCommand):
                 M("inventory.AdjustmentReason").objects.create(code=code, name=name, account=account,
                                                                direction=direction)
             Warehouse, Bin, Item = M("inventory.Warehouse"), M("inventory.StorageBin"), M("inventory.Item")
-            plant = Warehouse.objects.create(code="PLANT", name="Chakan plant")
+            # O415: where a purchase or requisition line naming no warehouse is received and planned.
+            plant = Warehouse.objects.create(code="PLANT", name="Chakan plant", receives_by_default=True)
             godown = Warehouse.objects.create(code="FG", name="Finished goods godown", requires_bins=True)
             bins = {code: Bin.objects.create(warehouse=godown, code=code, name=name, sequence=n)
                     for n, (code, name) in enumerate([("A-01", "Aisle A, bay 1"), ("A-02", "Aisle A, bay 2"),

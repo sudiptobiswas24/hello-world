@@ -12,6 +12,23 @@ interface Warehouse {
   is_transit: boolean;
   consignment_vendor: number | null;
   held_for: number | null;
+  receives_by_default?: boolean;
+}
+
+/** A warehouse goods may be received into or shipped from: not quarantine, transit or someone else's stock. */
+export function usableWarehouse(w: Record<string, unknown>): boolean {
+  return w.is_active !== false && !w.is_quarantine && !w.is_transit && w.consignment_vendor == null && w.held_for == null;
+}
+
+/**
+ * Where a line naming no warehouse is received and planned (O415): the one marked to receive by default, or the
+ * only usable warehouse. Null where neither, and the person chooses.
+ */
+export function defaultReceiving(rows: Record<string, unknown>[]): number | null {
+  const marked = rows.find((row) => row.receives_by_default && row.is_active !== false);
+  if (marked) return marked.id as number;
+  const usable = rows.filter(usableWarehouse);
+  return usable.length === 1 ? (usable[0]!.id as number) : null;
 }
 
 /**

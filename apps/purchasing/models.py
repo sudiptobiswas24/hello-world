@@ -1700,8 +1700,8 @@ class ReorderRule(AuditModel):
 
     def on_order(self):
         """
-        Confirmed purchases not yet received, into this warehouse or
-        without a warehouse yet named.
+        Confirmed purchases not yet received, into this warehouse, or naming
+        none where this is the default receiving warehouse (O415).
 
         Counted because ordering again for stock already on its way is
         how a reorder rule turns one shortage into two months of excess.
@@ -1710,7 +1710,7 @@ class ReorderRule(AuditModel):
             item=self.item, order__status=OrderStatus.CONFIRMED, charge__isnull=True,
             # A drop-ship goes to the customer, never onto this shelf.
             order__drop_ship_for__isnull=True,
-        ).filter(Q(warehouse=self.warehouse) | Q(warehouse__isnull=True))
+        ).filter(Warehouse.named_or_defaulted(self.warehouse))
         return sum((line.quantity_open() for line in lines), Decimal("0"))
 
     def committed(self):
@@ -1720,7 +1720,7 @@ class ReorderRule(AuditModel):
 
         lines = list(SalesOrderLine.objects.filter(
             item=self.item, order__status=SalesOrderStatus.CONFIRMED, charge__isnull=True
-        ).filter(Q(warehouse=self.warehouse) | Q(warehouse__isnull=True)))
+        ).filter(Warehouse.named_or_defaulted(self.warehouse)))
         awaited = quantities_awaited(lines)
         return sum(
             (line.quantity_to_ship(awaited[line.pk]) for line in lines),

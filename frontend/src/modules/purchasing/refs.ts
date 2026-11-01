@@ -20,6 +20,7 @@ export const UOM: FieldDef["ref"] = {
 export const WAREHOUSE: FieldDef["ref"] = {
   endpoint: "/api/inventory/warehouses/", permission: "inventory.view_warehouse", label: (row: Row) => String(row.name || row.code),
 };
+export { defaultReceiving } from "../../forms/WarehouseChoice";
 export const ACCOUNT: FieldDef["pick"] = {
   endpoint: "/api/accounting/accounts/", permission: "accounting.view_account", label: coded,
 };
