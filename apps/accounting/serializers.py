@@ -228,3 +228,13 @@ class MoneyLineSerializerMixin(serializers.Serializer):
     net_amount = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
     tax_total = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
     total = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
+
+    def create(self, validated_data):
+        """A line that names no taxes takes its item's for its side (O395); one that names none on purpose, []."""
+        named = "taxes" in validated_data
+        line = super().create(validated_data)
+        if not named and hasattr(line, "default_taxes") and not line.taxes.exists():
+            defaults = line.default_taxes()
+            if defaults:
+                line.taxes.set(defaults)
+        return line

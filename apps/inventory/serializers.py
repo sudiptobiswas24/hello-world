@@ -152,11 +152,22 @@ class ItemSerializer(HidesStockMoney, ExtensibleSerializerMixin, serializers.Mod
             "id", "sku", "name", "description", "item_type", "stock_class", "uom",
             "track_inventory", "tracking", "costing_method", "standard_cost",
             "sale_price", "inventory_account", "cogs_account", "is_active",
-            "hsn_code", "tcs_section", "extra", "weight_tolerance_percent",
+            "hsn_code", "sales_taxes", "purchase_taxes", "tcs_section", "extra", "weight_tolerance_percent",
         ]
         # A standard cost cannot be assigned: changing it revalues the
         # stock on hand, which is a posting. set_standard_cost() does it.
         read_only_fields = ["standard_cost"]
+
+    def validate(self, attrs):
+        # A default a line would take must be a tax of that side (O395): a purchase-only tax among an item's sales
+        # taxes would be charged to a customer.
+        attrs = super().validate(attrs)
+        for key, side in (("sales_taxes", "sales"), ("purchase_taxes", "purchase")):
+            wrong = [tax.code for tax in attrs.get(key, []) if tax.scope not in (side, "both")]
+            if wrong:
+                raise serializers.ValidationError({key: [f"{', '.join(wrong)} {'is' if len(wrong) == 1 else 'are'} "
+                                                         f"not taxes on a {'sale' if side == 'sales' else 'purchase'}."]})
+        return attrs
 
 
 class StockMovementSerializer(HidesStockMoney, serializers.ModelSerializer):

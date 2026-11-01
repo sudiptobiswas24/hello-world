@@ -384,7 +384,8 @@ class AnAdvanceOnAScrapOrderTests(TcsTestCase):
         self.assertEqual(self.ledger("2290"), D("1062.00"))
 
     def test_the_advance_refunded_gives_its_tcs_back(self):
-        note = self.advance.create_credit_note(on_date=datetime.date(2026, 9, 20))
+        # On the day it was received or after: a refund before the money came is refused, now the date is read.
+        note = self.advance.create_credit_note(on_date=self.advance.invoice_date)
         self.assertEqual(note.tcs_amount, D("270"))
         self.assertEqual(self.ledger("2290"), D("0"))
 

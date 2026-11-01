@@ -12,6 +12,8 @@ Reverse charge after the books: the self-invoice (s.31(3)(f), Rule 47A), the pay
   voucher on a payment of 4,000 of the 10,000 bill: IGST 200; of 3,333: 166.65
 """
 
+import itertools
+
 import datetime
 from decimal import Decimal as D
 
@@ -32,6 +34,9 @@ from .tests import DAY, GstReturnTestCase, gstin
 SEPTEMBER = (DAY.replace(day=1), DAY.replace(day=30))
 OCTOBER = (datetime.date(2026, 10, 1), datetime.date(2026, 10, 31))
 
+
+# A regular registrant's bill carries its invoice number (O396); one each, as the duplicate check asks.
+INVOICE_NUMBERS = itertools.count(1)
 
 class ReverseChargeCashTestCase(GstReturnTestCase):
     def setUp(self):
@@ -60,7 +65,8 @@ class ReverseChargeCashTestCase(GstReturnTestCase):
         self.gta = self.party("GTA", role=PartyRole.VENDOR, gstin=gstin("29AABCV4444D1Z"))
 
     def bill(self, vendor, amount, taxes, day=DAY):
-        bill = Bill.objects.create(vendor=vendor, bill_date=day, payable_account=self.ap)
+        bill = Bill.objects.create(vendor=vendor, bill_date=day, payable_account=self.ap,
+                                   reference=f"INV/{next(INVOICE_NUMBERS)}")
         line = BillLine.objects.create(bill=bill, charge=self.freight, quantity=D("1"), unit_price=D(amount),
                                        expense_account=self.expense)
         line.taxes.set(taxes)

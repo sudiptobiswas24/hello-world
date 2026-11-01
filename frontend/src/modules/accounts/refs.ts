@@ -13,6 +13,15 @@ export const SECTION: FieldDef["ref"] = {
 export const TCS_SECTION: FieldDef["ref"] = {
   endpoint: "/api/accounting/tcs-sections/", permission: "accounting.view_tcssection", label: coded,
 };
+/** The taxes a sale may bear, and those a purchase may: an item's defaults (O395). */
+export const SALES_TAX: FieldDef["ref"] = {
+  endpoint: "/api/accounting/taxes/", permission: "accounting.view_tax", query: { is_active: "true" },
+  label: coded,
+};
+export const PURCHASE_TAX: FieldDef["ref"] = {
+  endpoint: "/api/accounting/taxes/", permission: "accounting.view_tax", query: { is_active: "true" },
+  label: coded,
+};
 /** Any party, whatever its roles. */
 export const PARTY: FieldDef["pick"] = { endpoint: "/api/core/parties/", permission: "core.view_party", label: coded };
 /** A cost centre: who incurred a cost, in the analytic view of the books. */

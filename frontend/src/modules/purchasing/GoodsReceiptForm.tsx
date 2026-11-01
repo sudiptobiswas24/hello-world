@@ -123,10 +123,15 @@ export default function GoodsReceiptForm() {
           <Field label="Vendor">{(fid) => <output id={fid}>{receipt.vendor_name}</output>}</Field>
           <Field label="Order">{(fid) => <output id={fid}><Link to={`/purchasing/orders/${receipt.purchase_order}`}>{receipt.order_number || "Open the order"}</Link></output>}</Field>
           <Field label="Date">{(fid) => <output id={fid}>{date(receipt.receipt_date)}</output>}</Field>
-          <Field label="Reference">{(fid) => <output id={fid}>{receipt.reference || "—"}</output>}</Field>
+          {/* The supplier's challan or delivery note number, typed while the receipt is a draft (O398). */}
+          <Field label="Reference" hint="The supplier's challan or delivery note number">{(fid) => (!receipt.posted
+            && can("purchasing.change_goodsreceipt")) ? (
+              <CommitText value={receipt.reference ?? ""} label="Reference" placeholder="Challan number"
+                onCommit={(value) => void act.run("PATCH", `${ENDPOINT}${receipt.id}/`, { reference: value })} />
+            ) : <output id={fid}>{receipt.reference || "—"}</output>}</Field>
           <Field label="Weighbridge slip">{(fid) => (!receipt.posted && can("purchasing.change_goodsreceipt")
             && can("inventory.view_weighing")) ? (
-              <select id={fid} className="cell-input" value={receipt.weighing ?? ""}
+              <select id={fid} value={receipt.weighing ?? ""}
                 onChange={(event) => void act.run("PATCH", `${ENDPOINT}${receipt.id}/`,
                   { weighing: event.target.value ? Number(event.target.value) : null })}>
                 <option value="">Not weighed</option>

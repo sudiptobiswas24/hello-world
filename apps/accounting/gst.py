@@ -243,6 +243,50 @@ class GstSettings(AuditModel):
 
 
 
+def charges_gst(party):
+    """Whether `party`'s invoices carry GST: a regular registrant's do; an unregistered, composition or overseas one's do not."""
+    profile = getattr(party, "tax_profile", None) if party is not None else None
+    return profile is not None and profile.gst_registration == "regular" and not profile.tax_exempt
+
+
+def refuse_untaxed_lines(lines, party, what, purchase=False):
+    """
+    Under GST, refuse a line whose item declares its taxes but which names none (O395).
+
+    A line typed on screen named no tax and nothing asked: a rep's order of
+    2,24,000.00 was confirmed, shipped and invoiced with no GST. Items now
+    declare what a line of them takes (Item.sales_taxes, purchase_taxes) and
+    a line that names none takes it; one that then names none all the same,
+    on an item that says it bears tax, is the defect, and is refused.
+
+    A line with no tax is lawful elsewhere and is left alone: an item that
+    declares none (diesel, a non-GST supply the return puts in table 5); a
+    party marked exempt; and on the purchase side, a vendor who is not a
+    regular registrant (unregistered, composition, overseas), whose bill
+    carries no GST. Shared by the order's confirmation, the invoice's and
+    the bill's posting on both sides, so no path is written without it
+    (mistake 5).
+    """
+    if GstSettings.active() is None:
+        return
+    profile = getattr(party, "tax_profile", None) if party is not None else None
+    if profile is not None and profile.tax_exempt:
+        return
+    if purchase and not charges_gst(party):
+        return
+    bare = []
+    for line in lines:
+        item = getattr(line, "item", None)
+        declared = item is not None and (item.purchase_taxes if purchase else item.sales_taxes).exists()
+        if declared and not line.taxes.exists():
+            bare.append(line.label())
+    if bare:
+        raise ValidationError(
+            f"{what}: {', '.join(bare)} {'names' if len(bare) == 1 else 'name'} no tax, though "
+            f"{'its item bears' if len(bare) == 1 else 'their items bear'} tax. Give the line its taxes, as the "
+            "item's are; a supply that truly bears none is an item that declares none.")
+
+
 class LetterOfUndertaking(AuditModel):
     """
     The registration's Letter of Undertaking (Rule 96A, Form GST RFD-11): exports and supplies to an

@@ -18,8 +18,9 @@ const columns: Column<Order>[] = [
   { key: "vendor_name", label: "Vendor" },
   { key: "order_date", label: "Date", kind: "date", sort: "order_date", width: "8rem" },
   { key: "total", label: "Total", kind: "money", width: "9rem" },
-  { key: "receipt_status", label: "Received", width: "8rem", render: (row) => PROGRESS[row.receipt_status] ?? row.receipt_status },
-  { key: "bill_status", label: "Billed", width: "8rem", render: (row) => PROGRESS[row.bill_status] ?? row.bill_status },
+  // A draft receives and bills nothing; an empty one read "Done", as the sales list's did (O400).
+  { key: "receipt_status", label: "Received", width: "8rem", render: (row) => row.status === "draft" ? "—" : PROGRESS[row.receipt_status] ?? row.receipt_status },
+  { key: "bill_status", label: "Billed", width: "8rem", render: (row) => row.status === "draft" ? "—" : PROGRESS[row.bill_status] ?? row.bill_status },
   { key: "status", label: "State", kind: "status", width: "8rem" },
 ];
 

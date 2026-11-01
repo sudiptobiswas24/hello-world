@@ -1,6 +1,6 @@
 import { RecordScreen, type FieldDef, type PanelDef } from "../../views/RecordScreen";
 import type { SmartDef } from "../../views/SmartButtons";
-import { ACCOUNT, TCS_SECTION } from "../accounts/refs";
+import { ACCOUNT, PURCHASE_TAX, SALES_TAX, TCS_SECTION } from "../accounts/refs";
 import { ITEM } from "./refs";
 
 type Row = Record<string, unknown>;
@@ -66,6 +66,10 @@ export default function ItemForm() {
         { key: "cogs_account", label: "COGS account", kind: "pick", pick: ACCOUNT, hint: "Expense account charged when this item is sold" },
         { key: "is_active", label: "Active", kind: "bool", initial: true },
         { key: "hsn_code", label: "HSN code", hint: "The tariff code tax law classifies this under — HSN for goods, SAC for a service" },
+        { key: "sales_taxes", label: "Taxes on a sale", kind: "refs", ref: SALES_TAX, wide: true,
+          hint: "What a sales line of this item takes when it names none: for a GST good, CGST and SGST; the customer's position makes them IGST across a state line" },
+        { key: "purchase_taxes", label: "Taxes on a purchase", kind: "refs", ref: PURCHASE_TAX, wide: true,
+          hint: "What a purchase line of this item takes when it names none, mapped by the vendor's position" },
         { key: "tcs_section", label: "TCS on sale", kind: "ref", ref: TCS_SECTION, hint: "Goods tax is collected at source on when sold: scrap, for this plant" },
       ]}
       actions={[
