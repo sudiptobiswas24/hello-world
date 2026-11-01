@@ -33,6 +33,7 @@ class LoadDemoTests(TestCase):
         load(password="Trial-2026", stdout=out, stderr=StringIO())
         self.assertIn("The demo plant is loaded.", out.getvalue())
         self.assertEqual([finding["label"] for finding in integrity(fresh=True)["findings"] if finding["ok"] is False], [])
+        self.assert_the_agings_foot_with_a_foreign_document_open()
 
         # A rep signs in and sees only the customers they carry.
         self.assertTrue(self.client.login(username="imran", password="Trial-2026"))
@@ -45,6 +46,31 @@ class LoadDemoTests(TestCase):
         with self.assertRaisesMessage(CommandError, "already holds records"):
             load(stdout=StringIO())
         self.assertEqual(Party.objects.count(), parties)
+
+    def assert_the_agings_foot_with_a_foreign_document_open(self):
+        """
+        O416: each aging, in rupees, is what its control accounts hold, with a dollar document open on each
+        side: the export of 6,000 sacks at USD 0.19 and the second container of filler, 16,000 kg at USD 1.25.
+        """
+        from django.db.models import Sum
+        from django.utils import timezone
+
+        from apps.accounting.models import JournalLine
+        from apps.purchasing.models import ap_aging, payable_accounts
+        from apps.sales.models import ar_aging, receivable_accounts
+
+        def held(accounts):
+            rows = JournalLine.objects.filter(account__in=accounts, entry__posted=True).aggregate(
+                debit=Sum("debit"), credit=Sum("credit"))
+            return (rows["debit"] or 0) - (rows["credit"] or 0)
+
+        today = timezone.localdate()
+        for report, accounts, rows, sign in ((ar_aging(as_of=today), receivable_accounts(), "invoices", 1),
+                                             (ap_aging(as_of=today), payable_accounts(), "bills", -1)):
+            foreign = [(row["currency"], row["due_in_currency"]) for bucket in report.values() for row in bucket[rows]
+                       if row["currency"] == "USD"]
+            self.assertTrue(foreign, rows)
+            self.assertEqual(sum(bucket["total"] for bucket in report.values()), sign * held(accounts), rows)
 
     def test_a_database_with_anything_in_it_is_refused(self):
         customer = Party.objects.create(code="C-1", name="A real customer")

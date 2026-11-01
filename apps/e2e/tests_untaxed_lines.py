@@ -129,7 +129,10 @@ class ABillNeedsItsTaxesAndTheVendorsNumber(UntaxedLinesTestCase):
         posted = Bill.objects.filter(posted=True, is_prepayment=False, is_opening_balance=False,
                                      lines__item__sku="PP-RAFFIA", vendor__tax_profile__gst_registration="regular",
                                      lines__expense_account__isnull=False).first() or \
-            Bill.objects.filter(posted=True, is_prepayment=False, is_opening_balance=False).first()
+            Bill.objects.filter(posted=True, is_prepayment=False, is_opening_balance=False,
+                                vendor__tax_profile__gst_registration="regular").first()
+        # A regular registrant's, as the first choice asks: O416 gave the demo an open import bill from an overseas
+        # vendor, and copied from it the line was refused for its expense account before either refusal asked here.
         bill = Bill.objects.create(vendor=posted.vendor, payable_account=posted.payable_account,
                                    bill_date=posted.bill_date, reference=reference)
         # An item nothing has come in of: one received and unbilled would be refused first, rightly, for naming
