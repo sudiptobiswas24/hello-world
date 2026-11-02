@@ -76,3 +76,39 @@ class ThePlantsGstRegistrationTests(TestCase):
         self.assertEqual((made.json()["b2cl_limit"], made.json()["eway_bill_limit"], made.json()["is_active"]),
                          ("100000.00", "50000.00", True))
 
+
+    def test_it_is_not_taken_out_of_force_once_tax_is_recorded_under_it(self):
+        """Out of force, a taxable invoice posted untaxed and no month's return compiled (found by probing)."""
+        from unittest import mock
+
+        from apps.gst.tests import gstin
+
+        controller = self.as_("Controller")
+        made = controller.post("/api/accounting/gst-settings/", {
+            "gstin": gstin("19AABCB1234C1Z"), "interstate_position": FiscalPosition.objects.get(code="INTER").pk},
+            format="json")
+        url = f"/api/accounting/gst-settings/{made.json()['id']}/"
+        with mock.patch("apps.accounting.gst._anything_recorded", return_value=True):
+            refused = controller.patch(url, {"is_active": False}, format="json")
+        self.assertEqual(refused.status_code, 400, refused.content)
+        self.assertIn("it stays in force", str(refused.json()))
+        self.assertTrue(GstSettings.objects.get().is_active)
+        # Before anything is recorded under it, a registration entered by mistake is taken out of force.
+        self.assertEqual(controller.patch(url, {"is_active": False}, format="json").status_code, 200)
+
+    def test_a_position_that_does_not_tax_across_a_state_line_is_refused(self):
+        """The screen offers every position: EXPORT-LUT zero-rated every inter-state sale, INTRA charged CGST and SGST."""
+        from apps.gst.tests import gstin
+
+        controller = self.as_("Controller")
+        for code, maps in (("EXPORT-LUT", "CGST9 to IGST0"), ("INTRA", "CGST9 to CGST9")):
+            refused = controller.post("/api/accounting/gst-settings/", {
+                "gstin": gstin("19AABCB1234C1Z"), "interstate_position": FiscalPosition.objects.get(code=code).pk},
+                format="json")
+            self.assertEqual(refused.status_code, 400, refused.content)
+            self.assertIn(maps, str(refused.json()))
+        self.assertFalse(GstSettings.objects.exists())
+        made = controller.post("/api/accounting/gst-settings/", {
+            "gstin": gstin("19AABCB1234C1Z"), "interstate_position": FiscalPosition.objects.get(code="INTER").pk},
+            format="json")
+        self.assertEqual(made.status_code, 201, made.content)

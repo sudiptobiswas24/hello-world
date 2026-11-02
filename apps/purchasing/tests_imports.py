@@ -345,3 +345,24 @@ class BillOfEntryTests(ImportPlantTestCase):
         voided = ap.post(f"/api/purchasing/bills-of-entry/{pk}/void/", {"reason": "Wrong port"}, format="json")
         self.assertEqual(voided.status_code, 200, voided.content)
         self.assertEqual(voided.json()["status"], "void")
+
+
+class TheDutyBillIsCorrectedThroughItsEntryTests(ImportPlantTestCase):
+    """
+    Found by probing (2 November): a debit note raised on the duty bill itself took the duty payable to nothing while
+    the bill of entry still stood posted, its 3,61,222.00 of duty on the goods and on the duty account for good.
+    """
+
+    entry = BillOfEntryTests.entry
+
+    def test_a_debit_note_on_the_duty_bill_is_refused_and_the_entry_voids_it(self):
+        self.import_order()
+        posted = self.entry()
+        posted.post()
+        with self.assertRaisesMessage(ValidationError, "void the bill of entry"):
+            posted.duty_bill.create_debit_note(memo="Refund?", on_date=posted.be_date)
+        self.assertEqual(self.balance(self.duty_payable), D("-1214364.00"))
+        posted.void(on_date=posted.be_date, reason="Wrong port")
+        posted.refresh_from_db()
+        self.assertEqual((posted.status, posted.landings.filter(released_entry__isnull=True).count()), ("void", 0))
+        self.assertEqual((self.balance(self.duty_payable), self.balance(self.duty)), (D("0"), D("0")))
