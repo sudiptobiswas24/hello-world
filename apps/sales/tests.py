@@ -366,3 +366,19 @@ class APostingThatRollsBackGivesItsNumberBackTests(SalesTestCase):
         next_one.post()
         failing.post()
         self.assertEqual((next_one.number, failing.number), ("INV-2026-00001", "INV-2026-00002"))
+
+
+class ASalesLineWithNoUnitIsInItsItemsUnitTests(SalesTestCase):
+    """The mirror of purchasing's (seen on a first installation): an order or quotation line takes the item's unit."""
+
+    def test_an_order_line_and_a_quotation_line_with_no_unit(self):
+        from apps.sales.models import Quotation, QuotationLine, SalesOrder, SalesOrderLine
+
+        order = SalesOrder.objects.create(customer=self.customer, order_date="2026-01-01")
+        line = SalesOrderLine.objects.create(order=order, item=self.item, quantity=Decimal("2"),
+                                             unit_price=Decimal("50"))
+        self.assertEqual(line.uom, self.uom)
+        quote = Quotation.objects.create(customer=self.customer, quotation_date="2026-01-01")
+        quoted = QuotationLine.objects.create(quotation=quote, item=self.item, quantity=Decimal("2"),
+                                              unit_price=Decimal("50"))
+        self.assertEqual(quoted.uom, self.uom)

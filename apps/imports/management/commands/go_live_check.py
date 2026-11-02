@@ -54,7 +54,8 @@ def checks():
 
     company = Company.objects.first()
     if company is None:
-        add(FAIL, "Company", "No company profile. Create it in the admin (Core > Company).")
+        add(FAIL, "Company", "No company yet: python manage.py setup_indian_books makes it ready to post "
+            "(rupees, the year from April, the default accounts); then name it under Settings > Company.")
         return found
     add(OK, "Company", company.name)
     if company.base_currency_id is None:

@@ -173,20 +173,26 @@ class Month:
                                  ("2400", "Net pay payable", L), ("2410", "PF payable", L), ("2420", "ESI payable", L),
                                  ("2430", "PT payable", L), ("2440", "LWF payable", L), ("1400", "Salary advances", A),
                                  ("6000", "Wages", X), ("6100", "Employer contributions", X)):
-            acct[code] = Account.objects.create(code=code, name=name, account_type=kind)
+            # The books setup seeds some of these under the same code for the same purpose: kept, as the plant would.
+            acct[code] = Account.objects.filter(code=code, account_type=kind).first() or \
+                Account.objects.create(code=code, name=name, account_type=kind)
         self.acct = acct
-        self.inr = Currency.objects.create(code="INR", name="Rupee", is_base=True)
-        self.usd = Currency.objects.create(code="USD", name="US Dollar")
+        # The books setup seeds both, rupees as the base, and makes the company the plant then fills in.
+        self.inr = Currency.objects.get(code="INR", is_base=True)
+        self.usd = Currency.objects.get(code="USD")
         ExchangeRate.objects.create(currency=self.usd, rate=D("84.00"), valid_from=OCT(1))
         ExchangeRate.objects.create(currency=self.usd, rate=D("84.50"), valid_from=OCT(30))
-        Company.objects.create(
+        company = Company.objects.get()
+        for field, value in dict(
             name="Bengal Polysacks", base_currency=self.inr, tan="CALB01234E",
             default_inventory_account=acct["1300"], default_cogs_account=acct["5010"],
             grni_account=acct["2150"], customer_deposit_account=acct["2300"],
             purchase_price_variance_account=acct["5150"], fx_gain_account=acct["4900"],
             fx_loss_account=acct["5910"], settlement_discount_account=acct["5310"],
-            bad_debt_account=acct["5200"], net_pay_account=acct["2400"])
-        self.terms = PaymentTerms.objects.create(code="N30", name="Net 30", net_days=30)
+            bad_debt_account=acct["5200"], net_pay_account=acct["2400"]).items():
+            setattr(company, field, value)
+        company.save()
+        self.terms = PaymentTerms.objects.get(code="N30", net_days=30)  # seeded by the books setup
         self.kg = UnitOfMeasure.objects.create(code="kg", name="Kilogram", category=UnitOfMeasureCategory.WEIGHT)
         self.qc = Warehouse.objects.create(code="QC", name="Held for inspection", is_quarantine=True)
         self.store = Warehouse.objects.create(code="STORE", name="Stores")
@@ -230,7 +236,9 @@ class Month:
         BooksOpening.objects.create(opened_on=datetime.date(2026, 9, 30), opening_account=acct["3000"])
         for code, name, kind in (("1500", "Plant and machinery", A), ("1590", "Accumulated depreciation", A),
                                  ("5600", "Depreciation", X), ("5700", "Machinery bought", X)):
-            acct[code] = Account.objects.create(code=code, name=name, account_type=kind)
+            # The books setup seeds some of these under the same code for the same purpose: kept, as the plant would.
+            acct[code] = Account.objects.filter(code=code, account_type=kind).first() or \
+                Account.objects.create(code=code, name=name, account_type=kind)
         self.looms = AssetCategory.objects.create(code="LOOM", name="Circular looms", asset_account=acct["1500"],
                                                   accumulated_account=acct["1590"], expense_account=acct["5600"],
                                                   default_life_months=120)

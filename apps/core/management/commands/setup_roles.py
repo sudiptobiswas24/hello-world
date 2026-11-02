@@ -80,6 +80,9 @@ ROLES = {
         # deliberately NOT accounting.post_journalentry
     ],
     "Controller": [
+        # The plant's own GST registration, a setting of the books (it had no door but code; seen on a first
+        # installation). The GST Officer reads it.
+        *crud("accounting", "gstsettings", actions=("add", "change", "view")),
         *view("quality", "instrument"),
         "quality.set_weighbridge",
         # They keep the ledger, the inventory account included, so they see the stock figures behind it:

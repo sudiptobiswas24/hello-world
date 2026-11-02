@@ -354,6 +354,16 @@ class OfficeApplicationTests(BrowserTestCase):
         expect(page.locator(".pager .count")).to_have_text("1–4 of 4")
         self.assertEqual(self.problems, [])
 
+    def test_the_tab_and_the_badge_carry_the_plants_own_name(self):
+        """They were the demo's (seen on a first installation)."""
+        from apps.core.models import Company
+
+        name = Company.objects.get().name
+        page = self.sign_in(self.person("AR Manager"))
+        expect(page).to_have_title(f"{name} ERP")
+        expect(page.locator(".brand span")).to_have_text("".join(part[0].upper() for part in name.split()[:2]))
+        self.assertEqual(self.problems, [])
+
     def test_finding_an_invoice(self):
         page = self.sign_in(self.person("AR Manager"), "/app/sales/invoices")
         expect(self.rows()).to_have_count(4)

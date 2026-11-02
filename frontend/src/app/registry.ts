@@ -1463,6 +1463,13 @@ export const MODULES: Module[] = [
         detail: () => import("../modules/settings/FiscalPositionForm"),
       },
       {
+        // The plant's own registration (it had no door but code; seen on a first installation).
+        path: "plant-gst", label: "Plant's GST registration", permission: "accounting.view_gstsettings",
+        create: "accounting.add_gstsettings", keep: "accounting.change_gstsettings",
+        keywords: "gstin own registration state b2cl e-invoice irn eway sac", load: () => import("../modules/settings/PlantGstRegistrations"),
+        detail: () => import("../modules/settings/PlantGstRegistrationForm"),
+      },
+      {
         path: "gst-registrations", label: "GST registrations", permission: "accounting.view_partytaxprofile",
         keep: "accounting.change_partytaxprofile",
         create: "accounting.add_partytaxprofile",

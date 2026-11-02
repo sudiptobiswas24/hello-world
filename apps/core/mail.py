@@ -36,8 +36,8 @@ def recipient_for(party):
 def send_document(document, party, what, *, to=None, subject=None, body=None, user=None, pdf=None,
                   filename=None):
     """
-    Mail a document's PDF to its party ("Delivery challan DN-7 from Deccan
-    Polysacks"), to `to` or the party's address, and write it in the
+    Mail a document's PDF to its party ("Delivery challan DN-7 from the
+    plant"), to `to` or the party's address, and write it in the
     document's history with who it went to. Returns the address used.
     `pdf` is the bytes to attach when the document renders more than one
     paper (an order's proforma), under `filename`.
