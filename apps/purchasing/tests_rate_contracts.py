@@ -11,7 +11,7 @@ from decimal import Decimal
 from django.core.exceptions import ValidationError
 
 from apps.accounting.gst import GstSettings
-from apps.accounting.models import Account, AccountType, FiscalPosition, PartyTaxProfile, Tax
+from apps.accounting.models import Account, AccountType, FiscalPosition, FiscalPositionTaxMapping, PartyTaxProfile, Tax
 from apps.sales.price_variation import PriceIndex, PriceIndexValue
 
 from .models import BillPolicy, GoodsReceipt, GoodsReceiptLine, PurchaseOrder, PurchaseOrderLine
@@ -26,14 +26,18 @@ class RateContractTestCase(ImportPlantTestCase):
     def setUp(self):
         super().setUp()
 
-        def tax(code, account_code):
+        def tax(code, account_code, rate="9"):
             account = Account.objects.create(code=account_code, name=f"Input {code}", account_type=AccountType.ASSET)
-            return Tax.objects.create(code=code, name=code, rate=D("9"), gst_head=code[:4].lower(),
+            return Tax.objects.create(code=code, name=code, rate=D(rate), gst_head=code[:4].lower(),
                                       collected_account=account, paid_account=account)
 
         self.cgst, self.sgst = tax("CGST9", "1311"), tax("SGST9", "1312")
-        GstSettings.objects.create(gstin="19AABCP1234E1ZT", state="19",
-                                   interstate_position=FiscalPosition.objects.create(code="INTER", name="Inter"))
+        igst = tax("IGST18", "1319", rate="18")
+        # Mapped as a plant's is: GstSettings refuses a position that would charge CGST and SGST across a state line.
+        inter = FiscalPosition.objects.create(code="INTER", name="Inter")
+        FiscalPositionTaxMapping.objects.create(fiscal_position=inter, source_tax=self.cgst, target_tax=igst)
+        FiscalPositionTaxMapping.objects.create(fiscal_position=inter, source_tax=self.sgst, target_tax=None)
+        GstSettings.objects.create(gstin="19AABCP1234E1ZT", state="19", interstate_position=inter)
         self.supplier = self.party("V-HPL", "Haldia Polymer Traders")
         PartyTaxProfile.objects.create(party=self.supplier, gstin="19AACCH1180A1Z3")
         self.index = PriceIndex.objects.create(code="RIL-H030SG", name="RIL raffia H030SG circular")

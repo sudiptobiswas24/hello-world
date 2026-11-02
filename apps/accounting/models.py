@@ -934,7 +934,34 @@ class FiscalPositionTaxMapping(AuditModel):
         # In save() as well: ModelSerializer never calls clean(), and the
         # office writes through the API. Only the admin ever asked this.
         self._check_target()
-        super().save(*args, **kwargs)
+        from .gst import interstate_position_faults, plants_position_if_among, refuse_breaking_the_plants_position
+
+        before = FiscalPositionTaxMapping.objects.filter(pk=self.pk).select_related("fiscal_position").first() \
+            if self.pk else None
+        plants = plants_position_if_among(self.fiscal_position, before.fiscal_position if before else None)
+        with transaction.atomic():
+            faults = interstate_position_faults(plants) if plants else []
+            super().save(*args, **kwargs)
+            # The guard on choosing the plant's position is otherwise undone by editing its mappings afterwards.
+            # Asked after the write, of the position as it now maps; a refusal rolls the write back.
+            if plants:
+                refuse_breaking_the_plants_position(plants, faults)
+
+    def delete(self, *args, **kwargs):
+        from .gst import interstate_position_faults, plants_position_if_among, refuse_breaking_the_plants_position
+
+        plants = plants_position_if_among(self.fiscal_position)
+        pk = self.pk
+        try:
+            with transaction.atomic():
+                faults = interstate_position_faults(plants) if plants else []
+                result = super().delete(*args, **kwargs)
+                if plants:
+                    refuse_breaking_the_plants_position(plants, faults)
+        except ValidationError:
+            self.pk = pk  # Django cleared it as the row went; the refusal put the row back
+            raise
+        return result
 
     def _check_target(self):
         if self.target_tax_id and self.target_tax_id == self.source_tax_id:
