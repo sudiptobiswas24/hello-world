@@ -32,8 +32,8 @@ class SetupStoresTests(TestCase):
         run("setup_stores")
         reasons = {reason.code: (reason.account.code, reason.direction) for reason in AdjustmentReason.objects.all()}
         self.assertEqual(reasons, {"DAMAGE": ("5300", "decrease"), "SHORT": ("5300", "decrease"),
-                                   "FOUND": ("4200", "increase")})
-        self.assertEqual(SeededDefault.objects.filter(model="inventory.adjustmentreason").count(), 3)
+                                   "FOUND": ("4200", "increase"), "OPENING": ("3900", "increase")})
+        self.assertEqual(SeededDefault.objects.filter(model="inventory.adjustmentreason").count(), 4)
 
     def test_run_again_nothing_is_made_twice_nor_changed(self):
         run("setup_indian_books")
@@ -44,7 +44,7 @@ class SetupStoresTests(TestCase):
         said = run("setup_stores")
         self.assertEqual(Country.objects.count(), len(COUNTRIES))
         self.assertEqual(Country.objects.get(code="AE").name, "UAE")
-        self.assertEqual(AdjustmentReason.objects.count(), 3)
+        self.assertEqual(AdjustmentReason.objects.count(), 4)  # DAMAGE, SHORT, FOUND, OPENING: none twice
         self.assertEqual(AdjustmentReason.objects.get(code="SHORT").name, "Shortage")
         self.assertIn("0 seeded", said)
 
@@ -60,3 +60,34 @@ class SetupStoresTests(TestCase):
         with self.assertRaisesMessage(CommandError, "run setup_indian_books first"):
             run("setup_stores")
         self.assertFalse(AdjustmentReason.objects.exists())
+
+
+class AFreshPlantHasItsUnitsTests(TestCase):
+    """No unit existed on a fresh install, so no item could be made or imported (2 November)."""
+
+    def test_the_units_with_their_gst_codes_and_conversions_and_a_second_run_adds_none(self):
+        from decimal import Decimal
+
+        from apps.core.models import UnitOfMeasure
+        from apps.gst.models import UnitQuantityCode
+
+        call_command("setup_indian_books", stdout=StringIO())
+        UnitOfMeasure.objects.create(code="bag", name="Sack", category="count")  # the plant's own, kept
+        out = StringIO()
+        call_command("setup_stores", stdout=out)
+        self.assertEqual(sorted(UnitOfMeasure.objects.values_list("code", flat=True)),
+                         sorted(["kg", "g", "t", "nos", "pcs", "bag", "bale", "roll", "m", "L"]))
+        self.assertEqual(UnitOfMeasure.objects.get(code="bag").name, "Sack")
+        self.assertIn("kept as it was: unit bag", out.getvalue())
+        tonne = UnitOfMeasure.objects.get(code="t")
+        self.assertEqual((tonne.base_unit.code, tonne.conversion_factor), ("kg", Decimal("1000")))
+        self.assertEqual(dict(UnitQuantityCode.objects.values_list("uom__code", "code")), {
+            "kg": "KGS", "g": "GMS", "t": "TON", "nos": "NOS", "pcs": "PCS", "bale": "BAL", "roll": "ROL",
+            "m": "MTR", "L": "LTR"})
+        # The opening position's stock posts with nothing more made by hand (docs/IMPORT.md).
+        opening = AdjustmentReason.objects.get(code="OPENING")
+        self.assertEqual((opening.account.code, opening.direction), ("3900", "increase"))
+        again = StringIO()
+        call_command("setup_stores", stdout=again)
+        self.assertIn("0 seeded for the accountant to review", again.getvalue())
+

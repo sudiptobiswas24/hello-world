@@ -59,12 +59,18 @@ account** (an equity account, say `3900 Opening balances`), and so does
 the journal entry for everything else. Once the opening position is in, that account
 holds the old system's equity; if it does not, something was left out.
 
-Make, before the opening position:
+Before the opening position, the plant needs:
 
 - the opening-balance account;
 - an adjustment reason with code `OPENING` (or name another with
   `--reason`) whose account is the opening-balance account;
 - the company's default receivable and payable accounts.
+
+`setup_indian_books` and then `setup_stores` (RUNBOOK.md, "First
+installation") make all three: `3900 Opening balances`, the `OPENING`
+reason posting to it, and the company's defaults. A plant whose chart
+already has its own opening-balance account names its reason with
+`--reason`.
 
 ## Columns
 

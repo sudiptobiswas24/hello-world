@@ -101,6 +101,67 @@ class SetupIndianBooksTests(TestCase):
         self.assertEqual(GstSettings.objects.get().gstin, number)
 
 
+class AFreshInstallIsReadyToPostTests(TestCase):
+    """
+    Seen on a first installation (2 November): no currency to choose, the year from January, and every default
+    account blank, so nothing could post until seventeen accounts were picked by hand.
+    """
+
+    def test_a_fresh_install_gets_rupees_its_year_from_april_and_every_default_account(self):
+        from apps.imports.management.commands.go_live_check import checks
+
+        self.assertFalse(Company.objects.exists())
+        out = run()
+        company = Company.objects.get()
+        self.assertEqual((company.base_currency.code, company.base_currency.is_base, company.fiscal_year_start_month),
+                         ("INR", True, 4))
+        wired = {field: getattr(company, field).code for field, _code, _words in
+                 __import__("apps.accounting.management.commands.setup_indian_books",
+                            fromlist=["DEFAULTS"]).DEFAULTS}
+        self.assertEqual(wired, {
+            "default_receivable_account": "1100", "default_payable_account": "2000", "default_bank_account": "1200",
+            "default_revenue_account": "4000", "default_inventory_account": "1300", "default_cogs_account": "5010",
+            "grni_account": "2150", "default_purchase_expense_account": "5000", "customer_deposit_account": "2300",
+            "vendor_prepayment_account": "1410", "fx_gain_account": "4900", "fx_loss_account": "5910",
+            "settlement_discount_account": "5310", "settlement_discount_received_account": "4310",
+            "bad_debt_account": "5200", "purchase_price_variance_account": "5150", "net_pay_account": "2400",
+            "claims_recoverable_account": "1360"})
+        self.assertIn("year from April (was January)", out)
+        from apps.core.models import PaymentTerms
+
+        self.assertEqual(dict(PaymentTerms.objects.values_list("code", "net_days")),
+                         {"IMMEDIATE": 0, "N15": 15, "N30": 30, "N45": 45, "N60": 60})
+        self.assertTrue(SeededDefault.objects.filter(model="core.company", object_id=company.pk).exists())
+        # What the go-live check asked of the accountant by hand is done; what is the plant's own choice is not.
+        said = {what: level for level, what, _detail in checks()}
+        self.assertNotIn("Base currency", said)
+        self.assertEqual([what for what, level in said.items() if what.startswith("Account:")], [])
+        self.assertEqual(said["Warehouses"], "FAIL")
+
+    def test_what_the_company_already_says_is_kept_and_a_posted_year_is_not_moved(self):
+        from apps.accounting.models import JournalEntry
+        import datetime
+
+        usd = Currency.objects.create(code="USD", name="Dollar", is_base=True)
+        debtors = Account.objects.create(code="1105", name="Sundry debtors", account_type=AccountType.ASSET)
+        Company.objects.create(name="Bengal Woven Sacks", base_currency=usd, default_receivable_account=debtors)
+        JournalEntry.objects.create(date=datetime.date(2026, 4, 1), memo="Opening")
+        out = run()
+        company = Company.objects.get()
+        self.assertEqual((company.base_currency.code, company.default_receivable_account.code,
+                          company.fiscal_year_start_month), ("USD", "1105", 1))
+        self.assertFalse(Currency.objects.get(code="INR").is_base)
+        self.assertIn("company year from January: entries are posted, so it is not moved", out)
+        self.assertEqual(company.default_payable_account.code, "2000")
+
+    def test_an_account_of_the_right_type_named_for_something_else_is_not_wired(self):
+        Account.objects.create(code="2150", name="Rent payable", account_type=AccountType.LIABILITY)
+        out = run()
+        self.assertIsNone(Company.objects.get().grni_account)
+        self.assertIn("company grni account: account 2150 is 'Rent payable', not what it is for; left unset, "
+                      "choose it on Settings > Company", out)
+
+
 class TheExampleInItsOwnWordsRunsTests(TestCase):
     """The command's docstring shows a GSTIN to run it with; that one failed its check character (g22 month)."""
 

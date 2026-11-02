@@ -82,12 +82,16 @@ export function Shell() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
   useEffect(() => setMenu(false), [location.pathname]);
+  // The plant's own name in the tab: it was the demo's, written into the page (seen on a first installation).
+  useEffect(() => {
+    document.title = me.company ? `${me.company} ERP` : "ERP";
+  }, [me.company]);
 
   return (
     <div className="shell">
       <nav className="rail" aria-label="Modules">
         <NavLink to="/" end className="brand" aria-label="Home">
-          <span>DP</span>
+          <span>{initials(me.company ?? "")}</span>
         </NavLink>
         <NavLink to="/" end className="rail-item">
           <Icon name="home" />

@@ -680,3 +680,19 @@ class AReturnToTheVendorTakesBackWhatASwitchedOffAccountHoldsTests(PurchasingTes
         Account.objects.filter(pk=self.grni.pk).update(is_active=False)
         with self.assertRaisesMessage(ValidationError, "is switched off; it takes nothing new"):
             receipt.post()
+
+
+class ALineWithNoUnitIsInItsItemsUnitTests(PurchasingTestCase):
+    """
+    Seen on a first installation (2 November): a purchase order line made through the API with no unit was accepted,
+    confirmed and received, and refused only when its receipt posted. It takes the item's unit as it is saved.
+    """
+
+    def test_a_line_with_no_unit_is_received_in_the_items_own(self):
+        order = PurchaseOrder.objects.create(vendor=self.vendor, order_date="2026-01-01")
+        line = PurchaseOrderLine.objects.create(order=order, item=self.item, quantity=Decimal("10"),
+                                                unit_price=Decimal("5"))
+        self.assertEqual(line.uom, self.uom)
+        order.confirm()
+        receipt = self.receive(line, Decimal("10"))
+        self.assertEqual(receipt.lines.get().quantity_received, Decimal("10"))

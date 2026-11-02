@@ -63,7 +63,22 @@ LOCKED_FOR = datetime.timedelta(minutes=15)
 LONGEST_LOCK = datetime.timedelta(hours=24)
 RECOVERY_CODES = 10
 STEP_URL = "/accounts/second-factor/"
-ISSUER = "Deccan Polysacks ERP"
+
+
+def plant_name():
+    """
+    The company's name, as the sign-in page and an authenticator app show it; nothing before there is one. Read,
+    never made: a sign-in page is not where a company comes into being. It was the demo company's name, written in, so
+    every plant's sign-in page and every phone's authenticator named the demo (seen on a first installation).
+    """
+    from apps.core.models import Company
+
+    return Company.objects.order_by("pk").values_list("name", flat=True).first() or ""
+
+
+def issuer():
+    """The name an authenticator app lists the code under."""
+    return f"{plant_name() or 'Plant'} ERP"
 
 
 class GuardedRight(models.Model):
@@ -377,6 +392,9 @@ def _own_password_first(request, user, wanted):
 class SignInView(LoginView):
     """The password; then one's own password where someone else set it; then the code where one is needed."""
 
+    def get_context_data(self, **kwargs):
+        return {**super().get_context_data(**kwargs), "plant_name": plant_name()}
+
     def get(self, request, *args, **kwargs):
         user = get_user(request)
         if user.is_authenticated:
@@ -433,7 +451,7 @@ class SetOwnPasswordView(PasswordChangeView):
 def _qr(factor):
     import segno
 
-    uri = pyotp.TOTP(factor.secret).provisioning_uri(name=factor.user.get_username(), issuer_name=ISSUER)
+    uri = pyotp.TOTP(factor.secret).provisioning_uri(name=factor.user.get_username(), issuer_name=issuer())
     return mark_safe(segno.make(uri, error="m").svg_inline(scale=5, dark="#16181A", light="#ffffff"))
 
 
