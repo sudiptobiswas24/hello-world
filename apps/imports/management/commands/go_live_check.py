@@ -139,6 +139,14 @@ def _gst(add):
         add(WARN, "GST", "No active registration: no invoice will carry GST and no return compiles.")
         return
     add(OK, "GST", gst.gstin)
+    from apps.accounting.gst import interstate_position_faults
+
+    faults = interstate_position_faults(gst.interstate_position)
+    if faults:
+        # A rate added after the position was chosen is charged CGST and SGST across a state line until mapped.
+        add(FAIL, "GST: inter-state position", f"{gst.interstate_position} maps {', '.join(faults[:4])}: a supply "
+            "across a state line would be charged central and state tax. Map each CGST to the IGST at the whole "
+            "rate and each SGST to no tax (Settings > Fiscal positions), or run setup_indian_books.")
     if not gst.job_work_sac and SalesOrder.objects.filter(is_job_work=True).exists():
         add(FAIL, "GST: job-work SAC", "Job-work orders exist and the SAC for conversion is not set; "
             "their invoices will be refused.")

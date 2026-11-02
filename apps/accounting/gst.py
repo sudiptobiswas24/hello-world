@@ -213,32 +213,11 @@ class GstSettings(AuditModel):
         return f"GST {self.gstin}"
 
     def _check_interstate_position(self):
-        """
-        What a supply across a state line maps its taxes through must turn each central tax into integrated tax at
-        twice its rate and drop each state tax. The screen offers every position: chosen by mistake, EXPORT-LUT
-        zero-rated every inter-state sale and INTRA charged it CGST and SGST (found by probing, 2 November).
-        Asked when the position is chosen or changed, of the plant's own GST taxes.
-        """
+        """Asked when the position is chosen or changed; a mapping edited later asks again (models.py)."""
         before = GstSettings.objects.filter(pk=self.pk).values_list("interstate_position_id", flat=True).first() \
             if self.pk else None
-        if not self.interstate_position_id or before == self.interstate_position_id:
-            return
-        from .models import Tax
-
-        position = self.interstate_position
-        wrong = []
-        for tax in Tax.objects.filter(gst_head__in=("cgst", "sgst"), reverse_charge=False):
-            mapped = position.map_tax(tax)
-            if tax.gst_head == "cgst" and not (mapped is not None and mapped.gst_head == "igst"
-                                               and mapped.rate == tax.rate * 2):
-                wrong.append(f"{tax.code} to {mapped.code if mapped else 'nothing'}")
-            if tax.gst_head == "sgst" and mapped is not None:
-                wrong.append(f"{tax.code} to {mapped.code}")
-        if wrong:
-            raise ValidationError({"interstate_position": [
-                f"{position} is not what a supply across a state line is taxed through: it maps "
-                f"{', '.join(wrong[:4])}. It turns central tax into integrated tax at the whole rate and drops "
-                "state tax (INTER, as setup_indian_books seeds it)."]})
+        if self.interstate_position_id and before != self.interstate_position_id:
+            refuse_wrong_interstate_position(self.interstate_position)
 
     def save(self, *args, **kwargs):
         self.gstin = validate_gstin(self.gstin)
@@ -277,6 +256,58 @@ class GstSettings(AuditModel):
     def active(cls):
         return cls.objects.filter(is_active=True).first()
 
+
+
+def interstate_position_faults(position):
+    """
+    What a supply across a state line maps its taxes through must turn each central tax into integrated tax at
+    twice its rate and drop each state tax. The screen offers every position: chosen by mistake, EXPORT-LUT
+    zero-rated every inter-state sale and INTRA charged it CGST and SGST (found by probing, 2 November). Answered
+    of the plant's own GST taxes, one line per tax mapped wrong.
+    """
+    from .models import Tax
+
+    wrong = []
+    for tax in Tax.objects.filter(gst_head__in=("cgst", "sgst"), reverse_charge=False).order_by("code"):
+        mapped = position.map_tax(tax)
+        if tax.gst_head == "cgst" and not (mapped is not None and mapped.gst_head == "igst"
+                                           and mapped.rate == tax.rate * 2):
+            wrong.append(f"{tax.code} to {mapped.code if mapped else 'nothing'}")
+        if tax.gst_head == "sgst" and mapped is not None:
+            wrong.append(f"{tax.code} to {mapped.code}")
+    return wrong
+
+
+def _refusal(position, wrong):
+    return (f"{position} is not what a supply across a state line is taxed through: it maps "
+            f"{', '.join(wrong[:4])}. It turns central tax into integrated tax at the whole rate and drops "
+            "state tax (INTER, as setup_indian_books seeds it).")
+
+
+def refuse_wrong_interstate_position(position):
+    wrong = interstate_position_faults(position)
+    if wrong:
+        raise ValidationError({"interstate_position": [_refusal(position, wrong)]})
+
+
+def plants_position_if_among(*positions):
+    """The plant's inter-state position when it is one of `positions`, else None."""
+    plant = GstSettings.active()
+    if plant is not None and plant.interstate_position_id in {p.pk for p in positions if p is not None}:
+        return plant.interstate_position
+    return None
+
+
+def refuse_breaking_the_plants_position(position, faults_before):
+    """
+    A mapping changed or removed on the plant's inter-state position may not leave a tax mapped wrong that was
+    mapped right. Worse only: a new rate's CGST and SGST are mapped one at a time, and the first leaves the second
+    still wrong.
+    """
+    worse = [fault for fault in interstate_position_faults(position) if fault not in faults_before]
+    if worse:
+        raise ValidationError(f"{position} is what the plant taxes a supply across a state line through. "
+                              + _refusal(position, worse))
 
 
 def charges_gst(party):
@@ -531,7 +562,16 @@ def gst_taxes(profile, taxes, place=None):
             "or, if unregistered, a state."
         )
     if state != settings.state or profile.gst_registration == GstRegistration.SEZ:
-        return settings.interstate_position.map_taxes(taxes)
+        mapped = settings.interstate_position.map_taxes(taxes)
+        # The position is checked when chosen and when its mappings change, not when a rate is added after: an
+        # unmapped new rate would otherwise charge a buyer in another state CGST and SGST.
+        local = [tax.code for tax in mapped if tax.gst_head in ("cgst", "sgst") and not tax.reverse_charge]
+        if local:
+            raise ValidationError(
+                f"{settings.interstate_position} does not map {', '.join(local)}: across a state line it would be "
+                "charged as central and state tax. Map each CGST to the IGST at the whole rate and each SGST to "
+                "no tax (Settings > Fiscal positions).")
+        return mapped
     return list(taxes)
 
 

@@ -4,6 +4,7 @@ no API, only a flag to setup_indian_books, while Settings' "GST registrations" e
 typed the plant's GSTIN there made a party's profile, and the go-live check still said no registration was active.
 """
 
+from decimal import Decimal as D
 from io import StringIO
 
 from django.contrib.auth.models import Group, User
@@ -112,3 +113,108 @@ class ThePlantsGstRegistrationTests(TestCase):
             "gstin": gstin("19AABCB1234C1Z"), "interstate_position": FiscalPosition.objects.get(code="INTER").pk},
             format="json")
         self.assertEqual(made.status_code, 201, made.content)
+
+
+class ThePlantsPositionStaysRightWhenItsMappingsChangeTests(TestCase):
+    """
+    The guard on choosing the plant's inter-state position was undone by editing its mappings afterwards: a
+    Controller deleting INTER's CGST 9 to IGST 18 row left every inter-state sale at 18 per cent charged CGST 9 and
+    SGST 9 to the other state's buyer (found probing the guard's edit path, 2 November).
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        from apps.gst.tests import gstin
+
+        call_command("setup_roles", verbosity=0)
+        call_command("setup_indian_books", stdout=StringIO())
+        cls.inter = FiscalPosition.objects.get(code="INTER")
+        GstSettings.objects.create(gstin=gstin("19AABCB1234C1Z"), interstate_position=cls.inter)
+
+    def mapping(self, position, source):
+        from apps.accounting.models import FiscalPositionTaxMapping
+
+        return FiscalPositionTaxMapping.objects.get(fiscal_position=position, source_tax__code=source)
+
+    def test_a_mapping_removed_or_bent_is_refused_and_kept(self):
+        from django.core.exceptions import ValidationError
+
+        from apps.accounting.models import Tax
+
+        cgst = self.mapping(self.inter, "CGST9")
+        with self.assertRaisesMessage(ValidationError, "CGST9 to CGST9"):
+            cgst.delete()
+        self.assertEqual(self.mapping(self.inter, "CGST9").target_tax.code, "IGST18")
+
+        cgst.target_tax = Tax.objects.get(code="IGST5")
+        with self.assertRaisesMessage(ValidationError, "CGST9 to IGST5"):
+            cgst.save()
+        self.assertEqual(self.mapping(self.inter, "CGST9").target_tax.code, "IGST18")
+
+        sgst = self.mapping(self.inter, "SGST9")
+        sgst.target_tax = Tax.objects.get(code="IGST18")
+        with self.assertRaisesMessage(ValidationError, "SGST9 to IGST18"):
+            sgst.save()
+        self.assertIsNone(self.mapping(self.inter, "SGST9").target_tax)
+
+    def test_the_controller_is_answered_in_words_through_the_api(self):
+        user = User.objects.create_user("controller")
+        user.groups.add(Group.objects.get(name="Controller"))
+        client = APIClient()
+        client.force_authenticate(user)
+        row = self.mapping(self.inter, "CGST9")
+        removed = client.delete(f"/api/accounting/fiscal-position-tax-mappings/{row.pk}/")
+        self.assertEqual(removed.status_code, 400, removed.content)
+        self.assertIn("what the plant taxes a supply across a state line through", str(removed.json()))
+        self.assertEqual(self.mapping(self.inter, "CGST9").target_tax.code, "IGST18")
+
+    def test_a_new_rate_is_mapped_one_tax_at_a_time(self):
+        """Its CGST and SGST cannot be mapped at once: the first mapping leaves the second still wrong, not worse."""
+        from apps.accounting.gst import interstate_position_faults
+        from apps.accounting.models import FiscalPositionTaxMapping, Tax
+
+        nine = Tax.objects.get(code="CGST9")
+
+        def tax(code, rate, head):
+            return Tax.objects.create(code=code, name=code, rate=D(rate), gst_head=head,
+                                      collected_account=nine.collected_account, paid_account=nine.paid_account)
+
+        cgst, sgst, igst = tax("CGST14", "14", "cgst"), tax("SGST14", "14", "sgst"), tax("IGST28", "28", "igst")
+        self.assertEqual(interstate_position_faults(self.inter), ["CGST14 to CGST14", "SGST14 to SGST14"])
+        FiscalPositionTaxMapping.objects.create(fiscal_position=self.inter, source_tax=cgst, target_tax=igst)
+        FiscalPositionTaxMapping.objects.create(fiscal_position=self.inter, source_tax=sgst, target_tax=None)
+        self.assertEqual(interstate_position_faults(self.inter), [])
+
+    def test_another_positions_mappings_are_its_own(self):
+        self.mapping(FiscalPosition.objects.get(code="EXPORT-LUT"), "CGST9").delete()
+
+    def test_a_rate_added_later_and_left_unmapped_fails_the_go_live_check(self):
+        from apps.accounting.models import Tax
+        from apps.imports.management.commands.go_live_check import checks
+
+        def level():
+            return {what: level for level, what, _detail in checks()}.get("GST: inter-state position")
+
+        self.assertIsNone(level())
+        nine = Tax.objects.get(code="CGST9")
+        Tax.objects.create(code="CGST14", name="CGST14", rate=D("14"), gst_head="cgst",
+                           collected_account=nine.collected_account, paid_account=nine.paid_account)
+        self.assertEqual(level(), "FAIL")
+
+    def test_a_supply_across_a_state_line_at_an_unmapped_rate_is_refused(self):
+        from django.core.exceptions import ValidationError
+
+        from apps.accounting.gst import gst_taxes
+        from apps.accounting.models import PartyTaxProfile, Tax
+        from apps.core.models import Party
+        from apps.gst.tests import gstin
+
+        nine = Tax.objects.get(code="CGST9")
+        buyer = PartyTaxProfile.objects.create(party=Party.objects.create(code="C-PATNA", name="Patna Mills"),
+                                               gstin=gstin("10AABCP5678D1Z"))
+        sgst9 = Tax.objects.get(code="SGST9")
+        self.assertEqual([t.code for t in gst_taxes(buyer, [nine, sgst9])], ["IGST18"])
+        fourteen = Tax.objects.create(code="CGST14", name="CGST14", rate=D("14"), gst_head="cgst",
+                                      collected_account=nine.collected_account, paid_account=nine.paid_account)
+        with self.assertRaisesMessage(ValidationError, "does not map CGST14"):
+            gst_taxes(buyer, [fourteen])
