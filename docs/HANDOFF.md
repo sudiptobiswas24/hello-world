@@ -69,6 +69,12 @@ Round B's report: /home/user/work/reports/fix_imports.md, with the review below.
   which month's filed GSTR-3B stops a void. For the customs broker: rounding to the rupee per line, and the
   20% freight / 1.125% insurance defaults (now confirmable under Purchasing > Configuration). For the GST
   Officer: the IMPG field names in a real 2B download.
+- A first installation, 2 November: installed from nothing on PostgreSQL in production mode (two database
+  roles, Kolkata time) as RUNBOOK.md and deploy/entrypoint.sh do it, then driven in a browser and through the API
+  as the people. It could not post until fixed (the fresh-install commit: the books setup readies the company,
+  units, terms, the OPENING reason, the plant's GST registration screen, the plant's own name, an order line's
+  unit). With it: go_live_check ready, a first purchase and sale worked by hand. Open from it: O419 (pay
+  components), O420 to O422. Scripts: /home/user/work/fresh/ (install.sh, day1_trade.py, read_outputs.py).
 Order from here:
 1. O415 before round C: a supply line with no warehouse counts in every warehouse's plan, which advises
    cancelling material the plant needs. The fix is in the row.
