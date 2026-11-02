@@ -93,14 +93,23 @@ class Warehouse(AuditModel):
     def default_receiving(cls):
         """
         The warehouse a line naming none is received into and planned in: the one marked, or on a site with
-        a single active warehouse, that one. None where there are two or more and none is marked, which
+        a single warehouse that receives to stock (receiving_to_stock), that one. None where there are two or more and none is marked, which
         go_live_check fails: such a line then belongs to no warehouse's plan rather than to every one's.
         """
         marked = cls.objects.filter(receives_by_default=True, is_active=True).first()
         if marked is not None:
             return marked
-        active = list(cls.objects.filter(is_active=True)[:2])
-        return active[0] if len(active) == 1 else None
+        usable = list(cls.receiving_to_stock()[:2])
+        return usable[0] if len(usable) == 1 else None
+
+    @classmethod
+    def receiving_to_stock(cls):
+        """
+        Active warehouses goods can be received into as stock: not a quarantine bay, not transit, and not a
+        vendor's or customer's stock. A main store with an inspection bay beside it has one, and it is the default.
+        """
+        return cls.objects.filter(is_active=True, is_quarantine=False, is_transit=False,
+                                  consignment_vendor__isnull=True, held_for__isnull=True)
 
     @classmethod
     def named_or_defaulted(cls, warehouse, field="warehouse"):
