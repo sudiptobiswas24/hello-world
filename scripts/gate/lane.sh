@@ -1,16 +1,19 @@
 #!/bin/bash
 # One lane of the release gate, run as its own background job.
 #
-#   scripts/gate/lane.sh <prefix> ui|sqlite|ist|pg-a|pg-b|mig
+#   scripts/gate/lane.sh <prefix> ui|sqlite|ist|pg-a|pg-b|pg-c|mig
 #
 # GATE_TREE  the worktree to gate (default: this repository's root). Keep it
 #            clean and do not edit it while a lane runs.
 # GATE_LOGS  where logs go (default: /tmp/gate-logs).
 #
-# A background job may run two hours at most. With nothing else on the
-# machine, sqlite and ist take about an hour each and the two pg halves
-# about 20 and 60 minutes. Run ui first: it builds the office app the
-# browser tests need. Then sqlite and pg-a and pg-b, then ist and mig.
+# A background job may run two hours at most, and a lane killed at the limit
+# has no verdict. Each lane runs two workers on a four-core machine, so run
+# two lanes at a time, never more: five at once (g25) ran every one past the
+# limit. Beside one other lane, sqlite and ist take about 100 minutes each
+# and pg-a about 65. Run ui first: it builds the office app the browser
+# tests need. Then sqlite with pg-a, ist with pg-b, then pg-c, then mig
+# alone (three workers).
 # Never edit this file while a lane is running from it: bash reads a
 # script as it runs, and the lane then executes shifted lines.
 set -u
@@ -61,7 +64,11 @@ pg-a)
     pg_half A erp apps.sales apps.purchasing apps.accounting apps.gst apps.core
     ;;
 pg-b)
-    pg_half B erp2 apps.manufacturing apps.inventory apps.hr apps.planning apps.quality apps.assets apps.imports apps.e2e apps.web
+    pg_half B erp2 apps.manufacturing apps.inventory apps.hr apps.planning
+    ;;
+pg-c)
+    # Split from pg-b in g25: 4,471 tests at two workers ran past the two-hour limit beside one other lane.
+    pg_half C erp3 apps.quality apps.assets apps.imports apps.e2e apps.web
     ;;
 mig)
     # Three workers: each loads every app's migration state and grew to 4.4 GB in g25, and a fourth

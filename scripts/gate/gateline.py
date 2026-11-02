@@ -4,8 +4,8 @@ Print a gate's Gate line from its lane logs, or say what is missing.
     python3 scripts/gate/gateline.py <prefix>
 
 Reads $GATE_LOGS (default /tmp/gate-logs). Every lane must say "Ran N
-tests" and "OK". The two PostgreSQL halves must add up to the SQLite
-lane's count, so an app left out of both halves cannot pass unnoticed.
+tests" and "OK". The three PostgreSQL parts must add up to the SQLite
+lane's count, so an app left out of every part cannot pass unnoticed.
 Asia/Kolkata must skip no more than SQLite: a lane whose browser tests
 skipped (no build, no Chromium) looks green otherwise.
 """
@@ -30,13 +30,14 @@ def result(name):
 sq, sq_skip = result(f"{P}_suite.log")
 pg_a, _ = result(f"{P}_pg_A.log")
 pg_b, _ = result(f"{P}_pg_B.log")
+pg_c, _ = result(f"{P}_pg_C.log")
 ist, ist_skip = result(f"{P}_ist.log")
 mig, _ = result(f"{P}_mig.log")
 out = open(os.path.join(LOGS, f"gate_{P}.out")).read()
 vitest = re.search(r"Tests\s+(\d+) passed", out)
 problems = []
-if pg_a + pg_b != sq:
-    problems.append(f"PostgreSQL halves ran {pg_a}+{pg_b}, SQLite {sq}: an app is missing from a half")
+if pg_a + pg_b + pg_c != sq:
+    problems.append(f"PostgreSQL parts ran {pg_a}+{pg_b}+{pg_c}, SQLite {sq}: an app is missing from a part")
 if ist != sq or ist_skip > sq_skip:
     problems.append(f"Asia/Kolkata ran {ist} skipping {ist_skip}; SQLite ran {sq} skipping {sq_skip}")
 if not vitest or "UI FAILED" in out:

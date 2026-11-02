@@ -623,7 +623,7 @@ class Command(BaseCommand):
             buy(threads, day(-3), [(thread, "300", "262")], receive=False)
             buy(liner, day(-1), [(liner_film, "3000", "124")], receive=False)
 
-        with step("Polymer imported through customs, and polymer bought on a circular"):
+        with step("Polymer imported through customs"):
             # L21: a container of polymer from overseas, received and billed in dollars; its bill of entry is
             # the accountant's to enter from the BE customs gave. The duty is owed to the customs house.
             acc("2460", "Customs duty payable", "liability")
@@ -642,6 +642,10 @@ class Command(BaseCommand):
             landed.post()
             import_bill = imported.create_bill(ap, bill_date=day(-12), reference="GPF/26/0912")
             import_bill.post()
+
+        with step("The container paid by telegraphic transfer"):
+            # Its own section, as the office pays in its own request: posted in the transaction that received the
+            # container, the bank was shared after the stock rows, against apps.core.lock_order (PostgreSQL only).
             # Paid by telegraphic transfer in dollars, as the supplier's terms ask.
             remitted = Payment.objects.create(party=gulf_polymers, direction="disbursement", amount=import_bill.total(),
                                               payment_date=day(-10), currency=usd, bank_account=bank,
@@ -649,6 +653,8 @@ class Command(BaseCommand):
             remitted.post()
             M("purchasing.BillPayment").objects.create(bill=import_bill, payment=remitted, amount=import_bill.total(),
                                                        date=day(-10))
+
+        with step("The next container from the Gulf"):
             # O416: the next container, landed and billed, and not yet remitted: the payable holds it at the rate
             # its bill was booked at, and the aging has to say the same in rupees.
             following = PO.objects.create(vendor=gulf_polymers, order_date=day(-15), currency=usd)
@@ -657,6 +663,10 @@ class Command(BaseCommand):
             following.confirm()
             following.create_receipt(receipt_date=day(-4), warehouse=plant).post()
             following.create_bill(ap, bill_date=day(-4), reference="GPF/26/0951").post()
+
+        with step("Polymer bought on a circular"):
+            # Its own section, as each receipt is its own request: received in the transaction that landed the
+            # filler, the raffia's shelf was taken after the filler's, against key order (apps.core.lock_order).
             # L16: the maker's circular for raffia, a contract with Granule House at 1.50 off it, and an order
             # priced there, received in three lots and billed. A revision back-dated is the Purchase Manager's.
             Index, Value = M("sales.PriceIndex"), M("sales.PriceIndexValue")
