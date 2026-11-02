@@ -75,11 +75,14 @@ Round B's report: /home/user/work/reports/fix_imports.md, with the review below.
   units, terms, the OPENING reason, the plant's GST registration screen, the plant's own name, an order line's
   unit). With it: go_live_check ready, a first purchase and sale worked by hand. Open from it: O419 (pay
   components), O420 to O422. Scripts: /home/user/work/fresh/ (install.sh, day1_trade.py, read_outputs.py).
+- O416 and O415 in (3 commits from claude/erp-g25-balances; report /home/user/work/reports/fix_balances.md):
+  balances and agings in base through one shared reading, the demo carrying an open foreign invoice and bill;
+  one default receiving warehouse, a quarantine bay not counted as receiving. Reviewed: the edited planning test
+  encoded the double count. Its D1 to D6 are O423 to O428. For the accountant: booked or closing rates in the
+  year-end aging and in credit exposure; the GST default on an export order.
 Order from here:
-1. O415 before round C: a supply line with no warehouse counts in every warehouse's plan, which advises
-   cancelling material the plant needs. The fix is in the row.
-2. Round C (L28 certificates of analysis, L9 scanning), then the six-lane gate on one tip, finalize, push.
-3. Open from the 1 November checks: O416 (agings in mixed currencies), O401 (a document saved before its lines), O405 (the demo shows a third
+1. Round C (L28 certificates of analysis, L9 scanning), then the six-lane gate on one tip, finalize, push.
+2. Open from the 1 November checks: O416 (agings in mixed currencies), O401 (a document saved before its lines), O405 (the demo shows a third
    of the plant: specifications, inspections, stations, bank details, disposal accounts). Report:
    docs/handoff/reports/drilldown_nov01.md.
 Every round now drives its flows in the browser and reads its outputs before reporting (fix_common.md).
