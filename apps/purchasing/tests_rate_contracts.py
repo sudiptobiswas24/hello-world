@@ -184,3 +184,33 @@ class RateContractTests(RateContractTestCase):
             "/api/purchasing/rate-contracts/").status_code, 200)
         self.assertEqual(self.client_as("AP Manager").post("/api/purchasing/rate-contracts/", {}, format="json")
                          .status_code, 403)
+
+
+class ANotesDocumentSaysWhatTheNoteSaysTests(RateContractTestCase):
+    """
+    Found by probing (2 November): the note's draft bill cut from 45,000.00 to 15,000.00 still landed 45,000.00 on the
+    goods and left -30,000.00 on the holding account for good. And a debit note on the posted supplementary bill would
+    have taken the payable down with the price change still on the shelves.
+    """
+
+    def test_an_edited_bill_is_refused_at_posting_and_nothing_lands(self):
+        self.three_lots()
+        self.revise("102.5000")
+        note = self.note()
+        line = note.bill.lines.order_by("pk").first()
+        line.unit_price = D("15000.00")
+        line.save()
+        with self.assertRaisesMessage(ValidationError, "a rate-difference note's document is not edited"):
+            note.bill.post()
+        note.bill.refresh_from_db()
+        note.refresh_from_db()
+        self.assertFalse(note.bill.posted)
+        self.assertEqual((note.status, note.landings.count()), (NoteStatus.DRAFT, 0))
+
+    def test_its_posted_bill_is_not_debited_but_answered_by_a_new_note(self):
+        self.three_lots()
+        self.revise("102.5000")
+        note = self.note()
+        note.bill.post()
+        with self.assertRaisesMessage(ValidationError, "a fall in the circular is a new rate-difference note"):
+            note.bill.create_debit_note(memo="Supplier's error")

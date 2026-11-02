@@ -365,7 +365,7 @@ class BillOfEntry(AuditModel):
         lock_rows(bill)
         # The bill first, then the shelves its duty went onto: bill lines before stock (lock order).
         self.void_note = bill.create_debit_note(memo=f"Bill of entry {self.be_number} voided: {reason}"[:255],
-                                                on_date=day)
+                                                on_date=day, by_its_owner=True)
         for landing in self.landings.filter(released_entry__isnull=True).order_by("pk"):
             landing.release(on_date=day)
         self.status = EntryStatus.SUPERSEDED if superseded else EntryStatus.VOID

@@ -4936,7 +4936,8 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
     @serialised("posted", held_first=True)
     @takes_back
     def create_debit_note(self, memo="", quantities=None, accruals=None, amount=None,
-                          supplier_note_number="", supplier_note_date=None, on_date=None, post=True):
+                          supplier_note_number="", supplier_note_date=None, on_date=None, post=True,
+                          by_its_owner=False):
         """
         Debit this bill. By default the whole thing; pass `quantities` as
         {bill_line: quantity} to give back part of it, which is what a
@@ -4956,6 +4957,20 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             raise ValidationError("Only a posted bill can be corrected with a debit note.")
         if self.debits_id:
             raise ValidationError("Cannot issue a debit note against a debit note.")
+        # A bill another document owns is corrected through that document, which gives back what it landed on
+        # the goods as well: debited here, the payable fell while the duty or the price change stayed on the
+        # shelves and its account kept the difference for good.
+        from .imports import BillOfEntry
+        from .rate_contracts import RateDifferenceNote
+
+        entry = BillOfEntry.objects.filter(duty_bill=self).first()
+        if entry is not None and not by_its_owner:
+            raise ValidationError(f"{self.number} is the duty of {entry}: void the bill of entry, or re-assess it, "
+                                  "which gives the duty back off the goods.")
+        note = RateDifferenceNote.objects.filter(bill=self).first()
+        if note is not None:
+            raise ValidationError(f"{self.number} is {note}'s supplementary bill: a fall in the circular is a new "
+                                  "rate-difference note, which lands on the goods as well.")
         supplier_note = {"supplier_note_number": supplier_note_number or "",
                          "supplier_note_date": to_date(supplier_note_date)}
         if self.is_prepayment:

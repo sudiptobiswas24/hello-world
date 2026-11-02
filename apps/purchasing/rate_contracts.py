@@ -342,6 +342,13 @@ class RateDifferenceNote(AuditModel):
         if self.status != NoteStatus.DRAFT:
             return
         sign = Decimal("1") if document.pk == self.bill_id else Decimal("-1")
+        # The document says what the supplier's note says, or nothing lands: a draft bill cut from 45,000.00 to
+        # 15,000.00 still landed 45,000.00 on the goods and left 30,000.00 on the holding account for good.
+        wanted = sum((abs(line.amount) for line in self.lines.all() if line.amount * sign > 0), Decimal("0"))
+        if document.subtotal() != wanted:
+            raise ValidationError(
+                f"{document} says {document.subtotal()} and {self} says {wanted}: a rate-difference note's "
+                "document is not edited. Cancel the note and draft it again from the supplier's figures.")
         for line in self.lines.select_related("receipt_line__receipt", "receipt_line__order_line__item").order_by("pk"):
             if line.amount * sign <= 0:
                 continue

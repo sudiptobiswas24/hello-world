@@ -212,6 +212,34 @@ class GstSettings(AuditModel):
     def __str__(self):
         return f"GST {self.gstin}"
 
+    def _check_interstate_position(self):
+        """
+        What a supply across a state line maps its taxes through must turn each central tax into integrated tax at
+        twice its rate and drop each state tax. The screen offers every position: chosen by mistake, EXPORT-LUT
+        zero-rated every inter-state sale and INTRA charged it CGST and SGST (found by probing, 2 November).
+        Asked when the position is chosen or changed, of the plant's own GST taxes.
+        """
+        before = GstSettings.objects.filter(pk=self.pk).values_list("interstate_position_id", flat=True).first() \
+            if self.pk else None
+        if not self.interstate_position_id or before == self.interstate_position_id:
+            return
+        from .models import Tax
+
+        position = self.interstate_position
+        wrong = []
+        for tax in Tax.objects.filter(gst_head__in=("cgst", "sgst"), reverse_charge=False):
+            mapped = position.map_tax(tax)
+            if tax.gst_head == "cgst" and not (mapped is not None and mapped.gst_head == "igst"
+                                               and mapped.rate == tax.rate * 2):
+                wrong.append(f"{tax.code} to {mapped.code if mapped else 'nothing'}")
+            if tax.gst_head == "sgst" and mapped is not None:
+                wrong.append(f"{tax.code} to {mapped.code}")
+        if wrong:
+            raise ValidationError({"interstate_position": [
+                f"{position} is not what a supply across a state line is taxed through: it maps "
+                f"{', '.join(wrong[:4])}. It turns central tax into integrated tax at the whole rate and drops "
+                "state tax (INTER, as setup_indian_books seeds it)."]})
+
     def save(self, *args, **kwargs):
         self.gstin = validate_gstin(self.gstin)
         self.state = self.gstin[:2]
@@ -226,6 +254,13 @@ class GstSettings(AuditModel):
                 "The company has one GST registration here. A plant registered "
                 "in a second state is a second company to this system."
             )
+        self._check_interstate_position()
+        if self.pk and not self.is_active and GstSettings.objects.filter(pk=self.pk, is_active=True).exists() \
+                and _anything_recorded():
+            # Out of force, every reader takes the plant for one outside GST: a taxable invoice posts untaxed and
+            # no month's return compiles, last month's included. Before its screen only code could do this.
+            raise ValidationError({"is_active": [
+                f"Documents have recorded tax under {self.gstin}: it stays in force, and every return reads it."]})
         if self.pk:
             before = GstSettings.objects.filter(pk=self.pk).values_list("gstin", flat=True).first()
             if before is not None and before != self.gstin and _anything_recorded():
