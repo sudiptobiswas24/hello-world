@@ -94,6 +94,35 @@ Then make the first user, who can make all the others:
 docker compose run --rm web python manage.py createsuperuser
 ```
 
+Then the plant's books, stores and statutory figures, each seeded for the
+accountant to review and none of them overwriting what is there:
+
+```sh
+docker compose run --rm web python manage.py setup_indian_books --gstin <the plant's GSTIN>
+docker compose run --rm web python manage.py setup_stores
+docker compose run --rm web python manage.py setup_statutory
+```
+
+- `setup_indian_books` makes the company ready to post: rupees as its base
+  currency, its year from April (only while nothing is posted), the chart of
+  accounts, the GST taxes and positions, and every default account the
+  application books to. `--gstin` is the plant's own registration; without
+  it, enter it later under Settings > Plant's GST registration. Not under
+  "GST registrations": those are the parties'.
+- `setup_stores` adds the stock adjustment reasons.
+- `setup_statutory` loads the TDS, TCS, PF, ESI, bonus, overtime and minimum
+  wage figures, unconfirmed: nothing posts at one until the Controller
+  confirms it. Professional tax and the welfare fund load only into pay
+  components marked as those levies, so make the pay components first and
+  run it again.
+
+Sign in as the first user: the sign-in asks for a code from an
+authenticator app and shows ten recovery codes once. Then, in the
+application: name the company (Settings > Company), make the warehouses
+(Stores > Configuration > Warehouses), confirm the statutory figures and the
+customs valuation defaults, and review what was seeded (Settings > Seeded
+defaults).
+
 ### Before people use it
 
 Bring the old system's records in (docs/IMPORT.md: put the files in

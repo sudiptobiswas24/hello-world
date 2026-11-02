@@ -42,6 +42,38 @@ class LetterOfUndertakingViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     date_field = "valid_from"
 
 
+class GstSettingsSerializer(serializers.ModelSerializer):
+    """
+    The plant's own GST registration, from the office. It had neither a screen nor an API: given once, as a flag to
+    setup_indian_books, and changed only in code, while Settings' "GST registrations" edits the parties' (seen on a
+    first installation). Its own save() keeps it right: the GSTIN checked and its state read off it, one
+    registration, and no new GSTIN once documents carry tax under the old one.
+    """
+
+    state_name = serializers.CharField(source="get_state_display", read_only=True)
+
+    class Meta:
+        model = GstSettings
+        fields = ["id", "gstin", "state", "state_name", "interstate_position", "is_active", "b2cl_limit",
+                  "einvoicing_from", "job_work_sac", "eway_bill_limit"]
+        read_only_fields = ["state"]
+
+    def to_internal_value(self, data):
+        # A limit left blank on the screen arrives as null: it is the limit set by notification, the model's default,
+        # not no limit at all (seen on a first installation: the screen's create was refused for both).
+        data = {key: value for key, value in data.items()
+                if not (key in ("b2cl_limit", "eway_bill_limit") and value in (None, ""))}
+        return super().to_internal_value(data)
+
+
+class GstSettingsViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    queryset = GstSettings.objects.select_related("interstate_position")
+    serializer_class = GstSettingsSerializer
+    search_fields = ["gstin"]
+    # Never deleted: every return and every document's place of supply reads it. Made inactive instead.
+    http_method_names = ["get", "post", "patch", "head", "options"]
+
+
 class SeededDefaultSerializer(serializers.ModelSerializer):
     reviewed_by_name = serializers.CharField(source="reviewed_by.username", read_only=True, default=None)
 

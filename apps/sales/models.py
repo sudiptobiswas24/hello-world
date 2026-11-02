@@ -1654,6 +1654,11 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
 
     @transaction.atomic
     def save(self, *args, **kwargs):
+        # A line naming an item and no unit is in the item's own unit, said here as it is saved: left empty, it
+        # was accepted, confirmed and received, and refused only when its receipt posted (seen on a first
+        # installation: a line made through the API, which the screens' adder never leaves out).
+        if self.item_id and not self.uom_id:
+            self.uom = self.item.uom
         refuse_changing_what_moved(self, self._hold_with_its_orders)
         before = self._policy_before()
         shrinking = self._worth_less_than_stored()
@@ -6085,6 +6090,11 @@ class QuotationLine(TaxedLineMixin, AuditModel):
         super().delete(*args, **kwargs)
 
     def save(self, *args, **kwargs):
+        # A line naming an item and no unit is in the item's own unit, said here as it is saved: left empty, it
+        # was accepted, confirmed and received, and refused only when its receipt posted (seen on a first
+        # installation: a line made through the API, which the screens' adder never leaves out).
+        if self.item_id and not self.uom_id:
+            self.uom = self.item.uom
         if self._quotation_is_settled():
             raise ValidationError(
                 "This quotation has gone to the customer; revise it instead of editing it."
