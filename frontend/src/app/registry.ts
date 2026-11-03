@@ -740,6 +740,13 @@ export const MODULES: Module[] = [
         load: () => import("../modules/quality/Awaiting"),
       },
       {
+        path: "supplier-certificates", label: "Supplier certificates", permission: "quality.view_suppliercertificate",
+        create: "quality.add_suppliercertificate",
+        keywords: "coa certificate of analysis polymer mfi supplier incoming",
+        load: () => import("../modules/quality/SupplierCertificates"),
+        detail: () => import("../modules/quality/SupplierCertificateForm"),
+      },
+      {
         path: "batch-status", label: "Batch status", permission: "quality.view_inspection", also: ["inventory.view_lot"],
         keywords: "released held lot status", load: () => import("../modules/quality/BatchStatus"),
       },

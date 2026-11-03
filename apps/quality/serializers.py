@@ -8,6 +8,7 @@ from .models import (
     PlanLine,
     Reading,
 )
+from .certificates import SupplierCertificate, SupplierCertificateLine
 from .release import release_status
 
 
@@ -47,7 +48,8 @@ class InspectionPlanSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = InspectionPlan
-        fields = ["id", "item", "item_label", "lines_count", "name", "is_mandatory", "is_computed",
+        fields = ["id", "item", "item_label", "lines_count", "name", "is_mandatory", "certificate_required",
+                  "is_computed",
                   "is_active", "notes", "lines",
             "valid_from", "valid_to",
         ]
@@ -157,3 +159,63 @@ class CalibrationSerializer(serializers.ModelSerializer):
                  "inspected_on": str(inspection.inspected_on)}
                 for inspection in calibration.suspect_inspections()]
         read_only_fields = ["number", "posted", "posted_at", "voided_at", "voided_reason"]
+
+
+class SupplierCertificateLineSerializer(serializers.ModelSerializer):
+    characteristic_label = serializers.SerializerMethodField()
+    missing = serializers.SerializerMethodField()
+
+    def get_characteristic_label(self, line):
+        return f"{line.characteristic.code} · {line.characteristic.name}"
+
+    def get_missing(self, line):
+        return line.is_missing()
+
+    value_shown = serializers.SerializerMethodField()
+    limits_shown = serializers.SerializerMethodField()
+
+    def get_value_shown(self, line):
+        """As the supplier printed it, without the six places the column keeps: 4.1, not 4.100000."""
+        return line.shown_value()
+
+    def get_limits_shown(self, line):
+        return line.limit_words() if (line.lower_limit is not None or line.upper_limit is not None) else ""
+
+    class Meta:
+        model = SupplierCertificateLine
+        fields = ["id", "certificate", "characteristic", "characteristic_label", "value", "present",
+                  "lower_limit", "upper_limit", "within", "missing", "value_shown", "limits_shown"]
+        read_only_fields = ["lower_limit", "upper_limit", "within"]
+
+
+class SupplierCertificateSerializer(serializers.ModelSerializer):
+    lines = SupplierCertificateLineSerializer(many=True, read_only=True)
+    lot_code = serializers.CharField(source="lot.code", read_only=True)
+    item_label = serializers.SerializerMethodField()
+    vendor_name = serializers.CharField(source="vendor.name", read_only=True)
+    plan_name = serializers.CharField(source="plan.__str__", read_only=True, default="")
+    result_label = serializers.CharField(source="get_result_display", read_only=True)
+    verdict = serializers.SerializerMethodField()
+    lot_held_because = serializers.SerializerMethodField()
+
+    def get_item_label(self, certificate):
+        return f"{certificate.lot.item.sku} · {certificate.lot.item.name}"
+
+    def get_verdict(self, certificate):
+        return certificate.verdict_words() if certificate.posted else ""
+
+    def get_lot_held_because(self, certificate):
+        from .release import still_held_words
+
+        return still_held_words(certificate.lot)
+
+    class Meta:
+        model = SupplierCertificate
+        fields = ["id", "number", "lot", "lot_code", "item_label", "vendor", "vendor_name", "supplier_number",
+                  "issued_on", "recorded_on", "plan", "plan_name", "result", "result_label", "verdict",
+                  "posted", "posted_at", "posted_by", "voided_on", "voided_at", "voided_reason", "voided_by",
+                  "notes", "lines", "lot_held_because"]
+        read_only_fields = ["number", "plan", "result", "posted", "posted_at", "posted_by", "voided_on",
+                            "voided_at", "voided_reason", "voided_by"]
+        # Filled in save() from the receipt that brought the batch in, and the plant's today.
+        extra_kwargs = {"vendor": {"required": False}, "recorded_on": {"required": False}}

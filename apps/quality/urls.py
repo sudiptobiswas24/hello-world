@@ -13,6 +13,8 @@ from .views import (
     LotStatusViewSet,
     PlanLineViewSet,
     ReadingViewSet,
+    SupplierCertificateLineViewSet,
+    SupplierCertificateViewSet,
 )
 
 router = DefaultRouter()
@@ -21,6 +23,8 @@ router.register("plans", InspectionPlanViewSet)
 router.register("plan-lines", PlanLineViewSet)
 router.register("inspections", InspectionViewSet)
 router.register("readings", ReadingViewSet)
+router.register("supplier-certificates", SupplierCertificateViewSet)
+router.register("supplier-certificate-lines", SupplierCertificateLineViewSet)
 router.register("lot-status", LotStatusViewSet, basename="lot-status")
 router.register("instruments", InstrumentViewSet)
 router.register("calibrations", CalibrationViewSet)

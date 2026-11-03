@@ -15,6 +15,7 @@ from .models import (
     Reading,
 )
 from .calibration import Calibration, Instrument, due
+from .certificates import SupplierCertificate, SupplierCertificateLine
 from .release import latest_inspection, release_status
 from .serializers import (
     CalibrationSerializer,
@@ -24,6 +25,8 @@ from .serializers import (
     InspectionSerializer,
     PlanLineSerializer,
     ReadingSerializer,
+    SupplierCertificateLineSerializer,
+    SupplierCertificateSerializer,
 )
 
 
@@ -139,6 +142,53 @@ class InspectionViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
                 "due_on": due, "overdue": today > due, "escalated_on": inspection.escalated_on,
             })
         return Response(found)
+
+
+class SupplierCertificateViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    """
+    A supplier's certificate of analysis for a batch bought in (L28): quality
+    records and posts it; purchasing reads it. Posted, it is voided, never edited.
+    """
+
+    queryset = SupplierCertificate.objects.select_related(
+        "lot", "lot__item", "vendor", "plan").prefetch_related("lines__characteristic")
+    serializer_class = SupplierCertificateSerializer
+    filter_fields = ["lot", "vendor", "posted", "result"]
+    search_fields = ["number", "supplier_number", "lot__code", "vendor__name", "lot__item__sku"]
+    date_field = "recorded_on"
+    ordering_fields = ["recorded_on", "number"]
+    extra_params = ("lots",)
+    action_permission_map = {
+        "post": "quality.change_suppliercertificate",
+        "void": "quality.change_suppliercertificate",
+    }
+
+    def get_queryset(self):
+        found = super().get_queryset()
+        # The batches of one document at once: a goods receipt's panel names its lots.
+        lots = self.request.query_params.get("lots")
+        if lots:
+            found = found.filter(lot__in=[int(pk) for pk in lots.split(",") if pk.strip().isdigit()])
+        return found
+
+    @action(detail=True, methods=["post"])
+    def post(self, request, pk=None):
+        certificate = self.get_object()
+        _run(certificate.post, by=request.user)
+        return Response(self.get_serializer(certificate).data)
+
+    @action(detail=True, methods=["post"])
+    def void(self, request, pk=None):
+        certificate = self.get_object()
+        _run(certificate.void, reason=request.data.get("reason", ""), on_date=request.data.get("date") or None,
+             by=request.user)
+        return Response(self.get_serializer(certificate).data)
+
+
+class SupplierCertificateLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    queryset = SupplierCertificateLine.objects.select_related("certificate", "characteristic")
+    serializer_class = SupplierCertificateLineSerializer
+    filter_fields = ["certificate"]
 
 
 class ReadingViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
