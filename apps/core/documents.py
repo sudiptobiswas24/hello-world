@@ -16,10 +16,10 @@ from reportlab.lib import colors
 from reportlab.lib.enums import TA_RIGHT
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
-from reportlab.graphics.barcode import code128
 from reportlab.lib.units import mm
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
+from apps.core import barcode
 from apps.core.models import Company
 
 INK = colors.HexColor("#1a1a1a")
@@ -141,8 +141,11 @@ def render_document(*, heading, document, party, address, meta, totals,
     if shown_number:
         # The number as Code 128, so the paper scans back into the system
         # (a purchase order at the gate, a challan at dispatch).
-        title.append(code128.Code128(shown_number, barHeight=9 * mm, barWidth=0.3 * mm, humanReadable=False,
-                                     quiet=False))
+        # Drawn by apps/core/barcode.py, the one Code 128 drawer (O436).
+        try:
+            title.append(barcode.drawing(shown_number, height=9 * mm, module=0.3 * mm))
+        except ValueError:
+            pass  # A character Code 128 set B cannot carry: the paper goes out without the bars.
     story = [
         Table(
             [[Paragraph(letterhead_text or letterhead(company), style["body"]), title]],

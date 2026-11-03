@@ -41,3 +41,89 @@ class LetterheadTests(TestCase):
                               meta=[["Number", "N-1"]], totals=[["Total", Decimal("10.00")]], currency=inr,
                               table=(["What", "Amount"], [["A line", "10.00"]], [120, 54]))
         self.assertTrue(pdf.startswith(b"%PDF-"))
+
+
+def bars_on_the_page(pdf, height):
+    """
+    Every filled rectangle `height` points tall in the PDF's page streams, as
+    (x, width), left to right: what a scanner sweeping across the number sees.
+    """
+    import base64
+    import re
+    import zlib
+
+    found = []
+    for stream in re.finditer(rb"stream\r?\n(.*?)endstream", pdf, re.S):
+        raw = stream.group(1).strip()
+        for inflate in (lambda data: data, zlib.decompress,
+                        lambda data: zlib.decompress(base64.a85decode(data.strip(), adobe=True))):
+            try:
+                text = inflate(raw)
+            except Exception:  # noqa: BLE001 - not this encoding: try the next
+                continue
+            if b" re" in text:
+                break
+        else:
+            continue
+        for x, _, width, tall in re.findall(rb"(-?[\d.]+) (-?[\d.]+) (-?[\d.]+) (-?[\d.]+) re", text):
+            if abs(float(tall) - height) < 0.01:
+                found.append((float(x), float(width)))
+    return sorted(found)
+
+
+def decoded(bits):
+    """Code 128 read back from modules (1 bar, 0 space), checksum checked, as a scanner reads it."""
+    from apps.core.barcode import START_B, STOP, WIDTHS
+
+    bits = bits.strip("0")
+    symbols = []
+    while bits:
+        size = 13 if len(bits) == 13 else 11
+        chunk, bits = bits[:size], bits[size:]
+        widths, run = [], 1
+        for before, after in zip(chunk, chunk[1:]):
+            if before == after:
+                run += 1
+            else:
+                widths.append(run)
+                run = 1
+        widths.append(run)
+        symbols.append([tuple(int(w) for w in entry) for entry in WIDTHS].index(tuple(widths)))
+    start, *body, checksum, stop = symbols
+    assert (start, stop) == (START_B, STOP), (start, stop)
+    assert checksum == (START_B + sum(i * v for i, v in enumerate(body, start=1))) % 103, "checksum"
+    return "".join(chr(value + 32) for value in body)
+
+
+class TheDocumentNumberScansTests(TestCase):
+    """
+    O436: printed documents drew their number with reportlab's own Code 128, a
+    second drawer beside apps/core/barcode.py. The bars on the page are now the
+    one drawer's, and they read back as the number.
+    """
+
+    def test_the_bars_on_the_page_are_the_one_drawers_and_read_back_as_the_number(self):
+        from reportlab.lib.units import mm
+
+        from apps.core import barcode
+
+        inr = Currency.objects.create(code="INR", name="Rupee", symbol="₹", is_base=True)
+        Company.objects.create(name="Deccan Polysacks", base_currency=inr)
+        customer = Party.objects.create(code="C-1", name="Shree Cement")
+        number = "SO-2026-0042"
+        pdf = render_document(heading="Sales order", document=None, party=customer, address=None, number=number,
+                              meta=[["Number", number]], totals=[["Total", Decimal("10.00")]], currency=inr,
+                              table=(["What", "Amount"], [["A line", "10.00"]], [120, 54]))
+        module = 0.3 * mm
+        bars = bars_on_the_page(pdf, 9 * mm)
+        self.assertTrue(bars, "no bars on the page")
+        # Rebuild the modules from the drawn rectangles, from the first bar's left edge.
+        left = bars[0][0]
+        width = round((bars[-1][0] + bars[-1][1] - left) / module)
+        drawn = ["0"] * width
+        for x, w in bars:
+            first = round((x - left) / module)
+            drawn[first:first + round(w / module)] = "1" * round(w / module)
+        drawn = "".join(drawn)
+        self.assertEqual(drawn, barcode.modules(number))
+        self.assertEqual(decoded(drawn), number)

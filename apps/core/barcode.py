@@ -59,6 +59,23 @@ def modules(text):
     return "".join(out)
 
 
+def runs(text):
+    """
+    Each bar as (first module, width in modules), counted from the left edge
+    of the quiet zone, and the whole width in modules, quiet zones included.
+    What every drawer draws: the SVG on a label, the PDF on a document.
+    """
+    bits = "0" * QUIET + modules(text) + "0" * QUIET
+    bars, start = [], None
+    for index, bit in enumerate(bits + "0"):
+        if bit == "1" and start is None:
+            start = index
+        elif bit == "0" and start is not None:
+            bars.append((start, index - start))
+            start = None
+    return bars, len(bits)
+
+
 def svg(text, height=60, module=1):
     """
     An SVG of the barcode with its quiet zones, scaled by the viewer.
@@ -66,20 +83,32 @@ def svg(text, height=60, module=1):
     Bars are drawn as runs rather than one rectangle per module, which
     keeps the file small and the edges crisp at any print size.
     """
-    bits = "0" * QUIET + modules(text) + "0" * QUIET
-    rects, start = [], None
-    for index, bit in enumerate(bits + "0"):
-        if bit == "1" and start is None:
-            start = index
-        elif bit == "0" and start is not None:
-            rects.append(
-                f'<rect x="{start * module}" y="0" width="{(index - start) * module}" '
-                f'height="{height}"/>'
-            )
-            start = None
-    width = len(bits) * module
+    bars, span = runs(text)
+    rects = [
+        f'<rect x="{start * module}" y="0" width="{width * module}" height="{height}"/>'
+        for start, width in bars
+    ]
+    width = span * module
     return (
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" '
         f'preserveAspectRatio="none" role="img" aria-label="{escape(text)}" '
         f'shape-rendering="crispEdges"><g fill="#000">{"".join(rects)}</g></svg>'
     )
+
+
+def drawing(text, height, module):
+    """
+    The same bars for a PDF, as a reportlab Drawing (a flowable), `height`
+    and `module` in points. Printed documents drew their number with
+    reportlab's own Code 128 beside this one (O436): two drawers, and a
+    fault fixed in one stays in the other.
+    """
+    from reportlab.graphics.shapes import Drawing, Rect
+    from reportlab.lib import colors
+
+    bars, span = runs(text)
+    picture = Drawing(span * module, height)
+    for start, width in bars:
+        picture.add(Rect(start * module, 0, width * module, height, fillColor=colors.black,
+                         strokeColor=None, strokeWidth=0))
+    return picture
