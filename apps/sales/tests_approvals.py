@@ -249,6 +249,25 @@ class CreditLimitAsApprovalTests(ApprovalTestCase):
         order.confirm()
         self.assertEqual(order.status, OrderStatus.CONFIRMED)
 
+    def test_the_refusal_shows_its_money_as_money(self):
+        """It printed 12882100.00 against 12000000.00 (O426): the plant reads lakhs."""
+        from django.core.exceptions import ValidationError
+
+        from apps.core.models import Currency
+
+        Currency.objects.filter(pk=self.usd.pk).update(code="INR", name="Indian Rupee")
+        CustomerProfile.objects.create(party=self.customer, credit_limit=Decimal("12000000"))
+        order = self.draft("6", "100")
+        order.confirm()
+        line = order.lines.get()
+        line.quantity = Decimal("128821")  # 1,28,82,100.00
+        words = "would be at 1,28,82,100.00 against a credit limit of 1,20,00,000.00"
+        with self.assertRaisesMessage(ValidationError, words):
+            line.save()
+        # The approver reads the same figures: 600.00 confirmed and 1,28,82,100.00 on this draft.
+        self.assertIn("would be 1,28,82,700.00 against a credit limit of 1,20,00,000.00",
+                      self.draft("128821", "100").approval_reasons()[0])
+
     def test_a_confirmed_order_is_not_raised_past_the_limit(self):
         # Confirmed at 600 against 1,000: raised to 6,000 it would be six
         # times over, and nothing had asked.
@@ -261,14 +280,14 @@ class CreditLimitAsApprovalTests(ApprovalTestCase):
         order.confirm()
         line = order.lines.get()
         line.quantity = Decimal("60")
-        with self.assertRaisesMessage(ValidationError, "would be at 6000.00 against a credit limit of 1000.00"):
+        with self.assertRaisesMessage(ValidationError, "would be at USD 6,000.00 against a credit limit of USD 1,000.00"):
             line.save()
         self.assertEqual(committed_balance(self.customer), Decimal("600.00"))
         line.quantity = Decimal("9")
         line.save()
         added = SalesOrderLine(order=order, item=self.item, uom=self.uom, quantity=Decimal("2"),
                                unit_price=Decimal("100"), revenue_account=self.revenue)
-        with self.assertRaisesMessage(ValidationError, "would be at 1100.00"):
+        with self.assertRaisesMessage(ValidationError, "would be at USD 1,100.00"):
             added.save()
         self.assertEqual(committed_balance(self.customer), Decimal("900.00"))
 
