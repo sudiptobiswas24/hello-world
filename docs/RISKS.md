@@ -329,7 +329,6 @@ missing), **minor**.
 | O433 | quality | A specification-computed plan refuses hand edits, so certificate_required can never be set on one; a computed plan for a bought-in item could never ask for a certificate (seen 2026-11-03, fix_coa's report 4) | none | computed plans on bought-in items |
 | O434 | quality | The batches page reads each outside lot's certificate lines once for its words (verdict_words): a query per outside lot. Fix: prefill them with the page (seen 2026-11-03, fix_coa's report 5) | none | a page of many held lots |
 | O435 | inventory | StockTransferLine.save()/delete() read the transfer's status without holding it (transfers.py:511, :524), unlike receipt, delivery and count lines: a line PATCHed while the transfer dispatches can land on a transfer that has just moved stock. Shape: a check made before the lock. Fix: answer_to_its_document, as the other lines do (seen 2026-11-03, fix_scan's report 1) | inventory | an edit as a transfer dispatches |
-| O436 | core | Printed documents draw their number with reportlab's code128 (documents.py:144), a second Code 128 beside apps/core/barcode.py. Fix: one drawer (seen 2026-11-03, fix_scan's report 2) | none | every printed document |
 | O437 | inventory | StockCountViewSet.add (views.py:402) returns the line as built, so variance leaves at every digit the conversion made (-111172.257700000 on the demo). Fix: read the line back, as the scan endpoint does (seen 2026-11-03, fix_scan's report 3) | none | every count line added |
 
 Upgrade notes, true of data made before the 8 October fixes:
