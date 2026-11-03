@@ -431,6 +431,8 @@ class SetOwnPasswordView(PasswordChangeView):
     """
 
     form_class = OwnPasswordForm
+    # The plant's sign-in look, not Django's admin page: the first screen a new clerk sees (O420).
+    template_name = "registration/own_password.html"
 
     def get_success_url(self):
         wanted = _next(self.request)
@@ -443,8 +445,9 @@ class SetOwnPasswordView(PasswordChangeView):
         from .roles import must_set_own_password
 
         context = super().get_context_data(**kwargs)
-        if must_set_own_password(self.request.user):
-            context["title"] = "Choose your own password"
+        first = must_set_own_password(self.request.user)
+        context.update(title="Choose your own password" if first else "Change your password", first=first,
+                       plant_name=plant_name(), next=_next(self.request))
         return context
 
 
