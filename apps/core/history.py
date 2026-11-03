@@ -688,7 +688,28 @@ def _worded(field, value):
             return "Yes"
         if value in (False, "false", "False"):
             return "No"
+    if field.get_internal_type() == "DateTimeField":
+        return _moment(value)
     return value
+
+
+def _moment(value):
+    """
+    A kept moment in the plant's own time, as the event line beside it reads
+    (O421): "02 Nov 2026, 03:41", not "2026-11-01T22:11:17.290540+00:00". The
+    plant's zone is the server's (settings.TIME_ZONE, what the office
+    application is told on sign-in), whatever zone a request activated.
+    """
+    from django.utils import dateformat, timezone
+    from django.utils.dateparse import parse_datetime
+
+    moment = value if isinstance(value, datetime.datetime) else parse_datetime(str(value))
+    if moment is None:
+        return value
+    plant = timezone.get_default_timezone()
+    if timezone.is_naive(moment):
+        moment = timezone.make_aware(moment, plant)
+    return dateformat.format(timezone.localtime(moment, plant), "d M Y, H:i")
 
 
 def _masked(value):
