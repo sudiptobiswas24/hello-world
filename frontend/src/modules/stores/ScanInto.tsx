@@ -292,9 +292,11 @@ export function ScanCount() {
   }, [reread, flush]);
 
   const scanned = async (code: string) => {
+    const key = scanKey();
+    // The key travels in the body: the server records it once, so a resend counts once.
     const scan: QueuedScan = {
-      key: scanKey(), path, at: Date.now(),
-      body: { code, quantity: amountTyped, ...(bin ? { bin } : {}) },
+      key, path, at: Date.now(),
+      body: { code, quantity: amountTyped, key, ...(bin ? { bin } : {}) },
       label: `${code} × ${amountTyped}${bin ? ` in ${bin}` : ""}`,
     };
     await enqueue(scan);
