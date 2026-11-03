@@ -248,16 +248,17 @@ class Command(BaseCommand):
         self.seeded(made, f"{model._meta.verbose_name} {code} {fields.get('name', '')}".strip())
         return made
 
-    def account(self, code, name, kind, holds_money):
+    def account(self, code, name, kind, holds_money, words=None):
         """
         The account by `code`, made if free. Taken by one of another type or purpose, it is left as it is,
         reported for the accountant, and nothing is wired into it: the account is seeded under a free code
-        beside it instead. CGST never collects into the plant's Rent payable (review F12).
+        beside it instead. CGST never collects into the plant's Rent payable (review F12). `words` are what an
+        account already under the code must be named for, PURPOSES' when not given; setup_payroll gives its own.
         """
         found = Account.objects.filter(code=code).first()
         if found is None:
             return self.one(Account, code, name=name, account_type=kind, holds_money=holds_money)
-        words = PURPOSES.get(code, ())
+        words = PURPOSES.get(code, ()) if words is None else words
         if found.account_type == kind and (not words or any(word in found.name.lower() for word in words)):
             self.kept.append(f"account {code}")
             return found
