@@ -2983,3 +2983,34 @@ class ImportRaceTests(RaceCase):
         self.assertEqual(note.refund_due(), Decimal("0"))
         self.assertEqual(unallocated, total)
         self.assertEqual(self.balance(self.duty_payable), total)
+
+
+@tag("race")
+@unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
+class TwoClerksScanningIntoOneCountTests(RaceCase):
+    def test_both_scans_land(self):
+        # L9: two clerks scan the same item into one count at once, 5 and 7. Held first (hold_draft), the
+        # second waits and counts up the line the first wrote: 12. Read before the hold, both found no line,
+        # and the second was refused by one_count_line_per_untracked_item, its 7 lost.
+        from django.contrib.auth.models import User
+        from rest_framework.test import APIClient
+
+        from apps.inventory.models import StockCount, StockCountLine
+
+        stock_fixture.AdjustmentTestCase.setUp(self)
+        stock_fixture.AdjustmentTestCase.stock(self)
+        count = StockCount.objects.create(count_date=datetime.date(2026, 3, 1), warehouse=self.warehouse,
+                                          reason=self.recount)
+        clerk = User.objects.create_superuser("clerk")
+        answers = []
+
+        def scan(quantity, key):
+            client = APIClient()
+            client.force_authenticate(clerk)
+            answers.append(client.post(f"/api/inventory/stock-counts/{count.pk}/scan/",
+                                       {"code": self.item.sku, "quantity": quantity, "key": key}, format="json"))
+
+        race(StockCountLine, lambda: scan("5", "one"), lambda: scan("7", "two"))
+        self.assertEqual(sorted(answer.status_code for answer in answers), [200, 200],
+                         [answer.content for answer in answers])
+        self.assertEqual(count.lines.get().counted_quantity, Decimal("12"))
