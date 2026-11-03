@@ -26,7 +26,7 @@ from apps.core.approvals import (
     told,
     ApprovableMixin, ApprovalStatus, ChangesWithinItsApproval, asks_its_policy_when_taxes_change, authors,
 )
-from apps.core.documents import grouped
+from apps.core.documents import grouped, money
 from apps.core.history import EventKind, record
 from apps.core.recurrence import RecurrenceInterval, add_interval, run_date, still_to_take
 from apps.core.models import (
@@ -779,7 +779,7 @@ class SalesOrder(PlacedWhereTheGoodsGo, Extensible, TaxedDocumentMixin, ChangesW
         """
         breach = self.credit_limit_breach()
         if breach:
-            exposure, limit = breach
+            exposure, limit = in_words_of_money(*breach)
             raise ValidationError(
                 f"{self.customer} would be at {exposure} against a credit limit of {limit}. A "
                 "confirmed order is not raised past it; take the rest as a new order, which "
@@ -854,7 +854,7 @@ class SalesOrder(PlacedWhereTheGoodsGo, Extensible, TaxedDocumentMixin, ChangesW
         reasons = []
         breach = self.credit_limit_breach()
         if breach:
-            exposure, limit = breach
+            exposure, limit = in_words_of_money(*breach)
             reasons.append(
                 f"{self.customer} would be {exposure} against a credit limit of {limit}."
             )
@@ -4035,6 +4035,17 @@ def orders_to_ship(orders):
         models.Prefetch("delivery_lines", queryset=DeliveryLine.objects.select_related("delivery"))))
     awaited = quantities_awaited(lines)
     return sorted({line.order_id for line in lines if line.quantity_to_ship(awaited[line.pk]) > 0})
+
+
+def in_words_of_money(*amounts):
+    """
+    Base-currency figures as a person reads money, through the one money
+    formatter: 1,28,82,100.00 against 1,20,00,000.00, not 12882100.00
+    against 12000000.00 (O426). The credit limit and the exposure it is
+    weighed against are both in the base currency.
+    """
+    base = Currency.objects.filter(is_base=True).first()
+    return tuple(money(amount, base) for amount in amounts)
 
 
 def committed_balance(customer):

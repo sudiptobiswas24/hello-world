@@ -867,7 +867,7 @@ class ReopeningALineAsksTheCreditLimitTests(TradeRuleCase):
         line.close_short("Customer wants no more")
         self.make_order("8", "100")  # 800: 200 + 800 = 1000, within
         self.assertEqual(committed_balance(self.customer), Decimal("1000.00"))
-        with self.assertRaisesMessage(ValidationError, "would be at 1800.00 against a credit limit of 1000"):
+        with self.assertRaisesMessage(ValidationError, "would be at USD 1,800.00 against a credit limit of USD 1,000.00"):
             SalesOrderLine.objects.get(pk=line.pk).reopen()
         self.assertTrue(SalesOrderLine.objects.get(pk=line.pk).is_closed_short())
         self.assertEqual(committed_balance(self.customer), Decimal("1000.00"))
