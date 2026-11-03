@@ -1342,6 +1342,28 @@ class QualityDecisionRaceTests(RaceCase):
 
 @tag("race")
 @unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
+class SupplierCertificateRaceTests(RaceCase):
+    """L28: one standing supplier's certificate a lot, however many post at once."""
+
+    def test_two_certificates_posted_for_one_lot_at_once_one_wins(self):
+        from apps.purchasing import tests_certificates as certificate_fixture
+        from apps.quality.certificates import SupplierCertificate, SupplierCertificateLine
+
+        made = fixture(self, certificate_fixture.CertificateTestCase)
+        first = made.certificate({made.mfi: "3.2", made.ash: "0.020"}, post=False)
+        second = made.certificate({made.mfi: "4.1", made.ash: "0.020"}, post=False)
+        meera = made.users["meera"]
+        outcomes = race(SupplierCertificateLine,
+                        lambda: SupplierCertificate.objects.get(pk=first.pk).post(by=meera),
+                        lambda: SupplierCertificate.objects.get(pk=second.pk).post(by=meera))
+        self.once(outcomes)
+        # Refused in words by the lock, not by the table's constraint after the fact.
+        self.assertIn("already stands for", next(o for o in outcomes if o != "done"), outcomes)
+        self.assertEqual(SupplierCertificate.objects.filter(posted=True, voided_at__isnull=True).count(), 1)
+
+
+@tag("race")
+@unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
 class EditRaceTests(RaceCase):
     """
     Two people editing one record through the API at once, each a field of

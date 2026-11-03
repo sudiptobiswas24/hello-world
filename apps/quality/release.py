@@ -74,6 +74,109 @@ def register_lot_sources(provider, made_into):
         LOTS_MADE_FROM.append(made_into)
 
 
+# Who supplied a batch (L28): `fn(lot) -> Supply | None`, the vendor and the
+# day of the receipt that brought it in. Registered so quality asks without
+# importing purchasing. None is a batch nobody sold the plant: made here, or
+# a customer's return, which takes no supplier's certificate.
+LOT_SUPPLIERS = []
+
+
+class Supply:
+    """Who brought a batch in, on what day, on which receipt."""
+
+    def __init__(self, vendor, received_on, reference):
+        self.vendor, self.received_on, self.reference = vendor, received_on, reference
+
+
+def register_lot_supplier(provider):
+    if provider not in LOT_SUPPLIERS:
+        LOT_SUPPLIERS.append(provider)
+
+
+def supplied_by(lot):
+    """The Supply that brought `lot` in from a vendor, or None."""
+    def work():
+        for provider in LOT_SUPPLIERS:
+            found = provider(lot)
+            if found is not None:
+                return found
+        return None
+
+    return _remembered(("supplied", lot.pk), work)
+
+
+def standing_certificate(lot):
+    """The supplier's certificate of analysis standing for `lot` (posted, not voided), or None."""
+    from .certificates import SupplierCertificate
+
+    return _remembered(("certificate", lot.pk), lambda: SupplierCertificate.objects.filter(
+        lot=lot, posted=True, voided_at__isnull=True).select_related("vendor").first())
+
+
+def certificate_plan(lot):
+    """
+    The plan a supplier's certificate of `lot` is read against: the one in
+    force on the day its receipt brought it in, or None (made here, or no
+    plan that day). Whether a certificate is required is that plan's to say.
+    """
+    supply = supplied_by(lot)
+    return plan_for(lot.item, supply.received_on) if supply is not None else None
+
+
+def certificate_conceded(lot, certificate):
+    """
+    Whether the Quality Manager took `lot` as it is after `certificate` was
+    posted: a concession on its standing inspection, decided or posted after
+    the certificate. A pass is not one: a passed inspection alone does not
+    override a certificate outside (L28). A concession taken before the
+    certificate was known did not know it.
+    """
+    own = latest_inspection(lot)
+    return (own is not None and own.disposition == Disposition.CONCESSION
+            and _took_effect(own, decided=True) > certificate.posted_at)
+
+
+def certificate_failed(lot):
+    """
+    The standing certificate of `lot` that is outside its plan (or missing a
+    value) where that plan requires one and nobody has conceded it, or None.
+    What an inspection's pass of `lot` waits for the Quality Manager over.
+    """
+    plan = certificate_plan(lot)
+    if plan is None or not plan.certificate_required:
+        return None
+    certificate = standing_certificate(lot)
+    if certificate is None or certificate.is_within() or certificate_conceded(lot, certificate):
+        return None
+    return certificate
+
+
+def certificate_words(lot, action="issue"):
+    """
+    Why the supplier's certificate holds `lot`, in words, or "" (L28). Asked
+    only where the plan in force on its receipt's day requires a certificate:
+    none standing holds it, and one outside or missing a value holds it until
+    the Quality Manager concedes it on an inspection. One within decides
+    nothing more: the batch still needs whatever its own inspection needs.
+    Derived from the standing certificate, never stored: voided, the question
+    goes back to "none recorded".
+    """
+    plan = certificate_plan(lot)
+    if plan is None or not plan.certificate_required:
+        return ""
+    supply = supplied_by(lot)
+    certificate = standing_certificate(lot)
+    if certificate is None:
+        return (f"{lot} came in from {supply.vendor} on {supply.reference} and {plan} asks for the "
+                f"supplier's certificate of analysis. None is recorded, so it cannot {action} until "
+                "quality records and posts one.")
+    if certificate_failed(lot) is None:
+        return ""
+    return (f"{lot} is held: {certificate.number}, the certificate {certificate.supplier_number} from "
+            f"{supply.vendor}, is {certificate.verdict_words()}. It cannot {action} "
+            "until the Quality Manager takes it by concession on an inspection.")
+
+
 # Who wants to hear that a batch has a new verdict (posted or decided): the
 # module that holds something on it, `fn(lot, by)`. Registered so quality
 # tells without importing it: a receipt's to-dos close when nothing on it is
@@ -192,6 +295,7 @@ def prefill_page(lots):
         plans.setdefault(plan.item_id, plan)
     for item_pk in items:
         asked.setdefault(("plan", item_pk, today), plans.get(item_pk))
+    _prefill_certificates(asked, lots, pks)
     found = {pk: [] for pk in pks}
     for provider in LOT_SOURCES:
         page = getattr(provider, "for_page", None)
@@ -200,6 +304,42 @@ def prefill_page(lots):
             found[pk].extend(answers.get(pk, []))
     for pk in pks:
         asked.setdefault(("sources", pk), found[pk])
+
+
+def _prefill_certificates(asked, lots, pks):
+    """
+    What the supplier's certificate asks of a page of batches (L28), read once
+    for the page: who supplied each (a provider's `for_page(lots) -> {pk: Supply}`
+    where it has one), the plan of each item on each receipt's day, and the
+    standing certificate of each.
+    """
+    from .certificates import SupplierCertificate
+
+    supplied = {}
+    for provider in LOT_SUPPLIERS:
+        page = getattr(provider, "for_page", None)
+        answers = page(lots) if page is not None else {lot.pk: provider(lot) for lot in lots}
+        for pk in pks:
+            if supplied.get(pk) is None:
+                supplied[pk] = answers.get(pk)
+    for pk in pks:
+        asked.setdefault(("supplied", pk), supplied.get(pk))
+    standing = {}
+    for certificate in SupplierCertificate.objects.filter(
+            lot__in=pks, posted=True, voided_at__isnull=True).select_related("vendor").order_by("pk"):
+        standing.setdefault(certificate.lot_id, certificate)
+    for pk in pks:
+        asked.setdefault(("certificate", pk), standing.get(pk))
+    days = {(lot.item_id, supplied[lot.pk].received_on) for lot in lots if supplied.get(lot.pk) is not None}
+    if not days:
+        return
+    plans = list(InspectionPlan.objects.filter(item_id__in={item for item, _day in days}, is_active=True)
+                 .order_by("pk"))
+    for item_pk, day in days:
+        asked.setdefault(("plan", item_pk, day), next(
+            (plan for plan in plans if plan.item_id == item_pk
+             and (plan.valid_from is None or plan.valid_from <= day)
+             and (plan.valid_to is None or plan.valid_to >= day)), None))
 
 
 def lot_sources(lot):
@@ -391,6 +531,14 @@ def _release_status(lot):
     do: released only if all of them are, held if any is. Mixing a held
     batch into passed ones holds the lot; it never passes the held sacks.
     """
+    status = _own_status(lot)
+    # The supplier's certificate holds a batch its own verdict would let go (L28).
+    if status != ReleaseStatus.HELD and certificate_words(lot):
+        return ReleaseStatus.HELD
+    return status
+
+
+def _own_status(lot):
     inspection = latest_inspection(lot)
     if inspection is None:
         sources = lot_sources(lot)
@@ -432,10 +580,15 @@ def awaiting_decision(lot, action="issue"):
         return ""
     from .models import Result
 
-    # A pass waits too when what it was made from is held (review F3).
+    # A pass waits too when what it was made from is held (review F3), or its supplier's
+    # certificate is outside (L28).
     verdict = "passed" if held.result == Result.PASS else "failed"
-    made_from = (f", but it is made from {', '.join(str(source) for source in held_inside(lot))}, "
-                 "which quality holds," if verdict == "passed" else "")
+    inside = held_inside(lot) if verdict == "passed" else []
+    certificate = certificate_failed(lot) if verdict == "passed" else None
+    made_from = (f", but it is made from {', '.join(str(source) for source in inside)}, "
+                 "which quality holds," if inside else "")
+    if certificate is not None:
+        made_from += f", but its supplier's certificate {certificate.number} is {certificate.verdict_words()},"
     return (f"{lot} is held: it {verdict} {held.number} on {held.inspected_on}{made_from} and waits "
             f"for the Quality Manager's decision. It cannot {action} until they decide.")
 
@@ -480,6 +633,11 @@ def _why_held(item, lot, warehouse=None, action="issue", reworking=None):
     if lot is not None and reworking is not None and lot.pk == reworking.pk:
         return ""
     status = release_status(lot) if lot is not None else None
+    if status == ReleaseStatus.HELD and not (held is not None and held.disposition in HOLDING):
+        # Its own verdict does not hold it: the supplier's certificate may (L28).
+        said = certificate_words(lot, action)
+        if said:
+            return said
     if status == ReleaseStatus.HELD:
         if held is None:
             holding = holding_sources(lot)

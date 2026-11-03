@@ -63,6 +63,26 @@ export default function LotForm() {
           { key: "deliveries", label: "Deliveries" },
         ],
       }, {
+        // The supplier's certificate of analysis, for a batch bought in (L28).
+        title: "Supplier's certificates", permission: "quality.view_suppliercertificate",
+        endpoint: "/api/quality/supplier-certificates/", query: (record) => ({ lot: record.id }),
+        href: (row) => `/quality/supplier-certificates/${row.id}`,
+        columns: [
+          // A draft has no number yet, and the first column is the link: it reads "Draft".
+    { key: "number", label: "Number", width: "10rem", render: (row) => String(row.number || "Draft") },
+          { key: "vendor_name", label: "Supplier" },
+          { key: "supplier_number", label: "Their number", width: "10rem" },
+          { key: "result", label: "", width: "8rem",
+            render: (row) => (row.voided_at ? "Voided" : !row.posted ? "Draft" : row.result === "within" ? "Within" : "Outside") },
+        ],
+        adder: { label: "Record a certificate", permission: "quality.add_suppliercertificate",
+          url: () => "/api/quality/supplier-certificates/",
+          fields: [
+            { key: "supplier_number", label: "Their certificate number", kind: "text" },
+            { key: "issued_on", label: "Dated", kind: "date" },
+          ],
+          body: (values, record) => ({ lot: record.id, supplier_number: values.supplier_number, issued_on: values.issued_on }) },
+      }, {
         title: "Where it has been", permission: "inventory.view_stockmovement",
         endpoint: "/api/inventory/stock-movements/", query: (record) => ({ lot: record.id, ordering: "-occurred_at" }),
         columns: [

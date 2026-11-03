@@ -177,7 +177,9 @@ class TheFloorReadsNoStockMoneyAnywhere(RolesTestCase):
 
         load(password="Trial-2026", stdout=StringIO(), stderr=StringIO())
         call_command_roles()
+        # An item kept without batches: this adjustment names none (the demo's copolymer is kept by lot, L28).
         held = StockMovement.objects.filter(item__costing_method="average", warehouse__requires_bins=False,
+                                            item__tracking="none",
                                             quantity__gt=0).select_related("item", "warehouse").first()
         item, warehouse = held.item, held.warehouse
         income = Account.objects.filter(account_type=AccountType.INCOME).first()

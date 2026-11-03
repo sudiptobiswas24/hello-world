@@ -45,7 +45,7 @@ export const GROUPS: Record<string, [string, string[]][]> = {
     ["Energy", ["energy", "readings", "meters", "tariffs"]],
   ],
   quality: [
-    ["Inspection", ["inspections", "awaiting-decision", "batch-status", "sampling"]],
+    ["Inspection", ["inspections", "awaiting-decision", "batch-status", "supplier-certificates", "sampling"]],
     ["Issues", ["alerts", "complaints"]],
     ["Analysis", ["control-chart", "certificates"]],
     ["Calibration", ["calibration-due", "instruments", "calibrations"]],

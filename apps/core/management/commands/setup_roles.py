@@ -290,6 +290,8 @@ ROLES = {
     ],
     "Purchasing Clerk": [
         *REFERENCE,
+        # The supplier's certificate of analysis on what was bought (L28): read, not recorded.
+        *view("quality", "suppliercertificate", "suppliercertificateline"),
         *crud("purchasing", "purchaseorder"),
         *crud("purchasing", "purchaseorderline"),
         *crud("purchasing", "bill"),
@@ -445,6 +447,8 @@ ROLES = {
     # supplier's bill or a recovery from the transporter.
     "Purchase Manager": [
         *REFERENCE,
+        # The supplier's certificate of analysis on what was bought (L28): read, not recorded.
+        *view("quality", "suppliercertificate", "suppliercertificateline"),
         *view("purchasing", "purchaseorder", "purchaseorderline", "goodsreceipt", "goodsreceiptline", "bill",
               "billline"),
         *crud("purchasing", "weightclaim", actions=("add", "change", "view")),
@@ -571,6 +575,9 @@ ROLES = {
         *crud("quality", "inspection", actions=("add", "change", "view")),
         *crud("quality", "reading", actions=("add", "change", "view")),
         *crud("quality", "calibration", actions=("add", "view")),
+        # The supplier's certificate of analysis for a batch bought in (L28): recorded, posted, voided.
+        *crud("quality", "suppliercertificate", actions=("add", "change", "view")),
+        *full("quality", "suppliercertificateline"),
         # What the floor finds wrong is written down where the manager will see it.
         *crud("manufacturing", "qualityalert", actions=("add", "change", "view")),
         *crud("manufacturing", "correctiveaction", actions=("add", "change", "view")),
@@ -593,7 +600,8 @@ ROLES = {
         *view("hr", "employee"),
         *HOW_IT_IS_MADE,
         *full("quality", "inspection", "reading", "calibration", "instrument",
-              "characteristic", "inspectionplan", "planline"),
+              "characteristic", "inspectionplan", "planline", "suppliercertificate",
+              "suppliercertificateline"),
         # A failure under an advisory plan waits for them (RISKS.md, decision 22).
         "quality.decide_inspection",
         *crud("quality", "qualitysettings", actions=("change", "view")),
