@@ -7,7 +7,9 @@ separate, explicit step.
 
 Run it in the gate worktree ($GATE_TREE, default this repository), which
 must be clean. Each commit in base..tip carries the placeholder line
-"Gate: {GATE}" exactly once. The tip gets the full Gate line; the others
+"Gate: {GATE}" exactly once, or, if it changes nothing outside docs/, the
+line "Gate: documentation only (docs/). No application code or test
+changed.", which is kept as written. The tip gets the full Gate line; the others
 say they were gated with it. The replayed tip's tree must equal the
 gated one, or nothing is printed as done.
 """
@@ -20,6 +22,7 @@ import tempfile
 HERE = pathlib.Path(__file__).resolve().parent
 TREE = os.environ.get("GATE_TREE", str(HERE.parent.parent))
 base, tip, prefix = sys.argv[1:4]
+DOCS_ONLY = "Gate: documentation only (docs/). No application code or test changed."
 
 
 def git(*args):
@@ -44,8 +47,17 @@ subject = git("log", "-1", "--format=%s", tip)
 git("checkout", "-q", base)
 for sha in commits:
     body = git("log", "-1", "--format=%B", sha)
+    if body.count("Gate: {GATE}") == 0 and body.count(DOCS_ONLY) == 1:
+        # A commit that changes docs/ alone may say so instead of waiting for a gate; g25 carried nine.
+        # It is replayed as written, and only if it is true.
+        outside = [f for f in git("diff-tree", "--no-commit-id", "--name-only", "-r", sha).split()
+                   if not f.startswith("docs/")]
+        if outside:
+            raise SystemExit(f"{sha[:7]} says documentation only and changes {outside}")
+        git("cherry-pick", sha)
+        continue
     if body.count("Gate: {GATE}") != 1:
-        raise SystemExit(f"{sha[:7]} has no single Gate placeholder")
+        raise SystemExit(f"{sha[:7]} has no single Gate placeholder, nor a true documentation-only line")
     gate = full if sha == tip else (
         f"Gate: not run on this commit by itself. Gated once with the {len(commits) - 1} commits pushed with it, "
         f"at the newest of them (\"{subject}\"): {full[len('Gate: '):]}")

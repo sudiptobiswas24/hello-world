@@ -13,7 +13,7 @@
 # limit. Beside one other lane, sqlite and ist take about 100 minutes each
 # and pg-a about 65. Run ui first: it builds the office app the browser
 # tests need. Then sqlite with pg-a, ist with pg-b, then pg-c, then mig
-# alone (three workers).
+# alone and detached: it runs longer than a job may (see mig below).
 # Never edit this file while a lane is running from it: bash reads a
 # script as it runs, and the lane then executes shifted lines.
 set -u
@@ -71,10 +71,33 @@ pg-c)
     pg_half C erp3 apps.quality apps.assets apps.imports apps.e2e apps.web
     ;;
 mig)
-    # Three workers: each loads every app's migration state and grew to 4.4 GB in g25, and a fourth
-    # was killed for memory on a 16 GB machine; the runner then waited for its tests for good.
-    timeout 12000 env $PW .venv/bin/python manage.py test apps --tag migration --parallel 3 > "$LOGS/${P}_mig.log" 2>&1
-    echo "mig exit=$?"; grep -E "^Found|^Ran|^OK|^FAILED" "$LOGS/${P}_mig.log"
+    # One app at a time on two workers (O429). Whole, the lane took about four hours: past the two-hour job
+    # limit, and past the container's uptime three times in g25. Three workers outgrew the memory limit (one
+    # killed at 5.5 GB, the runner then waiting for it with no CPU). Run this lane detached
+    # (setsid nohup ... &) and run it again after any restart: an app that passed on this HEAD is not re-run.
+    # The tests SQLite skips are PostgreSQL's own and run there after: before g25 one had run in no gate.
+    M="$LOGS/${P}_mig"; mkdir -p "$M"; HEAD=$(git rev-parse HEAD)
+    .venv/bin/python scripts/gate/migcount.py > "$M/count.txt" || { echo "mig: counting failed"; exit 1; }
+    .venv/bin/python scripts/gate/migcount.py --skips > "$M/skips.txt" || { echo "mig: listing skips failed"; exit 1; }
+    for app in $(grep -v '^total ' "$M/count.txt" | cut -d' ' -f1); do
+        if [ "$(cat "$M/$app.done" 2>/dev/null)" = "$HEAD" ]; then echo "$app passed already on this HEAD"; continue; fi
+        timeout 7000 env $PW .venv/bin/python manage.py test "apps.$app" --tag migration --parallel 2 \
+            > "$M/$app.log" 2>&1
+        rc=$?; echo "$app exit=$rc $(grep -E '^Ran|^OK|^FAILED' "$M/$app.log" | tr '\n' ' ')"
+        [ $rc = 0 ] && echo "$HEAD" > "$M/$app.done"
+    done
+    rm -f "$M/pg.log"
+    if [ -s "$M/skips.txt" ]; then
+        if [ "$(cat "$M/pg.done" 2>/dev/null)" != "$HEAD" ]; then
+            pg_isready -q || service postgresql start > /dev/null
+            su postgres -c "psql -q -c 'DROP DATABASE IF EXISTS test_erp9 WITH (FORCE)'" 2>&1 | grep -v NOTICE
+            timeout 3000 env DATABASE_URL="postgres://erp:erp@localhost:5432/erp9" .venv/bin/python manage.py test \
+                $(cat "$M/skips.txt") --tag migration --noinput > "$M/pg.run.log" 2>&1
+            rc=$?; [ $rc = 0 ] && echo "$HEAD" > "$M/pg.done"
+            echo "PostgreSQL-only exit=$rc $(grep -E '^Ran|^OK|^FAILED' "$M/pg.run.log" | tr '\n' ' ')"
+        fi
+    fi
+    echo "mig finished"
     ;;
 *)
     echo "unknown lane: $2"; exit 2
