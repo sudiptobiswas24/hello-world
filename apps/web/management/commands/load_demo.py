@@ -868,6 +868,46 @@ class Command(BaseCommand):
                     certificate_reference=f"PCL/{last:%y%m}/{code}")
                 calibration.post()
 
+        with step("Polymer that comes with the supplier's certificate"):
+            # L28: a copolymer bought by the lot, each lot with Granule House's certificate of analysis, read against
+            # the plan in force the day it came in. PP-2610-A's is within and it may go; PP-2610-B's melt flow is
+            # 4.1 against 2.8 to 3.6, and it is held until the Quality Manager takes it by concession.
+            g10 = UOM.objects.create(code="g10min", name="Grammes per 10 minutes", category="other")
+            pct = UOM.objects.create(code="pct", name="Per cent", category="other")
+            copo = item("PP-COPO", "PP copolymer granule, for coating", kg, "124", hsn="39023000")
+            copo.tracking = "lot"
+            copo.save()
+            mfi = M("quality.Characteristic").objects.create(code="MFI", name="Melt flow index (230 C, 2.16 kg)",
+                                                            uom=g10)
+            ash = M("quality.Characteristic").objects.create(code="ASH", name="Ash content", uom=pct,
+                                                            decimal_places=3)
+            coa_plan = M("quality.InspectionPlan").objects.create(
+                item=copo, name="Copolymer: supplier's certificate", is_mandatory=False, certificate_required=True)
+            M("quality.PlanLine").objects.create(plan=coa_plan, characteristic=mfi, target=D("3.2"),
+                                                 lower_limit=D("2.8"), upper_limit=D("3.6"), line_number=1)
+            M("quality.PlanLine").objects.create(plan=coa_plan, characteristic=ash, upper_limit=D("0.050"),
+                                                 line_number=2)
+            copo_order = PO.objects.create(vendor=granule, order_date=day(-12), currency=inr)
+            for _ in range(2):
+                POLine.objects.create(order=copo_order, item=copo, uom=kg, quantity=D("5000"), unit_price=D("124"),
+                                      warehouse=plant, expected_date=day(-6)).taxes.set(gst18)
+            copo_order.confirm()
+            copo_receipt = copo_order.create_receipt(receipt_date=day(-6), warehouse=plant)
+            copo_lots = []
+            for row, code in zip(copo_receipt.lines.order_by("pk"), ("PP-2610-A", "PP-2610-B")):
+                row.lot = M("inventory.Lot").objects.create(item=copo, code=code, supplier_reference=f"GH/{code[-6:]}")
+                row.save()
+                copo_lots.append(row.lot)
+            copo_receipt.post()
+            for lot, number, values in ((copo_lots[0], "GH/QC/26/4471", ("3.2", "0.020")),
+                                        (copo_lots[1], "GH/QC/26/4472", ("4.1", "0.020"))):
+                coa = M("quality.SupplierCertificate").objects.create(
+                    lot=lot, supplier_number=number, issued_on=day(-7), recorded_on=day(-5))
+                for characteristic, value in zip((mfi, ash), values):
+                    M("quality.SupplierCertificateLine").objects.create(certificate=coa, characteristic=characteristic,
+                                                                        value=D(value))
+                coa.post(by=meena.user)
+
         with step("Maintenance: schedules, planned jobs and breakdowns"):
             for code, name, minutes, every in (("EXT-1", "Screen changer and die cleaning", 120, 30),
                                                ("LOOM-01", "Shuttle and cam lubrication", 45, 14),

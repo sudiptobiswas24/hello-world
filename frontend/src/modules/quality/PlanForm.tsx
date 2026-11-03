@@ -24,6 +24,8 @@ export default function PlanForm() {
         { key: "item", label: "Item", kind: "pick", pick: ITEM, show: (row) => String(row.item_label ?? "—") },
         { key: "name", label: "Plan" },
         { key: "is_mandatory", label: "Holds the batch until passed", kind: "bool", initial: true },
+        { key: "certificate_required", label: "Needs the supplier's certificate", kind: "bool", initial: false,
+          hint: "A batch bought in is held until its certificate of analysis is within these limits" },
         { key: "is_active", label: "Active", kind: "bool", initial: true },
         { key: "valid_from", label: "From", kind: "date" },
         { key: "valid_to", label: "To", kind: "date" },

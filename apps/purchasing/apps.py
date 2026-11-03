@@ -9,10 +9,10 @@ class PurchasingConfig(AppConfig):
     def ready(self):
         from apps.accounting.models import register_bank_movements, register_payment_check, register_void_follow_up
         from apps.accounting.settlement import register_allocation_model
-        from apps.quality.release import register_lot_decided, register_lot_sources
+        from apps.quality.release import register_lot_decided, register_lot_sources, register_lot_supplier
         from apps.sales.models import register_awaited_provider
 
-        from .models import BillPayment, assembled_from, assemblies_made_from, receipts_quality_released, drop_ship_awaited, refuse_held_payment, undo_what_it_settled
+        from .models import BillPayment, received_from, assembled_from, assemblies_made_from, receipts_quality_released, drop_ship_awaited, refuse_held_payment, undo_what_it_settled
         from .tds import challans_paid
 
         register_awaited_provider(drop_ship_awaited)
@@ -46,3 +46,5 @@ class PurchasingConfig(AppConfig):
         register_lot_sources(assembled_from, assemblies_made_from)
         # Quality's verdict may leave a held receipt with nothing held: its to-dos close (review F4).
         register_lot_decided(receipts_quality_released)
+        # Who sold the plant a batch: whose certificate of analysis it takes (L28).
+        register_lot_supplier(received_from)

@@ -6796,6 +6796,42 @@ def assemblies_made_from(lot):
     return list(Lot.objects.filter(pk__in=found).order_by("pk"))
 
 
+def received_from(lot):
+    """
+    Registered with quality (`register_lot_supplier`, L28): the vendor and
+    day of the first standing receipt that brought `lot` in, or None (made
+    here, or a customer's return). A return to the vendor is a receipt that
+    reverses another and is never this one: the batch was still bought from
+    them, and its certificate stays a record.
+    """
+    from apps.quality.release import Supply
+
+    line = (GoodsReceiptLine.objects.filter(lot=lot, receipt__posted=True, receipt__reverses__isnull=True)
+            .select_related("receipt__purchase_order__vendor")
+            .order_by("receipt__receipt_date", "receipt_id", "pk").first())
+    if line is None:
+        return None
+    receipt = line.receipt
+    return Supply(receipt.purchase_order.vendor, receipt.receipt_date, receipt.number)
+
+
+def _received_from_for_page(lots):
+    """`received_from` for a page of batches (O231): one read of their first standing receipts."""
+    from apps.quality.release import Supply
+
+    found = {}
+    for line in (GoodsReceiptLine.objects.filter(lot__in=lots, receipt__posted=True, receipt__reverses__isnull=True)
+                 .select_related("receipt__purchase_order__vendor")
+                 .order_by("lot_id", "receipt__receipt_date", "receipt_id", "pk")):
+        if line.lot_id not in found:
+            receipt = line.receipt
+            found[line.lot_id] = Supply(receipt.purchase_order.vendor, receipt.receipt_date, receipt.number)
+    return found
+
+
+received_from.for_page = _received_from_for_page
+
+
 def receipts_quality_released(lot, by=None):
     """
     Registered with quality (`register_lot_decided`): `lot` was inspected or

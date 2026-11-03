@@ -193,6 +193,12 @@ class InspectionPlan(AuditModel):
                   "is advisory — a record of what was checked rather than a "
                   "gate.",
     )
+    certificate_required = models.BooleanField(
+        default=False,
+        help_text="A batch bought in under this plan is held until the supplier's certificate of "
+                  "analysis is recorded and is within these limits, or the Quality Manager takes it "
+                  "by concession. It never stands in for the plant's own inspection.",
+    )
     is_computed = models.BooleanField(
         default=False, editable=False,
         help_text="Set when a product specification works this plan out. Such "
@@ -280,6 +286,10 @@ class InspectionPlan(AuditModel):
                 "plan is rebuilt from it."
             )
         self._check_window()
+        if self.certificate_required and self.item.tracking == "none":
+            raise ValidationError(
+                f"{self.item} is not tracked by batch, and a supplier's certificate is for one "
+                "batch. Track it by lot, or do not ask for a certificate.")
         if self.is_mandatory and self.item.tracking == "none":
             raise ValidationError(
                 f"{self.item} is not tracked by batch, so there is nothing for "
@@ -758,8 +768,8 @@ class Inspection(AuditModel):
         What a concession asks, posted so or decided later: a failure to
         concede, the person taking it (the login's own, never a name typed)
         and why, and a second person where the plant asks for one. A pass
-        that waited (`awaited`: made from a batch quality holds) concedes
-        what is inside it.
+        that waited (`awaited`: made from a batch quality holds, or its
+        supplier's certificate outside, L28) concedes what is inside it.
         """
         if self.result == Result.PASS and not awaited:
             raise ValidationError(
@@ -933,10 +943,16 @@ class Inspection(AuditModel):
         # passed by an Inspector's ordinary reading of the assemblies. It
         # waits for the Quality Manager as a failure does, unless they post
         # it (review F3). Splits and joins of a held batch are the same.
+        from .release import certificate_failed
+
+        # A pass does not take a batch whose supplier's certificate is outside (L28): it waits for
+        # the Quality Manager, whoever posts it, and they take it by concession or not at all.
+        certificate = certificate_failed(self.lot) if self.result == Result.PASS else None
         if not waits and self.result == Result.PASS and self.disposition in ("", Disposition.ACCEPT):
             from .release import held_inside
 
-            if held_inside(self.lot) and not (by is not None and by.has_perm("quality.decide_inspection")):
+            if certificate is not None or (
+                    held_inside(self.lot) and not (by is not None and by.has_perm("quality.decide_inspection"))):
                 waits = True
                 self.disposition = ""
         if waits:
@@ -962,7 +978,7 @@ class Inspection(AuditModel):
             overturned.check_lifted_by(by, ended="Released over it by a new verdict",
                                        remedy="posts the new verdict", reinspection=True)
         if self.disposition == Disposition.CONCESSION:
-            self._check_concession(by)
+            self._check_concession(by, awaited=certificate is not None)
         from .calibration import check_readings
 
         check_readings(self)
@@ -1278,3 +1294,4 @@ class Reading(AuditModel):
 
 
 from .calibration import Calibration, Instrument  # noqa: E402,F401
+from .certificates import SupplierCertificate, SupplierCertificateLine  # noqa: E402,F401
