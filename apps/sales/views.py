@@ -608,7 +608,35 @@ class DeliveryViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.Model
         "pick_list_pdf": "sales.view_delivery",
         "day_pick_list": "sales.view_delivery",
         "day_pick_list_pdf": "sales.view_delivery",
+        "scan": "sales.change_deliveryline",
+        "unpick": "sales.change_deliveryline",
     }
+
+    @action(detail=True, methods=["post"])
+    def unpick(self, request, pk=None):
+        """{line}: the batch a scan named taken off it again, its quantity back on the line it came from."""
+        from .scanning import unpick
+
+        delivery = self.get_object()
+        try:
+            line = unpick(delivery, request.data.get("line"))
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.messages)
+        return Response({"line": DeliveryLineSerializer(line).data})
+
+    @action(detail=True, methods=["post"])
+    def scan(self, request, pk=None):
+        """A scanned batch is named on this draft's line for its item (apps.sales.scanning)."""
+        from .scanning import scan_into_delivery
+
+        delivery = self.get_object()
+        if not request.data.get("code"):
+            raise DRFValidationError("code is required.")
+        try:
+            line, again = scan_into_delivery(delivery, request, request.data["code"], key=request.data.get("key"))
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.messages)
+        return Response({"line": DeliveryLineSerializer(line).data if line is not None else None, "again": again})
 
     # Named "picking", not "pick-list": a route name ending in -list reads as a collection.
     @action(detail=True, methods=["get"], url_path="pick-list", url_name="picking")

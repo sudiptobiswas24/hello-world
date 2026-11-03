@@ -7,6 +7,17 @@ class ManufacturingConfig(AppConfig):
     label = "manufacturing"
 
     def ready(self):
+        from apps.inventory.scanning import ScanDocument, register_scan_document
+
+        from .scanning import issue_scan_actions
+
+        def _issues():
+            from .views import MaterialIssueViewSet
+            return MaterialIssueViewSet
+
+        register_scan_document(ScanDocument("material_issue", "material issue", _issues, issue_scan_actions,
+                                            open={"posted": False, "direction": "issue"},
+                                            describe=lambda issue: f"for {issue.work_order.number or issue.work_order}"))
         from apps.hr.attendance import register_shift_clock
         from apps.hr.payroll import register_piece_measure
         from apps.inventory.models import register_unit_provider

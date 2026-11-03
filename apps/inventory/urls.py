@@ -17,6 +17,7 @@ from .views import (
     StockReservationViewSet,
     StockTransferLineViewSet,
     StockTransferViewSet,
+    ScanViewSet,
     StorageBinViewSet,
     WarehouseViewSet,
 )
@@ -45,6 +46,7 @@ router.register("gate-visits", GateVisitViewSet)
 router.register("weighings", WeighingViewSet)
 router.register("gate-passes", GatePassViewSet)
 router.register("gate-pass-lines", GatePassLineViewSet)
+router.register("scan", ScanViewSet, basename="scan")
 router.register("stock-reports", StockReportViewSet, basename="stock-report")
 
 urlpatterns = router.urls

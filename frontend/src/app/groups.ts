@@ -72,7 +72,7 @@ export const GROUPS: Record<string, [string, string[]][]> = {
   ],
   stores: [
     ["Stock", ["on-hand", "movements", "reserved", "batches"]],
-    ["Operations", ["picking", "transfers", "adjustments", "counts", "job-work", "customer-material",
+    ["Operations", ["scan", "picking", "transfers", "adjustments", "counts", "job-work", "customer-material",
       "customer-material-back"]],
     ["Gate", ["gate", "gate-passes", "weighings"]],
     ["Items", ["items", "item-templates", "item-attributes"]],

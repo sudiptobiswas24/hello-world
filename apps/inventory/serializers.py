@@ -154,7 +154,7 @@ class ItemSerializer(HidesStockMoney, ExtensibleSerializerMixin, serializers.Mod
     class Meta:
         model = Item
         fields = [
-            "id", "sku", "name", "description", "item_type", "stock_class", "uom",
+            "id", "sku", "gtin", "name", "description", "item_type", "stock_class", "uom",
             "track_inventory", "tracking", "costing_method", "standard_cost",
             "sale_price", "inventory_account", "cogs_account", "is_active",
             "hsn_code", "sales_taxes", "purchase_taxes", "tcs_section", "extra", "weight_tolerance_percent",

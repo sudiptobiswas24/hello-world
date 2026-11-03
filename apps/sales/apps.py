@@ -7,6 +7,17 @@ class SalesConfig(AppConfig):
     label = "sales"
 
     def ready(self):
+        from apps.inventory.scanning import ScanDocument, register_scan_document
+
+        from .scanning import delivery_scan_actions
+
+        def _deliveries():
+            from .views import DeliveryViewSet
+            return DeliveryViewSet
+
+        register_scan_document(ScanDocument("delivery", "delivery", _deliveries, delivery_scan_actions,
+                                            open={"posted": False, "reverses__isnull": True},
+                                            describe=lambda delivery: f"for {delivery.sales_order.number}"))
         from apps.accounting.models import register_void_follow_up
         from apps.accounting.settlement import register_allocation_model
         from apps.core.scoping import register_party_scope

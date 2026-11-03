@@ -7,6 +7,24 @@ class PurchasingConfig(AppConfig):
     label = "purchasing"
 
     def ready(self):
+        from apps.inventory.scanning import ScanDocument, register_scan_document
+
+        from .scanning import order_scan_actions, receipt_scan_actions
+
+        def _receipts():
+            from .views import GoodsReceiptViewSet
+            return GoodsReceiptViewSet
+
+        def _orders():
+            from .views import PurchaseOrderViewSet
+            return PurchaseOrderViewSet
+
+        register_scan_document(ScanDocument("goods_receipt", "receipt", _receipts, receipt_scan_actions,
+                                            open={"posted": False, "reverses__isnull": True},
+                                            describe=lambda receipt: f"against {receipt.purchase_order.number}"))
+        register_scan_document(ScanDocument("purchase_order", "purchase order", _orders, order_scan_actions,
+                                            state=lambda order: order.status, open={"status": "confirmed"},
+                                            describe=lambda order: str(order.vendor)))
         from apps.accounting.models import register_bank_movements, register_payment_check, register_void_follow_up
         from apps.accounting.settlement import register_allocation_model
         from apps.quality.release import register_lot_decided, register_lot_sources, register_lot_supplier

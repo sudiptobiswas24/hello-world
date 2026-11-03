@@ -1612,7 +1612,30 @@ class MaterialIssueViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     action_permission_map = {
         "post": "manufacturing.change_materialissue",
         "void": "manufacturing.change_materialissue",
+        "scan": "manufacturing.add_materialissueline",
+        "unpick": "manufacturing.add_materialissueline",
     }
+
+    @action(detail=True, methods=["post"])
+    def unpick(self, request, pk=None):
+        """{line}: the batch a scan named taken off it again, its quantity back on the line it came from."""
+        from .scanning import unpick
+
+        issue = self.get_object()
+        line = _run(unpick, issue, request.data.get("line"))
+        return Response({"line": MaterialIssueLineSerializer(line).data})
+
+    @action(detail=True, methods=["post"])
+    def scan(self, request, pk=None):
+        """A scanned batch is named on this draft's line for its item (apps.manufacturing.scanning)."""
+        from .scanning import scan_into_issue
+
+        issue = self.get_object()
+        if not request.data.get("code"):
+            raise DRFValidationError("code is required.")
+        line, again = _run(scan_into_issue, issue, request, request.data["code"], key=request.data.get("key"))
+        return Response({"line": MaterialIssueLineSerializer(line).data if line is not None else None,
+                         "again": again})
 
     @action(detail=True, methods=["post"])
     def post(self, request, pk=None):
@@ -2172,7 +2195,7 @@ class BaleViewSet(viewsets.ReadOnlyModelViewSet):
         """The bale's own label: its number as a barcode, and what is in it."""
         from django.utils.html import escape
 
-        from . import barcode
+        from apps.core import barcode
 
         bale = self.get_object()
         if bale.broken_at is not None:

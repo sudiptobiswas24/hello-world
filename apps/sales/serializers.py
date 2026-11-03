@@ -172,11 +172,13 @@ class DeliveryLineSerializer(serializers.ModelSerializer):
     # What the line is, as the order line says it: a delivery line names
     # only the order line, and a screen needs to say "50 kg sacks".
     description = serializers.SerializerMethodField()
+    # The batch as its label reads, for the pick-by-scan screen's lines.
+    lot_code = serializers.CharField(source="lot.code", read_only=True, default="")
 
     class Meta:
         model = DeliveryLine
         fields = ["id", "delivery", "order_line", "description", "warehouse", "quantity_shipped",
-            "bin", "lot",
+            "bin", "lot", "lot_code",
         ]
 
     def get_description(self, obj):
