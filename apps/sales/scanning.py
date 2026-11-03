@@ -33,13 +33,16 @@ def scan_into_delivery(delivery, request, code, key=None):
             items, lots = goods_named(code, request)
             item, lot = one_of(code, items, lots, {line.order_line.item_id for line in lines if line.order_line_id})
             if lot is None:
-                raise ValidationError(f"{item.sku} is an item; a pick names the batch. Scan the batch label.")
+                if item.tracking == "none":
+                    raise ValidationError(f"{item.sku} is not kept by batch: its line draws from the shelf as it "
+                                          "stands, and a scan has nothing to name on it.")
+                raise ValidationError(f"{item.sku} is kept by batch; scan the batch label, not the item's.")
             mine = [line for line in lines if line.order_line_id and line.order_line.item_id == lot.item_id]
             if not mine:
-                raise ValidationError(f"Batch {lot.code} is {lot.item.sku}; nothing on {delivery.number} is.")
+                raise ValidationError(f"Batch {lot.code} is {lot.item.sku}; nothing on {delivery.number or 'this delivery'} is.")
             waiting = [line for line in mine if line.lot_id is None]
             if not waiting:
-                raise ValidationError(f"Every line of {lot.item.sku} on {delivery.number} already names its batch.")
+                raise ValidationError(f"Every line of {lot.item.sku} on {delivery.number or 'this delivery'} already names its batch.")
             line = waiting[0]
             named = {}
             for other in mine:
