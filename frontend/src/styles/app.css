@@ -627,3 +627,11 @@ form.refuse input { min-width: 260px; }
 .legend { display: flex; flex-wrap: wrap; gap: 18px; align-items: center; margin: 0; color: var(--ink-2); font-size: 13px; }
 .legend span { display: inline-flex; align-items: center; gap: 6px; }
 .legend i { display: inline-block; width: 14px; height: 10px; border-radius: 2px; }
+
+/* Scanning in stores (L9): a handheld's width, one column. */
+.scan-lines { list-style: none; padding: 0; display: flex; flex-direction: column; gap: 0.4rem; }
+.scan-lines li { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; border-bottom: 1px solid var(--rule, #ddd); padding: 0.3rem 0; }
+@media (max-width: 480px) {
+  .scan-screen .scan-box label { min-width: 0; width: 100%; }
+  .scan-screen .list-head { flex-wrap: wrap; }
+}

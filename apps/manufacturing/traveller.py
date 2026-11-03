@@ -24,7 +24,7 @@ from django.utils import timezone
 
 from apps.core.api import plain
 
-from . import barcode
+from apps.core import barcode
 from .orders import WorkOrderStatus
 
 

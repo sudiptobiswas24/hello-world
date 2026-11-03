@@ -11,7 +11,7 @@ from rest_framework.test import APIClient
 from apps.hr.models import Employee
 from apps.inventory.models import Lot
 
-from . import barcode
+from apps.core import barcode
 from .orders import MaterialIssue, MaterialIssueLine
 from .tests_orders import TODAY
 from .tests_station import StationTestCase, at
