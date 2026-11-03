@@ -52,21 +52,14 @@ def checks():
     def add(level, what, detail=""):
         found.append((level, what, detail))
 
+    # Only this block reads the company. With none, it says so once and every other check is still
+    # asked: an installer mended one line per run while the check stopped here (O422).
     company = Company.objects.first()
     if company is None:
         add(FAIL, "Company", "No company yet: python manage.py setup_indian_books makes it ready to post "
             "(rupees, the year from April, the default accounts); then name it under Settings > Company.")
-        return found
-    add(OK, "Company", company.name)
-    if company.base_currency_id is None:
-        add(FAIL, "Base currency", "Set the company's base currency.")
-
-    for field, name, used_by in REQUIRED_ACCOUNTS:
-        if getattr(company, f"{field}_id") is None:
-            add(FAIL, f"Account: {name}", f"Not set on the company; {used_by} cannot post.")
-    for field, name, used_by in OPTIONAL_ACCOUNTS:
-        if getattr(company, f"{field}_id") is None:
-            add(WARN, f"Account: {name}", f"Not set; {used_by} will be refused until it is.")
+    else:
+        _company(add, company)
 
     if not Warehouse.objects.exists():
         add(FAIL, "Warehouses", "None. Make at least one before anything is received.")
@@ -102,6 +95,19 @@ def checks():
     _books(add)
     _settings(add)
     return found
+
+
+def _company(add, company):
+    add(OK, "Company", company.name)
+    if company.base_currency_id is None:
+        add(FAIL, "Base currency", "Set the company's base currency.")
+
+    for field, name, used_by in REQUIRED_ACCOUNTS:
+        if getattr(company, f"{field}_id") is None:
+            add(FAIL, f"Account: {name}", f"Not set on the company; {used_by} cannot post.")
+    for field, name, used_by in OPTIONAL_ACCOUNTS:
+        if getattr(company, f"{field}_id") is None:
+            add(WARN, f"Account: {name}", f"Not set; {used_by} will be refused until it is.")
 
 
 def _customs(add):

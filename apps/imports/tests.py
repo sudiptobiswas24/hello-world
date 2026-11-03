@@ -11,6 +11,7 @@ from io import StringIO
 
 from django.core.management import CommandError, call_command
 from django.db.models import Sum
+from django.test import TestCase
 
 from apps.accounting.models import Account, AccountType, JournalLine
 from apps.core.models import Company, Party
@@ -499,6 +500,28 @@ class GoLiveCheckTests(ImportTestCase):
         ready, said = self.check()
         self.assertFalse(ready)
         self.assertIn("FAIL  Trial balance", said)
+
+
+class GoLiveCheckBeforeTheCompanyTests(TestCase):
+    """
+    A first installation, nothing yet set up: the check stopped at "No company
+    yet" and listed nothing else, though warehouses, roles and the statutory
+    figures do not read the company, so an installer mended one line per run (O422).
+    """
+
+    def test_every_check_that_does_not_read_the_company_is_still_asked(self):
+        self.assertFalse(Company.objects.exists())
+        out = StringIO()
+        with self.assertRaises(CommandError) as refused:
+            call_command("go_live_check", stdout=out)
+        said = out.getvalue()
+        for expected in ("FAIL  Company: No company yet", "FAIL  Warehouses", "FAIL  Stock adjustment reasons",
+                         "FAIL  Roles", "WARN  GST", "WARN  Administrator"):
+            self.assertIn(expected, said)
+        # What reads the company is not asked of one that is not there: one line says so.
+        self.assertNotIn("Account: ", said)
+        self.assertNotIn("Base currency", said)
+        self.assertIn("Not ready", str(refused.exception))
 
 
 class TheOpeningPositionComesInOnceTests(ImportTestCase):
