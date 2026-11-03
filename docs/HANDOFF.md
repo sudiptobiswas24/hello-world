@@ -50,14 +50,17 @@ pg_isready -q || service postgresql start                              # role er
 
 ## 2. Next steps, in order
 
-**g25 in flight (1 November 2026).** Integration tree /home/user/work/g25tree, backed up at
-claude/erp-g25-integration; nothing of it is pushed to the working branch yet. Holds: round A (gate register,
-passes, weighbridge, review fixes), the interface sweep's fixes (cc1975a), the tax patch (f0289bc: items'
-default taxes, untaxed taxable lines and unnumbered bills refused, an advance's refund dated as asked), the
-outputs patch (cf52f6e: PDFs in lakhs without the missing rupee glyph, the empty ECR refused, agings footed
-with a credits group, bank auto-match line by line), and round B (dfadf5d, 73e4b2e, 98d0f09: landed cost by
-weight through one landing function, the bill of entry with IMPG matching, polymer rate contracts and
-rate-difference notes, customs valuation defaults on a screen). Every lane of the gate is still to run on it.
+**g25 is pushed (ef0ef37, 3 November 2026), all lanes green on one tip (gated as dc3a5a6).** Holds: round A (gate register,
+passes, weighbridge, review fixes), the interface sweep's fixes, the tax patch, the outputs patch, round B (landed cost
+by weight, the bill of entry, rate contracts, customs valuation defaults), the first installation's fixes, O415 and O416,
+the four probe holes and the plant's inter-state position (c3facdf, 4defc7d), and the demo loading on PostgreSQL again
+(dc3a5a6). c3facdf was committed with ten tests red in its own rate-contract fixture; 4defc7d fixed them.
+- How the gate ran: each lane a tracked job, two at a time (ui; sqlite with pg-a; ist with pg-b; pg-c; then mig). pg-b
+  is split into pg-b and pg-c (pg-c took 5,007 s, watch it). mig could not run as lane.sh has it (O429): killed for
+  memory, by the job limit and by three container restarts. It ran one app at a time on two workers, detached, 47
+  OK, and the PostgreSQL-only migration test on PostgreSQL for the first time; logs in /home/user/work/gatelogs25/mig_apps/.
+  finalize ran from a copy (/home/user/work/gatelogs25/finalize_copy/, with mig_apps.sh) whose gateline sums those logs and whose finalize keeps a
+  docs-only commit's own true Gate line (nine carried one). Put both into scripts/gate/ in g26's first commit.
 Round B's report: /home/user/work/reports/fix_imports.md, with the review below.
 - Its PostgreSQL void/pay races were red as committed (a bill's refund_due() is always 0; the refund is on the
   void's debit note) and its balance expectations wrong both ways; rewritten by hand (+12,14,364.00 either
@@ -81,7 +84,7 @@ Round B's report: /home/user/work/reports/fix_imports.md, with the review below.
   encoded the double count. Its D1 to D6 are O423 to O428. For the accountant: booked or closing rates in the
   year-end aging and in credit exposure; the GST default on an export order.
 Order from here:
-1. Round C (L28 certificates of analysis, L9 scanning), then the six-lane gate on one tip, finalize, push.
+1. O429 (the gate's mig lane) first, then round C (L28 certificates of analysis, L9 scanning), then the gate, finalize, push.
 2. Open from the 1 November checks: O416 (agings in mixed currencies), O401 (a document saved before its lines), O405 (the demo shows a third
    of the plant: specifications, inspections, stations, bank details, disposal accounts). Report:
    docs/handoff/reports/drilldown_nov01.md.
