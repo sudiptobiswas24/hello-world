@@ -64,6 +64,51 @@ class LoginsInTheBrowserTests(BrowserTestCase):
         self.assertEqual(self.problems, [])
 
 
+class OwnPasswordInTheBrowserTests(BrowserTestCase):
+    def test_the_first_password_is_replaced_on_a_page_of_the_plants_own(self):
+        """
+        O420: the step every new clerk passes first was Django's stock page, headed
+        "Django administration". It reads as the plant's sign-in page now.
+        """
+        from apps.core.models import Company
+
+        page = self.sign_in(self.person("HR Admin"), "/app/settings/logins/new")
+        page.get_by_label("Login", exact=True).fill("asha")
+        page.get_by_label("First name").fill("Asha")
+        page.get_by_label("First password").fill("loom-shed-2026")
+        page.get_by_role("button", name="Create", exact=True).click()
+        page.wait_for_url(re.compile(r"/settings/logins/\d+$"))
+
+        asha = self.new_page()
+        asha.goto(f"{self.live_server_url}/app/")
+        signing_in = asha.evaluate("() => getComputedStyle(document.body).backgroundColor")
+        asha.fill("#id_username", "asha")
+        asha.fill("#id_password", "loom-shed-2026")
+        asha.click("button[type=submit]")
+        asha.wait_for_url(re.compile(r"/accounts/password_change/"))
+        expect(asha).to_have_title("Choose your own password")
+        expect(asha.get_by_role("heading", name="Choose your own password")).to_be_visible()
+        expect(asha.locator("body")).not_to_contain_text("Django")
+        expect(asha.locator("body")).to_contain_text(Company.objects.get().name)
+        self.assertEqual(asha.evaluate("() => getComputedStyle(document.body).backgroundColor"), signing_in)
+
+        # Its own refusal, on the same page.
+        asha.get_by_label("The password you were given").fill("loom-shed-2026")
+        asha.get_by_label("Your own password", exact=True).fill("loom-shed-2026")
+        asha.get_by_label("Your own password, again").fill("loom-shed-2026")
+        asha.get_by_role("button", name="Set my password").click()
+        expect(asha.locator(".error")).to_contain_text("Choose a password of your own")
+
+        asha.get_by_label("The password you were given").fill("loom-shed-2026")
+        asha.get_by_label("Your own password", exact=True).fill("Warp-And-Weft-1977")
+        asha.get_by_label("Your own password, again").fill("Warp-And-Weft-1977")
+        asha.get_by_role("button", name="Set my password").click()
+        asha.wait_for_url(re.compile(r"/app/$"))
+        expect(asha.get_by_role("navigation", name="Modules")).to_be_attached()
+        self.assertTrue(Client().login(username="asha", password="Warp-And-Weft-1977"))
+        self.assertEqual(self.problems, [])
+
+
 class TwoFactorInTheBrowserTests(BrowserTestCase):
     """L12: a Controller enrols at the first sign-in, signs out, signs in with a code, and a wrong one is refused."""
 
