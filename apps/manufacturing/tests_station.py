@@ -443,7 +443,7 @@ class OneRuleForABatchsNameTests(StationTestCase):
     (set B is printable ASCII); a retired core was refused only by the station's views."""
 
     def test_bags_shift_codes_and_retired_cores(self):
-        from . import barcode
+        from apps.core import barcode
         from .conversion import bag_code
         from .shifts import Shift, batch_code
 

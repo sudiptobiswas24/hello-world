@@ -450,7 +450,38 @@ class GoodsReceiptViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         # The stores, who saw the goods, or accounts payable, who got the letter (O179).
         "objection": "purchasing.object_goodsreceipt",
         "reject": "purchasing.change_receiptinspection",
+        "scan": "purchasing.add_goodsreceiptline",
+        "lot_labels": "purchasing.view_goodsreceipt",
     }
+
+    @action(detail=True, methods=["post"])
+    def scan(self, request, pk=None):
+        """A scanned item or batch adds its line on this draft, or counts it up by `quantity`."""
+        from .scanning import scan_into_receipt
+
+        receipt = self.get_object()
+        if not request.data.get("code"):
+            raise DRFValidationError("code is required.")
+        line, again = _run(scan_into_receipt, receipt, request, request.data["code"],
+                           request.data.get("quantity"), key=request.data.get("key"))
+        return Response({"line": GoodsReceiptLineSerializer(line).data if line is not None else None,
+                         "again": again})
+
+    @action(detail=True, methods=["get"], url_path="lot-labels", url_name="lot-labels")
+    def lot_labels(self, request, pk=None):
+        """A sheet of labels for the batches this receipt brought in, each its code as Code 128."""
+        from django.http import HttpResponse
+
+        from apps.inventory.scanning import label_sheet
+
+        receipt = self.get_object()
+        seen, rows = set(), []
+        for line in receipt.lines.select_related("lot", "order_line__item").order_by("pk"):
+            if line.lot_id and line.lot_id not in seen:
+                seen.add(line.lot_id)
+                rows.append((line.lot.code, f"{line.order_line.item.sku} {line.order_line.item.name}"))
+        return HttpResponse(label_sheet(f"Batches received on {receipt.number or receipt.pk}", rows),
+                            content_type="text/html; charset=utf-8")
 
     @action(detail=True, methods=["get"])
     def inspection(self, request, pk=None):

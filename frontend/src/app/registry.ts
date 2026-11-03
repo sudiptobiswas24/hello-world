@@ -1194,6 +1194,36 @@ export const MODULES: Module[] = [
         detail: () => import("../modules/stores/ItemAttributeForm"),
       },
       {
+        path: "scan", label: "Scan", permission: "inventory.view_stockmovement",
+        keywords: "scan barcode handheld receive pick issue count transfer gtin bin label",
+        load: () => import("../modules/stores/Scan"),
+      },
+      {
+        path: "scan-receive", label: "Receive by scan", permission: "purchasing.view_goodsreceipt", hidden: true,
+        load: () => import("../modules/stores/Scan"),
+        detail: () => import("../modules/stores/ScanInto").then((module) => ({ default: module.ScanReceive })),
+      },
+      {
+        path: "scan-pick", label: "Pick by scan", permission: "sales.view_delivery", hidden: true,
+        load: () => import("../modules/stores/Scan"),
+        detail: () => import("../modules/stores/ScanInto").then((module) => ({ default: module.ScanPick })),
+      },
+      {
+        path: "scan-issue", label: "Issue by scan", permission: "manufacturing.view_materialissue", hidden: true,
+        load: () => import("../modules/stores/Scan"),
+        detail: () => import("../modules/stores/ScanInto").then((module) => ({ default: module.ScanIssue })),
+      },
+      {
+        path: "scan-transfer", label: "Transfer by scan", permission: "inventory.view_stocktransfer", hidden: true,
+        load: () => import("../modules/stores/Scan"),
+        detail: () => import("../modules/stores/ScanInto").then((module) => ({ default: module.ScanTransfer })),
+      },
+      {
+        path: "scan-count", label: "Count by scan", permission: "inventory.view_stockcount", hidden: true,
+        load: () => import("../modules/stores/Scan"),
+        detail: () => import("../modules/stores/ScanInto").then((module) => ({ default: module.ScanCount })),
+      },
+      {
         path: "counts", label: "Stock counts", permission: "inventory.view_stockcount", create: "inventory.add_stockcount",
         keywords: "physical count stocktake verification", load: () => import("../modules/stores/Counts"),
         detail: () => import("../modules/stores/CountForm"),

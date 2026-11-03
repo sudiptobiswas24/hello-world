@@ -24,7 +24,7 @@ from rest_framework.response import Response
 
 from apps.core.api import ANY_SIGN, number
 
-from . import barcode
+from apps.core import barcode
 from .rolls import FabricRoll
 from .shifts import Shift
 from .station import (

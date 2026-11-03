@@ -258,6 +258,11 @@ class Item(Extensible, AuditModel):
                   "change the shirt, it makes it a different product.",
     )
     sku = models.CharField(max_length=64, unique=True)
+    gtin = models.CharField(
+        max_length=14, null=True, blank=True, unique=True,
+        help_text="The GTIN (EAN-13, UPC-A, GTIN-8 or GTIN-14) a customer's barcode carries, where one asks "
+                  "for it. Left blank, the item's own code is its barcode. Its check digit is verified.",
+    )
     name = models.CharField(max_length=255)
     # O395: what a line of this item is taxed at when it names nothing. A line typed on screen carried no
     # tax at all, because nothing said what an item bears and the picker was too small to use: a rep's
@@ -500,11 +505,32 @@ class Item(Extensible, AuditModel):
         self._check_matches_template()
         self._check_variant_key_frozen()
         self._check_counting_frozen()
+        self._check_gtin()
         from .valuation import check_stock_account
 
         check_stock_account(self.inventory_account)
         self.hsn_code = validate_hsn(self.hsn_code)
         super().save(*args, **kwargs)
+
+    def _check_gtin(self):
+        """
+        A GTIN is a barcode another firm's scanner reads: one with a wrong
+        check digit is a typing slip that would scan as nothing, or as the
+        wrong product, so it is refused here; one already another item's
+        would make a scan answer two things. Blank is no GTIN (None, which
+        the unique index lets any number of items have).
+        """
+        from .scanning import gtin_refusal
+
+        self.gtin = (self.gtin or "").strip() or None
+        if self.gtin is None:
+            return
+        said = gtin_refusal(self.gtin)
+        if said:
+            raise ValidationError({"gtin": [said]})
+        other = Item.objects.filter(gtin=self.gtin).exclude(pk=self.pk).first()
+        if other is not None:
+            raise ValidationError({"gtin": [f"GTIN {self.gtin} is already {other.sku}'s."]})
 
     def on_hand_at(self, warehouse):
         """
@@ -1311,3 +1337,4 @@ from .gate import (  # noqa: E402,F401
     GateVisit,
     Weighing,
 )
+from .scanning import ScanKey  # noqa: E402,F401

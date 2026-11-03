@@ -266,6 +266,53 @@ class StorageBinViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     filter_fields = ["warehouse", "is_active", "is_pickable"]
     search_fields = ["code", "name"]
     ordering_fields = ["code"]
+    action_permission_map = {"labels": "inventory.view_storagebin"}
+
+    @action(detail=False, methods=["get"])
+    def labels(self, request):
+        """A sheet of a warehouse's bin labels, each its code as Code 128, in walking order."""
+        from django.http import HttpResponse
+
+        from .scanning import label_sheet
+
+        warehouse = get_object_or_404(Warehouse, pk=request.query_params.get("warehouse"))
+        rows = self.get_queryset().filter(warehouse=warehouse, is_active=True, is_pickable=True).order_by(
+            "sequence", "code")
+        return HttpResponse(label_sheet(f"Bins of {warehouse}", [(row.code, row.name or str(warehouse))
+                                                                  for row in rows]),
+                            content_type="text/html; charset=utf-8")
+
+
+class ScanViewSet(viewsets.ViewSet):
+    """
+    What a scanned code is: GET /api/inventory/scan/?code=. The one
+    resolver every scan screen asks (apps.inventory.scanning.resolve).
+    Each kind is read through its own viewset, so what it answers is what
+    the asker may read; a code naming only what they may not answers as
+    one naming nothing.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def list(self, request):
+        from .scanning import resolve
+
+        code = (request.query_params.get("code") or "").strip()
+        if not code:
+            raise DRFValidationError("code is required.")
+        found = resolve(code, request)
+        if not found:
+            from rest_framework.exceptions import NotFound
+
+            raise NotFound(f"Nothing you may read is coded {code}.")
+        return Response({"code": code, "matches": found})
+
+    @action(detail=False, methods=["get"], url_path="open", url_name="open")
+    def open_drafts(self, request):
+        """The drafts the person may scan into, each with what they may do (apps.inventory.scanning.open_to_scan)."""
+        from .scanning import open_to_scan
+
+        return Response(open_to_scan(request))
 
 
 class AdjustmentReasonViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
@@ -326,7 +373,26 @@ class StockCountViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     ordering_fields = ["count_date", "number"]
     # Putting an item on the sheet adds a line, as the count lines' own
     # address does: the counter's, while posting the differences is not.
-    action_permission_map = {"post": "inventory.change_stockcount", "add": "inventory.add_stockcountline"}
+    action_permission_map = {"post": "inventory.change_stockcount", "add": "inventory.add_stockcountline",
+                             "scan": "inventory.add_stockcountline"}
+
+    @action(detail=True, methods=["post"])
+    def scan(self, request, pk=None):
+        """
+        A scan in a bin while counting: the item or batch scanned is counted
+        up by `quantity`. `key` is made on the device and recorded once, so
+        a scan sent again after the network came back counts once.
+        """
+        from .scanning import scan_into_count
+
+        count = self.get_object()
+        code = request.data.get("code")
+        if not code:
+            raise DRFValidationError("code is required.")
+        line, again = _run(scan_into_count, count, request, code, request.data.get("quantity"),
+                           bin_code=request.data.get("bin"), key=request.data.get("key"))
+        return Response({"line": StockCountLineSerializer(line).data if line is not None else None,
+                         "again": again})
 
     @action(detail=True, methods=["post"])
     def add(self, request, pk=None):
@@ -379,7 +445,34 @@ class StockTransferViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         "send": "inventory.change_stocktransfer",
         "receive": "inventory.change_stocktransfer",
         "cancel": "inventory.change_stocktransfer",
+        "scan": "inventory.add_stocktransferline",
     }
+
+    @action(detail=True, methods=["post"])
+    def scan(self, request, pk=None):
+        """
+        A transfer by scan, in `stage`s: "from" (the bin it leaves), "goods"
+        (a batch or an item, `quantity` of it, from `from_bin`), "to" (the
+        bin every line scanned without one goes to).
+        """
+        from .scanning import scan_into_transfer
+
+        transfer = self.get_object()
+        code, stage = request.data.get("code"), request.data.get("stage") or "goods"
+        if not code:
+            raise DRFValidationError("code is required.")
+        if stage not in ("from", "goods", "to"):
+            raise DRFValidationError("stage is from, goods or to.")
+        done = _run(scan_into_transfer, transfer, request, code, stage, quantity=request.data.get("quantity"),
+                    from_bin=request.data.get("from_bin"), key=request.data.get("key"))
+        answer = {}
+        if "bin" in done:
+            answer["bin"] = StorageBinSerializer(done["bin"]).data
+        if done.get("line") is not None:
+            answer["line"] = StockTransferLineSerializer(done["line"]).data
+        if "lines" in done:
+            answer["lines"] = StockTransferLineSerializer(done["lines"], many=True).data
+        return Response(answer)
 
     @action(detail=True, methods=["post"])
     def post(self, request, pk=None):
