@@ -364,6 +364,26 @@ class OfficeApplicationTests(BrowserTestCase):
         expect(page.locator(".brand span")).to_have_text("".join(part[0].upper() for part in name.split()[:2]))
         self.assertEqual(self.problems, [])
 
+    def test_a_printed_list_carries_no_shell(self):
+        """The printed aging carried the navigation rail (O428): print shows the page, not the frame."""
+        page = self.sign_in(self.person("AR Manager"), "/app/sales/invoices")
+        expect(self.rows()).to_have_count(4)
+        for path, heading in (("/app/sales/invoices", "Invoices"), ("/app/sales/aging", "Receivables by age")):
+            with self.subTest(path):
+                page.emulate_media(media="screen")
+                page.goto(f"{self.live_server_url}{path}")
+                expect(page.get_by_role("heading", name=heading)).to_be_visible()
+                expect(page.get_by_role("navigation", name="Modules")).to_be_visible()
+                page.emulate_media(media="print")
+                expect(page.get_by_role("heading", name=heading)).to_be_visible()
+                expect(page.get_by_role("navigation", name="Modules")).to_be_hidden()
+                expect(page.locator("header.topbar")).to_be_hidden()
+                # The page runs on: a list longer than the window is not cut at the scrolling pane.
+                self.assertEqual(page.locator("main.content").evaluate("(el) => getComputedStyle(el).overflow"), "visible")
+                self.assertEqual(page.locator("main.content").evaluate("(el) => el.getBoundingClientRect().left"), 0)
+        page.emulate_media(media="screen")
+        self.assertEqual(self.problems, [])
+
     def test_finding_an_invoice(self):
         page = self.sign_in(self.person("AR Manager"), "/app/sales/invoices")
         expect(self.rows()).to_have_count(4)
