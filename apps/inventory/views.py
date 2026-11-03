@@ -391,6 +391,10 @@ class StockCountViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
             raise DRFValidationError("code is required.")
         line, again = _run(scan_into_count, count, request, code, request.data.get("quantity"),
                            bin_code=request.data.get("bin"), key=request.data.get("key"))
+        if line is not None:
+            # As stored: the variance of the line in hand went out at every digit the unit conversion made
+            # (-111172.257700000), the same line read back at its column's four.
+            line.refresh_from_db()
         return Response({"line": StockCountLineSerializer(line).data if line is not None else None,
                          "again": again})
 
