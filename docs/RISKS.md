@@ -328,6 +328,11 @@ missing), **minor**.
 | O426 | sales | The credit-hold refusal prints its figures raw (12882136.80 against 12000000.00), not as money in lakhs. Fix: money() in the message (seen 2026-11-02, round O416's report D4) | none | every credit hold |
 | O427 | sales, accounting | An export order line takes the item's default CGST and SGST, though the export customer's fiscal position is LUT. What the line posts at must be checked against the position's mapping before calling it a defect; the accountant to confirm the export default (seen 2026-11-02, round O416's report D5) | accounting | every export order |
 | O428 | interface | The printed aging carries the navigation rail. Fix: the print stylesheet hides the shell (seen 2026-11-02, round O416's report D6) | none | every printed list |
+| O430 | manufacturing | A material issue line for a held lot is added without a word; release's refusal comes only at Post (orders.py, the line's save). The answer is known when the line is added (mistake 3). Fix: the line asks release.py as it is added, the post keeps its check (seen 2026-11-03, fix_coa's report 1) | none | every issue of a held lot |
+| O431 | roles | No stores role holds manufacturing.add_materialissue; only the Production Supervisor may issue material to a run. For the owner: should Stores issue? (seen 2026-11-03, fix_coa's report 2) | none | every issue |
+| O432 | quality | A supplier's certificate posted outside specification sends the Quality Manager no to-do; they learn of it only when an inspection of the lot waits (seen 2026-11-03, fix_coa's report 3) | none | every outside certificate |
+| O433 | quality | A specification-computed plan refuses hand edits, so certificate_required can never be set on one; a computed plan for a bought-in item could never ask for a certificate (seen 2026-11-03, fix_coa's report 4) | none | computed plans on bought-in items |
+| O434 | quality | The batches page reads each outside lot's certificate lines once for its words (verdict_words): a query per outside lot. Fix: prefill them with the page (seen 2026-11-03, fix_coa's report 5) | none | a page of many held lots |
 
 Upgrade notes, true of data made before the 8 October fixes:
 - Landed cost allocated before the stores fix releases to cost of sales, and old inventory differences stay where they were.
