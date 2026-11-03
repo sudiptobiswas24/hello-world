@@ -336,7 +336,6 @@ missing), **minor**.
 | O435 | inventory | StockTransferLine.save()/delete() read the transfer's status without holding it (transfers.py:511, :524), unlike receipt, delivery and count lines: a line PATCHed while the transfer dispatches can land on a transfer that has just moved stock. Shape: a check made before the lock. Fix: answer_to_its_document, as the other lines do (seen 2026-11-03, fix_scan's report 1) | inventory | an edit as a transfer dispatches |
 | O436 | core | Printed documents draw their number with reportlab's code128 (documents.py:144), a second Code 128 beside apps/core/barcode.py. Fix: one drawer (seen 2026-11-03, fix_scan's report 2) | none | every printed document |
 | O437 | inventory | StockCountViewSet.add (views.py:402) returns the line as built, so variance leaves at every digit the conversion made (-111172.257700000 on the demo). Fix: read the line back, as the scan endpoint does (seen 2026-11-03, fix_scan's report 3) | none | every count line added |
-| O438 | interface | ScanBox's camera reads code_128, ean_13 and qr_code, not ean_8 or upc_a, though Item.gtin accepts both (ScanBox.tsx:32). A hand scanner is unaffected (seen 2026-11-03, fix_scan's report 4) | none | a GTIN-8 or UPC-A by camera |
 
 Upgrade notes, true of data made before the 8 October fixes:
 - Landed cost allocated before the stores fix releases to cost of sales, and old inventory differences stay where they were.
