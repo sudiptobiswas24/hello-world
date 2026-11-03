@@ -50,7 +50,8 @@ export default function ItemForm() {
       state={(row) => (row.is_active === false ? { label: "Inactive", tone: "draft" } : null)}
       permissions={{ add: "inventory.add_item", change: "inventory.change_item", delete: "inventory.delete_item" }}
       fields={[
-        { key: "sku", label: "SKU" },
+        { key: "sku", label: "SKU", hint: "Its barcode too, unless it has a GTIN" },
+        { key: "gtin", label: "GTIN", hint: "The EAN or GTIN a customer's barcode carries, where one asks: 8, 12, 13 or 14 digits, its check digit verified" },
         { key: "name", label: "Name" },
         { key: "description", label: "Description", kind: "textarea" },
         { key: "item_type", label: "Item type", kind: "choice", choices: [["goods", "Goods"], ["service", "Service"]], initial: "goods" },

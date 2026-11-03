@@ -97,8 +97,8 @@ function Lines({ rows, amount, action }: {
 }
 
 /** Receive, pick and issue: one box, the document's scan endpoint, each line's way back. */
-function OnlineScan({ title, endpoint, back, withQuantity, amount, undo, scanLabel, hint }: {
-  title: string; endpoint: string; back: (id: string) => string; withQuantity: boolean;
+function OnlineScan({ title, endpoint, back, withQuantity, amount, undo, scanLabel, hint, extra }: {
+  title: string; endpoint: string; back: (id: string) => string; withQuantity: boolean; extra?: (id: string) => ReactNode;
   amount: (line: Line) => string | undefined; scanLabel: string; hint: string;
   undo: { label: string; when?: (line: Line) => boolean; request: (doc: Doc, line: Line) => { method: "POST" | "DELETE"; path: string; body?: unknown } };
 }) {
@@ -144,6 +144,7 @@ function OnlineScan({ title, endpoint, back, withQuantity, amount, undo, scanLab
         {problem && <p className="form-error" role="alert">{problem}</p>}
         <Lines rows={doc?.lines ?? []} amount={amount}
           action={closed ? undefined : { label: undo.label, run: (line) => void undoLine(line), when: undo.when }} />
+        {extra?.(id ?? "")}
       </section>
     </Shell>
   );
@@ -154,6 +155,7 @@ export function ScanReceive() {
     <OnlineScan title="Receive" endpoint="/api/purchasing/goods-receipts/" back={(id) => `/purchasing/goods-in/${id}`}
       withQuantity scanLabel="Item or batch" hint="Scan each item or batch as it comes off the lorry, with how many."
       amount={(line) => line.quantity_received}
+      extra={(id) => <a className="btn" href={`/api/purchasing/goods-receipts/${id}/lot-labels/`} target="_blank" rel="noopener">Print batch labels</a>}
       undo={{ label: "Remove", request: (_doc, line) => ({ method: "DELETE", path: `/api/purchasing/goods-receipt-lines/${line.id}/` }) }} />
   );
 }

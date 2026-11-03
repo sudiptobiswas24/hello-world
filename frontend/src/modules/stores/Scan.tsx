@@ -2,7 +2,8 @@ import { useState } from "react";
 import { Link, useNavigate } from "react-router";
 
 import { ApiError, get } from "../../api/client";
-import { useAct, useGet } from "../../api/hooks";
+import { useAct, useGet, useReference } from "../../api/hooks";
+import { useAccess } from "../../auth/me";
 import { ScanBox } from "../../views/ScanBox";
 
 /**
@@ -43,6 +44,11 @@ export default function Scan() {
   const act = useAct<{ id: number }>();
   const [found, setFound] = useState<Match[] | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
+  const { can } = useAccess();
+  const bins = can("inventory.view_storagebin") && can("inventory.view_warehouse");
+  const warehouses = useReference<{ id: number; code: string; name: string }>("/api/inventory/warehouses/", undefined, bins);
+  const [warehouse, setWarehouse] = useState("");
+  const labelsOf = warehouse || String(warehouses.data?.[0]?.id ?? "");
 
   const scanned = async (code: string) => {
     setProblem(null);
@@ -73,6 +79,17 @@ export default function Scan() {
           </ul>
         )}
       </section>
+      {bins && (
+        <section className="sheet" aria-label="Bin labels">
+          <h2>Bin labels</h2>
+          <label className="field">Warehouse{" "}
+            <select aria-label="Warehouse" value={labelsOf} onChange={(event) => setWarehouse(event.target.value)}>
+              {(warehouses.data ?? []).map((row) => <option key={row.id} value={row.id}>{row.name || row.code}</option>)}
+            </select>
+          </label>{" "}
+          {labelsOf && <a className="btn" href={`/api/inventory/bins/labels/?warehouse=${labelsOf}`} target="_blank" rel="noopener">Print bin labels</a>}
+        </section>
+      )}
       <section className="sheet" aria-label="Open to scan into">
         <h2>Open to scan into</h2>
         {drafts.data && drafts.data.length === 0 && <p className="muted">Nothing open that you may scan into.</p>}

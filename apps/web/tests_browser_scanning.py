@@ -50,6 +50,13 @@ class ScanningInTheBrowserTests(BrowserMixin, stores.ScanTestCase, StaticLiveSer
     def test_the_store_counts_with_the_network_cut(self):
         count = StockCount.objects.create(count_date=DAY, warehouse=self.north, reason=self.reason)
         page = self.on_the_phone("Warehouse Staff", "/stores/scan")
+        scan(page, "Code", "n-01")
+        expect(page.get_by_role("list", name="What it is")).to_contain_text("N-01 in N - North")
+        labels = page.get_by_role("link", name="Print bin labels")
+        expect(labels).to_have_attribute("href", f"/api/inventory/bins/labels/?warehouse={self.north.pk}")
+        sheet = page.request.get(f"{self.live_server_url}/api/inventory/bins/labels/?warehouse={self.north.pk}")
+        self.assertEqual(sheet.status, 200)
+        self.assertIn('aria-label="N-01"', sheet.text())
         offered = page.get_by_role("region", name="Open to scan into")
         expect(offered).to_contain_text(f"Draft count #{count.pk}")
         offered.get_by_role("link", name="Count").click()
