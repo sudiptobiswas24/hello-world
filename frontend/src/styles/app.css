@@ -635,3 +635,14 @@ form.refuse input { min-width: 260px; }
   .scan-screen .scan-box label { min-width: 0; width: 100%; }
   .scan-screen .list-head { flex-wrap: wrap; }
 }
+
+/* ---------- print ----------
+   What is printed is the page, not the frame round it: the rail and the
+   header go, and the content runs on past the window instead of being cut
+   where its scrolling pane ended (O428). */
+@media print {
+  .rail, .topbar, .offline { display: none !important; }
+  html, body, #root, .shell, .main { height: auto; }
+  .shell, .main { display: block; }
+  .content { overflow: visible; padding: 0; }
+}
