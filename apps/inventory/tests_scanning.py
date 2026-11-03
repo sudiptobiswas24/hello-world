@@ -247,7 +247,7 @@ class PickByScanTests(ScanTestCase):
         other = self.lot("Z9", "2026-08-01", item=self.serialised)
         self.receive(other, "1")
         response = self.clerk.post(self.url, {"code": "Z9"}, format="json")
-        self.refused(response, "Batch Z9 is S; nothing on")
+        self.refused(response, "Batch Z9 is S; nothing on this delivery is.")
 
     def test_a_lot_release_holds_is_refused(self):
         from . import tracking
@@ -262,8 +262,11 @@ class PickByScanTests(ScanTestCase):
         self.assertEqual(self.clerk.post(self.url, {"code": "B"}, format="json").status_code, 200)
 
     def test_an_item_code_asks_for_the_batch(self):
-        response = self.clerk.post(self.url, {"code": "S"}, format="json")
-        self.assertEqual(response.status_code, 400)
+        self.refused(self.clerk.post(self.url, {"code": "S"}, format="json"),
+                     "S is kept by batch; scan the batch label")
+
+    def test_an_item_kept_by_no_batch_says_a_scan_has_nothing_to_name(self):
+        self.refused(self.clerk.post(self.url, {"code": "P"}, format="json"), "P is not kept by batch")
 
     def test_a_scan_into_a_delivery_posted_meanwhile_is_refused(self):
         type(self.shipment).objects.filter(pk=self.shipment.pk).update(posted=True)
