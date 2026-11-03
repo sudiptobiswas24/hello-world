@@ -100,6 +100,7 @@ accountant to review and none of them overwriting what is there:
 ```sh
 docker compose run --rm web python manage.py setup_indian_books --gstin <the plant's GSTIN>
 docker compose run --rm web python manage.py setup_stores
+docker compose run --rm web python manage.py setup_payroll
 docker compose run --rm web python manage.py setup_statutory
 ```
 
@@ -110,11 +111,17 @@ docker compose run --rm web python manage.py setup_statutory
   it, enter it later under Settings > Plant's GST registration. Not under
   "GST registrations": those are the parties'.
 - `setup_stores` adds the stock adjustment reasons.
+- `setup_payroll` adds the payroll accounts (2410 PF, 2420 ESI, 2430 PT and
+  2440 LWF payable, 6000 Wages, 6100 Employer contributions) and the
+  standard pay components: Basic, DA and HRA; PF and ESI, the employee's and
+  the employer's shares; professional tax; the welfare fund, both shares.
+  Each statutory one is marked with its levy. An account or component
+  already there is kept as it is, and so is a levy a component is already
+  marked as. Run it before `setup_statutory`.
 - `setup_statutory` loads the TDS, TCS, PF, ESI, bonus, overtime and minimum
   wage figures, unconfirmed: nothing posts at one until the Controller
-  confirms it. Professional tax and the welfare fund load only into pay
-  components marked as those levies, so make the pay components first and
-  run it again.
+  confirms it. Professional tax and the welfare fund load into the pay
+  components marked as those levies, which `setup_payroll` made.
 
 Sign in as the first user: the sign-in asks for a code from an
 authenticator app and shows ten recovery codes once. Then, in the
