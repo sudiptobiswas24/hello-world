@@ -2885,6 +2885,10 @@ class MaterialIssueLine(AuditModel):
         answer_to_its_document(self, "issue", lambda issue: (
             f"Cannot modify a line on {issue}, which is posted. Void it and raise another."))
         self.item.check_uom(self.uom)
+        # A held batch is refused as the line is written, by the same release gate the post asks (O430): the
+        # answer is known now, and asked only at Post the line stood on the draft without a word.
+        if self.issue.direction == IssueDirection.ISSUE:
+            self._check_may_be_drawn(self.issue)
         super().save(*args, **kwargs)
 
     @transaction.atomic
