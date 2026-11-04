@@ -19,7 +19,7 @@ from . import einvoice, ewaybill
 from .gstr2b import Gstr2bStatement, keep, reconcile
 from .serializers import EInvoiceSerializer, EwayBillSerializer, Gstr2bStatementSerializer
 
-from .returns import gstr1, gstr1_json, gstr3b, month
+from .returns import gstr1_json, month, reported
 from apps.core.audit import RowHeldViewSetMixin
 
 
@@ -33,35 +33,41 @@ class CanCompileReturns(BasePermission):
 
 class ReturnView(APIView):
     """GET ?period=YYYY-MM. Compiled on each request from the posted
-    documents; nothing is stored and nothing is filed."""
+    documents until the month's filing is recorded; then as filed
+    (returns.reported, O386). Nothing is filed from here."""
 
     permission_classes = [IsAuthenticated, CanCompileReturns]
-    compile = None
+    name = None
+
+    def compile(self, period):
+        return reported(self.name, period)
 
     def get(self, request):
         period = request.query_params.get("period")
         if not period:
             raise DRFValidationError(["Give a period as YYYY-MM."])
         try:
-            return Response(self.compile(*month(period)))
+            month(period)
+            return Response(self.compile(period))
         except DjangoValidationError as exc:
             raise DRFValidationError(exc.messages)
 
 
 class Gstr1View(ReturnView):
-    compile = staticmethod(gstr1)
+    name = "gstr1"
 
 
 class Gstr1JsonView(ReturnView):
     """The offline tool's shape — validate it there before uploading."""
 
-    @staticmethod
-    def compile(start, end):
-        return gstr1_json(gstr1(start, end))
+    name = "gstr1"
+
+    def compile(self, period):
+        return gstr1_json(reported(self.name, period))
 
 
 class Gstr3bView(ReturnView):
-    compile = staticmethod(gstr3b)
+    name = "gstr3b"
 
 
 class Itc04View(APIView):

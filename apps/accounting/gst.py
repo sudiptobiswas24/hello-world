@@ -29,7 +29,7 @@ document, which is not built yet and is said here rather than assumed.
 import re
 
 from django.core.exceptions import ValidationError
-from django.db import models
+from django.db import models, transaction
 from django.utils import timezone
 
 from apps.core.models import AuditModel
@@ -575,12 +575,23 @@ def gst_taxes(profile, taxes, place=None):
     return list(taxes)
 
 
+# What recording a filing does besides: the GST module keeps the return's figures as they stood (O386),
+# without accounting importing it.
+FILING_FOLLOW_UPS = []
+
+
+def register_filing_follow_up(follow_up):
+    if follow_up not in FILING_FOLLOW_UPS:
+        FILING_FOLLOW_UPS.append(follow_up)
+
+
 class GstReturnFiled(AuditModel):
     """
     A GST return as filed on the portal: which, for which month, the day, and the acknowledgement.
     Recorded by the person who filed it, since nothing here files (apps/gst/returns.py). What a filed
     return reported is then not taken back from under it: a bill of entry whose IGST credit a filed
-    GSTR-3B claimed is not voided (L21).
+    GSTR-3B claimed is not voided (L21), and the return's figures are kept as they stood when the filing
+    was recorded (O386), so a later void does not change what was filed. It is never un-filed (delete).
     """
 
     RETURNS = [("gstr1", "GSTR-1"), ("gstr3b", "GSTR-3B")]
@@ -608,7 +619,10 @@ class GstReturnFiled(AuditModel):
             raise ValidationError("A filing is recorded as it was made; it is not edited.")
         if self.filed_on and self.filed_on > timezone.localdate():
             raise ValidationError({"filed_on": "That day has not come."})
-        super().save(*args, **kwargs)
+        with transaction.atomic():
+            super().save(*args, **kwargs)
+            for follow_up in FILING_FOLLOW_UPS:
+                follow_up(self)
 
     def delete(self, *args, **kwargs):
         raise ValidationError("A filed return stays filed: amend it in a later return.")

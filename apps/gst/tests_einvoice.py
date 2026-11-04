@@ -885,3 +885,109 @@ class PortalClockSkewTests(EInvoiceTestCase):
     def test_five_minutes_one_ahead_is_refused(self):
         with self.assertRaisesMessage(ValidationError, "has not come"):
             self.generated(datetime.timedelta(minutes=5, seconds=1))
+
+
+class AFiledReturnKeepsItsFiguresTests(EInvoiceTestCase):
+    """
+    O386. S2 (15,000.00 + CGST 1,350.00 + SGST 1,350.00 to a Maharashtra buyer)
+    is in September's GSTR-1 and GSTR-3B. Both are filed and the filings
+    recorded; then the IRN is cancelled, which takes S2 off the books'
+    September. The filed returns read as filed; October's, not filed, says
+    September has moved and is to be reported there.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from django.contrib.auth.models import Group
+        from django.core.management import call_command
+
+        call_command("setup_roles", verbosity=0)
+        officer = User.objects.create_user("officer")
+        officer.groups.add(Group.objects.get(name="GST Officer"))
+        self.client_ = APIClient()
+        self.client_.force_authenticate(officer)
+
+    def read(self, name, period="2026-09"):
+        response = self.client_.get(f"/api/gst/{name}/", {"period": period})
+        self.assertEqual(response.status_code, 200, response.content)
+        return response.json()
+
+    def file(self, name):
+        response = self.client_.post("/api/accounting/gst-returns-filed/", {
+            "return_name": name, "period": "2026-09", "filed_on": "2026-10-11", "arn": f"AA27{name}"}, format="json")
+        self.assertEqual(response.status_code, 201, response.content)
+
+    def cancel_s2(self, record):
+        record.cancellation("2", "Wrong rate")
+        record.record_cancellation(timezone.now())
+
+    def test_a_void_after_filing_does_not_change_the_filed_return(self):
+        record = self.registered(self.invoice(self.mh, [(self.sack, "100", "150", "0", self.pair)]))
+        before = {name: self.read(name) for name in ("gstr1", "gstr3b")}
+        self.assertEqual(before["gstr3b"]["3.1a"], {"taxable": "15000.00", "igst": "0", "cgst": "1350.00",
+                                                    "sgst": "1350.00", "cess": "0"})
+        self.assertEqual([row["number"] for row in before["gstr1"]["b2b"]], [record.invoice.number])
+        self.file("gstr1")
+        self.file("gstr3b")
+        self.cancel_s2(record)
+
+        after = {name: self.read(name) for name in ("gstr1", "gstr3b")}
+        for name in ("gstr1", "gstr3b"):
+            filed = after[name].pop("filed")
+            self.assertEqual(filed, {"filed_on": "2026-10-11", "arn": f"AA27{name}"})
+            warnings = after[name].pop("warnings")
+            self.assertEqual({key: value for key, value in before[name].items() if key != "warnings"}, after[name])
+            self.assertTrue(any("these are its figures as kept" in warning for warning in warnings), warnings)
+            self.assertTrue(any("Since it was filed the books have moved in" in warning for warning in warnings),
+                            warnings)
+        # The books did move: compiled now, September has no S2 in either.
+        from .returns import gstr3b
+
+        self.assertEqual(gstr1(*SEPTEMBER)["b2b"], [])
+        self.assertEqual(gstr3b(*SEPTEMBER)["3.1a"]["taxable"], D("0"))
+        # October, not filed, says so: the change is to be reported there.
+        october = self.read("gstr1", "2026-10")
+        self.assertNotIn("filed", october)
+        self.assertTrue(any(warning.startswith("GSTR-1 2026-09 was filed on 11-10-2026 (ARN AA27gstr1) and the "
+                                               "books for that month have moved since, in b2b")
+                            for warning in october["warnings"]), october["warnings"])
+        # The offline tool's file for September is the filed one.
+        export = self.client_.get("/api/gst/gstr1/json/", {"period": "2026-09"}).json()
+        self.assertEqual([row["inv"][0]["inum"] for row in export["b2b"]], [record.invoice.number])
+
+    def test_a_filed_return_is_not_unfiled_nor_its_figures_changed(self):
+        from apps.accounting.gst import GstReturnFiled
+
+        self.registered(self.invoice(self.mh, [(self.sack, "100", "150", "0", self.pair)]))
+        self.file("gstr3b")
+        filing = GstReturnFiled.objects.get()
+        # The officer may not delete a filing, and the viewset takes no DELETE from anyone.
+        self.assertEqual(self.client_.delete(f"/api/accounting/gst-returns-filed/{filing.pk}/").status_code, 403)
+        self.assertTrue(GstReturnFiled.objects.filter(pk=filing.pk).exists())
+        with self.assertRaisesMessage(ValidationError, "A filed return stays filed"):
+            filing.delete()
+        with self.assertRaisesMessage(ValidationError, "kept as it was"):
+            filing.figures.save()
+        with self.assertRaisesMessage(ValidationError, "kept as it was"):
+            filing.figures.delete()
+
+    def test_kept_figures_read_back_exactly(self):
+        from .returns import gstr3b, kept, revived
+
+        self.registered(self.invoice(self.mh, [(self.sack, "100", "150", "0", self.pair)]))
+        for compiled in (gstr1(*SEPTEMBER), gstr3b(*SEPTEMBER)):
+            self.assertEqual(revived(json.loads(json.dumps(kept(compiled)))), compiled)
+
+    def test_a_filing_recorded_before_figures_were_kept_reads_the_books_and_says_so(self):
+        from apps.accounting.gst import GstReturnFiled
+
+        from .models import FiledReturnFigures
+
+        self.registered(self.invoice(self.mh, [(self.sack, "100", "150", "0", self.pair)]))
+        self.file("gstr3b")
+        FiledReturnFigures.objects.all()._raw_delete(FiledReturnFigures.objects.db)
+        self.assertFalse(GstReturnFiled.objects.filter(figures__isnull=False).exists())
+        result = self.read("gstr3b")
+        self.assertEqual(result["3.1a"]["taxable"], "15000.00")
+        self.assertTrue(any("its figures were not kept (it was recorded before filed figures were kept)" in warning
+                            for warning in result["warnings"]), result["warnings"])
