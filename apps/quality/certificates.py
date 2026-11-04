@@ -109,7 +109,10 @@ class SupplierCertificate(AuditModel):
         if self.is_within():
             return "within specification"
         said = []
-        for line in self.lines.select_related("characteristic").order_by("pk"):
+        # The page's lines where the page read them (release._prefill_certificates, O434), else its own.
+        lines = (self.lines.all() if "lines" in getattr(self, "_prefetched_objects_cache", {})
+                 else self.lines.select_related("characteristic"))
+        for line in sorted(lines, key=lambda line: line.pk):
             if line.within is False:
                 said.append(f"{line.characteristic.code} {line.shown_value()} against {line.limit_words()}"
                             if not line.is_missing() else f"{line.characteristic.code} missing")
