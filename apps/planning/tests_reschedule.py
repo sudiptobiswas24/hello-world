@@ -268,3 +268,19 @@ class EarliestServesEarliestTests(RescheduleTestCase):
         # second — not by the first.
         action = self.plan().expedites().get()
         self.assertEqual(action.wanted_on, self.day(25))
+
+
+class ASpareInNoRecipeIsNotAdvisedCancelledTests(RescheduleTestCase):
+    """
+    O425, decided: an item no recipe makes or draws (a loom bearing, kept for the fitters) is left out of
+    cancel advice; a raw material a recipe draws, ordered with nothing in the horizon wanting it, still gets it.
+    """
+
+    def test_the_bearing_gets_none_and_the_polymer_still_does(self):
+        from apps.inventory.models import Item
+
+        bearing = Item.objects.create(sku="SP-6205", name="Bearing 6205 (loom)", uom=self.kg)
+        self.purchase(bearing, "24", self.day(20))
+        self.purchase(self.virgin, "5000", self.day(20))
+        self.assertEqual([(action.item, action.action, action.quantity) for action in self.actions()],
+                         [(self.virgin, RescheduleAction.CANCEL, Decimal("5000"))])
