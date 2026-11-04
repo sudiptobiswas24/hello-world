@@ -400,6 +400,10 @@ ROLES = {
         *full("inventory", "stocktransferline"),
         *view("inventory", "stockadjustment", "stockadjustmentline", "adjustmentreason",
               "stockreservation"),
+        # Stores issues material to a run and takes back what comes back from it, and voids either (O431):
+        # an issue's reverse is a return (a MaterialIssue the other way) or its void, both the store's.
+        *full("manufacturing", "materialissue", "materialissueline"),
+        *view("manufacturing", "workorder", "workorderoperation"),
     ],
     # Whoever posts what the shelf was found to hold, and writes stock on
     # or off for a reason: the store's head, not the person who counted.
@@ -424,6 +428,8 @@ ROLES = {
               "customermaterialreceipt", "customermaterialreceiptline",
               "customermaterialreturn", "customermaterialreturnline"),
         *view("manufacturing", "workorder", "workorderoperation"),
+        # The store's head issues and takes back material as the store does (O431).
+        *full("manufacturing", "materialissue", "materialissueline"),
         # Told when a batch is held for the Quality Manager: the to-do opens the inspection.
         *view("quality", "inspection", "reading"),
         # The gate: passes signed off before the vehicle leaves, and a weight typed when the scale cannot.
