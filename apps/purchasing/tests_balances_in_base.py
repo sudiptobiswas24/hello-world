@@ -124,6 +124,23 @@ class TheAgingReadsWhatThePayableHoldsTests(BalancesInBaseCase):
         self.assertEqual((self.total(aging), vendor_balance(self.vendor), self.owed(self.payable)),
                          (D("1248750.00"), D("1248750.00"), D("1248750.00")))
 
+    def test_a_debit_note_partly_absorbed_is_restated_once(self):
+        """
+        O424, the payable's mirror (calc_fix_logic/o424.py): USD 1,000 at 83.25 (83,250.00), 600 paid
+        (clearing 49,950.00), a debit note of 700 (58,275.00) absorbs the 400 left and is owed 300 back: the
+        payable holds -24,975.00, and restated at 84.12 the 300 is -25,236.00. The note was carried at all it
+        booked, and the payable read 8,064.00 on the restatement's day.
+        """
+        from apps.accounting.restatement import Restatement
+
+        bill = self.dollar_bill("200", "5")
+        self.pay("600", bill)
+        bill.create_debit_note(quantities={bill.lines.get(): D("140")}, on_date=JAN(25))
+        self.assertEqual(self.owed(self.payable), D("-24975.00"))
+        Restatement.make(JAN(31), rates={"USD": "84.12"})
+        self.assertEqual((self.owed(self.payable, by=JAN(31)), self.total(ap_aging(as_of=JAN(31)))),
+                         (D("-25236.00"), D("-25236.00")))
+
     def test_a_vendor_overpaid_in_dollars_reads_what_the_payment_booked(self):
         bill = self.dollar_bill("200", "5")  # 1,000 USD
         self.pay("1200", bill, applied="1000")
