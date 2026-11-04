@@ -96,6 +96,26 @@ class TheAgingReadsWhatThePayableHoldsTests(BalancesInBaseCase):
         # The difference was realised when the half was paid, not left on the payable.
         self.assertEqual(-self.owed(self.fx_loss), D("18750.00"))
 
+    def test_a_multi_line_bill_reads_the_base_its_payable_holds(self):
+        """
+        O423, the payable's mirror (calc_fix_logic/o423.py): three lines of USD 10.01 at 83.25 book 833.33
+        each, 2,499.99, where 30.03 x 83.25 reads 2,500.00. Paid 10.00 at 84.00, its slice 832.50 clears and
+        1,667.49 stays held, where 20.03 x 83.25 reads 1,667.50.
+        """
+        bill = Bill.objects.create(vendor=self.vendor, bill_date=JAN(10), payable_account=self.payable,
+                                   currency=self.dollar)
+        for _ in range(3):
+            BillLine.objects.create(bill=bill, item=self.item, quantity=D("1"), unit_price=D("10.01"),
+                                    expense_account=self.expense)
+        bill.post()
+        on = datetime.date(2026, 3, 1)
+        self.assertEqual((bill.total(), self.owed(self.payable)), (D("30.03"), D("2499.99")))
+        self.assertEqual((self.total(ap_aging(as_of=on)), vendor_balance(self.vendor)), (D("2499.99"), D("2499.99")))
+        self.pay("10.00", bill)
+        [row] = ap_aging(as_of=on)["1-30"]["bills"]
+        self.assertEqual((row["due_in_currency"], row["amount_due"], vendor_balance(self.vendor),
+                          self.owed(self.payable)), (D("20.03"), D("1667.49"), D("1667.49"), D("1667.49")))
+
     def test_a_debit_note_comes_off_at_the_rate_it_was_booked(self):
         bill = self.dollar_bill()
         self.pay("25000", bill)

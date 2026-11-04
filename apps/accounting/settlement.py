@@ -156,9 +156,23 @@ def base_of_the_part(document, control_account, booked, amount, others):
     if not total:
         return Decimal("0")
     after = total - document.amount_due()
+    return round_money(booked * min(after, total) / total) - base_cleared(
+        document, control_account, booked, others, leaving=amount)
+
+
+def base_cleared(document, control_account, booked, others, leaving=Decimal("0")):
+    """
+    The base what has settled `document` cleared off its control account, but for its last `leaving`, which
+    base_of_the_part prices: `others` as each recorded it, what booked its own base at that, the rest at its
+    slice. With nothing left out it is all of it, and `booked` less it is the base still held (held_base).
+    """
+    total = document.total()
+    if not total:
+        return Decimal("0")
+    after = total - document.amount_due()
     if any(row.document_base is None for row in others):
         # Made before the base was kept: the slice, as it was then.
-        return slice_of(booked, total, after - amount, amount)
+        return slice_of(booked, total, Decimal("0"), after - leaving)
     applied = sum((row.amount for row in others), Decimal("0"))
     # What else settled it and booked its own base on the control account (a credit note, a drawdown,
     # as the document lists them: settled_by_entries) counts at what it booked; the rest at its slice.
@@ -168,10 +182,21 @@ def base_of_the_part(document, control_account, booked, amount, others):
         known = []
     known += absorbed_part(document, control_account)
     known_amount = sum((part for part, _ in known), Decimal("0"))
-    cleared = (sum((row.document_base for row in others), Decimal("0"))
-               + sum((base for _, base in known), Decimal("0"))
-               + slice_of(booked, total, applied + known_amount, after - amount - applied - known_amount))
-    return round_money(booked * min(after, total) / total) - cleared
+    return (sum((row.document_base for row in others), Decimal("0"))
+            + sum((base for _, base in known), Decimal("0"))
+            + slice_of(booked, total, applied + known_amount, after - leaving - applied - known_amount))
+
+
+def held_base(document, control_account):
+    """
+    The base the control account still holds for `document` (O423): what it booked, every line rounded on its
+    own, less what its settlements cleared. Not its due at its rate, rounded once: three lines of USD 10.01 at
+    83.25 book 2,499.99, and 30.03 x 83.25 reads 2,500.00. None where it booked nothing to read.
+    """
+    booked = booked_by(document, control_account) if document.journal_entry_id else None
+    if booked is None:
+        return None
+    return booked - base_cleared(document, control_account, booked, standing_allocations(document))
 
 
 def absorbed_base(document, control_account, amount):
