@@ -508,24 +508,36 @@ class StockTransferLine(AuditModel):
             undone.append(step.reverse(self, occurred_at, label))
         return undone
 
+    def locked_before_it(self):
+        """The transfers it leaves and joins, as save() holds them (apps.core.models.answer_to_its_document)."""
+        from apps.core.models import documents_it_answers_to
+
+        return documents_it_answers_to(self, "transfer")
+
+    @staticmethod
+    def _moved(transfer):
+        return transfer.status != TransferStatus.DRAFT
+
+    @transaction.atomic
     def save(self, *args, **kwargs):
-        if self.transfer_id and not StockTransfer.objects.filter(
-            pk=self.transfer_id, status=TransferStatus.DRAFT
-        ).exists():
-            raise ValidationError(
-                "Cannot modify a line on a transfer that has already moved stock."
-            )
+        from apps.core.models import answer_to_its_document
+
+        # Shared rule B (O435): the transfer it leaves and the one it joins, both held before either is read.
+        # Read unheld, a line raised to 50 as its transfer dispatched 30 said 50 on a transfer that moved 30.
+        answer_to_its_document(self, "transfer", "Cannot modify a line on a transfer that has already moved stock.",
+                               fixed=self._moved)
         if self.uom_id is None and self.item_id:
             self.uom = self.item.uom
         if self.item_id and self.uom_id:
             self.item.check_uom(self.uom)
         super().save(*args, **kwargs)
 
+    @transaction.atomic
     def delete(self, *args, **kwargs):
-        if self.transfer.status != TransferStatus.DRAFT:
-            raise ValidationError(
-                "Cannot delete a line on a transfer that has already moved stock."
-            )
+        from apps.core.models import answer_to_its_document
+
+        answer_to_its_document(self, "transfer", "Cannot delete a line on a transfer that has already moved stock.",
+                               fixed=self._moved)
         super().delete(*args, **kwargs)
 
 

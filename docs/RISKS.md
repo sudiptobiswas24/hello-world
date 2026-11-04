@@ -323,7 +323,6 @@ missing), **minor**.
 | O425 | planning | PLANT's own plan run advises cancelling eight raw-material supplies while it plans to make sacks from them; the FG run's double count is gone (O415), this is a different reading. For a planner to look at before anyone takes the advice (seen 2026-11-02, round O416's report D3) | planning | every PLANT plan run |
 | O427 | sales, accounting | An export order line takes the item's default CGST and SGST, though the export customer's fiscal position is LUT. What the line posts at must be checked against the position's mapping before calling it a defect; the accountant to confirm the export default (seen 2026-11-02, round O416's report D5) | accounting | every export order |
 | O431 | roles | No stores role holds manufacturing.add_materialissue; only the Production Supervisor may issue material to a run. For the owner: should Stores issue? (seen 2026-11-03, fix_coa's report 2) | none | every issue |
-| O435 | inventory | StockTransferLine.save()/delete() read the transfer's status without holding it (transfers.py:511, :524), unlike receipt, delivery and count lines: a line PATCHed while the transfer dispatches can land on a transfer that has just moved stock. Shape: a check made before the lock. Fix: answer_to_its_document, as the other lines do (seen 2026-11-03, fix_scan's report 1) | inventory | an edit as a transfer dispatches |
 
 Upgrade notes, true of data made before the 8 October fixes:
 - Landed cost allocated before the stores fix releases to cost of sales, and old inventory differences stay where they were.
