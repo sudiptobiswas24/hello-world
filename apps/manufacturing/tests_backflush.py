@@ -426,12 +426,11 @@ class DrawingTheFailedBatchTests(ReworkTestCase):
         issue = MaterialIssue.objects.create(
             work_order=order, issue_date=TODAY, warehouse=self.plant,
         )
-        MaterialIssueLine.objects.create(
-            issue=issue, item=self.tape, quantity=Decimal("10"), uom=self.kg,
-            lot=lot, line_number=1,
-        )
         with self.assertRaises(ValidationError):
-            issue.post()
+            MaterialIssueLine.objects.create(
+                issue=issue, item=self.tape, quantity=Decimal("10"), uom=self.kg,
+                lot=lot, line_number=1,
+            )
 
     def test_fresh_material_on_a_rework_run_is_checked_as_usual(self):
         lot = self.failed_lot()

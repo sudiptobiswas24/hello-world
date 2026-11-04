@@ -160,6 +160,29 @@ class AHeldBatchGoesNowhereTests(RunTestCase):
             self.issue_the_drum().post()
         self.assertIn("is held", str(caught.exception))
 
+    def test_a_line_for_a_held_batch_is_refused_as_it_is_added(self):
+        """O430: the line for a rejected drum stood on the draft without a word; release refused only at Post."""
+        from .orders import MaterialIssue, MaterialIssueLine
+
+        self.inspect(1200)
+        run = self.order("1000")
+        run.release(TODAY)
+        issue = MaterialIssue.objects.create(work_order=run, issue_date=TODAY, warehouse=self.plant)
+        with self.assertRaisesMessage(ValidationError, "PP-A is held: rejected on"):
+            MaterialIssueLine.objects.create(issue=issue, item=self.virgin, quantity=Decimal("100"), uom=self.kg,
+                                             lot=self.drum, line_number=1)
+        self.assertFalse(issue.lines.exists())
+
+    def test_a_batch_held_after_its_line_was_added_is_still_refused_at_post(self):
+        """The post keeps its own check (O430): passed when the line was written, rejected before Post."""
+        passed = self.inspect(1000)
+        issue = self.issue_the_drum()
+        passed.void("Read off the wrong drum.")
+        self.inspect(1200)
+        with self.assertRaisesMessage(ValidationError, "PP-A is held: rejected on"):
+            issue.post()
+        self.assertEqual(self.virgin.on_hand_at(self.plant), Decimal("5000.0000"))
+
     def test_a_passed_one_can(self):
         self.inspect(1000)
         self.issue_the_drum().post()
@@ -246,10 +269,10 @@ class AHeldBatchGoesNowhereTests(RunTestCase):
         run = self.order("1000")
         run.release(TODAY)
         document = MaterialIssue.objects.create(work_order=run, issue_date=TODAY, warehouse=rejects)
-        MaterialIssueLine.objects.create(issue=document, item=self.virgin, quantity=Decimal("100"),
-                                         uom=self.kg, lot=self.drum, line_number=1)
+        # Refused as the line is written (O430), not left on the draft until Post.
         with self.assertRaisesMessage(ValidationError, "PP-A is held: rejected on"):
-            document.post()
+            MaterialIssueLine.objects.create(issue=document, item=self.virgin, quantity=Decimal("100"),
+                                             uom=self.kg, lot=self.drum, line_number=1)
         self.assertEqual(self.drum.on_hand_at(rejects), Decimal("100"))
 
     def test_a_run_does_not_draw_from_the_quarantine_bay(self):
@@ -271,10 +294,9 @@ class AHeldBatchGoesNowhereTests(RunTestCase):
         run = self.order("1000")
         run.release(TODAY)
         document = MaterialIssue.objects.create(work_order=run, issue_date=TODAY, warehouse=hold)
-        MaterialIssueLine.objects.create(issue=document, item=self.filler,
-                                         quantity=Decimal("40"), uom=self.kg, line_number=1)
         with self.assertRaisesMessage(ValidationError, "QC - Quality hold holds goods awaiting inspection"):
-            document.post()
+            MaterialIssueLine.objects.create(issue=document, item=self.filler,
+                                             quantity=Decimal("40"), uom=self.kg, line_number=1)
         self.assertEqual(self.filler.on_hand_at(hold), Decimal("100"))
 
 

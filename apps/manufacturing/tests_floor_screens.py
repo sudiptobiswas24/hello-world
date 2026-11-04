@@ -77,10 +77,9 @@ class IssueTests(FloorScreensTestCase):
         number = issue.json()["id"]
         line = supervisor.post("/api/manufacturing/material-issue-lines/", {
             "issue": number, "item": self.virgin.pk, "quantity": "40", "uom": self.kg.pk}, format="json")
-        self.assertEqual(line.status_code, 201, line.content)
-        posted = supervisor.post(f"/api/manufacturing/material-issues/{number}/post/", {}, format="json")
-        self.assertEqual(posted.status_code, 400, posted.content)
-        self.assertIn("holds goods awaiting inspection", posted.content.decode())
+        # Refused as the line is added (O430): the answer is known then, not first at Post.
+        self.assertEqual(line.status_code, 400, line.content)
+        self.assertIn("holds goods awaiting inspection", line.content.decode())
         self.assertEqual(self.virgin.on_hand_at(bay), Decimal("100"))
 
 
