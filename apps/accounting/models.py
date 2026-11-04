@@ -319,6 +319,47 @@ def register_close_check(ask):
         CLOSE_CHECKS.append(ask)
 
 
+# Draft documents that post into the books on their own date (O361): each
+# (model, date field, what one is called, what still makes it a draft). A
+# period closes with none of them dated in it, or the draft could only ever
+# be posted on another day than the one it says. Registered by the module
+# that owns the document, as CLOSE_CHECKS are; one close check asks them all.
+DATED_DRAFTS = []
+
+
+def register_dated_draft(model, date_field, called, draft=None):
+    """
+    `called(document)` names one ("invoice", "credit note"); `draft` is the Q
+    that still makes a row a draft: `posted=False` unless the model keeps a
+    status instead.
+    """
+    if not any(kept[0] is model and kept[1] == date_field for kept in DATED_DRAFTS):
+        DATED_DRAFTS.append((model, date_field, called, draft if draft is not None else Q(posted=False)))
+
+
+def drafts_owed(period, shown=10):
+    """
+    [sentence]: draft documents dated in `period`, named by type, number (or id) and date, for its close to
+    refuse on (O361). Posting one, moving it to a date outside the period or deleting it takes it off the list.
+    """
+    found = []
+    for model, date_field, called, draft in DATED_DRAFTS:
+        rows = model.objects.filter(draft, **{f"{date_field}__gte": period.start_date,
+                                              f"{date_field}__lte": period.end_date})
+        found += [(getattr(row, date_field), called(row), getattr(row, "number", "") or f"id {row.pk}")
+                  for row in rows.order_by(date_field, "pk")]
+    if not found:
+        return []
+    found.sort(key=lambda row: (row[0], row[1], str(row[2])))
+    listed = "; ".join(f"{called} {number} dated {day}" for day, called, number in found[:shown])
+    more = f"; and {len(found) - shown} more" if len(found) > shown else ""
+    return [f"{len(found)} draft document(s) are dated in it: {listed}{more}. "
+            "Post each, move it to a date outside the period, or delete it."]
+
+
+register_close_check(drafts_owed)
+
+
 def refuse_switched_off(lines):
     """
     An account or cost centre switched off takes nothing new (O283): its flag was read by the money

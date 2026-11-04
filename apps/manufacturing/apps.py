@@ -7,6 +7,22 @@ class ManufacturingConfig(AppConfig):
     label = "manufacturing"
 
     def ready(self):
+        from apps.accounting.models import register_dated_draft
+
+        from .jobwork import JobWorkChallan
+        from .orders import MaterialIssue, ProductionEntry, TimeBooking
+        from .outside import OutsideMovement
+        from .rebatch import Rebatch
+
+        # A period closes with no draft that would post (or, a challan, be returned) into it (O361).
+        register_dated_draft(MaterialIssue, "issue_date", lambda issue: (
+            "material return" if issue.direction != "issue" else "material issue"))
+        register_dated_draft(ProductionEntry, "entry_date", lambda entry: "production entry")
+        register_dated_draft(TimeBooking, "booking_date", lambda booking: "time booking")
+        register_dated_draft(OutsideMovement, "movement_date", lambda movement: "outside movement")
+        register_dated_draft(JobWorkChallan, "challan_date", lambda challan: "job-work challan")
+        register_dated_draft(Rebatch, "rebatched_on", lambda rebatch: "rebatch")
+
         from apps.inventory.scanning import ScanDocument, register_scan_document
 
         from .scanning import issue_scan_actions

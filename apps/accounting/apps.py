@@ -7,9 +7,15 @@ class AccountingConfig(AppConfig):
     label = "accounting"
 
     def ready(self):
+        from .models import JournalEntry, Payment, PaymentDirection, register_dated_draft
+
+        # A period closes with no draft dated in it that would post into it (O361).
+        register_dated_draft(JournalEntry, "date", lambda entry: "journal entry")
+        register_dated_draft(Payment, "payment_date", lambda payment: (
+            "receipt" if payment.direction == PaymentDirection.RECEIPT else "payment"))
+
         from apps.core.models import register_booked_in_base, register_company_check
 
-        from .models import JournalEntry
         from .money import refuse_as_money_account, refuse_money_kept_as, settings_fields
 
         def posted_entries():
