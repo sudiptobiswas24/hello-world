@@ -29,4 +29,5 @@ class Gstr2bInTheBrowserTests(BrowserMixin, Gstr2bTestCase, StaticLiveServerTest
         waiting = page.locator("section.statement-section", has_text="Waiting on suppliers")
         expect(waiting.locator("tbody")).to_contain_text("W-1")
         expect(page.locator(".tile", has_text="Waiting on suppliers")).to_contain_text("900.00")
+        expect(page.locator(".tile", has_text="Credit not available")).to_contain_text("0.00")
         self.assertEqual(self.problems, [])

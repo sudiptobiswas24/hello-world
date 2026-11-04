@@ -66,7 +66,7 @@ interface Report {
   period: string;
   statement: { id: number; period: string; gstin: string; generated_on: string | null; lines: number } | null;
   matched: Pair[]; differs: Pair[]; not_in_2b: Pair[]; not_booked: Pair[]; imports?: Imports;
-  totals: { filed: string; booked: string; matched: string; waiting: string; not_booked: string };
+  totals: { filed: string; booked: string; matched: string; blocked: string; waiting: string; not_booked: string };
   notes: string[];
 }
 
@@ -173,6 +173,7 @@ export default function Gstr2b() {
             <div className="tile"><span>Credit filed this month</span><strong>{data ? money(data.totals.filed) : "…"}</strong><small>In the 2B, available</small></div>
             <div className="tile"><span>Credit booked this month</span><strong>{data ? money(data.totals.booked) : "…"}</strong><small>On the month's bills</small></div>
             <div className="tile"><span>Matched</span><strong>{data ? money(data.totals.matched) : "…"}</strong><small>Booked, and in this month's 2B</small></div>
+            <div className="tile"><span>Credit not available</span><strong>{data ? money(data.totals.blocked) : "…"}</strong><small>Booked, in this month's 2B, blocked by the portal</small></div>
             <div className={`tile${data && data.totals.waiting !== "0.00" && data.totals.waiting !== "0" ? " bad" : ""}`}>
               <span>Waiting on suppliers</span><strong>{data ? money(data.totals.waiting) : "…"}</strong><small>Booked this year, in no 2B yet</small>
             </div>

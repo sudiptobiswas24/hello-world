@@ -416,6 +416,9 @@ def reconcile(period):
     {period, statement, matched, differs, not_in_2b, not_booked, totals,
     notes}: the month's 2B against the posted bills of the fiscal year
     to its end, and every earlier month's 2B of the year with them.
+    A bill paired with a line of the month the portal marks ITC not
+    available counts in totals.blocked, not matched (O288, O356), so
+    booked = matched + blocked + waiting for a month's own bills.
     """
     settings = _settings()
     start, end = month(period)
@@ -443,7 +446,7 @@ def reconcile(period):
     if outside:
         result["notes"].append(f"{outside} bill(s) from composition or SEZ suppliers are outside the 2B's "
                                "supplier tables and are not matched.")
-    totals = {key: ZERO for key in ("filed", "booked", "matched", "waiting", "not_booked")}
+    totals = {key: ZERO for key in ("filed", "booked", "matched", "blocked", "waiting", "not_booked")}
     for document in sorted(documents, key=lambda row: (row.date, row.number)):
         figures = _figures(document)
         sign = -1 if document.is_note else 1
@@ -478,8 +481,9 @@ def reconcile(period):
         if line.statement.period == period and line.itc_available:
             totals["matched"] += sign * _money(figures)
         elif line.statement.period == period:
+            totals["blocked"] += sign * _money(figures)
             result["notes"].append(f"{document.number} is in the 2B, but the portal marks its credit not available: "
-                                   "it is not counted as matched.")
+                                   "it is counted as blocked, not matched.")
     for line in sorted(waiting.values(), key=lambda row: (row.statement.period, row.supplier_gstin, row.number)):
         result["not_booked"].append({"bill": None, "line": _line_row(line)})
         totals["not_booked"] += (-1 if line.kind == "credit_note" else 1) * line.itc()
