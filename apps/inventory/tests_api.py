@@ -212,6 +212,17 @@ class CountApiTests(ApiTestCase):
         self.assertEqual(Decimal(response.data["system_quantity"]), Decimal("100"))
         self.assertEqual(Decimal(response.data["variance"]), Decimal("-4"))
 
+    def test_the_added_line_answers_as_stored(self):
+        """O437: the line went back as built, its variance at every digit sent (-3.876544), not the stored -3.8765."""
+        self.stock("100")
+        count = self.sheet()
+        response = self.client.post(
+            f"/api/inventory/stock-counts/{count.pk}/add/",
+            {"item": self.item.pk, "counted_quantity": "96.123456"}, format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual((response.json()["counted_quantity"], response.json()["variance"]), ("96.1235", "-3.8765"))
+
     def test_posting_returns_the_adjustment_it_raised(self):
         self.stock("100")
         count = self.sheet()
