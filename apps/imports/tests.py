@@ -502,6 +502,19 @@ class GoLiveCheckTests(ImportTestCase):
         self.assertIn("FAIL  Trial balance", said)
 
 
+    def test_an_item_made_here_with_no_recipe_is_named(self):
+        """_making() was written and never asked (O439): a sack with no specification went unmentioned."""
+        from apps.manufacturing.bom import BillOfMaterials
+
+        sack = Item.objects.create(sku="SACK-50", name="50 kg sack", uom=self.uom, stock_class="finished")
+        fabric = Item.objects.create(sku="FAB-90", name="Fabric 90 cm", uom=self.uom, stock_class="semi_finished")
+        BillOfMaterials.objects.create(item=fabric, name="Woven", quantity_produced=Decimal("1"), uom=self.uom)
+        _ready, said = self.check()
+        self.assertIn("WARN  Items made here with no recipe", said)
+        self.assertIn("SACK-50", said)
+        self.assertNotIn("FAB-90", said)
+
+
 class GoLiveCheckBeforeTheCompanyTests(TestCase):
     """
     A first installation, nothing yet set up: the check stopped at "No company
