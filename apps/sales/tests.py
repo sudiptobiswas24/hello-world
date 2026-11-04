@@ -382,3 +382,29 @@ class ASalesLineWithNoUnitIsInItsItemsUnitTests(SalesTestCase):
         quoted = QuotationLine.objects.create(quotation=quote, item=self.item, quantity=Decimal("2"),
                                               unit_price=Decimal("50"))
         self.assertEqual(quoted.uom, self.uom)
+
+
+class ADraftInvoiceHoldsItsMonthsCloseTests(SalesTestCase):
+    """O361: January closes with no draft invoice or credit note dated in it; each is named."""
+
+    def test_january_waits_for_the_invoice_and_the_credit_note(self):
+        import datetime
+
+        from apps.accounting.models import AccountingPeriod
+
+        sold = self.make_invoice()
+        sold.post()
+        january = AccountingPeriod.objects.create(name="Jan 2026", start_date=datetime.date(2026, 1, 1),
+                                                  end_date=datetime.date(2026, 1, 31))
+        draft = self.make_invoice()
+        credit = Invoice.objects.create(customer=self.customer, invoice_date="2026-01-20",
+                                        receivable_account=self.receivable, credits=sold)
+        with self.assertRaisesMessage(
+                ValidationError, f"2 draft document(s) are dated in it: invoice id {draft.pk} dated 2026-01-01; "
+                                 f"credit note id {credit.pk} dated 2026-01-20."):
+            january.close()
+        credit.delete()
+        draft.invoice_date = datetime.date(2026, 2, 1)
+        draft.save()
+        january.close()
+        self.assertTrue(AccountingPeriod.objects.get(pk=january.pk).closed)

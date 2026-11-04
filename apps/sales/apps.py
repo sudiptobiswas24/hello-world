@@ -7,6 +7,16 @@ class SalesConfig(AppConfig):
     label = "sales"
 
     def ready(self):
+        from apps.accounting.models import register_dated_draft
+
+        from .models import Delivery, Invoice
+
+        # A period closes with no draft invoice, credit or debit note, or delivery dated in it (O361).
+        register_dated_draft(Invoice, "invoice_date", lambda invoice: (
+            "credit note" if invoice.is_credit_note() else "debit note" if invoice.is_debit_note() else "invoice"))
+        register_dated_draft(Delivery, "delivery_date", lambda delivery: (
+            "delivery return" if delivery.reverses_id else "delivery"))
+
         from apps.inventory.scanning import ScanDocument, register_scan_document
 
         from .scanning import delivery_scan_actions

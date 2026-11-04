@@ -1,4 +1,5 @@
 from django.apps import AppConfig
+from django.db.models import Q
 
 
 class PurchasingConfig(AppConfig):
@@ -7,6 +8,17 @@ class PurchasingConfig(AppConfig):
     label = "purchasing"
 
     def ready(self):
+        from apps.accounting.models import register_dated_draft
+
+        from .imports import BillOfEntry, EntryStatus
+        from .models import Bill, GoodsReceipt
+
+        # A period closes with no draft bill, debit note, receipt or bill of entry dated in it (O361).
+        register_dated_draft(Bill, "bill_date", lambda bill: "debit note" if bill.is_debit_note() else "bill")
+        register_dated_draft(GoodsReceipt, "receipt_date", lambda receipt: (
+            "goods receipt return" if receipt.reverses_id else "goods receipt"))
+        register_dated_draft(BillOfEntry, "be_date", lambda entry: "bill of entry", Q(status=EntryStatus.DRAFT))
+
         from apps.inventory.scanning import ScanDocument, register_scan_document
 
         from .scanning import order_scan_actions, receipt_scan_actions

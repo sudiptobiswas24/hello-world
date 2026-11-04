@@ -1,4 +1,5 @@
 from django.apps import AppConfig
+from django.db.models import Q
 
 
 class HrConfig(AppConfig):
@@ -7,6 +8,14 @@ class HrConfig(AppConfig):
     label = "hr"
 
     def ready(self):
+        from apps.accounting.models import register_dated_draft
+
+        from .expenses import ClaimStatus, ExpenseClaim
+
+        # A period closes with no expense claim dated in it still undecided (O361).
+        register_dated_draft(ExpenseClaim, "claim_date", lambda claim: f"{claim.get_status_display().lower()} expense claim",
+                             Q(status__in=[ClaimStatus.DRAFT, ClaimStatus.SUBMITTED]))
+
         from apps.core.models import register_working_day
 
         from .calendars import plant_works_on
