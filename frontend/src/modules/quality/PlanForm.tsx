@@ -25,7 +25,9 @@ export default function PlanForm() {
         { key: "name", label: "Plan" },
         { key: "is_mandatory", label: "Holds the batch until passed", kind: "bool", initial: true },
         { key: "certificate_required", label: "Needs the supplier's certificate", kind: "bool", initial: false,
-          hint: "A batch bought in is held until its certificate of analysis is within these limits" },
+          hint: "A batch bought in is held until its certificate of analysis is within these limits",
+          // The one field a specification never works out, so set here on a computed plan too (O433).
+          evenWhenFixed: true },
         { key: "is_active", label: "Active", kind: "bool", initial: true },
         { key: "valid_from", label: "From", kind: "date" },
         { key: "valid_to", label: "To", kind: "date" },

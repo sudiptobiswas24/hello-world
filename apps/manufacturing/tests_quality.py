@@ -65,6 +65,40 @@ class ASpecificationWritesItsOwnInspectionPlanTests(WovenTestCase):
         with self.assertRaisesMessage(ValidationError, "this plan is rebuilt from it"):
             plan.save()
 
+    def test_whether_it_asks_for_a_certificate_is_the_one_thing_set_by_hand(self):
+        """
+        O433: a computed plan refused every hand edit, so it could never ask for a supplier's certificate.
+        The specification never sets certificate_required, so a rebuild keeps it, and only it may be set.
+        """
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        call_command("setup_roles", verbosity=0)
+        self.fabric_item.tracking = TrackingMode.LOT
+        self.fabric_item.save()
+        fabric = self.fabric()
+        plan = fabric.inspection_plan
+        named = plan.name
+        manager = User.objects.create_user("asha")
+        manager.groups.add(Group.objects.get(name="Quality Manager"))
+        client = APIClient()
+        client.force_authenticate(manager)
+        response = client.patch(f"/api/quality/plans/{plan.pk}/", {"certificate_required": True}, format="json")
+        self.assertEqual(response.status_code, 200, response.content)
+        # Rebuilt from a new tolerance, it still asks.
+        fabric.gsm_tolerance_percent = Decimal("2")
+        fabric.save()
+        plan.refresh_from_db()
+        self.assertEqual((plan.certificate_required, plan.lines.get().lower_limit), (True, Decimal("85.750000")))
+        # Anything else is still the specification's, alone or alongside it.
+        response = client.patch(f"/api/quality/plans/{plan.pk}/", {"certificate_required": False, "name": "Mine"},
+                                format="json")
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("this plan is rebuilt from it", str(response.content))
+        plan.refresh_from_db()
+        self.assertEqual((plan.certificate_required, plan.name), (True, named))
+
     def test_a_tape_plan_checks_the_denier(self):
         self.tape_item.tracking = TrackingMode.LOT
         self.tape_item.save()
