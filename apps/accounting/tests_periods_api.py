@@ -18,7 +18,7 @@ from .tests import AccountingTestCase
 PERIODS = "/api/accounting/periods/"
 
 
-class PeriodsApiTests(AccountingTestCase):
+class PeriodsApiCase(AccountingTestCase):
     def setUp(self):
         super().setUp()
         call_command("setup_roles", verbosity=0)
@@ -36,6 +36,8 @@ class PeriodsApiTests(AccountingTestCase):
         JournalLine.objects.create(entry=entry, account=self.revenue, credit=Decimal("10"))
         return entry
 
+
+class PeriodsApiTests(PeriodsApiCase):
     def test_closed_from_the_office_and_reopened_there(self):
         controller, books = self.as_("Controller"), self.as_("Bookkeeper")
         made = controller.post(PERIODS, {"name": "Apr 2026", "start_date": "2026-04-01", "end_date": "2026-04-30"},
@@ -66,3 +68,77 @@ class PeriodsApiTests(AccountingTestCase):
         self.assertEqual(self.as_("Purchasing Clerk").get(PERIODS).status_code, 403)
         self.assertEqual(self.as_("Bookkeeper").post(PERIODS, {"name": "X", "start_date": "2026-04-01",
                                                                 "end_date": "2026-04-30"}, format="json").status_code, 403)
+
+
+class APeriodClosesWithNoDraftDatedInItTests(PeriodsApiCase):
+    """
+    O361: a draft dated in the period holds its close, named by type, number or id and date, until it is
+    posted, moved out of the period or deleted. Reopening a closed period asks nothing of drafts.
+    """
+
+    def april(self):
+        return self.as_("Controller").post(PERIODS, {"name": "Apr 2026", "start_date": "2026-04-01",
+                                                     "end_date": "2026-04-30"}, format="json").json()["id"]
+
+    def test_the_controller_is_refused_with_the_drafts_named_until_each_is_dealt_with(self):
+        controller, pk = self.as_("Controller"), self.april()
+        posted_later, moved, deleted = (self.entry(datetime.date(2026, 4, day)) for day in (3, 15, 30))
+        self.entry(datetime.date(2026, 5, 1))  # dated in May: holds nothing in April
+        refused = controller.post(f"{PERIODS}{pk}/close/", {}, format="json")
+        self.assertEqual(refused.status_code, 400, refused.content)
+        said = refused.content.decode()
+        self.assertIn("3 draft document(s) are dated in it: "
+                      f"journal entry id {posted_later.pk} dated 2026-04-03; "
+                      f"journal entry id {moved.pk} dated 2026-04-15; "
+                      f"journal entry id {deleted.pk} dated 2026-04-30. "
+                      "Post each, move it to a date outside the period, or delete it.", said)
+        self.assertFalse(AccountingPeriod.objects.get(pk=pk).closed)
+
+        entries = "/api/accounting/journal-entries/"
+        self.assertEqual(controller.post(f"{entries}{posted_later.pk}/post_entry/", {}, format="json").status_code, 200)
+        self.assertEqual(controller.patch(f"{entries}{moved.pk}/", {"date": "2026-05-02"}, format="json").status_code,
+                         200)
+        still = controller.post(f"{PERIODS}{pk}/close/", {}, format="json")
+        self.assertEqual(still.status_code, 400, still.content)
+        self.assertIn(f"1 draft document(s) are dated in it: journal entry id {deleted.pk} dated 2026-04-30.",
+                      still.content.decode())
+        self.assertEqual(controller.delete(f"{entries}{deleted.pk}/").status_code, 204)
+        closed = controller.post(f"{PERIODS}{pk}/close/", {}, format="json")
+        self.assertEqual((closed.status_code, closed.json()["closed"]), (200, True))
+
+        # Reopened, a draft dated in it is the reason it was reopened: nothing holds the reopening.
+        self.assertEqual(controller.post(f"{PERIODS}{pk}/reopen/", {}, format="json").status_code, 200)
+        self.entry(datetime.date(2026, 4, 20))
+        self.assertEqual(controller.post(f"{PERIODS}{pk}/close/", {}, format="json").status_code, 400)
+
+    def test_a_draft_receipt_holds_it_as_the_entry_does(self):
+        from apps.core.models import Party
+
+        from .models import Payment, PaymentDirection
+
+        customer = Party.objects.create(code="C1", name="Raghav Polymers")
+        ar = self.revenue.__class__.objects.create(code="1100", name="Debtors", account_type="asset")
+        receipt = Payment.objects.create(party=customer, direction=PaymentDirection.RECEIPT,
+                                         payment_date=datetime.date(2026, 4, 10), amount=Decimal("500"),
+                                         bank_account=self.cash, counterpart_account=ar)
+        april = AccountingPeriod.objects.get(pk=self.april())
+        with self.assertRaisesMessage(Exception, f"receipt {receipt.number or f'id {receipt.pk}'} dated 2026-04-10"):
+            april.close()
+        receipt.payment_date = datetime.date(2026, 3, 31)
+        receipt.save()
+        april.close()
+        self.assertTrue(AccountingPeriod.objects.get(pk=april.pk).closed)
+
+    def test_every_dated_draft_that_posts_is_asked(self):
+        from .models import DATED_DRAFTS
+
+        self.assertEqual(sorted(f"{model._meta.label}.{field}" for model, field, _, _ in DATED_DRAFTS), [
+            "accounting.JournalEntry.date", "accounting.Payment.payment_date",
+            "hr.ExpenseClaim.claim_date",
+            "inventory.StockAdjustment.adjustment_date", "inventory.StockCount.count_date",
+            "manufacturing.JobWorkChallan.challan_date", "manufacturing.MaterialIssue.issue_date",
+            "manufacturing.OutsideMovement.movement_date", "manufacturing.ProductionEntry.entry_date",
+            "manufacturing.Rebatch.rebatched_on", "manufacturing.TimeBooking.booking_date",
+            "purchasing.Bill.bill_date", "purchasing.BillOfEntry.be_date", "purchasing.GoodsReceipt.receipt_date",
+            "sales.Delivery.delivery_date", "sales.Invoice.invoice_date",
+        ])

@@ -7,6 +7,14 @@ class InventoryConfig(AppConfig):
     label = "inventory"
 
     def ready(self):
+        from apps.accounting.models import register_dated_draft
+
+        from .adjustments import StockAdjustment, StockCount
+
+        # A period closes with no draft adjustment or count dated in it (O361). A transfer moves no value.
+        register_dated_draft(StockAdjustment, "adjustment_date", lambda adjustment: "stock adjustment")
+        register_dated_draft(StockCount, "count_date", lambda count: "stock count")
+
         from apps.core.models import register_company_check
 
         from .valuation import (

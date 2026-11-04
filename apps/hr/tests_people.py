@@ -664,3 +664,27 @@ class AClaimIsChargedToExpenseAccountsOnlyTests(PeopleTestCase):
         claim.refresh_from_db()
         self.assertEqual((claim.status, claim.journal_entry_id), (ClaimStatus.APPROVED, None))
         self.assertFalse(JournalLine.objects.filter(account=self.tools).exists())
+
+
+class AnUndecidedClaimHoldsItsMonthsCloseTests(PeopleTestCase):
+    """
+    O361: a claim dated in a period and still a draft or submitted holds its close, named. Decided, it is
+    out of the claimant's hands and the books take it on the day it is paid, in whichever month is open.
+    """
+
+    def test_june_waits_for_the_claim_to_be_decided(self):
+        import datetime
+
+        from apps.accounting.models import AccountingPeriod
+
+        june = AccountingPeriod.objects.create(name="June 2026", start_date=datetime.date(2026, 6, 1),
+                                               end_date=datetime.date(2026, 6, 30))
+        claim = self.claim()
+        with self.assertRaisesMessage(ValidationError, f"draft expense claim id {claim.pk} dated 2026-06-01"):
+            june.close()
+        claim.submit()
+        with self.assertRaisesMessage(ValidationError, f"submitted expense claim {claim.number} dated 2026-06-01"):
+            june.close()
+        claim.approve(self.manager)
+        june.close()
+        self.assertTrue(AccountingPeriod.objects.get(pk=june.pk).closed)
