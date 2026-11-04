@@ -757,3 +757,123 @@ def gstr1_json(result):
         ]},
     }
 
+
+
+# -- filed returns (O386) --------------------------------------------------
+
+COMPILERS = {"gstr1": gstr1, "gstr3b": gstr3b}
+# What a return says about itself rather than reports: left out when a filed return is compared with the books.
+_NOT_REPORTED = ("warnings", "not_built", "filed")
+
+
+def kept(value):
+    """`value` as JSON, every Decimal, date and tuple tagged so revived() gives back exactly the same."""
+    if isinstance(value, Decimal):
+        return {"$decimal": str(value)}
+    if isinstance(value, datetime.datetime):
+        raise TypeError("A return holds days, not moments.")
+    if isinstance(value, datetime.date):
+        return {"$date": value.isoformat()}
+    if isinstance(value, tuple):
+        return {"$tuple": [kept(item) for item in value]}
+    if isinstance(value, list):
+        return [kept(item) for item in value]
+    if isinstance(value, dict):
+        if any(not isinstance(key, str) or key.startswith("$") for key in value):
+            raise TypeError(f"A return's keys are words: {list(value)[:3]}")
+        return {key: kept(item) for key, item in value.items()}
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    raise TypeError(f"A return does not hold a {type(value).__name__}.")
+
+
+def revived(value):
+    if isinstance(value, list):
+        return [revived(item) for item in value]
+    if isinstance(value, dict):
+        if len(value) == 1:
+            (key, item), = value.items()
+            if key == "$decimal":
+                return Decimal(item)
+            if key == "$date":
+                return datetime.date.fromisoformat(item)
+            if key == "$tuple":
+                return tuple(revived(part) for part in item)
+        return {key: revived(item) for key, item in value.items()}
+    return value
+
+
+def keep_filed_figures(filing):
+    """
+    Registered with accounting (GstConfig.ready): recording a filing keeps the return as it stands then.
+    One that cannot be compiled (GST not set up, a document posted before taxes were recorded) keeps
+    nothing and says why, rather than refusing to record what was filed on the portal.
+    """
+    from .models import FiledReturnFigures
+
+    try:
+        figures, not_kept = kept(COMPILERS[filing.return_name](*month(filing.period))), ""
+    except ValidationError as exc:
+        figures, not_kept = None, " ".join(exc.messages)
+    FiledReturnFigures.objects.create(filing=filing, figures=figures, not_kept=not_kept,
+                                      created_by=filing.created_by, updated_by=filing.updated_by)
+
+
+def _moved(was, now):
+    """The sections of a return whose figures differ between two compilations of it."""
+    return sorted(key for key in set(was) | set(now)
+                  if key not in _NOT_REPORTED and was.get(key) != now.get(key))
+
+
+def _filing_line(filing):
+    return f"{filing} was filed on {filing.filed_on:%d-%m-%Y}" + (f" (ARN {filing.arn})" if filing.arn else "")
+
+
+def reported(name, period):
+    """
+    The return `name` ("gstr1", "gstr3b") for `period` (YYYY-MM) as the office reads it: as filed,
+    when its filing is recorded with its figures (O386); else compiled from the books as they stand.
+    Either way the warnings say where the books have moved from a return filed: the filed month's own,
+    and every later month's of the fiscal year until the change is reported there.
+    """
+    from apps.accounting.gst import GstReturnFiled
+    from apps.core.models import Company
+
+    start, end = month(period)
+    filing = GstReturnFiled.objects.filter(return_name=name, period=period).select_related("figures").first()
+    record = getattr(filing, "figures", None) if filing is not None else None
+    if record is not None and record.figures is not None:
+        result = revived(record.figures)
+        result["warnings"] = list(result["warnings"]) + [
+            f"{_filing_line(filing)}: these are its figures as kept when the filing was recorded."]
+        try:
+            moved = _moved(result, COMPILERS[name](start, end))
+        except ValidationError:
+            moved = []
+        if moved:
+            result["warnings"].append(
+                f"Since it was filed the books have moved in {', '.join(moved)}: report the change in a later "
+                "month's return (amendments are not built here).")
+    else:
+        result = COMPILERS[name](start, end)
+        if filing is not None:
+            why = record.not_kept if record is not None else "it was recorded before filed figures were kept"
+            result["warnings"].append(f"{_filing_line(filing)}, but its figures were not kept ({why}): these are "
+                                      "the books as they stand now.")
+        else:
+            fy_start, _ = Company.get().fiscal_year_bounds(start)
+            earlier = GstReturnFiled.objects.filter(
+                return_name=name, period__gte=f"{fy_start:%Y-%m}", period__lt=period,
+                figures__figures__isnull=False).select_related("figures").order_by("period")
+            for before in earlier:
+                try:
+                    moved = _moved(revived(before.figures.figures), COMPILERS[name](*month(before.period)))
+                except ValidationError:
+                    continue
+                if moved:
+                    result["warnings"].append(
+                        f"{_filing_line(before)} and the books for that month have moved since, in "
+                        f"{', '.join(moved)}: report the change in this return (amendments are not built here).")
+    if filing is not None:
+        result["filed"] = {"filed_on": filing.filed_on, "arn": filing.arn}
+    return result

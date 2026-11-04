@@ -29,3 +29,10 @@ class GstConfig(AppConfig):
         register_debit_note_follow_up(cancel_with_a_whole_debit_note)
         register_void_follow_up(cancel_vouchers_of)
         register_bank_movements(challans_paid)
+
+        from apps.accounting.gst import register_filing_follow_up
+
+        from .returns import keep_filed_figures
+
+        # A filed return keeps its figures (O386).
+        register_filing_follow_up(keep_filed_figures)
