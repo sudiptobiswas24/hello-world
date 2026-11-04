@@ -821,14 +821,35 @@ def _uncovered(spare, safety):
     return surplus
 
 
+def in_no_recipe(item):
+    """
+    True for an item no active recipe makes, draws or allows as a stand-in, and no customer has ordered or
+    been forecast to: a maintenance spare (the loom bearing, the heater band). Plans want it only through what
+    the fitters draw, which no plan sees, so a supply of it nothing in the horizon wants is not surplus (O425).
+    Decided by the recipes, not by what the item is called or classed as.
+    """
+    from apps.manufacturing.bom import BillOfMaterials, BomComponent, BomSubstitute
+    from apps.sales.models import SalesOrderLine
+
+    return not (
+        BillOfMaterials.objects.filter(item=item, is_active=True).exists()
+        or BomComponent.objects.filter(item=item, bom__is_active=True).exists()
+        or BomSubstitute.objects.filter(item=item, is_active=True, component__bom__is_active=True).exists()
+        or SalesOrderLine.objects.filter(item=item).exists()
+        or Forecast.objects.filter(item=item).exists()
+    )
+
+
 def reschedule(item, warehouse, opening, safety, demands, supplies, planned_on,
-               tolerance):
+               tolerance, cancels=True):
     """
     Every order that exists, is movable, and is dated wrong.
 
     Only movable supply. A by-product comes off when its run comes
     off, and a planned order from this very run was dated by this very
-    run, so neither has a date anybody can act on.
+    run, so neither has a date anybody can act on. `cancels` False
+    (an item in no recipe, in_no_recipe()) leaves out the advice to
+    cancel what nothing in the horizon wants; moving it is still said.
     """
     pegs, surplus = peg_supply(opening, safety, demands, supplies, planned_on)
     spare = {id(row): quantity for row, quantity in surplus}
@@ -838,7 +859,7 @@ def reschedule(item, warehouse, opening, safety, demands, supplies, planned_on,
         if not row.movable:
             continue
         over = spare.get(id(row), ZERO)
-        if over > 0:
+        if over > 0 and cancels:
             # Reported whether or not the rest of the order is spoken
             # for. A twenty-tonne order of which six tonnes is wanted
             # and fourteen is not has two separate things wrong with
@@ -1165,7 +1186,7 @@ def plan(warehouse, planned_on=None, horizon_days=None, settings=None):
         # something anybody can be asked to pull in.
         for message in reschedule(
             item, warehouse, opening, safety, demands, supplies, planned_on,
-            settings.reschedule_tolerance_days,
+            settings.reschedule_tolerance_days, cancels=not in_no_recipe(item),
         ):
             _write_action(run, item, warehouse, message, planned_on)
         shortages = net(opening, safety, demands, supplies, planned_on, rule)
