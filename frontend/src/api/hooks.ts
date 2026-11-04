@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { type Query as Query_, type QueryClient, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { useToast } from "../shell/Toasts";
 import { ApiError, get, list, send, type Query } from "./client";
@@ -55,6 +55,28 @@ export function useRows<T>(endpoint: string, query: Query, enabled = true) {
   });
 }
 
+/**
+ * Everything a write may have moved is read again. A first read still on
+ * its way was asked before the write, and the query library would hand
+ * its answer back as the new one (it joins a fetch in flight unless there
+ * is data to keep): a 2B kept while the match was still loading showed
+ * "Nothing matched yet." until the page was opened again. So such a read
+ * is cancelled first, and asked again with the rest.
+ */
+export async function readAgainAfter(queryClient: QueryClient, path: string) {
+  const moved = (query: Query_) => {
+    const [kind, endpoint] = query.queryKey;
+    // A short master (currencies, countries) is read once and kept for
+    // the session; a write to it is the one time it changes.
+    if (kind === "reference") return typeof endpoint === "string" && path.startsWith(endpoint);
+    return kind !== "me";
+  };
+  await queryClient.cancelQueries({
+    predicate: (query) => moved(query) && query.state.data === undefined && query.state.fetchStatus === "fetching",
+  });
+  await queryClient.invalidateQueries({ predicate: moved });
+}
+
 export interface ActOptions<R> {
   /** What to tell the person when it worked. */
   done?: string | ((result: R) => string);
@@ -74,13 +96,7 @@ export function useAct<R = unknown>() {
   const mutation = useMutation<R, ApiError, { method: "POST" | "PATCH" | "DELETE" | "PUT"; path: string; body?: unknown; options?: ActOptions<R> }>({
     mutationFn: ({ method, path, body }) => send<R>(method, path, body),
     onSuccess: async (result, { options, path }) => {
-      await queryClient.invalidateQueries({ predicate: (query) => {
-        const [kind, endpoint] = query.queryKey;
-        // A short master (currencies, countries) is read once and kept for
-        // the session; a write to it is the one time it changes.
-        if (kind === "reference") return typeof endpoint === "string" && path.startsWith(endpoint);
-        return kind !== "me";
-      } });
+      await readAgainAfter(queryClient, path);
       const done = options?.done;
       if (done) toast.ok(typeof done === "function" ? done(result) : done);
       options?.onDone?.(result);
