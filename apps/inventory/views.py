@@ -417,6 +417,9 @@ class StockCountViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
             lot=get_object_or_404(Lot, pk=lot_id) if lot_id else None,
             storage_bin=get_object_or_404(StorageBin, pk=bin_id) if bin_id else None,
         )
+        # As stored, as the scan endpoint answers (O437): the line in hand carries what was sent at every digit,
+        # and its variance went out so (-111172.257700000), not at the column's four.
+        line.refresh_from_db()
         return Response(StockCountLineSerializer(line).data)
 
     @action(detail=True, methods=["post"])
