@@ -1,10 +1,11 @@
 """
 What GST returns need that no other module holds.
 
-The returns themselves are not stored: they are compiled, on request,
-from what each document recorded when it posted (see returns.py). A
-stored return is a copy, and a copy drifts from the documents the moment
-a credit note lands in the period.
+A return is compiled, on request, from what each document recorded when
+it posted (see returns.py), until it is filed. A filed return is then a
+fact (O386): its figures are kept as they stood when the filing was
+recorded (FiledReturnFigures), and a later void or note moves the books,
+not what was filed.
 """
 
 from django.db import models
@@ -49,3 +50,32 @@ from .ewaybill import EwayBill  # noqa: E402,F401
 from .gstr2b import Gstr2bLine, Gstr2bStatement  # noqa: E402,F401
 from .reverse_charge import (  # noqa: E402,F401
     GstCashPayment, GstCashPaymentRow, PaymentVoucher, ReverseChargeCredit, SelfInvoice)
+
+
+class FiledReturnFigures(AuditModel):
+    """
+    What a filed GSTR-1 or GSTR-3B reported, kept when its filing is recorded (O386, mistake 4): the
+    return as compiled then, every Decimal and date kept exactly (returns.kept / revived). Read back
+    in place of compiling the month again. A filing recorded when the return could not be compiled
+    keeps nothing and says why; that month then reads as the books stand, said so.
+    """
+
+    filing = models.OneToOneField("accounting.GstReturnFiled", on_delete=models.PROTECT, related_name="figures",
+                                  editable=False)
+    figures = models.JSONField(null=True, editable=False)
+    not_kept = models.TextField(blank=True, editable=False)
+
+    def __str__(self):
+        return f"{self.filing} as filed"
+
+    def save(self, *args, **kwargs):
+        if not self._state.adding:
+            from django.core.exceptions import ValidationError
+
+            raise ValidationError("What a filed return reported is kept as it was; amend it in a later return.")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        from django.core.exceptions import ValidationError
+
+        raise ValidationError("What a filed return reported is kept as it was; amend it in a later return.")
