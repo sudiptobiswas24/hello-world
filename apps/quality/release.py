@@ -313,7 +313,9 @@ def _prefill_certificates(asked, lots, pks):
     where it has one), the plan of each item on each receipt's day, and the
     standing certificate of each.
     """
-    from .certificates import SupplierCertificate
+    from django.db.models import Prefetch
+
+    from .certificates import SupplierCertificate, SupplierCertificateLine
 
     supplied = {}
     for provider in LOT_SUPPLIERS:
@@ -325,8 +327,12 @@ def _prefill_certificates(asked, lots, pks):
     for pk in pks:
         asked.setdefault(("supplied", pk), supplied.get(pk))
     standing = {}
-    for certificate in SupplierCertificate.objects.filter(
-            lot__in=pks, posted=True, voided_at__isnull=True).select_related("vendor").order_by("pk"):
+    # Its words name its lines (verdict_words): read with the page, not a lot at a time (O434).
+    certificates = (SupplierCertificate.objects.filter(lot__in=pks, posted=True, voided_at__isnull=True)
+                    .select_related("vendor").order_by("pk")
+                    .prefetch_related(Prefetch("lines", queryset=SupplierCertificateLine.objects
+                                               .select_related("characteristic"))))
+    for certificate in certificates:
         standing.setdefault(certificate.lot_id, certificate)
     for pk in pks:
         asked.setdefault(("certificate", pk), standing.get(pk))

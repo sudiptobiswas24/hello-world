@@ -300,6 +300,45 @@ class CertificateOutsideTellsTheQualityManagerTests(CertificateTestCase):
         self.assertIn(f"taken by concession on {inspection.number}", to_do.outcome)
 
 
+class APageOfCertifiedBatchesTests(CertificateTestCase):
+    def test_a_page_of_outside_batches_reads_their_certificates_once(self):
+        """
+        O434: the batches page read each outside lot's certificate lines for its words (verdict_words), a
+        query per lot. Read with the page, 30 such lots cost what 10 do.
+        """
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        order = self.make_order("40", "5")
+        line = order.lines.first()
+
+        def outside(count, start):
+            receipt = GoodsReceipt.objects.create(purchase_order=order, receipt_date=RECEIVED)
+            lots = [Lot.objects.create(item=self.item, code=f"PP-{number:03d}") for number in range(start, start + count)]
+            for lot in lots:
+                GoodsReceiptLine.objects.create(receipt=receipt, order_line=line, lot=lot, warehouse=self.warehouse,
+                                                quantity_received=Decimal("1"))
+            receipt.post()
+            for lot in lots:
+                self.certificate({self.mfi: "4.1", self.ash: "0.020"}, lot=lot)
+
+        def page():
+            with CaptureQueriesContext(connection) as asked:
+                response = self.clients["sunil"].get("/api/inventory/lots/", {"item": self.item.pk, "page_size": 50})
+            self.assertEqual(response.status_code, 200, response.content)
+            return response.json(), len(asked)
+
+        outside(10, 100)
+        few_rows, few = page()
+        outside(20, 200)
+        rows, many = page()
+        print(f"\nO434 the batches page: {few} queries for {len(few_rows)} batches, {many} for {len(rows)}")
+        said = {row["code"]: row["held_because"] for row in rows}
+        self.assertIn("is outside specification (MFI 4.1 against 2.8 to 3.6)", said["PP-215"])
+        self.assertEqual(len(rows), 31)
+        self.assertLessEqual(many, few + 2, f"{few} queries for {len(few_rows)} batches, {many} for {len(rows)}")
+
+
 class PostedCertificateTests(CertificateTestCase):
     def test_a_posted_certificate_refuses_edits_and_delete(self):
         certificate = self.certificate({self.mfi: "4.1", self.ash: "0.020"})
