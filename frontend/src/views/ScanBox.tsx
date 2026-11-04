@@ -29,8 +29,9 @@ export function ScanBox({ label, hint, onScan, busy }: {
   useEffect(() => {
     if (!camera || !video.current || typeof BarcodeDetector === "undefined") return;
     // Our own labels are Code 128 and QR; a maker's GTIN (Item.gtin takes 8,
-    // 12, 13 or 14 digits) is printed as EAN-8, UPC-A or EAN-13.
-    const detector = new BarcodeDetector({ formats: ["code_128", "ean_13", "ean_8", "upc_a", "qr_code"] });
+    // 12, 13 or 14 digits) is printed as EAN-8, UPC-A or EAN-13, and a GTIN-14
+    // on a carton as ITF-14, which the detector calls "itf".
+    const detector = new BarcodeDetector({ formats: ["code_128", "ean_13", "ean_8", "upc_a", "itf", "qr_code"] });
     let stream: MediaStream | null = null;
     let stopped = false;
     const element = video.current;

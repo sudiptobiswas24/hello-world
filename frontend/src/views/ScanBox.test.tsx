@@ -22,8 +22,9 @@ describe("the camera in ScanBox (O438)", () => {
     const page = render(<ScanBox label="Item" onScan={() => undefined} />);
     await act(async () => { fireEvent.click(page.getByText("Camera")); });
     expect(asked).toHaveLength(1);
-    // Item.gtin takes 8, 12, 13 or 14 digits: GTIN-8 prints as EAN-8, GTIN-12 as UPC-A.
-    for (const format of ["code_128", "ean_13", "ean_8", "upc_a", "qr_code"]) {
+    // Item.gtin takes 8, 12, 13 or 14 digits: GTIN-8 prints as EAN-8, GTIN-12 as UPC-A, and a
+    // carton's GTIN-14 as ITF-14 ("itf"), which O441 found the camera did not ask for.
+    for (const format of ["code_128", "ean_13", "ean_8", "upc_a", "itf", "qr_code"]) {
       expect(asked[0], format).toContain(format);
     }
   });
