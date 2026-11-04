@@ -156,7 +156,7 @@ class MatchingTests(Gstr2bTestCase):
         self.assertEqual([(row["line"]["number"], row["line"]["kind"]) for row in report["not_booked"]],
                          [("CN-9", "credit_note"), ("INV-27-13", "invoice")])
         self.assertEqual(report["totals"], {"filed": D("4410.00"), "booked": D("4860.00"), "matched": D("3960.00"),
-                                            "waiting": D("900.00"), "not_booked": D("360.00")})
+                                            "blocked": D("0"), "waiting": D("900.00"), "not_booked": D("360.00")})
 
     def test_the_same_document_of_that_day_for_that_value_when_the_number_was_mistyped(self):
         keep("", portal_json(b2b=[{"ctin": W, "trdnm": "W", "inv": [inv("WX-99", "10-09-2026", "5000", igst="900")]}]))
@@ -441,3 +441,28 @@ class CreditNotAvailableIsNotMatchedTests(GstReturnTestCase):
 
     def test_credit_available_is_matched(self):
         self.assertEqual(self.reconciled("Y")["totals"]["matched"], D("1800.00"))
+
+    def test_blocked_credit_has_its_own_total_so_booked_foots(self):
+        """
+        O356. September: KA's INV/27/0012 (10,000 + IGST 1,800) the portal
+        blocks, INV/27/0013 (5,000 + 900) available, INV/27/0014 (2,000 + 360)
+        in no 2B. Booked 3,060 = matched 900 + blocked 1,800 + waiting 360.
+        """
+        ka = self.party("KA", role=PartyRole.VENDOR, gstin=KA, gst_state="29")
+        self.buy(ka, "10000", taxes=[self.igst], reference="INV/27/0012")
+        self.buy(ka, "5000", taxes=[self.igst], reference="INV/27/0013")
+        self.buy(ka, "2000", taxes=[self.igst], reference="INV/27/0014")
+        keep("2026-09", portal_json(b2b=[{"ctin": KA, "trdnm": "KA Mills", "inv": [
+            inv("INV-27-12", "10-09-2026", "10000", igst="1800", itcavl="N", rsn="Supplier has not filed GSTR-3B"),
+            inv("INV-27-13", "10-09-2026", "5000", igst="900")]}]))
+        call_command("setup_roles", verbosity=0)
+        user = User.objects.create_user("gst_officer")
+        user.groups.add(Group.objects.get(name="GST Officer"))
+        officer = APIClient()
+        officer.force_authenticate(user)
+        response = officer.get("/api/gst/gstr2b/match/", {"period": "2026-09"})
+        self.assertEqual(response.status_code, 200, response.content)
+        totals = response.json()["totals"]
+        self.assertEqual(totals, {"filed": "900.00", "booked": "3060.00", "matched": "900.00", "blocked": "1800.00",
+                                  "waiting": "360.00", "not_booked": "0"})
+        self.assertEqual(D(totals["booked"]), D(totals["matched"]) + D(totals["blocked"]) + D(totals["waiting"]))
