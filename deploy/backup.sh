@@ -29,6 +29,12 @@ BACKUP_AT="${BACKUP_AT:-02:00}"
 BACKUP_KEEP_DAYS="${BACKUP_KEEP_DAYS:-30}"
 BACKUP_DIR="${BACKUP_DIR:-/backups}"
 MEDIA_DIR="${MEDIA_DIR:-/media}"
+# Where the backups go is a whole path (O343): relative, it means whatever directory the service was
+# started from, and retention and the restore then look in another place than the night wrote to.
+case "$BACKUP_DIR" in
+    /*) ;;
+    *) echo "BACKUP_DIR must be an absolute path, not '$BACKUP_DIR'; nothing backed up" >&2; exit 2 ;;
+esac
 
 # Says why tonight's backup stopped, and stops it. Every step of dump() asks this by hand rather
 # than leaning on `set -e`: the loop calls dump as `dump || ...`, and a shell ignores `set -e` in a
@@ -51,7 +57,7 @@ dump() {
     target="${BACKUP_DIR}/erp_${stamp}.dump"
     media="${BACKUP_DIR}/erp_${stamp}.media.tar.gz"
     manifest="${BACKUP_DIR}/erp_${stamp}.media.sha256"
-    check="${BACKUP_DIR}/erp_${stamp}.check.partial"
+    check="${BACKUP_DIR}/erp_${stamp}.checked.partial"
     [ -d "$MEDIA_DIR" ] || { failed "no attachments directory at $MEDIA_DIR: mount the media volume"; return 1; }
     # The database first, then the files (O244): an attachment's file is written before its record is
     # committed, so every record the dump holds has its file by then, and the archive taken after it holds
@@ -72,19 +78,19 @@ dump() {
         > "${manifest}.unsorted.partial" || { failed "hashing the archived attachments exited $?"; return 1; }
     sort -k2 -o "${manifest}.partial" "${manifest}.unsorted.partial" || { failed "sorting the manifest exited $?"; return 1; }
     rm -f -- "${manifest}.unsorted.partial"
-    # The night's set counts only once it verifies as the restore will check it: every archived file
-    # put back and matched against the manifest, strictly.
-    mkdir -p "$check" && tar -C "$check" -xzf "${media}.partial" \
-        || { failed "the attachments archive does not unpack for checking"; return 1; }
-    # A plant with nothing attached yet has an empty manifest, which sha256sum --check refuses ("no properly
-    # formatted checksum lines"): there, the archive must hold no file either, and that is what is asked.
-    if [ -s "${manifest}.partial" ]; then
-        (cd "$check" && sha256sum --check --quiet --strict "${manifest}.partial") > /dev/null \
-            || { failed "the manifest does not verify against the archive"; return 1; }
-    elif [ -n "$(find "$check" -type f -print -quit)" ]; then
-        failed "the manifest lists no file but the archive holds some"; return 1
-    fi
-    rm -rf -- "$check"
+    # The night's set counts only once it verifies as the restore will check it: every archived file,
+    # read from the archive once more, matched against the manifest, strictly. Read as a stream (O344):
+    # unpacked beside the backups, the check needed room on the backup disk for a second copy of every
+    # attachment while it ran. The hash here is asked as `sha256sum -`, a call
+    # of its own, and each file must appear in the manifest at that hash, and the manifest list no
+    # file the archive does not hold: a plant with nothing attached has an empty manifest and an
+    # archive with no file, and a file in an archive whose manifest is empty fails here.
+    MANIFEST="${manifest}.partial" tar -xzf "${media}.partial" \
+        --to-command='h=$(sha256sum -) || exit 1; grep -Fxq -- "${h%% *}  $TAR_FILENAME" "$MANIFEST" || exit 1; echo "$TAR_FILENAME"' \
+        > "$check" || { failed "the manifest does not verify against the archive"; return 1; }
+    [ "$(wc -l < "$check")" -eq "$(wc -l < "${manifest}.partial")" ] \
+        || { failed "the manifest lists a file the archive does not hold"; return 1; }
+    rm -f -- "$check"
     # Renamed only once complete, so a half-written file is never taken
     # for a backup.
     mv "${manifest}.partial" "$manifest" && mv "${media}.partial" "$media" && mv "${target}.partial" "$target" \
