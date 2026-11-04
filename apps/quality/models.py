@@ -278,8 +278,28 @@ class InspectionPlan(AuditModel):
                     "starts."
                 )
 
+    # What a person sets on a computed plan: the specification never sets it, so a rebuild keeps it
+    # (O433). A bought-in item's computed plan could otherwise never ask for a supplier's certificate.
+    SET_BY_HAND_WHEN_COMPUTED = ("certificate_required",)
+
+    def _only_set_by_hand_changed(self):
+        """Whether this save of a computed plan changes nothing the specification works out."""
+        stored = InspectionPlan.objects.filter(pk=self.pk).values().first() if self.pk else None
+        if stored is None:
+            return False
+        kept = set(self.SET_BY_HAND_WHEN_COMPUTED) | {"updated_at", "updated_by_id"}
+        return all(getattr(self, field.attname) == stored[field.attname]
+                   for field in self._meta.concrete_fields if field.attname not in kept)
+
     def save(self, *args, **kwargs):
-        if self.is_computed and not getattr(self, "_rebuilding", False):
+        if getattr(self, "_rebuilding", False) and self.pk:
+            # A rebuild works out everything but these, and its plan may be one the specification
+            # cached before a person set them: what is stored stands.
+            stored = InspectionPlan.objects.filter(pk=self.pk).values(*self.SET_BY_HAND_WHEN_COMPUTED).first()
+            for name, value in (stored or {}).items():
+                setattr(self, name, value)
+        if (self.is_computed and not getattr(self, "_rebuilding", False)
+                and not self._only_set_by_hand_changed()):
             raise ValidationError(
                 f"{self} is computed from "
                 f"{self.computed_by() or 'a specification'}. Change that; this "
