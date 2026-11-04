@@ -42,6 +42,8 @@ export interface FieldDef {
   readOnly?: boolean;
   /** Set when the record is made and fixed after. */
   createOnly?: boolean;
+  /** Changed even where the screen's `editable` says the record is not: a computed plan's certificate (O433). */
+  evenWhenFixed?: boolean;
   /** Left out of the new form. */
   existingOnly?: boolean;
   /** Asked only when the record is made, and not shown after (it was turned into something else). */
@@ -418,9 +420,11 @@ export function RecordScreen(props: RecordScreenProps) {
   }
   const value = draft.value;
   // A picker reads its list; whoever may not read it sees the value, not a box.
+  const mayChange = Boolean(permissions.change && can(permissions.change));
   const open = (field: FieldDef) =>
-    mayEdit && !field.readOnly && !(field.createOnly && !isNew)
+    (mayEdit || (!isNew && mayChange && Boolean(field.evenWhenFixed))) && !field.readOnly && !(field.createOnly && !isNew)
     && !(field.pick?.permission && !can(field.pick.permission));
+  const anyOpen = mayEdit || fields.some(open);
 
   const save = async () => {
     const body: Record<string, unknown> = {};
@@ -450,7 +454,7 @@ export function RecordScreen(props: RecordScreenProps) {
     <article className="doc">
       <DocHeader back={back} backLabel={backLabel} title={newTitle}
         number={saved ? heading(saved) : undefined} state={status?.label} tone={status?.tone}>
-        {mayEdit && (isNew || draft.dirty) && (
+        {anyOpen && (isNew || draft.dirty) && (
           <ActionButton primary pending={act.pending} onClick={() => void save()}>{isNew ? "Create" : "Save"}</ActionButton>
         )}
         {offered.map((action) => (

@@ -204,3 +204,24 @@ class TheDecisionOfferedIsTheServersTests(BrowserMixin, QualityTestCase, StaticL
         self.assertEqual(self.decisions(manager, again),
                          ["Not decided", "Accepted", "Accepted by concession", "Held for rework", "Rejected"])
         self.assertEqual(self.problems, [])
+
+
+class AComputedPlanAsksForACertificateInTheBrowserTests(BrowserMixin, QualityTestCase, StaticLiveServerTestCase):
+    """O433: a plan a specification computes offered no box at all; whether it asks for a certificate is set here."""
+
+    def test_the_quality_manager_ticks_the_one_box_a_computed_plan_offers(self):
+        from apps.quality.models import InspectionPlan
+
+        plan = self.plan()
+        InspectionPlan.objects.filter(pk=plan.pk).update(is_computed=True, name="F87 as specified")
+        page = self.sign_in(self.person("Quality Manager"), f"/app/quality/plans/{plan.pk}")
+        expect(page.get_by_text("From the specification")).to_be_visible()
+        box = page.get_by_label("Needs the supplier's certificate")
+        expect(box).to_be_enabled()
+        # Everything the specification works out is shown, not offered.
+        expect(page.get_by_role("textbox", name="Plan")).to_have_count(0)
+        box.check()
+        page.get_by_role("button", name="Save").click()
+        expect(page.get_by_text("Saved")).to_be_visible()
+        plan.refresh_from_db()
+        self.assertEqual((plan.certificate_required, plan.name), (True, "F87 as specified"))
