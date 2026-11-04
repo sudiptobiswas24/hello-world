@@ -216,12 +216,23 @@ class BudgetApprovalTests(BudgetTestCase):
         order = self.order_of("100", "20")
         line = order.lines.get()
         line.quantity = Decimal("1000")
-        with self.assertRaisesMessage(ValidationError, "Budget OPS-26 would be 10000.00 over"):
+        with self.assertRaisesMessage(ValidationError, "Budget OPS-26 would be USD 10,000.00 over"):
             line.save()
         self.assertEqual(self.budget.available(), Decimal("8000.00"))
         line.quantity = Decimal("500")
         line.save()
         self.assertEqual(self.budget.available(), Decimal("0.00"))
+
+    def test_the_budget_refusal_shows_its_money_as_money(self):
+        """It printed 1000000.00 (O440, the shape O426 fixed for credit holds): the plant reads lakhs."""
+        from apps.core.models import Currency
+
+        Currency.objects.filter(is_base=True).update(code="INR", name="Indian Rupee")
+        Budget.objects.filter(pk=self.budget.pk).update(amount=Decimal("12000000"))
+        line = self.order_of("100", "20").lines.get()
+        line.quantity = Decimal("650000")  # 1,30,00,000.00 against 1,20,00,000.00
+        with self.assertRaisesMessage(ValidationError, "Budget OPS-26 would be 10,00,000.00 over."):
+            line.save()
 
     def test_no_budget_on_the_account_means_no_constraint(self):
         self.budget.delete()
