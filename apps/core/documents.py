@@ -102,6 +102,20 @@ def money(amount, currency):
     return f"{symbol or currency.code + ' '}{grouped(amount, indian=False)}"
 
 
+def in_words_of_money(*amounts):
+    """
+    Base-currency figures as a person reads money, through the one money
+    formatter: 1,28,82,100.00 against 1,20,00,000.00, not 12882100.00
+    against 12000000.00 (O426). The credit limit and the exposure it is
+    weighed against are both in the base currency, as a purchase budget and
+    what it would be over are (O440).
+    """
+    from apps.core.models import Currency
+
+    base = Currency.objects.filter(is_base=True).first()
+    return tuple(money(amount, base) for amount in amounts)
+
+
 def render_document(*, heading, document, party, address, meta, totals,
                      party_label="BILL TO", note=None, table=None, currency=None,
                      number="", qr=None, letterhead_text=None, party_text=None,
