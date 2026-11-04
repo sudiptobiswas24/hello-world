@@ -471,15 +471,27 @@ class TaxedLineMixin(models.Model):
     def default_taxes(self):
         """
         The taxes this line takes when it names none: its item's for its
-        side, active ones only. The party's fiscal position then maps them
-        as it maps any line's (effective_taxes). Nothing for a line with no
-        item, or a kind of line that has not said its side.
+        side, active ones only, through the party's fiscal position, so the
+        line stores what it posts (O427): an export under LUT is entered as
+        IGST 0%, not as the item's CGST and SGST that posting would turn
+        into it. Posting maps the stored taxes again (effective_taxes); a
+        position maps a tax it has produced to itself (FiscalPositionTaxMapping
+        refuses a chain), so nothing is mapped twice. Where the position drops
+        every tax the item's stand, as before: a line naming none of an item
+        that declares some is refused (refuse_untaxed_lines). Nothing for a
+        line with no item, or a kind of line that has not said its side.
         """
         item = getattr(self, "item", None)
         if item is None or self.TAX_SIDE not in ("sales", "purchase"):
             return []
         taxes = item.sales_taxes if self.TAX_SIDE == "sales" else item.purchase_taxes
-        return list(taxes.filter(is_active=True))
+        taxes = list(taxes.filter(is_active=True))
+        party = self.party_for_tax()
+        profile = getattr(party, "tax_profile", None) if party is not None else None
+        position = getattr(profile, "fiscal_position", None) if profile is not None else None
+        if position is None or profile.tax_exempt:
+            return taxes
+        return position.map_taxes(taxes) or taxes
 
     def fixed_tax_amounts(self):
         """
