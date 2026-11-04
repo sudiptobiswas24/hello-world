@@ -9,11 +9,12 @@ document's own currency, an unpaid USD 50,000 bill counted 50,000 beside rupees 
 conversion and the summing live here once, and each side registers what it has (`register_balance_side`):
 accounting imports neither.
 
-The rule. Every figure returned is in the base currency, and each document's due is taken at the rate it
-posted at (its kept exchange_rate, through settlement.in_base), never today's: that is what the control
-account holds for it, since each settlement realised its own difference on its own day. Money on account the
-same, at the rate its payment posted at. A down payment or a prepayment the same: an advance stays at the
-rate it came in at (restatement.py says why).
+The rule. Every figure returned is in the base currency, and each document's due is taken at the base its
+control account still holds for it (settlement.held_base: what it booked, line by line, less what its
+settlements cleared; O423), never at today's rate: that is what the control account holds for it, since
+each settlement realised its own difference on its own day. Money on account the same, at the rate its
+payment posted at. A down payment or a prepayment the same: an advance stays at the rate it came in at
+(restatement.py says why).
 
 Each aging row keeps the document's own currency and its due in it beside the base figure, so a USD bill
 reads "USD 25,000.00" and "20,81,250.00"; the bucket totals are base.
@@ -57,6 +58,7 @@ class BalanceSide:
     control_accounts: Callable  # () -> the accounts its documents and money on account sit on
     settles: str  # the PaymentDirection that is the party settling it (a receipt, our disbursement)
     sign: int  # +1 where the control account's balance is a debit (receivable), -1 a credit (payable)
+    control_field: str = ""  # "receivable_account", "payable_account": the document's own control account
 
 
 SIDES = {}
@@ -78,6 +80,23 @@ def in_base_as_booked(holder, amount):
     on_date = getattr(holder, "payment_date", None) or getattr(holder, "invoice_date", None) \
         or getattr(holder, "bill_date", None)
     return in_base(amount, holder.currency, on_date, rate=holder.exchange_rate)
+
+
+def held_for(side, document, due):
+    """
+    `document`'s `due` in the base currency as its control account holds it (O423): a foreign document's base
+    still held, what it booked line by line less what its settlements cleared (settlement.held_base), as the
+    restatement carries it; never its due at its rate rounded once, which read a paisa off a multi-line
+    invoice. A base-currency document, or one with nothing booked to read, its due as booked.
+    """
+    from .restatement import is_foreign
+    from .settlement import held_base
+
+    if side.control_field and is_foreign(document.currency):
+        held = held_base(document, getattr(document, side.control_field))
+        if held is not None:
+            return held
+    return in_base_as_booked(document, due)
 
 
 def spread(base_total, parts):
@@ -140,7 +159,7 @@ def party_balance(side, party):
     for document in _open_documents(side, documents):
         due = document.amount_due()
         if due > 0:
-            owed += in_base_as_booked(document, due)
+            owed += held_for(side, document, due)
     for note in _open_notes(side, documents):
         refund = note.refund_due()
         if refund:
@@ -172,7 +191,7 @@ def aging(side, as_of=None, documents=None):
         # overdue while the balance is not due for another month. The base is the document's, shared over
         # its installments, so the rows add to what the control account holds for it.
         schedule = [row for row in document.installments() if row["outstanding"] > 0]
-        shares = spread(in_base_as_booked(document, due), [row["outstanding"] for row in schedule])
+        shares = spread(held_for(side, document, due), [row["outstanding"] for row in schedule])
         for row, base in zip(schedule, shares):
             key, days = _bucket(as_of, row["due_date"])
             buckets[key].append(_row(side, document, side.row_key, row["due_date"], days, row["outstanding"], base))

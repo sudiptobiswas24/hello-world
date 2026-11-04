@@ -100,6 +100,27 @@ class TheAgingReadsWhatTheReceivableHoldsTests(BalancesInBaseCase):
         self.assertEqual((self.total(aging), outstanding_balance(self.customer), self.held()),
                          (D("499500.00"), D("499500.00"), D("499500.00")))
 
+    def test_a_multi_line_invoice_reads_the_base_its_receivable_holds(self):
+        """
+        O423 (calc_fix_logic/o423.py): three lines of USD 10.01 at 83.25 book 833.33 each, 2,499.99, where
+        USD 30.03 x 83.25 rounded once is 2,500.00. Paid 10.00 at 84.00, the receipt clears its slice, 832.50,
+        and 1,667.49 stays held where 20.03 x 83.25 reads 1,667.50. The aging and the balance read what is held.
+        """
+        order = SalesOrder.objects.create(customer=self.customer, order_date=MAR(1), currency=self.dollar)
+        for _ in range(3):
+            SalesOrderLine.objects.create(order=order, item=self.item, uom=self.uom, quantity=D("1"),
+                                          unit_price=D("10.01"), revenue_account=self.revenue)
+        order.confirm()
+        invoice = self.bill(order, on=MAR(1))
+        on = datetime.date(2026, 4, 1)
+        self.assertEqual((invoice.total(), self.held()), (D("30.03"), D("2499.99")))
+        self.assertEqual((self.total(ar_aging(as_of=on)), outstanding_balance(self.customer)),
+                         (D("2499.99"), D("2499.99")))
+        self.receive("10.00", invoice)
+        [row] = ar_aging(as_of=on)["1-30"]["invoices"]
+        self.assertEqual((row["due_in_currency"], row["amount_due"], outstanding_balance(self.customer), self.held()),
+                         (D("20.03"), D("1667.49"), D("1667.49"), D("1667.49")))
+
     def test_the_statement_stays_in_the_customer_s_currency(self):
         invoice = self.dollar_invoice("120")
         self.receive("6000", invoice)

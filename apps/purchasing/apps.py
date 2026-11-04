@@ -55,7 +55,7 @@ class PurchasingConfig(AppConfig):
             name="payable", model=Bill, row_key="bill", rows_key="bills", party_field="vendor",
             date_field="bill_date", notes_field="debits", figures=BILL_FIGURES,
             not_paid_in_full=not_paid_in_full, control_accounts=payable_accounts,
-            settles=PaymentDirection.DISBURSEMENT, sign=-1))
+            settles=PaymentDirection.DISBURSEMENT, sign=-1, control_field="payable_account"))
         register_allocation_model(BillPayment)
         register_payment_check(refuse_held_payment)
         register_void_follow_up(undo_what_it_settled)
