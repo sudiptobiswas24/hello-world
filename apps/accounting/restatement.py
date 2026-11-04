@@ -119,6 +119,22 @@ def _allocations_then(document, day):
     return rows
 
 
+def absorbed_on_the_note(note, day):
+    """
+    [(day, amount, entries, words)] for a note partly or wholly absorbed into its document: the part absorbed
+    settled the note as it settled the document, on the note's own day (O424). Left out, a restatement
+    carried the note at all it booked while the invoice's carried base had that part off already: USD 1,000
+    at 83.25, 600 received and a note of 700 absorbing the 400 left read 58,275.00 carried for the 300 owed
+    back, and the restatement moved the receivable 33,039.00 where 300 at 84.12 moves it -261.00. Priced at the
+    note's rate, as the document's side prices a part absorbed that is not the whole note.
+    """
+    taken = note.absorbed_into()
+    if not taken or not taken[1]:
+        return []
+    document, amount = taken
+    return [(day, amount, None, f"absorbed into {document.number}")]
+
+
 def document_open_on(document, day, later):
     """
     What of `document` was open at the close of `day`, in its own currency: what is due now, with what has

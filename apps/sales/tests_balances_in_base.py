@@ -141,6 +141,37 @@ class TheAgingReadsWhatTheReceivableHoldsTests(BalancesInBaseCase):
         self.assertEqual((self.total(after), self.held(by=datetime.date(2026, 4, 1))),
                          (D("832500.00"), D("832500.00")))
 
+    def test_a_note_partly_absorbed_is_restated_once(self):
+        """
+        O424 (calc_fix_logic/o424.py): USD 1,000 at 83.25 (83,250.00), 600 received (clearing 49,950.00), then a
+        note of 700 (58,275.00) absorbs the 400 left and owes 300 back: the receivable holds -24,975.00. Restated
+        at 84.12 the 300 is -25,236.00, a move of -261.00. The note was carried at all 58,275.00 it booked while
+        the invoice had the absorbed 33,300.00 off already: the restatement moved the receivable 33,039.00.
+        """
+        from apps.accounting.restatement import Restatement
+
+        invoice = self.dollar_invoice("10")
+        self.receive("600", invoice)
+        note = invoice.create_credit_note(quantities={invoice.lines.get(): D("7")}, on_date=MAR(25))
+        self.assertEqual((invoice.amount_due(), note.amount_absorbed(), note.refund_due(), self.held()),
+                         (D("0"), D("400.00"), D("300.00"), D("-24975.00")))
+        Restatement.make(MAR(31), rates={"USD": "84.12"})
+        aging = ar_aging(as_of=MAR(31))
+        self.assertEqual((self.held(by=MAR(31)), self.total(aging), aging["restated"]["total"]),
+                         (D("-25236.00"), D("-25236.00"), D("-261.00")))
+
+    def test_a_note_wholly_absorbed_into_an_unpaid_invoice_is_restated_once(self):
+        """O424, the other reading: unpaid, the note of 700 leaves 300 owing, 24,975.00; at 84.12, 25,236.00."""
+        from apps.accounting.restatement import Restatement
+
+        invoice = self.dollar_invoice("10")
+        invoice.create_credit_note(quantities={invoice.lines.get(): D("7")}, on_date=MAR(25))
+        self.assertEqual((invoice.amount_due(), self.held()), (D("300.00"), D("24975.00")))
+        Restatement.make(MAR(31), rates={"USD": "84.12"})
+        aging = ar_aging(as_of=MAR(31))
+        self.assertEqual((self.held(by=MAR(31)), self.total(aging), aging["restated"]["total"]),
+                         (D("25236.00"), D("25236.00"), D("261.00")))
+
     def test_the_ar_manager_reads_both_figures_and_the_restatement(self):
         from apps.accounting.restatement import Restatement
 
