@@ -14,6 +14,17 @@
 # and pg-a about 65. Run ui first: it builds the office app the browser
 # tests need. Then sqlite with pg-a, ist with pg-b, then pg-c, then mig
 # alone and detached: it runs longer than a job may (see mig below).
+# mig counts as a lane. g26 ran sqlite beside ist and mig: sqlite passed
+# its own 9000-second limit twice with no verdict, and each rerun cost two
+# hours. So mig runs beside at most one other lane.
+# A lane run detached (setsid nohup) is not a job the session tracks, and a
+# session with no tracked job running is reclaimed with its container: g26
+# lost three detached lanes that way. Keep a tracked watcher job running for
+# as long as any lane runs:
+#   timeout 7000 bash -c 'while pgrep -f "lane.sh <prefix>" >/dev/null; do sleep 60; done'
+# and start another when it ends.
+# A lane run again keeps the last run's log as <log>.prev: read it first. g26
+# reran sqlite before reading a line its timed-out log had, and lost it.
 # Never edit this file while a lane is running from it: bash reads a
 # script as it runs, and the lane then executes shifted lines.
 set -u
@@ -25,6 +36,7 @@ cd "$TREE" || exit 2
 P=$1
 PW="PLAYWRIGHT_CHROMIUM_EXECUTABLE=/opt/pw-browsers/chromium"
 echo "HEAD $(git rev-parse HEAD) dirty=$(git status --short | wc -l) lane=$2"
+keep() { [ -f "$1" ] && mv -f "$1" "$1.prev"; true; }  # keep <log>: the last run's log, read before it is lost
 
 pg_half() {  # pg_half <A|B> <database name> <labels...>
     local half=$1 db=$2; shift 2
@@ -33,7 +45,7 @@ pg_half() {  # pg_half <A|B> <database name> <labels...>
     for n in "" _1 _2 _3 _4; do
         su postgres -c "psql -q -c 'DROP DATABASE IF EXISTS test_$db$n WITH (FORCE)'" 2>&1 | grep -v NOTICE
     done
-    rm -f "$LOGS/${P}_pg_$half.log"
+    keep "$LOGS/${P}_pg_$half.log"
     timeout 12000 env $PW DATABASE_URL="postgres://erp:erp@localhost:5432/$db" .venv/bin/python manage.py test "$@" \
         --parallel 2 --keepdb --noinput --exclude-tag migration > "$LOGS/${P}_pg_$half.log" 2>&1
     echo "pg $half exit=$?"; grep -E "^Found|^Ran|^OK|^FAILED" "$LOGS/${P}_pg_$half.log"
@@ -52,13 +64,15 @@ ui)
     cat "$LOGS/gate_${P}.out"
     ;;
 sqlite)
+    keep "$LOGS/${P}_suite.log"
     timeout 9000 env $PW .venv/bin/python manage.py test apps --exclude-tag migration --parallel 2 > "$LOGS/${P}_suite.log" 2>&1
-    echo "sqlite exit=$?"; grep -E "^Found|^Ran|^OK|^FAILED" "$LOGS/${P}_suite.log"
+    rc=$?; echo "sqlite exit=$rc"; [ $rc = 124 ] && echo "sqlite: TIMED OUT, no verdict"; grep -E "^Found|^Ran|^OK|^FAILED" "$LOGS/${P}_suite.log"
     ;;
 ist)
+    keep "$LOGS/${P}_ist.log"
     timeout 9000 env $PW DJANGO_TIME_ZONE=Asia/Kolkata PYTHONPATH="$HERE" DJANGO_SETTINGS_MODULE=fastsettings \
         .venv/bin/python manage.py test apps --parallel 2 --exclude-tag migration --settings=fastsettings > "$LOGS/${P}_ist.log" 2>&1
-    echo "ist exit=$?"; grep -E "^Found|^Ran|^OK|^FAILED" "$LOGS/${P}_ist.log"
+    rc=$?; echo "ist exit=$rc"; [ $rc = 124 ] && echo "ist: TIMED OUT, no verdict"; grep -E "^Found|^Ran|^OK|^FAILED" "$LOGS/${P}_ist.log"
     ;;
 pg-a)
     pg_half A erp apps.sales apps.purchasing apps.accounting apps.gst apps.core
