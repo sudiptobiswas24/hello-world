@@ -251,6 +251,55 @@ class CertificateDecidesReleaseTests(CertificateTestCase):
         self.assertEqual(supplied_by(self.lot).reference, self.receipt.number)
 
 
+class CertificateOutsideTellsTheQualityManagerTests(CertificateTestCase):
+    """O432: an outside certificate was posted without a word to the Quality Manager."""
+
+    def to_dos(self, certificate, **kwargs):
+        from django.contrib.contenttypes.models import ContentType
+
+        from apps.core.chatter import FollowUp
+
+        return FollowUp.objects.filter(content_type=ContentType.objects.get_for_model(SupplierCertificate),
+                                       object_id=certificate.pk, **kwargs)
+
+    def test_a_certificate_outside_gives_the_quality_manager_a_to_do(self):
+        certificate = self.certificate({self.mfi: "4.1", self.ash: "0.020"})
+        to_do = self.to_dos(certificate).get()
+        self.assertEqual((to_do.assigned_to, to_do.done_on, to_do.link),
+                         (self.users["asha"], None, f"/quality/supplier-certificates/{certificate.pk}"))
+        self.assertIn(f"Decide {certificate.number}: WDG-1 / PP-1 is outside specification (MFI 4.1 against 2.8 to 3.6)",
+                      to_do.summary)
+        self.assertIn("held until the Quality Manager takes it by concession", to_do.note)
+        # The Quality Manager reads it on their own list.
+        mine = self.clients["asha"].get("/api/core/follow-ups/", {"mine": "true"})
+        self.assertEqual(mine.status_code, 200, mine.content)
+        self.assertIn(to_do.pk, [row["id"] for row in mine.json()])
+
+    def test_a_certificate_within_gives_nobody_a_to_do(self):
+        certificate = self.certificate({self.mfi: "3.2", self.ash: "0.020"})
+        self.assertFalse(self.to_dos(certificate).exists())
+
+    def test_voiding_it_closes_the_to_do(self):
+        certificate = self.certificate({self.mfi: "4.1", self.ash: "0.020"})
+        response = self.clients["meera"].post(f"/api/quality/supplier-certificates/{certificate.pk}/void/",
+                                              {"reason": "Supplier withdrew it."}, format="json")
+        self.assertEqual(response.status_code, 200, response.content)
+        to_do = self.to_dos(certificate).get()
+        self.assertEqual(to_do.done_on, timezone.localdate())
+        self.assertIn("voided, so there is nothing to decide: Supplier withdrew it.", to_do.outcome)
+
+    def test_the_concession_answers_the_to_do(self):
+        certificate = self.certificate({self.mfi: "4.1", self.ash: "0.020"})
+        inspection = self.passed_inspection()
+        inspection.post(by=self.users["meera"])
+        response = self.clients["asha"].post(f"/api/quality/inspections/{inspection.pk}/decide/", {
+            "disposition": "concession", "note": "MFI 4.1 runs on line 2 at a lower draw."}, format="json")
+        self.assertEqual(response.status_code, 200, response.content)
+        to_do = self.to_dos(certificate).get()
+        self.assertEqual((to_do.done_on, to_do.done_by), (timezone.localdate(), self.users["asha"]))
+        self.assertIn(f"taken by concession on {inspection.number}", to_do.outcome)
+
+
 class PostedCertificateTests(CertificateTestCase):
     def test_a_posted_certificate_refuses_edits_and_delete(self):
         certificate = self.certificate({self.mfi: "4.1", self.ash: "0.020"})
