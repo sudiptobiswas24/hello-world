@@ -83,6 +83,46 @@ class IssueTests(FloorScreensTestCase):
         self.assertEqual(self.virgin.on_hand_at(bay), Decimal("100"))
 
 
+class StoresIssuesMaterialTests(FloorScreensTestCase):
+    """
+    O431, decided: the store issues material to a run, and takes back what comes back from it. 600 kg of
+    virgin out at ₹100 (₹60,000), 100 kg back at what it went out at (₹10,000, shown as -10,000). The supervisor keeps both; a role without it is refused.
+    """
+
+    def issue(self, client, direction, quantity, **line):
+        made = client.post("/api/manufacturing/material-issues/", {
+            "work_order": self.run_.pk, "issue_date": str(TODAY), "warehouse": self.plant.pk,
+            "direction": direction}, format="json")
+        self.assertEqual(made.status_code, 201, made.content)
+        line = client.post("/api/manufacturing/material-issue-lines/", {
+            "issue": made.json()["id"], "item": self.virgin.pk, "quantity": quantity, "uom": self.kg.pk, **line},
+            format="json")
+        self.assertEqual(line.status_code, 201, line.content)
+        posted = client.post(f"/api/manufacturing/material-issues/{made.json()['id']}/post/", {}, format="json")
+        self.assertEqual(posted.status_code, 200, posted.content)
+        return posted.json()
+
+    def test_the_store_issues_and_takes_back(self):
+        for role in ("Warehouse Staff", "Stores Manager", "Production Supervisor"):
+            with self.subTest(role=role):
+                store = self.as_(role)
+                runs = store.get("/api/manufacturing/work-orders/", {"status": "released"})
+                self.assertEqual((runs.status_code, [row["id"] for row in runs.json()]), (200, [self.run_.pk]))
+                out = self.issue(store, "issue", "600")
+                self.assertEqual(Decimal(out["posted_value"]), Decimal("60000"))
+                back = self.issue(store, "return", "100", returns_line=out["lines"][0]["id"])
+                self.assertEqual(Decimal(back["posted_value"]), Decimal("-10000"))  # back on the shelf
+
+    def test_a_role_without_it_is_refused(self):
+        for role in ("Production Planner", "Quality Inspector", "Purchasing Clerk"):
+            with self.subTest(role=role):
+                response = self.as_(role).post("/api/manufacturing/material-issues/", {
+                    "work_order": self.run_.pk, "issue_date": str(TODAY), "warehouse": self.plant.pk},
+                    format="json")
+                self.assertEqual(response.status_code, 403)
+        self.assertFalse(MaterialIssue.objects.exists())
+
+
 class BookingTests(FloorScreensTestCase):
     def test_a_booking_names_its_step_and_the_run_comes_with_it(self):
         supervisor = self.as_("Production Supervisor")

@@ -68,10 +68,15 @@ class IssueByScanTests(RunTestCase):
         self.assertEqual(response.status_code, 400, response.content)
         self.assertIn("was posted meanwhile", response.content.decode())
 
-    def test_the_store_may_not_scan_into_a_run(self):
-        response = self.as_("Warehouse Staff").post(self.url, {"code": "V1"}, format="json")
-        self.assertIn(response.status_code, (403, 404))
+    def test_the_store_scans_into_a_run_as_it_issues_and_the_planner_does_not(self):
+        # O431, decided: Stores issues material, so the store is offered the issue and scans into it.
         found = self.as_("Warehouse Staff").get("/api/inventory/scan/open/").json()
+        self.assertIn("material_issue", [row["kind"] for row in found])
+        response = self.as_("Warehouse Staff").post(self.url, {"code": "V1"}, format="json")
+        self.assertEqual(response.status_code, 200, response.content)
+        refused = self.as_("Production Planner").post(self.url, {"code": "V1"}, format="json")
+        self.assertIn(refused.status_code, (403, 404))
+        found = self.as_("Production Planner").get("/api/inventory/scan/open/").json()
         self.assertNotIn("material_issue", [row["kind"] for row in found])
         offered = self.supervisor.get("/api/inventory/scan/open/").json()
         self.assertIn(("material_issue", self.document.pk, ["issue"]),
