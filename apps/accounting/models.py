@@ -1007,6 +1007,18 @@ class FiscalPositionTaxMapping(AuditModel):
     def _check_target(self):
         if self.target_tax_id and self.target_tax_id == self.source_tax_id:
             raise ValidationError("Mapping a tax to itself has no effect.")
+        # A line stores its taxes as mapped (TaxedLineMixin.default_taxes) and posting maps them again: that is
+        # only the same as mapping once when nothing a position produces is itself mapped by it (O427).
+        others = FiscalPositionTaxMapping.objects.filter(fiscal_position_id=self.fiscal_position_id).exclude(pk=self.pk)
+        if self.target_tax_id and others.filter(source_tax_id=self.target_tax_id).exists():
+            raise ValidationError({"target_tax": [
+                f"{self.fiscal_position} already maps {self.target_tax.code} to another tax: a line given "
+                f"{self.target_tax.code} here would be mapped twice. Map {self.source_tax.code} to where "
+                f"{self.target_tax.code} goes."]})
+        if others.filter(target_tax_id=self.source_tax_id).exists():
+            raise ValidationError({"source_tax": [
+                f"{self.fiscal_position} maps another tax to {self.source_tax.code}: a line stored with it would be "
+                f"mapped twice. Map that tax to where {self.source_tax.code} goes instead."]})
 
 
 class PartyTaxProfile(AuditModel):

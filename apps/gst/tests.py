@@ -806,3 +806,99 @@ class ABadPeriodIsAnswered400Tests(GstReturnTestCase):
         urls = ["/api/gst/gstr1/?period=99999-01", "/api/gst/gstr3b/?period=0000-01",
                 "/api/gst/gstr1/json/?period=99999-12", "/api/gst/gstr2b/match/?period=99999-01"]
         self.assertEqual({url: client.get(url).status_code for url in urls}, {url: 400 for url in urls})
+
+
+class ExportLineStoresWhatItPostsTests(GstReturnTestCase):
+    """
+    O427, owner's decision of 2026-11-04: an export line under LUT is stored
+    as IGST 0%, not with the item's default CGST 9% and SGST 9% that posting
+    would map into it. 100 USD of sacks at 83: Dr debtors 8,300, Cr sales
+    8,300, no tax, as a line stored the old way posts.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from django.core.management import call_command
+        from django.contrib.auth.models import Group
+
+        call_command("setup_roles", verbosity=0)
+        self.sack.sales_taxes.set(self.pair)
+        self.sack.purchase_taxes.set(self.pair)
+        self.abroad = self.party("EXPORT", currency=self.usd, gst_registration="overseas", fiscal_position=self.lut)
+        self.clients = {}
+        for role in ("AR Manager", "AP Manager"):
+            user = User.objects.create_user(role.replace(" ", "_").lower())
+            user.groups.add(Group.objects.get(name=role))
+            self.clients[role] = APIClient()
+            self.clients[role].force_authenticate(user)
+
+    def added(self, role, url, **fields):
+        response = self.clients[role].post(url, {"item": self.sack.pk, "quantity": "1", "unit_price": "100", **fields},
+                                           format="json")
+        self.assertEqual(response.status_code, 201, response.content)
+        return response.json()
+
+    def test_each_sales_document_stores_igst_0_for_an_export_under_lut(self):
+        from apps.sales.models import Quotation
+
+        quotation = Quotation.objects.create(customer=self.abroad, quotation_date=DAY, currency=self.usd)
+        order = SalesOrder.objects.create(customer=self.abroad, order_date=DAY, currency=self.usd)
+        invoice = Invoice.objects.create(customer=self.abroad, invoice_date=DAY, receivable_account=self.ar,
+                                         currency=self.usd)
+        stored = {
+            "quotation": self.added("AR Manager", "/api/sales/quotation-lines/", quotation=quotation.pk)["taxes"],
+            "order": self.added("AR Manager", "/api/sales/sales-order-lines/", order=order.pk)["taxes"],
+            "invoice": self.added("AR Manager", "/api/sales/invoice-lines/", invoice=invoice.pk,
+                                  revenue_account=self.revenue.pk)["taxes"],
+        }
+        self.assertEqual(stored, {"quotation": [self.zero.pk], "order": [self.zero.pk], "invoice": [self.zero.pk]})
+
+    def test_a_note_line_stores_igst_0(self):
+        invoice = Invoice.objects.create(customer=self.abroad, invoice_date=DAY, receivable_account=self.ar,
+                                         currency=self.usd)
+        self.added("AR Manager", "/api/sales/invoice-lines/", invoice=invoice.pk, revenue_account=self.revenue.pk)
+        invoice.refresh_from_db()
+        invoice.post()
+        credit = invoice.create_credit_note(quantities={invoice.lines.get(): D("1")}, post=False)
+        self.assertEqual([tax.code for tax in credit.lines.get().taxes.all()], ["IGST0"])
+        debit = Invoice.objects.create(customer=self.abroad, invoice_date=DAY, receivable_account=self.ar,
+                                       currency=self.usd, debits=invoice)
+        line = self.added("AR Manager", "/api/sales/invoice-lines/", invoice=debit.pk, revenue_account=self.revenue.pk)
+        self.assertEqual(line["taxes"], [self.zero.pk])
+
+    def test_a_domestic_line_keeps_the_items_taxes(self):
+        mh = self.party("MH-REG", gstin=gstin("27AABCM1111A1Z"))
+        order = SalesOrder.objects.create(customer=mh, order_date=DAY)
+        line = self.added("AR Manager", "/api/sales/sales-order-lines/", order=order.pk)
+        self.assertEqual(sorted(line["taxes"]), sorted([self.cgst.pk, self.sgst.pk]))
+
+    def test_the_entry_is_the_one_a_line_stored_the_old_way_posts(self):
+        def entry(invoice):
+            return sorted((row.account.code, row.debit, row.credit) for row in invoice.journal_entry.lines.all())
+
+        legacy = self.sell(self.abroad, "100", currency=self.usd, taxes=self.pair)
+        invoice = Invoice.objects.create(customer=self.abroad, invoice_date=DAY, receivable_account=self.ar,
+                                         currency=self.usd)
+        self.added("AR Manager", "/api/sales/invoice-lines/", invoice=invoice.pk, revenue_account=self.revenue.pk)
+        invoice.refresh_from_db()
+        invoice.post()
+        self.assertEqual([tax.code for tax in invoice.lines.get().taxes.all()], ["IGST0"])
+        self.assertEqual(entry(invoice), [("1100", D("8300.00"), D("0.00")), ("4000", D("0.00"), D("8300.00"))])
+        self.assertEqual(entry(invoice), entry(legacy))
+        self.assertEqual(invoice.lines.get().tax_amounts(), [(self.zero, D("0.00"))])
+
+    def test_a_purchase_line_is_stored_through_the_vendors_position_too(self):
+        vendor = self.party("SEZ-V", role=PartyRole.VENDOR, gstin=gstin("24AABCS3333C1Z"), gst_registration="sez",
+                            fiscal_position=self.lut)
+        bill = Bill.objects.create(vendor=vendor, bill_date=DAY, payable_account=self.ap, reference="S-1")
+        line = self.added("AP Manager", "/api/purchasing/bill-lines/", bill=bill.pk, expense_account=self.expense.pk)
+        self.assertEqual(line["taxes"], [self.zero.pk])
+
+    def test_a_position_that_would_map_twice_is_refused(self):
+        with self.assertRaisesMessage(ValidationError, "would be mapped twice"):
+            FiscalPositionTaxMapping.objects.create(fiscal_position=self.lut, source_tax=self.zero,
+                                                    target_tax=self.igst)
+        with self.assertRaisesMessage(ValidationError, "would be mapped twice"):
+            FiscalPositionTaxMapping.objects.create(fiscal_position=self.lut, source_tax=self.igst,
+                                                    target_tax=self.cgst)
+        FiscalPositionTaxMapping.objects.create(fiscal_position=self.lut, source_tax=self.igst, target_tax=self.zero)
