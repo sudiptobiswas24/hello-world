@@ -2834,8 +2834,11 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
             lock_rows(budget, refresh=False)
         super().save(*args, **kwargs)
         if budget is not None and budget.available() < 0:
+            from apps.core.documents import in_words_of_money
+
+            (over,) = in_words_of_money(-budget.available())
             raise ValidationError(
-                f"Budget {budget.code} would be {-budget.available()} over. A confirmed order is not "
+                f"Budget {budget.code} would be {over} over. A confirmed order is not "
                 "raised past it; order the rest separately, which asks for approval.")
         if policy_before is not None:
             PurchaseOrder.objects.get(pk=self.order_id).refuse_going_past_the_policy(policy_before)
