@@ -331,7 +331,6 @@ missing), **minor**.
 | O437 | inventory | StockCountViewSet.add (views.py:402) returns the line as built, so variance leaves at every digit the conversion made (-111172.257700000 on the demo). Fix: read the line back, as the scan endpoint does (seen 2026-11-03, fix_scan's report 3) | none | every count line added |
 | O439 | go-live | go_live_check's _making() (go_live_check.py:238) is never called, so "Items made here with no recipe" is never reported. Shape: inert feature. Fix: call it with the other checks (seen 2026-11-04, fix_setup's report) | none | first installation |
 | O440 | purchasing | The budget refusal prints its figure raw (purchasing/models.py:2838), the shape O426 fixed for credit holds. Fix: money() in the message (seen 2026-11-04, fix_setup's report) | none | every budget refusal |
-| O441 | interface | The scan camera does not ask for itf (ITF-14), the usual print of a 14-digit GTIN on cartons (ScanBox.tsx). A hand scanner is unaffected (seen 2026-11-04, fix_setup's report) | none | a carton GTIN by camera |
 
 Upgrade notes, true of data made before the 8 October fixes:
 - Landed cost allocated before the stores fix releases to cost of sales, and old inventory differences stay where they were.
