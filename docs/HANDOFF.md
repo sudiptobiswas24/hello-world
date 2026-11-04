@@ -50,6 +50,21 @@ pg_isready -q || service postgresql start                              # role er
 
 ## 2. Next steps, in order
 
+**g26 is pushed (07921cc, 4 November 2026), all seven lanes green on one tip (gated as 27e2e1b).** Holds: O429 (the
+mig lane one app at a time, resuming after a restart), L28 (certificates of analysis), L9 (scanning in stores), the
+fix_coa, fix_scan, fix_setup and fix_logic rounds (O419-O428, O430-O441 less those still open), and 27e2e1b: a write
+cancels a first read still on its way before it invalidates (the GSTR-2B screen showed the pre-write answer; pg-c found it).
+- Gate rules learned the hard way (now in scripts/gate/lane.sh's header, in g27): at most two lanes at a time and
+  **mig counts as one**; sqlite beside two lanes passes its 9000 s limit. Always keep a harness-tracked watcher job
+  (`timeout 7000 bash -c 'while pgrep -f "lane.sh g26 <lane>" ...'`) while any detached lane runs, or the container is
+  reclaimed and the lanes die (two restarts on 4 November). Read a lane's log before rerunning it; lane.sh now keeps the
+  previous log as `.prev`. Timings beside one other lane: sqlite 107 min, pg-c 103 min, mig about 6 h in all.
+- g27 in progress: worktree /home/user/work/g27tree, branch g27-work, backup `claude/erp-g27-integration`. Holds the
+  lane.sh rules, O343/O344 (backup), O361 (drafts hold a close), O431 (Stores issues material), O425 (spares no
+  cancel advice), O445 recorded. Agent fix_gst on O356, O427, O386 in /home/user/work/fixgst (report
+  /home/user/work/reports/fix_gst.md). Then the g27 gate. O385 and O387 wait on the tax adviser. Open question for the
+  owner: should approved-but-unpaid expense claims hold a close?
+
 **g25 is pushed (ef0ef37, 3 November 2026), all lanes green on one tip (gated as dc3a5a6).** Holds: round A (gate register,
 passes, weighbridge, review fixes), the interface sweep's fixes, the tax patch, the outputs patch, round B (landed cost
 by weight, the bill of entry, rate contracts, customs valuation defaults), the first installation's fixes, O415 and O416,
