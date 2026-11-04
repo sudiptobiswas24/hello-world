@@ -329,7 +329,6 @@ missing), **minor**.
 | O434 | quality | The batches page reads each outside lot's certificate lines once for its words (verdict_words): a query per outside lot. Fix: prefill them with the page (seen 2026-11-03, fix_coa's report 5) | none | a page of many held lots |
 | O435 | inventory | StockTransferLine.save()/delete() read the transfer's status without holding it (transfers.py:511, :524), unlike receipt, delivery and count lines: a line PATCHed while the transfer dispatches can land on a transfer that has just moved stock. Shape: a check made before the lock. Fix: answer_to_its_document, as the other lines do (seen 2026-11-03, fix_scan's report 1) | inventory | an edit as a transfer dispatches |
 | O437 | inventory | StockCountViewSet.add (views.py:402) returns the line as built, so variance leaves at every digit the conversion made (-111172.257700000 on the demo). Fix: read the line back, as the scan endpoint does (seen 2026-11-03, fix_scan's report 3) | none | every count line added |
-| O439 | go-live | go_live_check's _making() (go_live_check.py:238) is never called, so "Items made here with no recipe" is never reported. Shape: inert feature. Fix: call it with the other checks (seen 2026-11-04, fix_setup's report) | none | first installation |
 
 Upgrade notes, true of data made before the 8 October fixes:
 - Landed cost allocated before the stores fix releases to cost of sales, and old inventory differences stay where they were.

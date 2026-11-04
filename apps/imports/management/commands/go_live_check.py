@@ -92,6 +92,7 @@ def checks():
     _gst(add)
     _people(add)
     _statutory(add)
+    _making(add)
     _books(add)
     _settings(add)
     return found
