@@ -986,6 +986,33 @@ class OneDecisionAtATimeRaceTests(RaceCase):
         self.once(race(StockMovement, *[lambda: StockTransfer.objects.get(pk=move.pk).dispatch()] * 2))
         self.assertEqual(made.item.on_hand_at(made.north), Decimal("70"))
 
+    def test_a_transfer_line_is_not_changed_as_the_transfer_dispatches(self):
+        """
+        O435: 30 of 100 on a draft transfer; the line is raised to 50 as the
+        transfer dispatches. The line read the status unheld, so it said 50 on
+        a transfer that had moved 30. Now it holds the transfer first.
+        """
+        from apps.inventory.models import StockMovement, StockTransfer, StockTransferLine
+        from apps.inventory import tests_transfers
+
+        made = fixture(self, tests_transfers.TransferTestCase)
+        made.stock("100", "5")
+        move = made.transfer("30", transit=True)
+        line_pk = move.lines.get().pk
+
+        def raise_the_line():
+            line = StockTransferLine.objects.get(pk=line_pk)
+            line.quantity = Decimal("50")
+            line.save()
+
+        # The dispatch first, holding the numbering row: the line's check then reads a transfer not yet moved.
+        outcomes = race_in_order((StockMovement, StockTransferLine),
+                                 lambda: StockTransfer.objects.get(pk=move.pk).dispatch(), raise_the_line)
+        line = StockTransferLine.objects.get(pk=line_pk)
+        self.assertEqual(StockTransfer.objects.get(pk=move.pk).status, "in_transit", outcomes)
+        self.assertEqual((made.item.on_hand_at(made.north), line.quantity),
+                         (Decimal("100") - line.quantity, Decimal("30")), outcomes)
+
     def test_a_delivery_leaves_one_backorder(self):
         from apps.sales.models import Delivery
         from apps.sales import tests_lifecycle
