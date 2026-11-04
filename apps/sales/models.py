@@ -2620,7 +2620,9 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
         are not its alone). The restatement replays what is dated after its day (accounting.restatement).
         """
         if self.is_credit_note():
-            return []
+            from apps.accounting.restatement import absorbed_on_the_note
+
+            return absorbed_on_the_note(self, self.invoice_date)
         rows = []
         for note in self.credit_notes.all():
             if not note.posted:

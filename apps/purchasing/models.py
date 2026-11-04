@@ -3878,7 +3878,9 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         are not its alone). The restatement replays what is dated after its day (accounting.restatement).
         """
         if self.is_debit_note():
-            return []
+            from apps.accounting.restatement import absorbed_on_the_note
+
+            return absorbed_on_the_note(self, self.bill_date)
         rows = []
         for note in self.debit_notes.all():
             if not note.posted:
