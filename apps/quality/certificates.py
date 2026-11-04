@@ -200,10 +200,36 @@ class SupplierCertificate(AuditModel):
         self.posted, self.posted_at, self.posted_by = True, timezone.now(), by
         super().save(update_fields=["number", "recorded_on", "issued_on", "plan", "result", "posted",
                                     "posted_at", "posted_by", "updated_at"])
+        if not self.is_within():
+            self._tell_the_quality_manager(by)
         from .release import lot_decided
 
         lot_decided(self.lot, by)
         return self
+
+    def _tell_the_quality_manager(self, by):
+        """
+        A certificate outside: the Quality Manager's to-do, through the to-do every
+        held batch gives them (decisions.tell_the_quality_manager). Posted without a
+        word, they learnt of it only when an inspection of the lot waited (O432). Closed
+        when it is voided, or when the batch is taken by concession (certificate_answered).
+        """
+        from .decisions import tell_the_quality_manager
+        from .release import certificate_failed
+
+        verdict = self.verdict_words()
+        if certificate_failed(self.lot) is not None:
+            summary = f"Decide {self.number}: {self.lot} is {verdict} and is held"
+            body = (f"{self.number}, the certificate {self.supplier_number} from {self.vendor}, says {self.lot} "
+                    f"({self.lot.item}) is {verdict}. {self.plan} asks for a certificate, so the batch is held "
+                    "until the Quality Manager takes it by concession on an inspection, or the certificate "
+                    "is voided.")
+        else:
+            summary = f"{self.number}: {self.lot} is {verdict}"
+            body = (f"{self.number}, the certificate {self.supplier_number} from {self.vendor}, says {self.lot} "
+                    f"({self.lot.item}) is {verdict}. {self.plan} does not ask for a certificate, so it holds "
+                    "nothing: for the Quality Manager to read before the batch is used.")
+        tell_the_quality_manager(self, summary, link=f"/quality/supplier-certificates/{self.pk}", by=by, body=body)
 
     @serialised("posted", "voided_at", held_first="held_for_post")
     @takes_back
@@ -223,6 +249,9 @@ class SupplierCertificate(AuditModel):
                                          "it was recorded")
         self.voided_at, self.voided_reason, self.voided_by = timezone.now(), reason, by
         super().save(update_fields=["voided_on", "voided_at", "voided_reason", "voided_by", "updated_at"])
+        from .decisions import close_to_dos
+
+        close_to_dos(self, by, f"{self} was voided, so there is nothing to decide: {reason}")
         return self
 
     @transaction.atomic
@@ -250,6 +279,21 @@ class SupplierCertificate(AuditModel):
                 f"{self} is posted: it is what decided whether {self.lot} could go. Void it, with a "
                 "reason, rather than delete it.")
         return super().delete(*args, **kwargs)
+
+
+def certificate_answered(lot, by=None):
+    """
+    Registered with the release gate (register_lot_decided): `lot` was decided. A
+    standing certificate outside that the Quality Manager has now taken by concession
+    is answered, and its to-do closes with the inspection that conceded it (O432).
+    """
+    from .decisions import close_to_dos
+    from .release import certificate_conceded, latest_inspection
+
+    certificate = SupplierCertificate.objects.filter(
+        lot=lot, posted=True, voided_at__isnull=True, result=CertificateResult.OUTSIDE).first()
+    if certificate is not None and certificate_conceded(lot, certificate):
+        close_to_dos(certificate, by, f"{lot} taken by concession on {latest_inspection(lot).number}.")
 
 
 class SupplierCertificateLine(AuditModel):

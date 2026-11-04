@@ -18,3 +18,9 @@ class QualityConfig(AppConfig):
         register_lot_question(one_question)
         # A page of batches is asked once for the page (O231).
         register_lot_page_question(prefill_page)
+
+        from .certificates import certificate_answered
+        from .release import register_lot_decided
+
+        # A certificate outside is answered by the concession that takes its batch (O432).
+        register_lot_decided(certificate_answered)
