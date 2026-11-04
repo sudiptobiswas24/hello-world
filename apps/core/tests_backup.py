@@ -256,3 +256,33 @@ class AFailedBackupKeepsTheOlderOnesTests(SimpleTestCase):
         self.assertIn("backup written", said)
         self.assertFalse(self.old.exists())
         self.assertEqual(len(list(self.backups.glob("erp_*.dump"))), 1)
+
+    def test_a_relative_backup_directory_is_refused(self):
+        # O343: relative, BACKUP_DIR means the directory the service started in; refused before anything is written.
+        self.env["BACKUP_DIR"] = "backups"
+        status, said = self.backup("now")
+        self.assertEqual(status, 2, said)
+        self.assertIn("BACKUP_DIR must be an absolute path, not 'backups'; nothing backed up", said)
+        self.assertNotIn("backup written", said)
+        self.assertEqual(sorted(path.name for path in self.backups.iterdir()), [self.old.name])
+
+    def test_the_check_needs_no_room_for_a_second_copy_of_the_attachments(self):
+        # O344: the check unpacked the whole archive beside the backups. Unpacking to a directory is refused
+        # here, as a disk with no room for a second copy would; the night still verifies and is written.
+        real_tar = shutil.which("tar")
+        self.stub("tar", f'case "$*" in *-C*-xzf*|*-xzf*-C*) echo "tar: No space left on device" >&2; exit 2;; esac\n'
+                         f'exec {real_tar} "$@"\n')
+        status, said = self.backup("now")
+        self.assertEqual(status, 0, said)
+        self.assertIn("backup written", said)
+        self.assertEqual(sorted(path.name for path in self.backups.glob("*.partial")), [])
+
+    def test_a_manifest_listing_a_file_the_archive_does_not_hold_fails_the_night(self):
+        real_sort = shutil.which("sort")
+        self.stub("sort", 'prev=; for a; do [ "$prev" = -o ] && out=$a; prev=$a; done\n'
+                          f'{real_sort} "$@" || exit $?\n'
+                          "printf '%s  %s\\n' 0000000000000000000000000000000000000000000000000000000000000000 ./gone.pdf >> \"$out\"\n")
+        status, said = self.backup("now")
+        self.assertEqual(status, 1, said)
+        self.assertIn("BACKUP FAILED: the manifest lists a file the archive does not hold", said)
+        self.assertTrue(self.old.exists())
