@@ -419,6 +419,17 @@ class ARequisitionIsRequestedUntilItsOrderIsConfirmedTests(BudgetTestCase):
             order.delete()
         self.assertEqual(self.read(), (Decimal("90000"), Decimal("0"), Decimal("110000")))
 
+    def test_a_draft_order_deleted_from_code_holds_itself(self):
+        """
+        O456: a management command or a shell deletes a draft with no transaction of its own. delete()
+        takes the order before its lines itself, so the lock-order sentinel lets it through, and the
+        requisition is asked for again: 90,000 / 0 / 110,000.
+        """
+        order = self.draft_order()
+        order.delete()
+        self.assertFalse(PurchaseOrder.objects.filter(pk=order.pk).exists())
+        self.assertEqual(self.read(), (Decimal("90000"), Decimal("0"), Decimal("110000")))
+
     def test_a_confirmed_order_cancelled_hands_it_back(self):
         order = self.draft_order()
         order.confirm()
