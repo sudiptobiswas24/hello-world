@@ -104,8 +104,24 @@ def issued_particulars(invoice, posting=False):
         "lines": {str(line.pk): {"description": line.label(), "unit": _unit(line)} for line in invoice.lines.all()},
     }
     if shipped is not None and (billed is None or shipped.pk != billed.pk):
-        particulars["delivery"] = {"address": _address_lines(shipped), "state": _state_of(shipped)}
+        particulars["delivery"] = {"address": _address_lines(shipped), "state": _state_of(shipped),
+                                   "consignee": consignee(customer, shipped, billed)}
     return particulars
+
+
+def consignee(customer, shipped, billed):
+    """
+    Whose the delivery address is, when it is not the buyer's own: {"name", "gstin"}, else None (O152).
+    The e-invoice's ShipDtls names the party the goods go to, and named the buyer for a third party's
+    godown. Own as accounting.gst.place_of_supply reads it: the bill-to is the buyer's whoever it
+    names, and any address of the buyer's party is its own.
+    """
+    if (shipped is None or shipped.party_id is None or shipped.party_id == customer.pk
+            or (billed is not None and shipped.pk == billed.pk)):
+        return None
+    party = shipped.party
+    profile = getattr(party, "tax_profile", None)
+    return {"name": party.legal_name or party.name, "gstin": (profile.gstin or "") if profile else ""}
 
 
 def _state_name(code):
@@ -335,7 +351,9 @@ def render_invoice_pdf(invoice, copy="original"):
     blocks = []
     if printed["delivery"]:
         delivery = printed["delivery"]
-        text = lines([*delivery["address"]] + ([f"State {delivery['state_name']}"] if delivery["state_name"] else []))
+        to = delivery.get("consignee")
+        text = lines(([bold(to["name"]), f"GSTIN {to['gstin']}" if to["gstin"] else "Unregistered"] if to else [])
+                     + [*delivery["address"]] + ([f"State {delivery['state_name']}"] if delivery["state_name"] else []))
         blocks.append(("DELIVERED TO", text))
     if printed["export"]:
         words = bold(printed["export"])
