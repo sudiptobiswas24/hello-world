@@ -50,6 +50,8 @@ pg_isready -q || service postgresql start                              # role er
 
 ## 2. Next steps, in order
 
+**g27 is pushed (fee871b, 5 November 2026); g26 below.**
+
 **g26 is pushed (07921cc, 4 November 2026), all seven lanes green on one tip (gated as 27e2e1b).** Holds: O429 (the
 mig lane one app at a time, resuming after a restart), L28 (certificates of analysis), L9 (scanning in stores), the
 fix_coa, fix_scan, fix_setup and fix_logic rounds (O419-O428, O430-O441 less those still open), and 27e2e1b: a write
@@ -59,11 +61,17 @@ cancels a first read still on its way before it invalidates (the GSTR-2B screen 
   (`timeout 7000 bash -c 'while pgrep -f "lane.sh g26 <lane>" ...'`) while any detached lane runs, or the container is
   reclaimed and the lanes die (two restarts on 4 November). Read a lane's log before rerunning it; lane.sh now keeps the
   previous log as `.prev`. Timings beside one other lane: sqlite 107 min, pg-c 103 min, mig about 6 h in all.
-- g27 in progress: worktree /home/user/work/g27tree, branch g27-work, backup `claude/erp-g27-integration`. Holds the
-  lane.sh rules, O343/O344 (backup), O361 (drafts hold a close), O431 (Stores issues material), O425 (spares no
-  cancel advice), O445 recorded. Agent fix_gst on O356, O427, O386 in /home/user/work/fixgst (report
-  /home/user/work/reports/fix_gst.md). Then the g27 gate. O385 and O387 wait on the tax adviser. Open question for the
-  owner: should approved-but-unpaid expense claims hold a close?
+- g27 is pushed (fee871b, 5 November 2026), all seven lanes green on one tip (gated as e5d5ca6; replayed onto the
+  HANDOFF commit, the only difference docs/HANDOFF.md). Holds: lane.sh's rules, O343/O344 (backup), O361 (dated drafts
+  hold a close), O431 (Stores issues, returns and voids material), O425 (spares get no cancel advice), O356 (2B
+  "credit not available" total), O427 (a line stores its taxes through the party's fiscal position: LUT export as
+  IGST 0%; a position may not chain mappings), O386 (a filed GSTR-1/3B keeps its figures, gst/0010; no amendment
+  tables, a later month warns). Reports: /home/user/work/reports/fix_close.md, fix_gst.md. Recorded: O445, O446.
+- Two more gate mistakes in g27: sqlite started beside ui, whose build empties apps/web/static/web, so 159 browser tests
+  skipped and the lane said OK (400 skipped, not 241): **run ui alone first, and check the skip count**. A watcher job
+  needs the Bash tool's timeout set to 7200000, or it ends at 30 minutes.
+- Next (g28): lane.sh refuses a test lane while the office app is not built; then the open rows. Waiting on others:
+  O385 and O387 (tax adviser); whether approved-but-unpaid expense claims hold a close (owner).
 
 **g25 is pushed (ef0ef37, 3 November 2026), all lanes green on one tip (gated as dc3a5a6).** Holds: round A (gate register,
 passes, weighbridge, review fixes), the interface sweep's fixes, the tax patch, the outputs patch, round B (landed cost
