@@ -199,7 +199,8 @@ def issuer_out_of_reach(setter):
             summary=f"API keys {setter} issued: replace or keep them"[:255],
             note=(f"{setter} can no longer issue API keys, and saw these when issuing them: {named}. They still "
                   "work. Issue each integration a new key, put it where the old one is kept, and revoke the old one."),
-            due_on=timezone.localdate(), assigned_to=admin, created_by=None, updated_by=None)
+            due_on=timezone.localdate(), assigned_to=admin, created_by=None, updated_by=None,
+            raised_by_a_rule=True)
 
 
 class ApiKeyAuthentication(BaseAuthentication):

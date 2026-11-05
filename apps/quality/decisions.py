@@ -132,7 +132,7 @@ def tell(people, record, summary, due_on, link="", by=None, body=""):
                 FollowUp.objects.create(
                     content_type=kind, object_id=record.pk, kind=FollowUpKind.TODO,
                     summary=summary[:255], note=body, due_on=due_on, assigned_to=person,
-                    link=link, created_by=by, updated_by=by,
+                    link=link, created_by=by, updated_by=by, raised_by_a_rule=True,
                 )
         except ValidationError as refused:
             told.not_told[username] = " ".join(refused.messages)
