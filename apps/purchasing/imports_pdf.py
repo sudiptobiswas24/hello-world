@@ -3,6 +3,7 @@
 from django.http import HttpResponse
 
 from apps.core.documents import counted, grouped, money, render_document
+from apps.core.documents import lines as markup
 
 
 def bill_of_entry_pdf(entry):
@@ -25,11 +26,11 @@ def bill_of_entry_pdf(entry):
     if entry.supersedes_id:
         meta.append(["Re-assesses", f"{entry.supersedes.number} (BE {entry.supersedes.be_number})"])
     header = ["Goods", "Qty", f"FOB {foreign.code}", "Assessable", "BCD", "SWS", "IGST"]
-    rows = [[f"{line.receipt_line.order_line.item.name}<br/>{line.receipt_line.receipt.number}",
+    rows = [[markup([line.receipt_line.order_line.item.name, line.receipt_line.receipt.number]),
              counted(line.quantity), grouped(line.fob, indian=False), grouped(line.assessable_value),
-             f"{grouped(line.bcd)}<br/>@ {line.bcd_rate.normalize():f}%",
-             f"{grouped(line.sws)}<br/>@ {line.sws_rate.normalize():f}%",
-             f"{grouped(line.igst)}<br/>@ {line.igst_rate.normalize():f}%"] for line in lines]
+             markup([grouped(line.bcd), f"@ {line.bcd_rate.normalize():f}%"]),
+             markup([grouped(line.sws), f"@ {line.sws_rate.normalize():f}%"]),
+             markup([grouped(line.igst), f"@ {line.igst_rate.normalize():f}%"])] for line in lines]
     from reportlab.lib.units import mm
 
     widths = [44 * mm, 18 * mm, 22 * mm, 26 * mm, 22 * mm, 20 * mm, 22 * mm]
