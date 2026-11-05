@@ -26,6 +26,7 @@ from apps.core.models import Party, PartyRole, PartyRoleAssignment
 from .crm import Activity, Campaign, Lead, Opportunity, follow_ups_due
 from .models import CustomerProfile, Quotation
 from .tests_base import SalesTestCase, carries_every_customer
+from apps.core.tests_schema_window import TodaysColumns
 
 
 
@@ -363,6 +364,7 @@ class OneOpportunityAnOrderMigrationTests(TransactionTestCase):
 
         executor = MigrationExecutor(connection)
         executor.migrate(self.before)
+        window = TodaysColumns()  # today's models written at the old schema (apps.core.tests_schema_window)
         customer = Party.objects.create(code="C-OPP", name="Bengal Cement")
         PartyRoleAssignment.objects.create(party=customer, role=PartyRole.CUSTOMER)
         order = SalesOrder.objects.create(customer=customer, order_date=datetime.date(2026, 9, 1))
@@ -380,5 +382,6 @@ class OneOpportunityAnOrderMigrationTests(TransactionTestCase):
             with self.assertRaises(IntegrityError), transaction.atomic():
                 Opportunity.objects.filter(pk=second.pk).update(sales_order=order)
         finally:
+            window.close()
             executor = MigrationExecutor(connection)
             executor.migrate(executor.loader.graph.leaf_nodes())

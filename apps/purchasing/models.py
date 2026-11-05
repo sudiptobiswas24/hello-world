@@ -18,6 +18,7 @@ from apps.accounting.mixins import (
     RecordedLineTax,
     TaxedDocumentMixin,
     TaxedLineMixin,
+    TaxesTakenUnder,
     nothing_left_to_give_back,
     refuse_correcting_a_note,
     refuse_correcting_another_line,
@@ -1175,7 +1176,7 @@ class BlanketStatus(models.TextChoices):
     CLOSED = "closed", "Closed"
 
 
-class BlanketOrder(AuditModel):
+class BlanketOrder(TaxesTakenUnder, AuditModel):
     """
     A negotiated commitment — an agreed price and volume over a period,
     drawn down by releases rather than delivered in one go.
@@ -1312,6 +1313,7 @@ class BlanketOrder(AuditModel):
             order_date=order_date,
             reference=self.reference,
             currency=self.currency,
+            taxes_taken_under=self.taxes_taken_under,  # its lines' taxes are the agreement's (O446)
         )
         for line, quantity in selected:
             order_line = PurchaseOrderLine.objects.create(
@@ -1827,7 +1829,7 @@ class OrderStatus(models.TextChoices):
     CANCELLED = "cancelled", "Cancelled"
 
 
-class PurchaseOrder(Extensible, TaxedDocumentMixin, ChangesWithinItsApproval, ApprovableMixin, AuditModel):
+class PurchaseOrder(Extensible, TaxesTakenUnder, TaxedDocumentMixin, ChangesWithinItsApproval, ApprovableMixin, AuditModel):
     number = models.CharField(max_length=32, blank=True, editable=False)
     vendor = models.ForeignKey(Party, on_delete=models.PROTECT, related_name="purchase_orders")
     order_date = models.DateField()
@@ -2236,6 +2238,7 @@ class PurchaseOrder(Extensible, TaxedDocumentMixin, ChangesWithinItsApproval, Ap
             bill_date=bill_date or timezone.localdate(),
             reference=reference,
             purchase_order=self,
+            taxes_taken_under=self.taxes_taken_under,  # its lines' taxes are the order's (O446)
             payable_account=payable_account,
             currency=self.currency,
             # As the order agreed them, not as the vendor's stand today.
@@ -3321,7 +3324,7 @@ def register_debit_note_follow_up(follow_up):
         DEBIT_NOTE_FOLLOW_UPS.append(follow_up)
 
 
-class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
+class Bill(Extensible, PostedTaxDocumentMixin, TaxesTakenUnder, TaxedDocumentMixin, AuditModel):
     """
     Vendor bill — the Purchasing mirror of Sales' Invoice. Posting builds
     a balanced JournalEntry (Dr Expense per line / Cr Accounts Payable)
@@ -4482,6 +4485,7 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
                     "twice."]})
             refuse_untaxed_lines(self.lines.all(), self.vendor, f"{self.number or 'This bill'} is not posted",
                                  purchase=True)
+            self.refuse_taxes_taken_under_another_position()
         if not self.number:
             if self.is_debit_note():
                 self.number = DocumentSequence.next_for(

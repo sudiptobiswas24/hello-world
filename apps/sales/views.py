@@ -338,6 +338,7 @@ class InvoiceViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.ModelV
         return queryset
     action_permission_map = {
         "post_invoice": "sales.post_invoice",
+        "retake_taxes": "sales.change_invoice",
         "credit_note": "sales.post_invoice",
         "debit_note": "sales.post_invoice",
         "credit_old_supply": "sales.post_invoice",
@@ -454,6 +455,16 @@ class InvoiceViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.ModelV
         except DjangoValidationError as exc:
             raise DRFValidationError(exc.messages)
         return Response(self.get_serializer(invoice).data)
+
+    @action(detail=True, methods=["post"])
+    def retake_taxes(self, request, pk=None):
+        """Every line that took its item's taxes by default takes them again under the customer's position now (O446)."""
+        invoice = self.get_object()
+        try:
+            invoice.retake_taxes()
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.messages)
+        return Response(self.get_serializer(self.get_queryset().get(pk=invoice.pk)).data)
 
     @action(detail=True, methods=["get"])
     def pdf(self, request, pk=None):

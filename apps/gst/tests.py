@@ -902,3 +902,100 @@ class ExportLineStoresWhatItPostsTests(GstReturnTestCase):
             FiscalPositionTaxMapping.objects.create(fiscal_position=self.lut, source_tax=self.igst,
                                                     target_tax=self.cgst)
         FiscalPositionTaxMapping.objects.create(fiscal_position=self.lut, source_tax=self.igst, target_tax=self.zero)
+
+
+class TaxesTakenUnderAnotherPositionTests(GstReturnTestCase):
+    """
+    O446: a draft's lines stored IGST 0% under the customer's LUT position; the position was cleared
+    before posting, the customer now a domestic one in Karnataka, and the draft posted at 0% where a
+    line typed afterwards takes IGST 18%: 10,000 of sacks went out with no tax instead of 1,800. Now
+    posting is refused until the taxes are taken again.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from django.contrib.auth.models import Group
+        from django.core.management import call_command
+
+        call_command("setup_roles", verbosity=0)
+        self.sack.sales_taxes.set(self.pair)
+        self.sack.purchase_taxes.set(self.pair)
+        self.clients = {}
+        for role in ("AR Manager", "AP Manager"):
+            user = User.objects.create_user(role.replace(" ", "_").lower())
+            user.groups.add(Group.objects.get(name=role))
+            self.clients[role] = APIClient()
+            self.clients[role].force_authenticate(user)
+
+    added = ExportLineStoresWhatItPostsTests.added
+
+    def drafted_then_cleared(self, role, url, party, document, **fields):
+        self.added(role, url, quantity="100", **{fields.pop("on"): document.pk}, **fields)
+        self.assertEqual([tax.code for tax in document.lines.get().taxes.all()], ["IGST0"])
+        PartyTaxProfile.objects.filter(party=party).update(fiscal_position=None)
+        document.refresh_from_db()
+        with self.assertRaisesMessage(ValidationError, "under fiscal position LUT, and"):
+            document.post()
+        self.assertFalse(type(document).objects.get(pk=document.pk).posted)
+
+    def test_an_invoice_is_refused_then_retaken_and_posts_at_igst_18(self):
+        ka = self.party("KA-LUT", gstin=gstin("29AABCK2222B1Z"), fiscal_position=self.lut)
+        invoice = Invoice.objects.create(customer=ka, invoice_date=DAY, receivable_account=self.ar)
+        self.assertEqual(invoice.taxes_taken_under, self.lut)
+        self.drafted_then_cleared("AR Manager", "/api/sales/invoice-lines/", ka, invoice, on="invoice",
+                                  revenue_account=self.revenue.pk)
+        response = self.clients["AR Manager"].post(f"/api/sales/invoices/{invoice.pk}/retake_taxes/")
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertIsNone(response.json()["taxes_taken_under"])
+        invoice.refresh_from_db()
+        self.assertEqual(sorted(tax.code for tax in invoice.lines.get().taxes.all()), ["CGST9", "SGST9"])
+        invoice.post()
+        self.assertEqual((invoice.lines.get().tax_amounts(), invoice.total()),
+                         ([(self.igst, D("1800.00"))], D("11800.00")))
+
+    def test_an_invoice_from_an_order_carries_the_orders_position(self):
+        ka = self.party("KA-LUT", gstin=gstin("29AABCK2222B1Z"), fiscal_position=self.lut)
+        from apps.core.models import Company
+
+        Company.objects.update(default_revenue_account=self.revenue)
+        order = SalesOrder.objects.create(customer=ka, order_date=DAY)
+        self.added("AR Manager", "/api/sales/sales-order-lines/", order=order.pk, quantity="100")
+        PartyTaxProfile.objects.filter(party=ka).update(fiscal_position=None)
+        order.refresh_from_db()
+        order.confirm()
+        invoice = order.create_invoice(self.ar, invoice_date=DAY)
+        self.assertEqual(invoice.taxes_taken_under, self.lut)
+        with self.assertRaisesMessage(ValidationError, "re-take the taxes"):
+            invoice.post()
+
+    def test_a_bill_is_refused_then_retaken(self):
+        vendor = self.party("SEZ-V", role=PartyRole.VENDOR, gstin=gstin("24AABCS3333C1Z"), gst_registration="sez",
+                            fiscal_position=self.lut)
+        bill = Bill.objects.create(vendor=vendor, bill_date=DAY, payable_account=self.ap, reference="S-1")
+        self.drafted_then_cleared("AP Manager", "/api/purchasing/bill-lines/", vendor, bill, on="bill",
+                                  expense_account=self.expense.pk)
+        response = self.clients["AP Manager"].post(f"/api/purchasing/bills/{bill.pk}/retake_taxes/")
+        self.assertEqual(response.status_code, 200, response.content)
+        bill.refresh_from_db()
+        self.assertEqual(sorted(tax.code for tax in bill.lines.get().taxes.all()), ["CGST9", "SGST9"])
+
+    def test_a_line_typed_with_its_own_taxes_is_left_as_typed(self):
+        ka = self.party("KA-LUT", gstin=gstin("29AABCK2222B1Z"), fiscal_position=self.lut)
+        invoice = Invoice.objects.create(customer=ka, invoice_date=DAY, receivable_account=self.ar)
+        self.added("AR Manager", "/api/sales/invoice-lines/", invoice=invoice.pk, quantity="100",
+                   revenue_account=self.revenue.pk, taxes=[self.igst.pk])
+        PartyTaxProfile.objects.filter(party=ka).update(fiscal_position=None)
+        invoice.refresh_from_db()
+        invoice.post()  # typed, not taken by default: nothing stale to refuse
+        self.assertEqual(invoice.lines.get().tax_amounts(), [(self.igst, D("1800.00"))])
+
+    def test_retaking_is_for_those_who_may_change_the_document(self):
+        from django.contrib.auth.models import Group
+
+        ka = self.party("KA-LUT", gstin=gstin("29AABCK2222B1Z"), fiscal_position=self.lut)
+        invoice = Invoice.objects.create(customer=ka, invoice_date=DAY, receivable_account=self.ar)
+        user = User.objects.create_user("payroll")
+        user.groups.add(Group.objects.get(name="Payroll Officer"))
+        client = APIClient()
+        client.force_authenticate(user)
+        self.assertIn(client.post(f"/api/sales/invoices/{invoice.pk}/retake_taxes/").status_code, (403, 404))
