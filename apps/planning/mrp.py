@@ -388,20 +388,12 @@ def work_order_demand(item, warehouse, on_date):
 
 def counted_as_purchase(order_lines):
     """
-    The order lines `purchase_supply` takes over from a requisition.
-
-    One definition for both readers, because the two used to disagree:
-    the requisition stopped counting a line once it was on any order not
-    cancelled, a draft included, and the purchase side began only at
-    confirmation, so between "convert to order" and "confirm" the
-    quantity was in neither and the next plan bought it again. A
-    requisition's quantity now counts as requisition supply until its
-    order is confirmed and as purchase supply from then on (received or
-    not: what has come in is on the shelf), and never twice.
+    The order lines `purchase_supply` takes over from a requisition: purchasing's one definition
+    (on_confirmed_orders, O315, O453), which a budget's requested() reads too.
     """
-    from apps.purchasing.models import OrderStatus
+    from apps.purchasing.models import on_confirmed_orders
 
-    return order_lines.filter(order__status=OrderStatus.CONFIRMED)
+    return on_confirmed_orders(order_lines)
 
 
 def purchase_supply(item, warehouse, on_date):
