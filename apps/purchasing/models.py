@@ -18,6 +18,7 @@ from apps.accounting.mixins import (
     RecordedLineTax,
     TaxedDocumentMixin,
     TaxedLineMixin,
+    nothing_left_to_give_back,
     refuse_correcting_a_note,
     refuse_correcting_another_line,
     refuse_correcting_past_what_it_holds,
@@ -8331,6 +8332,11 @@ class GoodsReceipt(AuditModel):
                 if available <= 0:
                     continue
                 taken = min(available, remaining)
+                if nothing_left_to_give_back(bill_line.bill, "debits", "bill"):
+                    # Debited in full already, a goodwill debit of the whole: the goods go back and debit
+                    # nothing more (O366, the sales mirror). Still its goods, so no later bill is debited.
+                    remaining -= taken
+                    continue
                 per_bill = allocations[bill_line.bill]
                 per_bill[bill_line] = per_bill.get(bill_line, Decimal("0")) + taken
                 if line.accrued_unit_cost is not None:

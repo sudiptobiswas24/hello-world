@@ -422,10 +422,14 @@ class ANoteMadeInCodeKeepsToItsInvoiceTests(SalesTestCase):
 
 
 class OneCeilingForEveryCreditNoteTests(SalesTestCase):
-    """Review of O298 (probe s2): a goodwill credit of the whole invoice, then a return: the return's note is refused."""
+    """
+    Review of O298 (probe s2), then O366: a goodwill credit of the whole invoice, then a return. The return's
+    note was refused, and the goods with it. Decided: the goods come back, and nothing more is credited.
+    """
 
-    def test_a_return_after_a_goodwill_credit_of_the_whole_is_refused_at_posting(self):
+    def goodwill_of_the_whole(self):
         order = self.make_order(quantity="10", price="100")
+        on_hand = self.item.on_hand_at(self.warehouse)
         delivery = self.ship(order, 10)
         invoice = self.bill(order)
         goodwill = Invoice.objects.create(customer=invoice.customer, invoice_date=invoice.invoice_date,
@@ -434,7 +438,38 @@ class OneCeilingForEveryCreditNoteTests(SalesTestCase):
         InvoiceLine.objects.create(invoice=goodwill, description="goodwill", quantity=Decimal("1"),
                                    unit_price=Decimal("1000"), revenue_account=self.revenue)
         goodwill.post()
-        with self.assertRaisesMessage(ValidationError, "has 0 left to give back (1000 of 1000"):
-            delivery.create_return()
-        self.assertEqual(Invoice.objects.filter(credits=invoice, posted=True).count(), 1)
-        self.assertEqual(invoice.amount_due(), Decimal("0.00"))
+        return delivery, invoice, on_hand
+
+    def assert_back_and_nothing_more_credited(self, invoice, on_hand):
+        from apps.accounting.models import JournalLine
+
+        def balance(account):
+            rows = JournalLine.objects.filter(account=account, entry__posted=True)
+            return sum((row.debit - row.credit for row in rows), Decimal("0"))
+
+        self.assertEqual(self.item.on_hand_at(self.warehouse), on_hand)
+        self.assertEqual(Invoice.objects.filter(credits=invoice).count(), 1)
+        self.assertEqual((invoice.amount_due(), balance(self.ar), balance(self.revenue), balance(self.cogs)),
+                         (Decimal("0.00"), Decimal("0.00"), Decimal("0.00"), Decimal("0.00")))
+
+    def test_a_return_after_a_goodwill_credit_of_the_whole_brings_the_goods_back_and_credits_nothing(self):
+        delivery, invoice, on_hand = self.goodwill_of_the_whole()
+        returned = delivery.create_return()
+        self.assertEqual(returned.credit_notes_created, [])
+        self.assert_back_and_nothing_more_credited(invoice, on_hand)
+
+    def test_the_same_over_the_api_as_the_warehouse(self):
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        call_command("setup_roles", verbosity=0)
+        delivery, invoice, on_hand = self.goodwill_of_the_whole()
+        user = User.objects.create_user("stores")
+        user.groups.add(Group.objects.get(name="Warehouse Staff"))
+        client = APIClient()
+        client.force_authenticate(user)
+        response = client.post(f"/api/sales/deliveries/{delivery.pk}/customer_return/", {}, format="json")
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.json()["credit_notes"], [])
+        self.assert_back_and_nothing_more_credited(invoice, on_hand)
