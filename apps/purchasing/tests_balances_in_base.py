@@ -137,6 +137,23 @@ class TheAgingReadsWhatThePayableHoldsTests(BalancesInBaseCase):
         self.assertEqual((row["amount_due"], self.total(ap_aging(as_of=on)), vendor_balance(self.vendor)),
                          (D("-2499.99"), D("-2499.99"), D("-2499.99")))
 
+    def test_a_multi_line_bill_paid_at_its_own_rate_leaves_nothing_on_the_payable(self):
+        """
+        O447, the payable's mirror (calc_fix_pay/o447.py): three lines of USD 10.01 at 83.25 book 2,499.99;
+        USD 30.03 paid on 12 Jan at the same 83.25 debits 2,500.00. The bases subtracted: a paisa of exchange
+        loss, and the payable at 0.00. Compared by rate it was 0, and -0.01 stayed with the bill settled.
+        """
+        bill = Bill.objects.create(vendor=self.vendor, bill_date=JAN(10), payable_account=self.payable,
+                                   currency=self.dollar)
+        for _ in range(3):
+            BillLine.objects.create(bill=bill, item=self.item, quantity=D("1"), unit_price=D("10.01"),
+                                    expense_account=self.expense)
+        bill.post()
+        self.pay("30.03", bill, on=JAN(12))
+        bill.refresh_from_db()
+        self.assertEqual((bill.amount_due(), self.owed(self.payable), -self.owed(self.fx_loss)),
+                         (D("0.00"), D("0.00"), D("0.01")))
+
     def test_a_debit_note_comes_off_at_the_rate_it_was_booked(self):
         bill = self.dollar_bill()
         self.pay("25000", bill)
