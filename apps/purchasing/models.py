@@ -114,7 +114,7 @@ from apps.accounting.settlement import (
 )
 from apps.inventory.availability import check_available
 from apps.assets.models import UNDOING_CAPITALISATION
-from apps.inventory.costing import follow_value, goods_held, where_value_is
+from apps.inventory.costing import CostingMethod, follow_value, goods_held, where_value_is
 from apps.inventory.valuation import (
     cogs_account_for,
     grni_account,
@@ -8617,15 +8617,18 @@ class GoodsReceiptLine(AuditModel):
             accepted.aggregate(total=models.Sum("quantity"))["total"] or Decimal("0")
             if inspection is not None and inspection.pk == warehouse.pk else Decimal("0")
         )
-        sent_back = self.return_lines.filter(receipt__posted=True).filter(
-            Q(landed_warehouse=warehouse) | Q(landed_warehouse__isnull=True, warehouse=warehouse)
-        ).aggregate(total=models.Sum("quantity_received"))["total"] or Decimal("0")
         return (
             arrived
             + self.quantity_advanced_to(warehouse)
             - self.quantity_advanced_from(warehouse)
-            + cleared_in - cleared_out - sent_back
+            + cleared_in - cleared_out - self.sent_back_from(warehouse)
         )
+
+    def sent_back_from(self, warehouse):
+        """What posted returns naming this line sent back to the vendor from `warehouse`."""
+        return self.return_lines.filter(receipt__posted=True).filter(
+            Q(landed_warehouse=warehouse) | Q(landed_warehouse__isnull=True, warehouse=warehouse)
+        ).aggregate(total=models.Sum("quantity_received"))["total"] or Decimal("0")
 
     def places(self):
         """
@@ -8902,6 +8905,15 @@ def land_on_goods(receipt_line, amount, reference, memo, entry, on_date):
     item = receipt_line.order_line.item
     uom = receipt_line.order_line.uom
     positions = receipt_line.positions()
+    if item.costing_method == CostingMethod.FIFO:
+        # Under FIFO a return to vendor takes the oldest layer on the shelf, not the one the receipt
+        # line it names brought in (O417): what is left of this line's goods is what is left of its
+        # own layers, and goods_held reads exactly that. Asked for the line's goods less what returns
+        # naming it sent back, four of ten returned off another layer left this one whole and the
+        # landing put six tenths of a freight bill on it and four tenths in cost of sales. What did
+        # leave its layers, on a return or anything else, follow_value follows from its arrival.
+        positions = [(place, there) for place in receipt_line.places()
+                     if (there := receipt_line.quantity_at(place) + receipt_line.sent_back_from(place)) > 0]
     lock_positions((item, place) for place, _there in positions)
     shelves = [
         (place, source, held)
