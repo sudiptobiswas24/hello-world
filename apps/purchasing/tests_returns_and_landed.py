@@ -1503,3 +1503,46 @@ class AReturnsNoteIsDatedOnTheReturnsDayTests(ProbeCase):
         note = Bill.objects.get(debits__isnull=False)
         self.assertEqual((back.receipt_date, note.bill_date, note.journal_entry.date, note.total()),
                          (JAN(20), JAN(20), JAN(20), Decimal("20.00")))
+
+
+class ALandingAfterAReturnReadsTheLayersTests(ReturnTestCase):
+    """
+    O417: under FIFO a return to vendor takes the oldest layer, whichever receipt line it names, while a
+    landing asked each shelf for the line's goods less what returns naming it sent back. Ten at 100 and
+    ten at 120 received, four of the second sent back (FIFO: off the first's layer, at 100), then 100 of
+    freight on the second: its ten are all still on the shelf, in its layer, and all 100 belongs on
+    them. The landing put 60 there and 40 in cost of sales.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.item.costing_method = "fifo"
+        self.item.save()
+        self.freight_expense = Account.objects.create(code="5300", name="Freight", account_type=AccountType.EXPENSE)
+        self.freight = ChargeType.objects.create(code="FRT", name="Ocean freight", expense_account=self.freight_expense,
+                                                 capitalise_into_inventory=True)
+        self.cogs = Account.objects.create(code="5010", name="Cost of sales", account_type=AccountType.EXPENSE)
+        Company.objects.update(default_cogs_account=self.cogs)
+
+    carrier_bill = ThirdPartyLandedCostTests.carrier_bill
+
+    def test_a_partial_return_then_a_late_freight_bill_lands_on_the_goods_still_held(self):
+        from apps.inventory.models import StockMovement
+        from apps.inventory.reports import reconcile_to_ledger
+
+        self.carrier = Party.objects.create(code="V-CAR", name="Carrier", default_currency=self.usd)
+        PartyRoleAssignment.objects.create(party=self.carrier, role=PartyRole.VENDOR)
+        self.receive(self.make_order("10", "100"), "10")
+        second = self.receive(self.make_order("10", "120"), "10")
+        line = second.lines.get()
+        second.create_return(quantities={line: Decimal("4")}, debit_bills=False)
+        self.assertEqual((self.item.on_hand_at(self.warehouse), self.item.stock_value_at(self.warehouse)),
+                         (Decimal("16"), Decimal("1800.00")))
+        _bill, charge = self.carrier_bill("100")
+        charge.allocate_landed_cost([line])
+        self.assertEqual(self.item.stock_value_at(self.warehouse), Decimal("1900.00"))
+        self.assertEqual(self.balance(self.inventory), Decimal("1900.00"))
+        self.assertEqual((self.balance(self.freight_expense), self.balance(self.cogs)), (Decimal("0.00"), Decimal("0.00")))
+        landed = StockMovement.objects.filter(adjusts=line.stock_movement, quantity=0)
+        self.assertEqual(sum((row.value for row in landed), Decimal("0")), Decimal("100.00"))
+        self.assertEqual(reconcile_to_ledger()["difference"], Decimal("0"))
