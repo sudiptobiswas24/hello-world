@@ -737,7 +737,7 @@ class APolicyHoldsNoSettingNothingReadsTests(TestCase):
 
 class WhatAPolicyChangeLeavesAloneTests(LeaveTestCase):
     """O307: carry_over_limit is enforced where the carry is entered, and a change of annual days restates no
-    year before the one it is made in."""
+    year up to the one it is made in (O359: it applies from the next)."""
 
     def test_a_carry_over_beyond_the_limit_is_refused_and_one_within_it_counts(self):
         from django.core.exceptions import ValidationError
@@ -752,18 +752,40 @@ class WhatAPolicyChangeLeavesAloneTests(LeaveTestCase):
                                         carried_over=Decimal("5"))
         self.assertEqual(self.policy.entitlement_for(person, 2026), Decimal("25.00"))
 
-    def test_changed_twice_on_2_january_2027_2026_keeps_its_25_and_2027_has_28(self):
+    def change(self, on, *figures):
         from unittest import mock
 
+        with mock.patch("apps.hr.models.timezone.localdate", return_value=on):
+            for days in figures:
+                self.policy.annual_days = Decimal(days)
+                self.policy.save()
+
+    def granted(self, person, *years):
+        return tuple(self.policy.entitlement_for(person, year) for year in years)
+
+    def test_changed_twice_on_2_january_2027_2027_keeps_its_25_and_2028_has_28(self):
+        """O359 (decided): a change applies from the next leave year. Until then 2027 read the new figure."""
         person = self.employee("C2")
-        with mock.patch("apps.hr.models.timezone.localdate", return_value=datetime.date(2027, 1, 2)):
-            self.policy.annual_days = Decimal("30")
-            self.policy.save()
-            self.policy.annual_days = Decimal("28")
-            self.policy.save()
-        self.assertEqual((self.policy.entitlement_for(person, 2025), self.policy.entitlement_for(person, 2026),
-                          self.policy.entitlement_for(person, 2027)),
-                         (Decimal("25.00"), Decimal("25.00"), Decimal("28.00")))
+        self.change(datetime.date(2027, 1, 2), "30", "28")
+        self.assertEqual(self.granted(person, 2025, 2026, 2027, 2028),
+                         (Decimal("25.00"), Decimal("25.00"), Decimal("25.00"), Decimal("28.00")))
+
+    def test_changed_on_the_last_day_of_the_year_the_next_takes_it(self):
+        person = self.employee("C3")
+        self.change(datetime.date(2026, 12, 31), "30")
+        self.assertEqual(self.granted(person, 2026, 2027), (Decimal("25.00"), Decimal("30.00")))
+
+    def test_changed_and_changed_back_in_one_year_nothing_moves(self):
+        person = self.employee("C4")
+        self.change(datetime.date(2026, 6, 15), "30", "25")
+        self.assertEqual(self.granted(person, 2026, 2027), (Decimal("25.00"), Decimal("25.00")))
+
+    def test_changed_in_two_years_each_keeps_the_figure_it_started_with(self):
+        person = self.employee("C5")
+        self.change(datetime.date(2026, 3, 1), "30")
+        self.change(datetime.date(2027, 3, 1), "18")
+        self.assertEqual(self.granted(person, 2026, 2027, 2028),
+                         (Decimal("25.00"), Decimal("30.00"), Decimal("18.00")))
 
 
 class LeaveAskedBeforeALeavingDateTests(LeaveTestCase):
