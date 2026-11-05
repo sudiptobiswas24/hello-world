@@ -10,7 +10,7 @@ from django.core.exceptions import ValidationError
 from reportlab.lib.units import mm
 
 from apps.accounting.trade_terms import freight_meta
-from apps.core.documents import counted, money, render_document, rupees_in_words
+from apps.core.documents import bold, counted, lines, money, render_document, rupees_in_words
 from apps.core.models import Company, to_date
 
 
@@ -243,23 +243,23 @@ def tax_invoice(invoice, copy="original"):
 
 
 def _party_text(recipient):
-    lines = [f"<b>{recipient['name']}</b>", *recipient["address"]]
-    lines.append(f"GSTIN {recipient['gstin']}" if recipient["gstin"] else "Unregistered")
+    parts = [bold(recipient["name"]), *recipient["address"]]
+    parts.append(f"GSTIN {recipient['gstin']}" if recipient["gstin"] else "Unregistered")
     if recipient["state_name"]:
-        lines.append(f"State {recipient['state_name']}")
-    return "<br/>".join(lines)
+        parts.append(f"State {recipient['state_name']}")
+    return lines(parts)
 
 
 def _letterhead_text(supplier):
-    lines = [f"<b>{supplier['trade_name'] or supplier['name']}</b>"]
+    parts = [bold(supplier["trade_name"] or supplier["name"])]
     if supplier["trade_name"] and supplier["name"] != supplier["trade_name"]:
-        lines.append(supplier["name"])
-    lines.extend(supplier["address"])
+        parts.append(supplier["name"])
+    parts.extend(supplier["address"])
     if supplier["gstin"]:
-        lines.append(f"GSTIN {supplier['gstin']}")
+        parts.append(f"GSTIN {supplier['gstin']}")
     if supplier["state_name"]:
-        lines.append(f"State {supplier['state_name']}")
-    return "<br/>".join(lines)
+        parts.append(f"State {supplier['state_name']}")
+    return lines(parts)
 
 
 def render_invoice_pdf(invoice, copy="original"):
@@ -296,13 +296,13 @@ def render_invoice_pdf(invoice, copy="original"):
     for line in printed["lines"]:
         description = line["description"]
         if line["discount_percent"]:
-            description += f"<br/>less {line['discount_percent'].normalize():f}%"
+            description = lines([description, f"less {line['discount_percent'].normalize():f}%"])
         rows.append([
             description, line["hsn"] or "—",
             f"{counted(line['quantity'])} {line['unit']}".strip(),
             money(line["unit_price"], currency), money(line["taxable"], currency),
-            "<br/>".join(f"{name} {_rate(rate)}<br/>{money(amount, currency)}"
-                         for name, rate, amount in line["taxes"]) or "—",
+            lines(part for name, rate, amount in line["taxes"]
+                  for part in (f"{name} {_rate(rate)}", money(amount, currency))) or "—",
             money(line["amount"], currency),
         ])
     # Wide enough for a crore on one line: 1,76,40,000.00 broke into "1,764,000.0" over "0" (O409).
@@ -335,16 +335,14 @@ def render_invoice_pdf(invoice, copy="original"):
     blocks = []
     if printed["delivery"]:
         delivery = printed["delivery"]
-        text = "<br/>".join(delivery["address"])
-        if delivery["state_name"]:
-            text += f"<br/>State {delivery['state_name']}"
+        text = lines([*delivery["address"]] + ([f"State {delivery['state_name']}"] if delivery["state_name"] else []))
         blocks.append(("DELIVERED TO", text))
     if printed["export"]:
-        words = f"<b>{printed['export']}</b>"
+        words = bold(printed["export"])
         if printed["lut"] and "WITHOUT PAYMENT" in printed["export"]:
             lut = printed["lut"]
-            words += (f"<br/>LUT ARN {lut['arn']} dated {to_date(lut['filed_on']):%d %b %Y}, "
-                      f"for {lut['financial_year']}")
+            words = lines([words, f"LUT ARN {lut['arn']} dated {to_date(lut['filed_on']):%d %b %Y}, "
+                                  f"for {lut['financial_year']}"])
         blocks.append(("", words))
     for row in printed["tcs"]:
         if row["declaration"]:
