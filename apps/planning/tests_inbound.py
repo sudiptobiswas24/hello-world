@@ -13,8 +13,10 @@ from datetime import timedelta
 from decimal import Decimal
 
 from django.contrib.auth.models import User
+from django.db import transaction
 from django.utils import timezone
 
+from apps.core.models import lock_rows
 from apps.inventory.models import MovementType, StockMovement, Warehouse
 from apps.inventory.tracking import Lot, TrackingMode
 from apps.purchasing.models import (
@@ -199,3 +201,83 @@ class ExpiringUnusedTests(ExpiringTestCase):
         # Neither batch is inspected: both are already out of the opening
         # balance, so their expiry takes nothing more away.
         self.assertEqual(expiring_unused(self.virgin, self.plant, TODAY, []), [])
+
+
+class ARequisitionCountsOnceTests(InboundTestCase):
+    """
+    O315. 1,000 kg of polymer asked for by a requisition counts as supply
+    exactly once on its way to the shelf: as the requisition until its order
+    is confirmed, as the order from then on, as stock once it is in. Worked in
+    calc_fix_plan/o315.py.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from apps.accounting.models import Account, AccountType
+        from apps.core.models import Company
+
+        Company.objects.update(grni_account=Account.objects.create(
+            code="2150", name="Goods received not invoiced", account_type=AccountType.LIABILITY))
+        VendorPrice.objects.create(vendor=self.vendor, item=self.virgin, currency=self.inr,
+                                   unit_price=Decimal("90"), min_quantity=Decimal("0"), valid_from=TODAY)
+        self.requisition = PurchaseRequisition.objects.create(
+            requested_by=self.buyer, request_date=TODAY, needed_by=TODAY)
+        self.asked = PurchaseRequisitionLine.objects.create(
+            requisition=self.requisition, item=self.virgin, uom=self.kg, quantity=Decimal("1000"))
+        self.requisition.submit()
+
+    def supply(self):
+        def total(rows):
+            return sum((row.quantity for row in rows), Decimal("0"))
+        return (total(requisition_supply(self.virgin, self.plant, TODAY)),
+                total(purchase_supply(self.virgin, self.plant, TODAY)))
+
+    def approve_and_order(self, **kwargs):
+        self.requisition.approve(by=User.objects.create_user("approver"))
+        return self.requisition.create_order(self.vendor, **kwargs)
+
+    def test_a_requisition_turned_into_a_draft_order_is_still_expected_supply(self):
+        """The auditor's probe: draft order of 1,000 kg, and the plan asks for nothing more."""
+        self.rule(self.virgin, minimum="1000")
+        self.assertEqual(self.orders(), {})
+        self.approve_and_order()
+        self.assertEqual(self.supply(), (Decimal("1000"), Decimal("0")))
+        self.assertEqual(sorted(self.orders()), [])
+
+    def test_each_step_forward_counts_the_thousand_once(self):
+        self.assertEqual(self.supply(), (Decimal("1000"), Decimal("0")))
+        order = self.approve_and_order()
+        self.assertEqual(self.supply(), (Decimal("1000"), Decimal("0")))
+        order.confirm()
+        self.assertEqual(self.supply(), (Decimal("0"), Decimal("1000")))
+        receipt = GoodsReceipt.objects.create(purchase_order=order, receipt_date=TODAY)
+        GoodsReceiptLine.objects.create(receipt=receipt, order_line=order.lines.get(),
+                                        warehouse=self.plant, quantity_received=Decimal("400"))
+        receipt.post()
+        self.assertEqual(self.supply(), (Decimal("0"), Decimal("600")))
+
+    def test_a_draft_order_deleted_hands_the_quantity_back_to_the_requisition(self):
+        order = self.approve_and_order()
+        with transaction.atomic():  # as the API's delete holds the order first
+            lock_rows(order)
+            order.delete()
+        self.assertEqual(self.supply(), (Decimal("1000"), Decimal("0")))
+
+    def test_a_confirmed_order_cancelled_hands_it_back_too(self):
+        order = self.approve_and_order()
+        order.confirm()
+        order.cancel()
+        self.assertEqual(self.supply(), (Decimal("1000"), Decimal("0")))
+
+    def test_a_rejected_requisition_is_nothing_coming(self):
+        self.requisition.reject(note="Not this month.")
+        self.assertEqual(self.supply(), (Decimal("0"), Decimal("0")))
+
+    def test_part_confirmed_counts_the_rest_as_still_asked_for(self):
+        order = PurchaseOrder.objects.create(vendor=self.vendor, order_date=TODAY, currency=self.inr)
+        PurchaseOrderLine.objects.create(order=order, item=self.virgin, uom=self.kg, quantity=Decimal("600"),
+                                         unit_price=Decimal("90"), expected_date=TODAY,
+                                         requisition_line=self.asked)
+        self.assertEqual(self.supply(), (Decimal("1000"), Decimal("0")))
+        order.confirm()
+        self.assertEqual(self.supply(), (Decimal("400"), Decimal("600")))

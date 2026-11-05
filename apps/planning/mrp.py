@@ -386,14 +386,33 @@ def work_order_demand(item, warehouse, on_date):
 # -- what is already coming ----------------------------------------------
 
 
+def counted_as_purchase(order_lines):
+    """
+    The order lines `purchase_supply` takes over from a requisition.
+
+    One definition for both readers, because the two used to disagree:
+    the requisition stopped counting a line once it was on any order not
+    cancelled, a draft included, and the purchase side began only at
+    confirmation, so between "convert to order" and "confirm" the
+    quantity was in neither and the next plan bought it again. A
+    requisition's quantity now counts as requisition supply until its
+    order is confirmed and as purchase supply from then on (received or
+    not: what has come in is on the shelf), and never twice.
+    """
+    from apps.purchasing.models import OrderStatus
+
+    return order_lines.filter(order__status=OrderStatus.CONFIRMED)
+
+
 def purchase_supply(item, warehouse, on_date):
     """Confirmed purchase lines not yet received."""
-    from apps.purchasing.models import OrderStatus, PurchaseOrderLine
+    from apps.purchasing.models import PurchaseOrderLine
 
     rows = []
     lines = (
-        PurchaseOrderLine.objects.filter(
-            item=item, order__status=OrderStatus.CONFIRMED, charge__isnull=True,
+        counted_as_purchase(PurchaseOrderLine.objects.filter(
+            item=item, charge__isnull=True,
+        )).filter(
             # Shipped by the vendor straight to the customer: it never
             # comes here, and counting it hid the shortage it leaves.
             order__drop_ship_for__isnull=True,
@@ -486,10 +505,12 @@ def requisition_supply(item, warehouse, on_date):
     proposes the same purchase every morning until somebody stops
     reading it.
 
-    Counted per line and net of what has already been turned into a
-    purchase order, because a requisition split across two vendors is
-    part ordered and part not, and the ordered part is already counted
-    as a confirmed purchase.
+    Counted per line and net of what is already counted as a confirmed
+    purchase (`counted_as_purchase`), because a requisition split across
+    two vendors is part ordered and part not. A draft order is not netted:
+    it is not supply until confirmed, and netting it hid the quantity
+    from both sides. Each side in its own unit, taken to the stocking
+    unit before they are subtracted.
     """
     from apps.purchasing.models import PurchaseRequisitionLine, RequisitionStatus
 
@@ -502,9 +523,13 @@ def requisition_supply(item, warehouse, on_date):
         .select_related("requisition", "item", "uom")
     )
     for line in lines:
-        remaining = line.item.to_stock_quantity(
-            line.quantity - line.quantity_ordered(), line.uom or line.item.uom
+        asked = line.item.to_stock_quantity(line.quantity, line.uom or line.item.uom)
+        ordered = sum(
+            (line.item.to_stock_quantity(placed.quantity, placed.uom or line.item.uom)
+             for placed in counted_as_purchase(line.order_lines.all()).select_related("uom")),
+            Decimal("0"),
         )
+        remaining = asked - ordered
         if remaining <= 0:
             continue
         rows.append(_supply(
