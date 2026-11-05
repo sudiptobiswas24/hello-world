@@ -550,9 +550,11 @@ class LeavePolicy(AuditModel):
 
     def save(self, *args, **kwargs):
         """
-        A change of the annual days does not restate the years before the one it is made in (O307): the class
-        says changing it is a policy change rather than an edit to everybody's history, and raising 12 to 15
-        turned 2026's 12 into 15 for everybody. The figure that stood is kept for the years up to last year.
+        A change of the annual days applies from the next leave year (O359, decided): the class says changing
+        it is a policy change rather than an edit to everybody's history, and raising 12 to 15 turned 2026's
+        12 into 15 for everybody (O307), then the year it was made in. The figure that stood is kept for the
+        years up to this one. Changed again the same year, the year keeps the figure it started with and the
+        next takes the latest; changed back, both read the same figure.
         """
         with transaction.atomic():
             if self.pk:
@@ -560,9 +562,9 @@ class LeavePolicy(AuditModel):
                 before = LeavePolicy.objects.select_for_update(no_key=True).filter(pk=self.pk).values_list(
                     "annual_days", flat=True).first()
                 if before is not None and before != self.annual_days:
-                    last_year = timezone.localdate().year - 1
-                    if not self.years.filter(year__gte=last_year).exists():
-                        LeavePolicyYear.objects.create(policy=self, year=last_year, annual_days=before)
+                    this_year = timezone.localdate().year
+                    if not self.years.filter(year__gte=this_year).exists():
+                        LeavePolicyYear.objects.create(policy=self, year=this_year, annual_days=before)
             super().save(*args, **kwargs)
 
     def annual_days_for(self, year):
