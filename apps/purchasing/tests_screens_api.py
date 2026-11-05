@@ -476,6 +476,22 @@ class PurchaseOrderPdfTests(ScreensTestCase):
     def test_a_draft_prints_as_a_draft(self):
         self.assertTrue(self.make_order(confirm=False).render_pdf().startswith(b"%PDF-"))
 
+    def test_a_vendor_with_angle_brackets_prints_as_typed(self):
+        """O319: the purchase order shares the invoice's layout, and lost "<...>" the same way."""
+        from apps.core.documents import printed_text
+
+        order = self.make_order(confirm=False)
+        order.vendor.name = "Gupta <Korba> & Co"
+        order.vendor.save()
+        order.shipping_note = "Deliver to gate <2> & sign"
+        order.save()
+        with printed_text() as seen:
+            response = self.as_("Purchasing Clerk").get(f"/api/purchasing/purchase-orders/{order.pk}/pdf/")
+        self.assertEqual(response.status_code, 200)
+        printed = "\n".join(seen)
+        self.assertIn("Gupta <Korba> & Co", printed)
+        self.assertIn("Deliver to gate <2> & sign", printed)
+
 
 @override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
 class PurchaseOrderMailTests(ScreensTestCase):

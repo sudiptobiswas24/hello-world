@@ -1,7 +1,7 @@
 """The purchase order on paper, for the vendor: on the plant's shared layout (apps/core/documents.py)."""
 
 from apps.accounting.trade_terms import freight_meta
-from apps.core.documents import render_document
+from apps.core.documents import bold, lines, render_document
 from apps.core.models import Company
 
 from .models import VendorProfile
@@ -48,16 +48,16 @@ def _buyer(company):
     """
     from apps.accounting.gst import STATES, GstSettings
 
-    lines = [f"<b>{company.name}</b>"]
+    parts = [bold(company.name)]
     if company.legal_name and company.legal_name != company.name:
-        lines.append(company.legal_name)
+        parts.append(company.legal_name)
     if company.address_id:
-        lines.append(company.address.formatted().replace("\n", "<br/>"))
+        parts.extend(company.address.formatted().splitlines())
     gst = GstSettings.active()
     if gst is not None:
-        lines.append(f"GSTIN {gst.gstin}")
-        lines.append(f"State {STATES.get(gst.state, gst.state)} ({gst.state})")
-    return "<br/>".join(lines)
+        parts.append(f"GSTIN {gst.gstin}")
+        parts.append(f"State {STATES.get(gst.state, gst.state)} ({gst.state})")
+    return lines(parts)
 
 
 def _vendor(vendor):
@@ -65,7 +65,7 @@ def _vendor(vendor):
     from apps.core.documents import address_block
 
     profile = getattr(vendor, "tax_profile", None)
-    text = f"<b>{vendor.name}</b><br/>{address_block(vendor.billing_address())}"
+    parts = [bold(vendor.name), address_block(vendor.billing_address())]
     if profile is not None and profile.gstin:
-        text += f"<br/>GSTIN {profile.gstin}"
-    return text
+        parts.append(f"GSTIN {profile.gstin}")
+    return lines(parts)
