@@ -705,3 +705,45 @@ class ATdsAndATcsChallanForOneMonthOnOneBankTests(TcsTestCase):
         lines["-700"].match_entry(tds.journal_entry)
         report = statement.reconciliation()
         self.assertEqual((report["difference"], report["unpresented_entries"]), (D("0"), []))
+
+
+class SettledWithItsTcsAtNoExchangeTests(TcsTestCase):
+    """
+    O450: a rupee invoice with TCS part-settled then settled in full. T1 books 106,200.00 on its own entry
+    and 1,062.00 on the TCS collection's, 107,262.00 on the receivable, which its total() counts too. 50,000
+    then 57,262 received: each clears its own figure (document base = payment base), nothing is exchange,
+    the receivable is 0.00 (calc_fix_new/o450.py). Read off the invoice's entry alone, 50,000 of it cleared
+    49,504.95 and the 495.05 between was booked as exchange once the base-currency shortcut went.
+    """
+
+    def receipt(self, amount, day):
+        from apps.accounting.models import Payment, PaymentDirection
+
+        payment = Payment.objects.create(party=self.mh, direction=PaymentDirection.RECEIPT, payment_date=day,
+                                         amount=D(amount), currency=self.inr, bank_account=self.bank,
+                                         counterpart_account=self.ar)
+        payment.post()
+        return payment
+
+    def test_part_then_whole_clears_the_receivable_at_what_each_side_booked(self):
+        from .models import InvoicePayment
+
+        invoice = self.t1()
+        self.assertEqual((invoice.total(), -self.ledger("1100")), (D("107262.00"), D("107262.00")))
+        first = InvoicePayment.objects.create(invoice=invoice, payment=self.receipt("50000", OCTOBER),
+                                              amount=D("50000"))
+        first.refresh_from_db()
+        self.assertEqual((first.document_base, first.payment_base, first.fx_entry_id, -self.ledger("1100")),
+                         (D("50000.00"), D("50000.00"), None, D("57262.00")))
+        second = InvoicePayment.objects.create(invoice=invoice, payment=self.receipt("57262", OCTOBER),
+                                               amount=D("57262"))
+        second.refresh_from_db()
+        invoice.refresh_from_db()
+        self.assertEqual((second.document_base, second.payment_base, second.fx_entry_id, invoice.amount_due(),
+                          self.ledger("1100")),
+                         (D("57262.00"), D("57262.00"), None, D("0"), D("0")))
+
+    def test_tcs_on_a_foreign_currency_sale_is_refused(self):
+        # The USD half of O450 cannot be built: TCS on a sale is collected in rupees.
+        with self.assertRaisesMessage(ValidationError, "TCS on a sale"):
+            self.invoice(self.mh, [(self.scrap, "10", "1", "0", [])], currency=self.usd)

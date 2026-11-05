@@ -463,6 +463,21 @@ class CommissionLeavesTcsOutTests(SalesTestCase):
         for line in order.lines.all():
             line.taxes.set([vat])
         invoice = self.bill(order)
+        # Planted as the application books it (O450): its own entry on the receivable beside the invoice's,
+        # which total() counts. tcs_amount alone left 1,212 owed on 1,200 booked, and a receipt of 600
+        # cleared 594.06 of it, the rest read as exchange.
+        from apps.accounting.models import JournalEntry, JournalLine, TcsSection
+        from .tcs import TcsCollection
+
+        payable = Account.objects.create(code="2290", name="TCS payable", account_type=AccountType.LIABILITY)
+        section = TcsSection.objects.create(code="206C(1)", name="Scrap", form_code="6CE", payable_account=payable)
+        entry = JournalEntry.objects.create(date=invoice.invoice_date, reference=invoice.number, memo="TCS")
+        JournalLine.objects.create(entry=entry, account=self.ar, party=self.customer, debit=Decimal("12.00"))
+        JournalLine.objects.create(entry=entry, account=payable, party=self.customer, credit=Decimal("12.00"))
+        entry.post()
+        TcsCollection.objects.create(invoice=invoice, section=section, base=Decimal("1200.00"),
+                                     rate_percent=Decimal("1"), amount=Decimal("12.00"), date=invoice.invoice_date,
+                                     journal_entry=entry, posted_account=payable)
         Invoice.objects.filter(pk=invoice.pk).update(tcs_amount=Decimal("12.00"))
         invoice.refresh_from_db()
         self.assertEqual(invoice.total(), Decimal("1212.00"))
