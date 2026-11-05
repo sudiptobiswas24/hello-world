@@ -275,6 +275,21 @@ class PlanningRun(AuditModel):
             f" ({timezone.localtime(self.ran_at):%H:%M})"
         )
 
+    def delete(self, *args, **kwargs):
+        """
+        The delete path of a firmed order's guard: a run's orders go with
+        it in one cascade that never asks PlannedOrder.delete(), so a run
+        holding an order whose document stands is refused here (O316).
+        """
+        for order in self.orders.filter(status=PlannedOrderStatus.FIRMED).order_by("pk"):
+            standing = order.firmed_into()
+            if standing is not None:
+                raise ValidationError(
+                    f"{self} holds {order}, firmed into {standing}: it is not deleted while that "
+                    "stands. Cancel that first."
+                )
+        return super().delete(*args, **kwargs)
+
     def suggestions(self):
         return self.orders.filter(status=PlannedOrderStatus.SUGGESTED)
 
@@ -556,9 +571,62 @@ class PlannedOrder(AuditModel):
                 "itself."
             )
 
+    # What the document it was firmed into was made from. Changing one
+    # afterwards leaves the run or the requisition with no account of
+    # itself, and the plan's netting with a figure nothing is making.
+    FIXED_WHILE_FIRMED = (
+        "item", "kind", "warehouse", "from_warehouse", "quantity", "needed_by",
+        "release_on", "bom", "vendor", "routing", "run",
+    )
+
+    def _refuse_changing_what_stands(self, update_fields=None):
+        """
+        Firmed means fixed (O316). While the work order, requisition or
+        transfer it became still stands, what it was made from is not
+        edited and the suggestion is not deleted: cancel that document
+        first, which lapses the firming, and the suggestion is a
+        suggestion again. Asked in save() and delete(), so the API
+        reaches it whatever the serializer lets through.
+        """
+        if self.pk is None:
+            return
+        names = self.FIXED_WHILE_FIRMED if update_fields is None else [
+            name for name in self.FIXED_WHILE_FIRMED if name in set(update_fields)]
+        if not names:
+            return
+        before = type(self).objects.filter(pk=self.pk).first()
+        if before is None or before.status != PlannedOrderStatus.FIRMED:
+            return
+        attnames = [self._meta.get_field(name).attname for name in names]
+        changed = [name for name, attname in zip(names, attnames)
+                   if getattr(self, attname) != getattr(before, attname)]
+        if not changed:
+            return
+        standing = before.firmed_into()
+        if standing is not None:
+            raise ValidationError(
+                f"{before} has been firmed into {standing}, and its "
+                f"{', '.join(name.replace('_', ' ') for name in changed)} cannot change while that "
+                "stands. Change or cancel that instead."
+            )
+
     def save(self, *args, **kwargs):
         self._check_kind()
+        self._refuse_changing_what_stands(kwargs.get("update_fields"))
         super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        """Refused while what it was firmed into stands: see _refuse_changing_what_stands."""
+        if self.pk is not None:
+            before = type(self).objects.filter(pk=self.pk).first()
+            standing = before.firmed_into() if before is not None and \
+                before.status == PlannedOrderStatus.FIRMED else None
+            if standing is not None:
+                raise ValidationError(
+                    f"{before} has been firmed into {standing} and is the record of why it exists: "
+                    "it is not deleted while that stands. Cancel that first."
+                )
+        return super().delete(*args, **kwargs)
 
     def firmed_into(self):
         """
