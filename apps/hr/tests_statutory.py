@@ -641,6 +641,79 @@ class AMonthPaidInTwoRunsTests(StatutoryTestCase):
         self.assertEqual(self.lines(again, person)["PF"], Decimal("960.00"))
 
 
+class ESICoverageOfSomebodyPaidByTheHourTests(StatutoryTestCase):
+    """
+    O367 (decided): a member paid by the hour or the piece has no monthly rate to read, so the O358 rule read
+    theirs as 0 and covered them whatever they earned. Their coverage is the month's wages so far at each run:
+    June in fortnights at 100 an hour (calc_fix_pay/o367_o368.py).
+    """
+
+    FIRST, SECOND = AMonthPaidInTwoRunsTests.FIRST, AMonthPaidInTwoRunsTests.SECOND
+
+    def setUp(self):
+        super().setUp()
+        from .pay_details import EmployeePayDetails
+        from .payroll import Statutory
+
+        self.hourly = PayComponent.objects.create(
+            code="HOURLY", name="Hourly", kind=ComponentKind.EARNING, basis=ComponentBasis.PER_HOUR,
+            expense_account=self.wages, sequence=5)
+        for component, marked in ((self.esi, Statutory.ESI), (self.esi_er, Statutory.ESI_EMPLOYER)):
+            self.mark(component, marked)
+            component.base_components.add(self.hourly)
+            component.coverage_components.add(self.hourly)
+        self.person_f = self.person("F")
+        for number, employee in enumerate(Employee.objects.order_by("pk")):
+            Employee.objects.filter(pk=employee.pk).update(uan=f"10000000000{number}", esi_number=f"220000000{number}")
+            EmployeePayDetails.objects.create(employee=employee, date_of_birth=datetime.date(1990, 1, 1))
+
+    def run_with_hours(self, start, end, hours):
+        run = PayRun.objects.create(period_start=start, period_end=end, pay_date=end)
+        run.calculate(hours={self.person_f: Decimal(hours)} if hours else None)
+        run.post()
+        return run
+
+    def fortnights(self, hours, since=datetime.date(2020, 1, 1)):
+        self.paid(self.person_f, self.hourly, "100", since=since)
+        return (self.run_with_hours(*self.FIRST, hours=hours if since <= self.FIRST[1] else None),
+                self.run_with_hours(*self.SECOND, hours=hours))
+
+    def test_fortnights_of_12000_the_first_is_covered_and_the_month_so_far_of_24000_is_not(self):
+        first, second = self.fortnights("120")
+        self.assertEqual([(self.lines(run, self.person_f).get("ESI"), self.lines(run, self.person_f).get("ESI-ER"))
+                          for run in (first, second)],
+                         [(Decimal("90"), Decimal("390")), (None, None)])
+
+    def test_fortnights_of_8000_both_covered_at_16000_so_far(self):
+        first, second = self.fortnights("80")
+        self.assertEqual((self.lines(first, self.person_f)["ESI"], self.lines(second, self.person_f)["ESI"]),
+                         (Decimal("60"), Decimal("60")))
+
+    def test_an_hourly_rate_from_the_1st_mid_month_or_the_last_day_reads_wages_so_far(self):
+        """
+        A fixed basic of 12,000 a fortnight to the day before, the hourly rate from the 1st, the 16th or the
+        30th: June is decided by its wages so far, 12,000 in the first fortnight, covered (ESI 90). Read from
+        the fixed rate it was 24,000 a month and not covered.
+        """
+        for day in (1, 16, 30):
+            with self.subTest(day=day):
+                since = datetime.date(2026, 6, day)
+                EmployeeCompensation.objects.filter(employee=self.person_f, component__in=[self.basic, self.hourly]
+                                                    ).delete()
+                if day > 1:
+                    EmployeeCompensation.objects.create(employee=self.person_f, component=self.basic,
+                                                        amount=Decimal("12000"), effective_from=datetime.date(2020, 1, 1),
+                                                        effective_to=since - datetime.timedelta(days=1))
+                self.paid(self.person_f, self.hourly, "100", since=since)
+                run = PayRun.objects.create(period_start=self.FIRST[0], period_end=self.FIRST[1],
+                                            pay_date=self.FIRST[1])
+                run.calculate(employees=[self.person_f], hours={self.person_f: Decimal("120")} if day == 1 else None)
+                slip = run.payslips.get(employee=self.person_f)
+                self.assertEqual((slip.gross(), self.lines(run, self.person_f).get("ESI")),
+                                 (Decimal("12000.00"), Decimal("90")))
+                run.delete()
+
+
 class AMonthPaidInTwoRunsWithThePensionApartTests(AMonthPaidInTwoRunsTests):
     """
     Review 1 (O301 with O237): PF-ER 3.67% and EPS 8.33% as components of their own. Two fortnights of 8,000:

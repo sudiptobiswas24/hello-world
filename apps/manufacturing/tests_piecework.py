@@ -459,6 +459,26 @@ class ATakeBackOutsideAFinalRunTests(PieceworkTestCase):
         self.assertEqual(lines, [(ComponentKind.EARNING, Decimal("1000"), Decimal("450.00"))])
 
 
+    def test_what_is_taken_back_is_not_esi_coverage_wages(self):
+        """
+        O368: ESI of the piece work alone. October in fortnights at 0.45 a metre: 20,000 m, 9,000.00, with the
+        400.00 of September taken back beside it; then 26,000 m, 11,700.00. The month's wages so far are
+        20,700.00, within 21,000: ESI 0.75% of 11,700 = 87.75, up to 88. Counted as wages, the 400.00 taken
+        back made them 21,100.00 and the second fortnight was not covered (calc_fix_pay/o367_o368.py).
+        """
+        self.esi.base_components.set([self.per_metre])
+        for _ in range(4):
+            self.woven("5000", datetime.date(2026, 10, 5))
+        slip, lines = self.slip_of(self.pay(datetime.date(2026, 10, 1), datetime.date(2026, 10, 15)))
+        self.assertEqual((lines, self.amount(slip, self.esi)),
+                         ([(ComponentKind.DEDUCTION, Decimal("1000"), Decimal("400.00")),
+                           (ComponentKind.EARNING, Decimal("20000"), Decimal("9000.00"))], Decimal("68")))
+        for _ in range(4):
+            self.woven("6500", datetime.date(2026, 10, 20))
+        slip, lines = self.slip_of(self.pay(datetime.date(2026, 10, 16), datetime.date(2026, 10, 31)))
+        self.assertEqual((lines, self.amount(slip, self.esi)),
+                         ([(ComponentKind.EARNING, Decimal("26000"), Decimal("11700.00"))], Decimal("88")))
+
 class AFormerEmployeesShortfallIsSettledTests(PieceworkTestCase):
     """
     O215. 400.00 paid for 1,000 m, the roll voided, and the weaver gone on
