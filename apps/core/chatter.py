@@ -67,6 +67,12 @@ class FollowUp(AuditModel):
     done_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.PROTECT,
                                 related_name="+")
     outcome = models.TextField(blank=True)
+    raised_by_a_rule = models.BooleanField(
+        default=False, editable=False,
+        help_text="Raised by the application for its addressee to decide (quality.decisions.tell, an API key's "
+                  "issuer leaving), not planned by a person: whoever caused it is its created_by and has no say "
+                  "over it (O454). Only its addressee, or a manager, marks it done, changes or removes it.",
+    )
 
     class Meta:
         indexes = [models.Index(fields=["content_type", "object_id"], name="follow_up_by_record"),
