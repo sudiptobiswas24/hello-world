@@ -28,7 +28,7 @@ from apps.core.approvals import (
 )
 from apps.core.documents import grouped, in_words_of_money, money
 from apps.core.history import EventKind, record
-from apps.core.recurrence import RecurrenceInterval, add_interval, run_date, still_to_take
+from apps.core.recurrence import RecurrenceInterval, add_interval, follow_the_start, run_date, still_to_take
 from apps.core.models import (
     BILLED,
     CONFIRMED,
@@ -6265,6 +6265,7 @@ class RecurringInvoice(AuditModel):
     def save(self, *args, **kwargs):
         self._check_terms()
         refuse_money_kept_as(self, "receivable_account")
+        follow_the_start(self)
         if self.next_run_date is None:
             self.next_run_date = to_date(self.start_date)
         if self._state.adding and self.customer_id:
