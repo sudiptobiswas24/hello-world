@@ -21,7 +21,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from apps.core.models import AuditModel, serialised, to_date
-from apps.core.recurrence import RecurrenceInterval, add_interval, run_date, still_to_take
+from apps.core.recurrence import RecurrenceInterval, add_interval, follow_the_start, run_date, still_to_take
 
 ZERO = Decimal("0")
 
@@ -56,6 +56,7 @@ class RecurringJournal(AuditModel):
 
     def save(self, *args, **kwargs):
         self._check_terms()
+        follow_the_start(self)
         if self.next_run_date is None:
             self.next_run_date = to_date(self.start_date)
         super().save(*args, **kwargs)

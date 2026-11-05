@@ -72,3 +72,34 @@ def run_date(schedule, on_date=None):
     day = correction_date(to_date(on_date) or schedule.next_run_date, schedule.start_date, refused,
                           "the schedule starts")
     return day_that_has_come(day, refused)
+
+
+def follow_the_start(schedule):
+    """
+    Asked in every schedule's save() (journals, invoices): a start_date edit moves next_run_date with it
+    (O355). The next run stayed where it was, so a start moved past it left a next run before the start,
+    which run_date refuses: every run refused, and next_run_date is not editable. Decided:
+
+    - not yet run (its next run on or before its start as stored): the next run is the new start;
+    - run already (its next run past its start): the start is where the runs taken were anchored, so it
+      does not move; the edit is refused in words.
+
+    A schedule left with its next run before its start by an edit made before this is put right by any
+    save.
+    """
+    from django.core.exceptions import ValidationError
+
+    from apps.core.models import to_date
+
+    start = to_date(schedule.start_date)
+    kept = (None if schedule._state.adding or schedule.pk is None else
+            type(schedule)._base_manager.filter(pk=schedule.pk).values("start_date", "next_run_date").first())
+    if kept is not None and kept["start_date"] != start:
+        if kept["next_run_date"] is not None and kept["next_run_date"] > kept["start_date"]:
+            raise ValidationError({"start_date": [
+                f"{schedule.code} has run since {kept['start_date']:%d %b %Y}, its next run on "
+                f"{kept['next_run_date']:%d %b %Y}: the start its runs were taken from does not move. "
+                "Stop this schedule and begin another from the new day."]})
+        schedule.next_run_date = start
+    elif schedule.next_run_date is not None and start and schedule.next_run_date < start:
+        schedule.next_run_date = start
