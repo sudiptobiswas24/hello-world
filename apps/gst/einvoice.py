@@ -409,6 +409,11 @@ def build(invoice):
     buyer = invoice.customer
     billed_at = invoice.billing_address or buyer.billing_address()
     shipped = invoice.shipping_address
+    from apps.sales.documents import consignee
+
+    kept = (invoice.issued_as or {}).get("delivery") or {}
+    # Whose godown the goods go to, as the invoice posted it; an invoice from before that was kept reads it now.
+    ship_to = kept["consignee"] if "consignee" in kept else consignee(buyer, shipped, billed_at)
     if (not overseas and shipped is not None and billed_at is not None and shipped.pk == billed_at.pk
             and p.state_code(billed_at) not in (None, document.gstin[:2])):
         # Billed and delivered at the buyer's site in another state (O161
@@ -436,7 +441,13 @@ def build(invoice):
     # leave by a port, and the block is optional there.
     if not overseas and shipped is not None and shipped.pk != billed_at.pk:
         ship = p.place(shipped, f"{buyer}'s delivery address")
-        payload["ShipDtls"] = _block(ship, document.gstin, p.party_name(buyer))
+        if ship_to:
+            # A third party's site, on the buyer's direction: the party the goods go to, by its own
+            # registration, or URP where it has none (O152).
+            payload["ShipDtls"] = _block(ship, ship_to["gstin"] or p.UNREGISTERED,
+                                         p.text(ship_to["name"], f"{shipped}'s party's legal name", 3, 100))
+        else:
+            payload["ShipDtls"] = _block(ship, document.gstin, p.party_name(buyer))
     items, running = [], ZERO
     for number, recorded in enumerate(document.lines, start=1):
         row, value = _item(number, recorded, rate)
