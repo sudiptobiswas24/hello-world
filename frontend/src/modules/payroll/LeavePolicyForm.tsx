@@ -15,7 +15,7 @@ export default function LeavePolicyForm() {
         { key: "code", label: "Code" },
         { key: "name", label: "Name" },
         { key: "leave_type", label: "Leave type", kind: "choice", choices: [["vacation", "Vacation"], ["sick", "Sick"], ["unpaid", "Unpaid"], ["other", "Other"]] },
-        { key: "annual_days", label: "Annual days", kind: "decimal", places: 2, initial: "0", hint: "Working days a full year grants" },
+        { key: "annual_days", label: "Annual days", kind: "decimal", places: 2, initial: "0", hint: "Working days a full year grants. A change applies from next January: this year keeps the days it had" },
       ]}
     />
   );
