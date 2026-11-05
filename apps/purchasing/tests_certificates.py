@@ -299,6 +299,28 @@ class CertificateOutsideTellsTheQualityManagerTests(CertificateTestCase):
         self.assertEqual((to_do.done_on, to_do.done_by), (timezone.localdate(), self.users["asha"]))
         self.assertIn(f"taken by concession on {inspection.number}", to_do.outcome)
 
+    def test_under_a_plan_that_asks_for_none_the_quality_manager_reads_it_and_answers_it(self):
+        """
+        O444. MFI 4.1 against 2.8 to 3.6 under a plan that does not ask for a certificate: the batch is
+        not held, and the to-do is for the Quality Manager to read before it is used. Asha, to whom it
+        is addressed, answers it from her own list, and the to-do says that is how it is answered.
+        """
+        InspectionPlan.objects.filter(pk=self.plan.pk).update(certificate_required=False)
+        certificate = self.certificate({self.mfi: "4.1", self.ash: "0.020"})
+        self.assertEqual(why_held(self.item, self.lot), "")
+        to_do = self.to_dos(certificate).get()
+        self.assertEqual(to_do.assigned_to, self.users["asha"])
+        self.assertIn("does not ask for a certificate, so it holds nothing", to_do.note)
+        self.assertIn("mark this done with what was decided", to_do.note)
+        mine = self.clients["asha"].get("/api/core/follow-ups/", {"mine": "true"}).json()
+        self.assertEqual([row["may_change"] for row in mine if row["id"] == to_do.pk], [True])
+        answered = self.clients["asha"].post(f"/api/core/follow-ups/{to_do.pk}/done/",
+                                             {"outcome": "Read; line 2 told to run it at a lower draw."},
+                                             format="json")
+        self.assertEqual(answered.status_code, 200, answered.content)
+        to_do.refresh_from_db()
+        self.assertEqual((to_do.done_on, to_do.done_by), (timezone.localdate(), self.users["asha"]))
+
 
 class APageOfCertifiedBatchesTests(CertificateTestCase):
     def test_a_page_of_outside_batches_reads_their_certificates_once(self):
