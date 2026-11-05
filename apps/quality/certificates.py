@@ -216,6 +216,12 @@ class SupplierCertificate(AuditModel):
         held batch gives them (decisions.tell_the_quality_manager). Posted without a
         word, they learnt of it only when an inspection of the lot waited (O432). Closed
         when it is voided, or when the batch is taken by concession (certificate_answered).
+
+        Under a plan that does not ask for a certificate it is still raised (O444): the
+        batch is not held, so no concession will ever answer it, but a supplier saying
+        the batch is out of specification is exactly what the Quality Manager is to read
+        before it is used, and dropping it would put back O432. It is answered by the
+        person it is addressed to, marking it done with what they decided; it says so.
         """
         from .decisions import tell_the_quality_manager
         from .release import certificate_failed
@@ -231,7 +237,8 @@ class SupplierCertificate(AuditModel):
             summary = f"{self.number}: {self.lot} is {verdict}"
             body = (f"{self.number}, the certificate {self.supplier_number} from {self.vendor}, says {self.lot} "
                     f"({self.lot.item}) is {verdict}. {self.plan} does not ask for a certificate, so it holds "
-                    "nothing: for the Quality Manager to read before the batch is used.")
+                    "nothing and nothing in the system decides it: for the Quality Manager to read before "
+                    "the batch is used, and to mark this done with what was decided (O444).")
         tell_the_quality_manager(self, summary, link=f"/quality/supplier-certificates/{self.pk}", by=by, body=body)
 
     @serialised("posted", "voided_at", held_first="held_for_post")
