@@ -322,6 +322,61 @@ class CertificateOutsideTellsTheQualityManagerTests(CertificateTestCase):
         self.assertEqual((to_do.done_on, to_do.done_by), (timezone.localdate(), self.users["asha"]))
 
 
+class ATodoIsAnsweredByWhoItIsForTests(CertificateTestCase):
+    """
+    O454: the to-do a certificate raises is the Quality Manager's to decide. Meera, the inspector who posted
+    the certificate, is its created_by; she may neither mark it done, change it nor remove it (403), and her
+    list does not offer it. Asha, to whom it is addressed, answers it (200). A to-do a person plans by hand
+    keeps today's rule: its planner changes it.
+    """
+
+    to_dos = CertificateOutsideTellsTheQualityManagerTests.to_dos
+
+    def to_do(self):
+        InspectionPlan.objects.filter(pk=self.plan.pk).update(certificate_required=False)
+        to_do = self.to_dos(self.certificate({self.mfi: "4.1", self.ash: "0.020"})).get()
+        self.assertEqual((to_do.created_by, to_do.assigned_to, to_do.raised_by_a_rule),
+                         (self.users["meera"], self.users["asha"], True))
+        return to_do
+
+    def test_whoever_caused_it_does_not_close_it(self):
+        from apps.core.chatter import FollowUp
+
+        to_do = self.to_do()
+        url = f"/api/core/follow-ups/{to_do.pk}/"
+        meera = self.clients["meera"]
+        record = f"{to_do.content_type.app_label}.{to_do.content_type.model}"
+        shown = meera.get("/api/core/follow-ups/", {"model": record, "id": to_do.object_id})
+        self.assertEqual(shown.status_code, 200, shown.content)
+        self.assertEqual([row["may_change"] for row in shown.json() if row["id"] == to_do.pk], [False])
+        for answer in (meera.post(url + "done/", {"outcome": "fine"}, format="json"),
+                       meera.patch(url, {"summary": "nothing to see"}, format="json"),
+                       meera.delete(url)):
+            self.assertEqual(answer.status_code, 403, answer.content)
+        to_do.refresh_from_db()
+        self.assertEqual((to_do.done_on, to_do.done_by, FollowUp.objects.filter(pk=to_do.pk).exists()),
+                         (None, None, True))
+        answered = self.clients["asha"].post(url + "done/", {"outcome": "Read; run it at a lower draw."},
+                                             format="json")
+        self.assertEqual(answered.status_code, 200, answered.content)
+        to_do.refresh_from_db()
+        self.assertEqual((to_do.done_on, to_do.done_by), (timezone.localdate(), self.users["asha"]))
+
+    def test_a_to_do_planned_by_hand_is_still_its_planners(self):
+        from django.contrib.auth.models import Permission
+
+        to_do = self.to_do()
+        meera = self.users["meera"]
+        meera.user_permissions.add(Permission.objects.get(codename="add_followup"))
+        planned = self.clients["meera"].post("/api/core/follow-ups/", {
+            "model": f"{to_do.content_type.app_label}.{to_do.content_type.model}", "id": to_do.object_id,
+            "summary": "Ring the mill",
+            "due_on": str(timezone.localdate()), "assigned_to": self.users["asha"].pk}, format="json")
+        self.assertEqual(planned.status_code, 201, planned.content)
+        done = self.clients["meera"].post(f"/api/core/follow-ups/{planned.json()['id']}/done/", {}, format="json")
+        self.assertEqual(done.status_code, 200, done.content)
+
+
 class APageOfCertifiedBatchesTests(CertificateTestCase):
     def test_a_page_of_outside_batches_reads_their_certificates_once(self):
         """

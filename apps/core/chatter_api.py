@@ -74,7 +74,7 @@ def _follow_up(row, user, today, with_record=False):
         # Worked out on reading, never stored: whether it is late depends on the day it is read.
         "state": "done" if row.done_on else "overdue" if row.due_on < today else "today" if row.due_on == today
         else "planned",
-        "may_change": row.done_on is None and (user.pk in (row.created_by_id, row.assigned_to_id)
+        "may_change": row.done_on is None and (user.pk in (_planner(row), row.assigned_to_id)
                                                or user.has_perm("core.change_followup")),
     }
     if with_record:
@@ -137,6 +137,15 @@ class FollowUpInput(serializers.Serializer):
     link = serializers.CharField(max_length=255, required=False, allow_blank=True)
 
 
+def _planner(row):
+    """
+    Who planned a follow-up and so may change or remove it: its created_by, unless the application raised it
+    for its addressee to decide (raised_by_a_rule), when nobody did (O454). The inspector who posted a
+    certificate is its to-do's created_by, and closed the Quality Manager's to-do on it.
+    """
+    return None if row.raised_by_a_rule else row.created_by_id
+
+
 class FollowUpViewSet(viewsets.ViewSet):
     permission_classes = [IsAuthenticated]
 
@@ -174,9 +183,11 @@ class FollowUpViewSet(viewsets.ViewSet):
 
     def _changeable(self, request, pk):
         row = _held(_readable(request, record_or_404(FollowUp, pk, "id")))
-        if request.user.pk not in (row.created_by_id, row.assigned_to_id) \
+        if request.user.pk not in (_planner(row), row.assigned_to_id) \
                 and not request.user.has_perm("core.change_followup"):
-            raise PermissionDenied("Only whoever planned it, whoever it is for, or a manager changes it.")
+            raise PermissionDenied("Only whoever planned it, whoever it is for, or a manager changes it."
+                                   if not row.raised_by_a_rule else
+                                   f"This is {row.assigned_to}'s to decide: only they, or a manager, close it.")
         return row
 
     @transaction.atomic
@@ -202,7 +213,7 @@ class FollowUpViewSet(viewsets.ViewSet):
     @transaction.atomic
     def destroy(self, request, pk=None):
         row = _held(_readable(request, record_or_404(FollowUp, pk, "id")))
-        if row.created_by_id != request.user.pk and not request.user.has_perm("core.delete_followup"):
+        if _planner(row) != request.user.pk and not request.user.has_perm("core.delete_followup"):
             raise PermissionDenied("Only whoever planned it, or a manager, removes it.")
         row.delete()
         return Response(status=204)
