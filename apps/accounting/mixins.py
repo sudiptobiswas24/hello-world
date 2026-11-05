@@ -11,7 +11,7 @@ from collections import defaultdict
 from decimal import ROUND_DOWN, Decimal
 
 from django.core.exceptions import ValidationError
-from django.db import models
+from django.db import models, transaction
 
 from apps.core.models import Company, correction_date
 
@@ -431,6 +431,17 @@ def _refuse_past_the_document(document, original, mine, lines, corrects, on, wai
             f"{plain(whole)} given back by {counted}); this note gives back {plain(going)}.")
 
 
+_NOW = object()
+
+
+def position_for_defaults(party):
+    """The fiscal position a line's default taxes are mapped through for `party` now: None for none, or exempt."""
+    profile = getattr(party, "tax_profile", None) if party is not None else None
+    if profile is None or profile.tax_exempt:
+        return None
+    return profile.fiscal_position
+
+
 class TaxedLineMixin(models.Model):
     """
     Money arithmetic for one line of a trading document: gross, discount,
@@ -481,8 +492,10 @@ class TaxedLineMixin(models.Model):
         """
         return None
 
-    def default_taxes(self):
+    def default_taxes(self, under=_NOW):
         """
+        `under`: the fiscal position to map through (None: none), when not the party's now (O446).
+
         The taxes this line takes when it names none: its item's for its
         side, active ones only, through the party's fiscal position, so the
         line stores what it posts (O427): an export under LUT is entered as
@@ -499,10 +512,8 @@ class TaxedLineMixin(models.Model):
             return []
         taxes = item.sales_taxes if self.TAX_SIDE == "sales" else item.purchase_taxes
         taxes = list(taxes.filter(is_active=True))
-        party = self.party_for_tax()
-        profile = getattr(party, "tax_profile", None) if party is not None else None
-        position = getattr(profile, "fiscal_position", None) if profile is not None else None
-        if position is None or profile.tax_exempt:
+        position = position_for_defaults(self.party_for_tax()) if under is _NOW else under
+        if position is None:
             return taxes
         return position.map_taxes(taxes) or taxes
 
@@ -584,6 +595,121 @@ class TaxedLineMixin(models.Model):
             or (str(self.item) if getattr(self, "item_id", None) else "")
             or "—"
         )
+
+
+class TaxesTakenUnder(models.Model):
+    """
+    The fiscal position a document's lines took their default taxes under (O446), a fact kept on the
+    document. Since O427 a line stores its item's taxes mapped through the party's position as it is
+    entered, and posting maps the stored taxes through the position the party has then: a draft
+    entered for an exporter under LUT (IGST 0%) whose position was cleared before posting posted at
+    0% where the line typed afterwards takes IGST 18%. Now:
+
+    - a line taking its defaults records the party's position on its document (note_taxes_taken);
+      one taken under another position while lines taken under the recorded one wait is refused;
+    - a line "took its taxes by default" when its stored taxes are its item's mapped under the
+      recorded position; a line whose taxes were typed is left as typed;
+    - posting refuses while the party's position is not the recorded one and such lines wait
+      (refuse_taxes_taken_under_another_position), and retake_taxes re-takes every one of them
+      under the position the party has now. Recorded under no position, a line stores its item's
+      own taxes, which posting maps through the party's position then, as before O427: not refused;
+    - a document copied from another (order to invoice, quotation to order, schedule to invoice,
+      blanket to order, order to bill) carries its source's position with its lines' taxes.
+
+    A document made before this records its party's position as it stood at the migration: its
+    lines were taken under some position nobody kept, and the party's then is the best reading.
+    """
+
+    taxes_taken_under = models.ForeignKey(
+        "accounting.FiscalPosition", null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="The party's fiscal position when the lines took their default taxes; blank for none. "
+                  "Set by the system.")
+
+    class Meta:
+        abstract = True
+
+    def tax_party(self):
+        """The party whose position maps the lines' taxes: the customer selling, the vendor buying."""
+        name = "customer" if hasattr(type(self), "customer") else "vendor"
+        return getattr(self, name) if getattr(self, f"{name}_id") else None
+
+    def lines_taken_by_default(self):
+        """The lines whose stored taxes are their item's defaults under the recorded position."""
+        position = self.taxes_taken_under
+        taken = []
+        for line in self.lines.all():
+            defaults = line.default_taxes(under=position)
+            if defaults and {tax.pk for tax in line.taxes.all()} == {tax.pk for tax in defaults}:
+                taken.append(line)
+        return taken
+
+    def save(self, *args, **kwargs):
+        if self._state.adding and self.taxes_taken_under_id is None:
+            # A new document's lines take their taxes under the party's position now; a copy says its source's.
+            self.taxes_taken_under = position_for_defaults(self.tax_party())
+        super().save(*args, **kwargs)
+
+    def _stale_lines(self):
+        """
+        (the position now, the lines taken by default under the recorded one) when they differ, else None.
+        Under no position a line stores its item's own taxes, which posting maps through whatever position
+        the party has then, as it always did: only lines mapped through a position can be stale.
+        """
+        now = position_for_defaults(self.tax_party())
+        if self.taxes_taken_under_id is None or (now.pk if now else None) == self.taxes_taken_under_id:
+            return None
+        return now, self.lines_taken_by_default()
+
+    def note_taxes_taken(self):
+        """Asked before a line of this document takes its default taxes: under the party's position now."""
+        from apps.core.models import lock_rows
+
+        with transaction.atomic():
+            # Held, and read again: two lines added at once both asked what the other was changing.
+            lock_rows(self)
+            self._note_taxes_taken()
+
+    def _note_taxes_taken(self):
+        stale = self._stale_lines()
+        now = position_for_defaults(self.tax_party())
+        if stale and stale[1]:
+            raise ValidationError(self._taken_under_another(now))
+        if (now.pk if now else None) != self.taxes_taken_under_id:
+            self.taxes_taken_under = now
+            type(self)._base_manager.filter(pk=self.pk).update(taxes_taken_under=now)
+
+    def _taken_under_another(self, now):
+        def named(position):
+            return f"fiscal position {position.name}" if position else "no fiscal position"
+
+        return (f"{self.number or 'This draft'}'s lines took {self.tax_party()}'s taxes under "
+                f"{named(self.taxes_taken_under)}, and {self.tax_party()} is now under {named(now)}: "
+                "re-take the taxes (retake_taxes), check them, then go on.")
+
+    def refuse_taxes_taken_under_another_position(self):
+        """Asked as an invoice or bill posts: no line posts at taxes mapped under a position the party has left."""
+        stale = self._stale_lines()
+        if stale and stale[1]:
+            raise ValidationError(self._taken_under_another(stale[0]))
+
+    def retake_taxes(self):
+        """Every line that took its taxes by default takes them again, under the party's position now."""
+        from apps.core.models import lock_rows
+
+        with transaction.atomic():
+            lock_rows(self)
+            return self._retake_taxes()
+
+    def _retake_taxes(self):
+        if getattr(self, "posted", False):
+            raise ValidationError(f"{self.number} is posted; its taxes are what it posted.")
+        now = position_for_defaults(self.tax_party())
+        taken = self.lines_taken_by_default()
+        self.taxes_taken_under = now
+        type(self)._base_manager.filter(pk=self.pk).update(taxes_taken_under=now)
+        for line in taken:
+            line.taxes.set(line.default_taxes(under=now))
+        return taken
 
 
 class TaxedDocumentMixin(models.Model):

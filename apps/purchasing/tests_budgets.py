@@ -26,6 +26,7 @@ from .models import (
     PurchaseRequisitionLine,
 )
 from .tests_lifecycle import PurchasingLifecycleTestCase
+from apps.core.tests_schema_window import TodaysColumns
 
 
 class BudgetTestCase(PurchasingLifecycleTestCase):
@@ -338,6 +339,7 @@ class ApprovedFiguresPutInTheBaseMigrationTests(TransactionTestCase):
 
         executor = MigrationExecutor(connection)
         executor.migrate(self.before)
+        window = TodaysColumns()  # today's models written at the old schema (apps.core.tests_schema_window)
         try:
             inr = Currency.objects.create(code="INR", name="Rupee", is_base=True)
             eur = Currency.objects.create(code="EUR", name="Euro")
@@ -359,5 +361,6 @@ class ApprovedFiguresPutInTheBaseMigrationTests(TransactionTestCase):
             # Named already: in the base, not converted twice.
             self.assertEqual(PurchaseOrder.objects.get(pk=named.pk).approved_figures, in_base)
         finally:
+            window.close()
             executor = MigrationExecutor(connection)
             executor.migrate(executor.loader.graph.leaf_nodes())
