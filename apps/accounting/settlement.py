@@ -91,10 +91,18 @@ def settlement_difference(amount, document_rate, payment_rate, *, document_base=
     side's base is its slice of what it booked when that is known
     (`document_base`, `payment_base`: slice_of), so the part that settles
     the last of either takes what is left of it (review F1).
+
+    Equal rates are no exception (O447): three lines of USD 10.01 at 83.25
+    book 833.33 each, 2,499.99, and USD 30.03 received at 83.25 credits
+    2,500.00. Comparing the rates and returning 0 left the paisa on the
+    receivable with the invoice settled. Only both in the base currency
+    (rate 1 on each side) is there nothing to exchange: what each side
+    booked there differs only by what the document booked beside its total
+    (an invoice's TCS), which is not exchange.
     """
     document_rate = document_rate or Decimal("1")
     payment_rate = payment_rate or Decimal("1")
-    if document_rate == payment_rate:
+    if document_rate == payment_rate == Decimal("1"):
         return Decimal("0")
     amount = Decimal(amount)
     document_base = round_money(amount * document_rate) if document_base is None else document_base
