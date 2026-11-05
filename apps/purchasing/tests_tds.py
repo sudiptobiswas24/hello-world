@@ -810,6 +810,52 @@ class TcsTheSupplierCollectedTests(TdsTestCase):
         self.assertEqual(self.balance(self.tcs_receivable), Decimal("12000.00"))
 
 
+class ABillWithTcsAndTdsSettlesAtNoExchangeTests(TdsTestCase):
+    """
+    O450, the purchasing mirror: a bill's TCS is on its own entry, so what it booked on the payable is its
+    total(); its TDS is settled otherwise, at its slice. The van, 1,200,000 and 12,000 of TCS, after a
+    5,000,000 bill took the year's threshold: TDS 0.1% of 1,200,000 is 1,200. 600,000 paid, then what is
+    due, 610,800: each clears its own figure, nothing is exchange, the van leaves the payable at 0.00
+    (calc_fix_new/o450.py).
+    """
+
+    van = TcsTheSupplierCollectedTests.van
+
+    def setUp(self):
+        super().setUp()
+        self.tcs_receivable = Account.objects.create(code="1460", name="TCS receivable", account_type=AccountType.ASSET)
+
+    def pay(self, bill, amount):
+        from apps.accounting.models import Payment, PaymentDirection
+        from .models import BillPayment
+
+        payment = Payment.objects.create(party=self.vendor, direction=PaymentDirection.DISBURSEMENT,
+                                         payment_date=DAY, amount=Decimal(amount), currency=self.usd,
+                                         bank_account=self.bank, counterpart_account=self.payable)
+        payment.post()
+        row = BillPayment.objects.create(bill=bill, payment=payment, amount=Decimal(amount))
+        row.refresh_from_db()
+        return row
+
+    def test_part_then_whole(self):
+        self.bill("5000000")
+        before = self.balance(self.payable)
+        van = self.van(tcs_amount=Decimal("12000"), tcs_section="206C(1F)", tcs_account=self.tcs_receivable)
+        van.post()
+        van = Bill.objects.get(pk=van.pk)
+        self.assertEqual(van.deduct_tds().amount, Decimal("1200.00"))
+        first = self.pay(Bill.objects.get(pk=van.pk), "600000")
+        self.assertEqual((first.document_base, first.payment_base, first.fx_entry_id),
+                         (Decimal("600000.00"), Decimal("600000.00"), None))
+        van = Bill.objects.get(pk=van.pk)
+        self.assertEqual(van.amount_due(), Decimal("610800.00"))
+        second = self.pay(van, "610800")
+        self.assertEqual((second.document_base, second.payment_base, second.fx_entry_id),
+                         (Decimal("610800.00"), Decimal("610800.00"), None))
+        self.assertEqual((Bill.objects.get(pk=van.pk).amount_due(), self.balance(self.payable) - before),
+                         (Decimal("0.00"), Decimal("0.00")))
+
+
 class NoConfirmedRateRefusesThePostingTests(TdsTestCase):
     """
     Integrator's decision (g22): a bill its vendor's section taxes, with no
