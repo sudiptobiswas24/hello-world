@@ -121,6 +121,26 @@ class TheAgingReadsWhatTheReceivableHoldsTests(BalancesInBaseCase):
         self.assertEqual((row["due_in_currency"], row["amount_due"], outstanding_balance(self.customer), self.held()),
                          (D("20.03"), D("1667.49"), D("1667.49"), D("1667.49")))
 
+    def test_an_open_multi_line_credit_note_reads_the_base_its_receivable_holds(self):
+        """
+        O443, O423's shape on the note side: the same three lines of USD 10.01 at 83.25 paid in full at 84.00
+        (its exchange booked from the two bases), then credited in full at 83.25. The note books 833.33 a line, 2,499.99, and owes the customer back all
+        of it, where USD 30.03 x 83.25 rounded once reads 2,500.00.
+        """
+        order = SalesOrder.objects.create(customer=self.customer, order_date=MAR(1), currency=self.dollar)
+        for _ in range(3):
+            SalesOrderLine.objects.create(order=order, item=self.item, uom=self.uom, quantity=D("1"),
+                                          unit_price=D("10.01"), revenue_account=self.revenue)
+        order.confirm()
+        invoice = self.bill(order, on=MAR(1))
+        self.receive("30.03", invoice, on=MAR(20))
+        note = invoice.create_credit_note(on_date=MAR(10))
+        on = datetime.date(2026, 4, 1)
+        self.assertEqual((note.exchange_rate, note.refund_due(), self.held()), (D("83.25"), D("30.03"), D("-2499.99")))
+        [row] = ar_aging(as_of=on)["credits"]["invoices"]
+        self.assertEqual((row["amount_due"], self.total(ar_aging(as_of=on)), outstanding_balance(self.customer)),
+                         (D("-2499.99"), D("-2499.99"), D("-2499.99")))
+
     def test_the_statement_stays_in_the_customer_s_currency(self):
         invoice = self.dollar_invoice("120")
         self.receive("6000", invoice)
