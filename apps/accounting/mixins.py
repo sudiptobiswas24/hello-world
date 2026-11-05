@@ -389,6 +389,19 @@ def refuse_giving_back_past_the_document(document, original, corrects, on):
     _refuse_past_the_document(document, original, mine, lines, corrects, on, waiting=False)
 
 
+def nothing_left_to_give_back(held, original, on):
+    """
+    True when posted notes on `held`, an invoice or bill, have given back all its booked net (O366).
+    A return of goods after a goodwill credit of the whole was refused outright, its note past the
+    ceiling above, so the goods could not come back either. Decided: the goods come back, and the
+    return gives back nothing more, sales and purchasing alike. Asked by a return as it chooses
+    which documents its notes give back on.
+    """
+    whole = sum((row.net_amount() for row in held.lines.all()), Decimal("0"))
+    notes = held.lines.model._base_manager.filter(**{f"{on}__{original}": held, f"{on}__posted": True})
+    return whole - sum((row.net_amount() for row in notes), Decimal("0")) <= 0
+
+
 def refuse_a_line_past_the_document(line, document, original, corrects, on):
     """refuse_giving_back_past_the_document, asked as `line` is saved: its new figures, its note's others."""
     if not getattr(document, f"{original}_id"):
