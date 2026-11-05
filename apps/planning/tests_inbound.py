@@ -13,6 +13,7 @@ from datetime import timedelta
 from decimal import Decimal
 
 from django.contrib.auth.models import User
+from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
 
@@ -268,6 +269,30 @@ class ARequisitionCountsOnceTests(InboundTestCase):
         order.confirm()
         order.cancel()
         self.assertEqual(self.supply(), (Decimal("1000"), Decimal("0")))
+
+    def test_a_part_received_order_is_not_cancelled_and_goods_returned_are_awaited_again(self):
+        """
+        O455 (calc_fix_core/o455.py). 400 of 1,000 kg in: (0, 600), and cancel() is refused. 100 sent
+        back: the order awaits 700, the returned 100 among it, and is still refused. All 400 back: the
+        order may be cancelled and the requisition is supply for the whole 1,000 again.
+        """
+        D = Decimal
+        order = self.approve_and_order()
+        order.confirm()
+        receipt = GoodsReceipt.objects.create(purchase_order=order, receipt_date=TODAY)
+        GoodsReceiptLine.objects.create(receipt=receipt, order_line=order.lines.get(),
+                                        warehouse=self.plant, quantity_received=D("400"))
+        receipt.post()
+        self.assertEqual(self.supply(), (D("0"), D("600")))
+        with self.assertRaisesMessage(ValidationError, "cannot be cancelled"):
+            order.cancel()
+        receipt.create_return({receipt.lines.get(): D("100")})
+        self.assertEqual(self.supply(), (D("0"), D("700")))
+        with self.assertRaisesMessage(ValidationError, "cannot be cancelled"):
+            PurchaseOrder.objects.get(pk=order.pk).cancel()
+        receipt.create_return()
+        PurchaseOrder.objects.get(pk=order.pk).cancel()
+        self.assertEqual(self.supply(), (D("1000"), D("0")))
 
     def test_a_rejected_requisition_is_nothing_coming(self):
         self.requisition.reject(note="Not this month.")

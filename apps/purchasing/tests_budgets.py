@@ -425,6 +425,29 @@ class ARequisitionIsRequestedUntilItsOrderIsConfirmedTests(BudgetTestCase):
         order.cancel()
         self.assertEqual(self.read(), (Decimal("90000"), Decimal("0"), Decimal("110000")))
 
+    def test_a_part_received_order_is_not_cancelled_so_nothing_is_counted_twice(self):
+        """
+        O455 (calc_fix_core/o455.py). 400 of 1,000 kg received: cancel() refuses while anything is
+        received net of returns, so the requisition is never handed back whole beside goods in hand. The
+        budget reads 0 requested, 90,000 committed, 110,000 available, before and after the refusal; 100
+        returned leaves 300 in and the same refusal. Only once all 400 have gone back may the order be
+        cancelled, and then the whole 1,000 is asked for again: none of it is here.
+        """
+        D = Decimal
+        order = self.draft_order()
+        order.confirm()
+        receipt = self.receive(order, "400")
+        self.assertEqual(self.read(), (D("0"), D("90000"), D("110000")), "400 received")
+        with self.assertRaisesMessage(ValidationError, "cannot be cancelled"):
+            order.cancel()
+        receipt.create_return({receipt.lines.get(): D("100")})
+        with self.assertRaisesMessage(ValidationError, "cannot be cancelled"):
+            PurchaseOrder.objects.get(pk=order.pk).cancel()
+        self.assertEqual(self.read(), (D("0"), D("90000"), D("110000")), "100 of 400 returned")
+        receipt.create_return()
+        PurchaseOrder.objects.get(pk=order.pk).cancel()
+        self.assertEqual(self.read(), (D("90000"), D("0"), D("110000")), "all returned, cancelled")
+
     def make_bill_for(self, order, line, quantity):
         from .models import Bill, BillLine
 
