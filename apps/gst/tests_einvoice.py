@@ -29,7 +29,7 @@ from django.test import override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from apps.accounting.models import ChargeType
+from apps.accounting.models import ChargeType, PartyTaxProfile
 from apps.core.models import Address, AddressType, Company, Country, ExchangeRate
 from apps.sales.models import Invoice, InvoiceLine
 
@@ -157,6 +157,45 @@ class WhatIsRegisteredTests(EInvoiceTestCase):
                      kind=AddressType.SHIPPING)
         ship = build(self.s1())["ShipDtls"]
         self.assertEqual((ship["Loc"], ship["Pin"], ship["Stcd"]), ("Belagavi", 590016, "29"))
+
+    def test_shipped_to_the_buyers_own_godown_names_the_buyer(self):
+        self.address(self.ka, "Godown 4, APMC", "Belagavi", "Karnataka", "590016",
+                     kind=AddressType.SHIPPING)
+        ship = build(self.s1())["ShipDtls"]
+        self.assertEqual((ship["Gstin"], ship["LglNm"]), (self.ka.tax_profile.gstin, "KA-REG"))
+
+    def shipped_to(self, consignee, line1):
+        """S1's invoice, its goods sent on the buyer's direction to `consignee`'s site in Karnataka."""
+        site = self.address(consignee, line1, "Belagavi", "Karnataka", "590016", kind=AddressType.SHIPPING)
+        invoice = self.invoice(self.ka, [(self.sack, "1000", "125", "2", self.pair)], post=False)
+        invoice.shipping_address = site
+        invoice.save()
+        invoice.post()
+        return Invoice.objects.get(pk=invoice.pk)
+
+    def test_shipped_to_a_third_party_names_the_third_party(self):
+        """O152: ShipDtls named the buyer's GSTIN and name at a third party's godown."""
+        mill = self.party("KA-MILL", gstin=gstin("29AABCB3333C1Z"))
+        mill.legal_name = "Belagavi Bag Mills Pvt Ltd"
+        mill.save()
+        invoice = self.shipped_to(mill, "Unit 9, Udyambag")
+        payload = build(invoice)
+        self.assertEqual((payload["BuyerDtls"]["Gstin"], payload["BuyerDtls"]["LglNm"]),
+                         (self.ka.tax_profile.gstin, "KA-REG"))
+        ship = payload["ShipDtls"]
+        self.assertEqual((ship["Gstin"], ship["LglNm"], ship["Addr1"], ship["Pin"], ship["Stcd"]),
+                         (mill.tax_profile.gstin, "Belagavi Bag Mills Pvt Ltd", "Unit 9, Udyambag", 590016, "29"))
+        # What the invoice posted with, not the party as it stands later.
+        mill.legal_name = "Renamed Mills"
+        mill.save()
+        PartyTaxProfile.objects.filter(party=mill).update(gstin="")
+        ship = build(Invoice.objects.get(pk=invoice.pk))["ShipDtls"]
+        self.assertEqual((ship["Gstin"], ship["LglNm"]), (mill.tax_profile.gstin, "Belagavi Bag Mills Pvt Ltd"))
+
+    def test_shipped_to_an_unregistered_third_party_says_urp(self):
+        farm = self.party("KA-FARM")
+        ship = build(self.shipped_to(farm, "Survey 41, Hire Bagewadi"))["ShipDtls"]
+        self.assertEqual((ship["Gstin"], ship["LglNm"]), ("URP", "KA-FARM"))
 
     def test_an_export_in_rupees_at_its_own_rate(self):
         payload = build(self.export([(self.sack, "1000", "1.37", "0", [self.zero])]))
