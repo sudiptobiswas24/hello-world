@@ -249,3 +249,30 @@ class DatedByTheRuleTests(RecurringTestCase):
         self.assertEqual(answer.status_code, 400, answer.content)
         schedule.refresh_from_db()
         self.assertEqual(schedule.next_run_date, datetime.date(2026, 1, 31))
+
+
+class MovingTheStartTests(RecurringTestCase):
+    """O355: a start moved past the next run left every run refused; next_run_date is not editable."""
+
+    def test_a_start_moved_before_any_run_moves_the_next_run_and_after_a_run_is_refused(self):
+        schedule = self.schedule()
+        url = f"/api/accounting/recurring-journals/{schedule.pk}/"
+        bookkeeper = self.as_("Bookkeeper")
+        response = bookkeeper.patch(url, {"start_date": "2026-03-15"}, format="json")
+        self.assertEqual((response.status_code, response.json()["next_run_date"]), (200, "2026-03-15"), response.content)
+        response = bookkeeper.patch(url, {"start_date": "2026-01-10"}, format="json")
+        self.assertEqual((response.status_code, response.json()["next_run_date"]), (200, "2026-01-10"))
+        bookkeeper.patch(url, {"start_date": "2026-03-15"}, format="json")
+        schedule.refresh_from_db()
+        entry = schedule.generate_one()
+        self.assertEqual(entry.date, datetime.date(2026, 3, 15))
+        schedule.refresh_from_db()
+        self.assertEqual(schedule.next_run_date, datetime.date(2026, 4, 15))
+        refused = bookkeeper.patch(url, {"start_date": "2026-05-01"}, format="json")
+        self.assertEqual(refused.status_code, 400)
+        self.assertIn("RENT has run since 15 Mar 2026, its next run on 15 Apr 2026", str(refused.json()))
+        schedule.refresh_from_db()
+        self.assertEqual((schedule.start_date, schedule.next_run_date),
+                         (datetime.date(2026, 3, 15), datetime.date(2026, 4, 15)))
+        # Its other terms still change.
+        self.assertEqual(bookkeeper.patch(url, {"memo": "Rent, office"}, format="json").status_code, 200)
