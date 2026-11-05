@@ -1148,6 +1148,9 @@ def pay_runs_owed(period):
     return [f"{len(runs)} pay run(s) are still to post or delete: {shown}."]
 
 
+MONTHLY_RATE, WAGES_SO_FAR = "monthly rate", "wages so far"
+
+
 class Payslip(AuditModel):
     employee = models.ForeignKey(Employee, on_delete=models.PROTECT, related_name="payslips")
     run = models.ForeignKey(PayRun, on_delete=models.CASCADE, related_name="payslips")
@@ -1179,6 +1182,12 @@ class Payslip(AuditModel):
     kept_ncp_days = models.DecimalField(
         max_digits=6, decimal_places=2, null=True, blank=True, editable=False,
         help_text="Unpaid leave and absences as the slip was worked out: the ECR's NCP days (O5).",
+    )
+    kept_coverage = models.JSONField(
+        null=True, blank=True, editable=False,
+        help_text="How a month paid in shorter runs was read against each coverage ceiling, by component: "
+                  "'monthly rate' or 'wages so far' (O451). The month's first posted run decides it; the "
+                  "runs after it read it here, never from compensation entered since.",
     )
 
     class Meta:
@@ -1353,7 +1362,7 @@ class Payslip(AuditModel):
         # check_current refuses a post they have moved under.
         away = self.unpaid_leave_days() + self.absent_days()
         self.kept_paid_days, self.kept_ncp_days = self.days_employed() - away, away
-        super().save(update_fields=["hours", "kept_paid_days", "kept_ncp_days", "recoverable",
+        super().save(update_fields=["hours", "kept_paid_days", "kept_ncp_days", "kept_coverage", "recoverable",
                                     "recoverable_component", "updated_at"])
         return list(self.lines.all())
 
@@ -1412,6 +1421,7 @@ class Payslip(AuditModel):
         # The dated figures each component was worked out at, kept on its lines (kept_terms), and the
         # overtime hours each rate row paid for.
         self._kept, self._hours = {}, {}
+        self.kept_coverage = None
         rows = EmployeeCompensation.objects.filter(
             employee=self.employee,
             component__is_active=True,
@@ -1916,7 +1926,7 @@ class Payslip(AuditModel):
         # wages so far at each run, the same sum a whole-month run reads below.
         if opening is not None and (opening.period_start > month
                                     or opening.period_end < following - datetime.timedelta(days=1)) \
-                and not self._paid_by_rate(deciding, month, following):
+                and self._coverage_read_by(component, deciding, month, following) == MONTHLY_RATE:
             return self._monthly_rate(deciding, opening, month, following) <= ceiling
         # Wages are what was earned: a line of a deciding component taken back as a deduction (a roll voided
         # after payday) is not wages and does not add to them (O368), as this run's computed holds only earnings.
@@ -1968,6 +1978,27 @@ class Payslip(AuditModel):
                 least_term, most_term
         self.__dict__.setdefault("_rates", {})[row.pk] = rate
         return rate
+
+    def _coverage_read_by(self, component, deciding, month, following):
+        """
+        How the month is read against `component`'s ceiling, by its monthly rate or by its wages so far, kept
+        on this slip (kept_coverage). A fact of the month decided once (O451): a posted run of the month that
+        kept it decides it for the runs after it. Asked of the compensation each time, a piece rate entered
+        after the month's first run posted read the second run by wages so far while the first had been read
+        by rate. A month with no posted run that kept it (one posted before it was kept) asks the compensation.
+        """
+        key = str(component.pk)
+        slips = Payslip.objects.filter(
+            employee=self.employee, run__status=PayRunStatus.POSTED, kept_coverage__has_key=key,
+            run__period_end__gte=month, run__period_end__lt=following,
+        ).exclude(run=self.run).order_by("run__period_start", "run__pk")
+        first = slips.only("kept_coverage").first()
+        if first is not None:
+            read = first.kept_coverage[key]
+        else:
+            read = WAGES_SO_FAR if self._paid_by_rate(deciding, month, following) else MONTHLY_RATE
+        self.kept_coverage = {**(self.kept_coverage or {}), key: read}
+        return read
 
     def _paid_by_rate(self, deciding, month, following):
         """
