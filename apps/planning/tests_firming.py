@@ -287,3 +287,62 @@ class TheCommandTests(PlanningTestCase):
     def test_it_refuses_a_warehouse_it_cannot_find(self):
         with self.assertRaises(CommandError):
             call_command("run_mrp", "NOPE")
+
+
+class FirmedMeansFixedTests(PlanningTestCase):
+    """
+    O316. 1,000 kg of fabric planned and firmed into a draft run of 1,000 kg.
+    The suggestion is the record of why the run exists: while the run stands,
+    the Production Planner cannot change its quantity (1,000 to 10), item or
+    dates, nor delete it or the plan holding it. Cancelling the run lapses it,
+    and then it is a suggestion again.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from django.contrib.auth.models import Group, User
+        from rest_framework.test import APIClient
+
+        call_command("setup_roles", verbosity=0)
+        self.sell(self.fabric, "1000", self.day(30))
+        self.run_ = self.plan()
+        self.order = self.run_.orders.get(item=self.fabric)
+        self.order.firm()
+        self.order.refresh_from_db()
+        user = User.objects.create_user("planner")
+        user.groups.add(Group.objects.get(name="Production Planner"))
+        self.client = APIClient()
+        self.client.force_authenticate(user)
+        self.url = f"/api/planning/planned-orders/{self.order.pk}/"
+
+    def test_a_planner_cannot_change_or_delete_a_planned_order_after_it_became_a_work_order(self):
+        """The auditor's probe."""
+        changed = self.client.patch(self.url, {"quantity": "10"}, format="json")
+        deleted = self.client.delete(self.url)
+        self.assertEqual((changed.status_code, deleted.status_code), (400, 400),
+                         (changed.status_code, deleted.status_code))
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.quantity, Decimal("1000"))
+        self.assertEqual(self.order.work_order.quantity_ordered, Decimal("1000"))
+
+    def test_nor_its_date_or_item(self):
+        moved = self.client.patch(self.url, {"needed_by": str(self.day(40))}, format="json")
+        other = self.client.patch(self.url, {"item": self.virgin.pk}, format="json")
+        self.assertEqual((moved.status_code, other.status_code), (400, 400))
+        self.assertIn("firmed into", str(moved.data))
+
+    def test_what_it_was_not_made_from_still_changes(self):
+        noted = self.client.patch(self.url, {"waits_for": "Cylinders from the engraver"}, format="json")
+        self.assertEqual(noted.status_code, 200, noted.data)
+
+    def test_the_plan_holding_it_is_not_deleted_either(self):
+        with self.assertRaises(ValidationError):
+            self.run_.delete()
+        self.assertTrue(type(self.order).objects.filter(pk=self.order.pk).exists())
+
+    def test_cancelling_the_run_it_became_frees_it(self):
+        self.order.work_order.cancel()
+        changed = self.client.patch(self.url, {"quantity": "10"}, format="json")
+        self.assertEqual(changed.status_code, 200, changed.data)
+        deleted = self.client.delete(self.url)
+        self.assertEqual(deleted.status_code, 204)
