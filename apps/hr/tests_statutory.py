@@ -714,6 +714,64 @@ class ESICoverageOfSomebodyPaidByTheHourTests(StatutoryTestCase):
                 run.delete()
 
 
+class TheMonthsCoverageIsReadOneWayTests(StatutoryTestCase):
+    """
+    O451: how a month paid in fortnights is read against the ESI ceiling, by its monthly rate (O358) or by its
+    wages so far (O367), is decided once, by the month's first posted run, and kept on its slip. A basic of
+    9,000 a fortnight and 100 an hour from 16 June, 70 hours in the second fortnight (calc_fix_new/o451.py):
+      - the hourly rate entered after the first run posted: that run read the monthly rate, 18,000, covered,
+        ESI 68 on 9,000; the second reads it too, covered, ESI 120 on 16,000. Asked of the compensation again,
+        the second read wages so far, 25,000, and took no ESI.
+      - the hourly rate entered before the first run: both read wages so far: 9,000 covered (68), then
+        25,000, not covered.
+    """
+
+    FIRST, SECOND = AMonthPaidInTwoRunsTests.FIRST, AMonthPaidInTwoRunsTests.SECOND
+
+    def setUp(self):
+        super().setUp()
+        from .pay_details import EmployeePayDetails
+        from .payroll import Statutory
+
+        self.hourly = PayComponent.objects.create(
+            code="HOURLY", name="Hourly", kind=ComponentKind.EARNING, basis=ComponentBasis.PER_HOUR,
+            expense_account=self.wages, sequence=5)
+        for component, marked in ((self.esi, Statutory.ESI), (self.esi_er, Statutory.ESI_EMPLOYER)):
+            self.mark(component, marked)
+            component.base_components.add(self.hourly)
+            component.coverage_components.add(self.hourly)
+        self.person_f = self.person("F", basic="9000")
+        for number, employee in enumerate(Employee.objects.order_by("pk")):
+            Employee.objects.filter(pk=employee.pk).update(uan=f"10000000000{number}", esi_number=f"220000000{number}")
+            EmployeePayDetails.objects.create(employee=employee, date_of_birth=datetime.date(1990, 1, 1))
+
+    def run_with_hours(self, start, end, hours=None):
+        run = PayRun.objects.create(period_start=start, period_end=end, pay_date=end)
+        run.calculate(hours={self.person_f: Decimal(hours)} if hours else None)
+        run.post()
+        return run
+
+    def esi_on(self, run):
+        return self.lines(run, self.person_f).get("ESI")
+
+    def kept(self, run):
+        return run.payslips.get(employee=self.person_f).kept_coverage[str(self.esi.pk)]
+
+    def test_an_hourly_rate_entered_after_the_first_run_posted_leaves_the_month_read_by_its_rate(self):
+        first = self.run_with_hours(*self.FIRST)
+        self.paid(self.person_f, self.hourly, "100", since=self.SECOND[0])
+        second = self.run_with_hours(*self.SECOND, hours="70")
+        self.assertEqual((self.esi_on(first), self.kept(first), self.esi_on(second), self.kept(second)),
+                         (Decimal("68"), "monthly rate", Decimal("120"), "monthly rate"))
+
+    def test_an_hourly_rate_entered_before_the_first_run_reads_the_month_by_its_wages_so_far(self):
+        self.paid(self.person_f, self.hourly, "100", since=self.SECOND[0])
+        first = self.run_with_hours(*self.FIRST)
+        second = self.run_with_hours(*self.SECOND, hours="70")
+        self.assertEqual((self.esi_on(first), self.kept(first), self.esi_on(second), self.kept(second)),
+                         (Decimal("68"), "wages so far", None, "wages so far"))
+
+
 class AMonthPaidInTwoRunsWithThePensionApartTests(AMonthPaidInTwoRunsTests):
     """
     Review 1 (O301 with O237): PF-ER 3.67% and EPS 8.33% as components of their own. Two fortnights of 8,000:
