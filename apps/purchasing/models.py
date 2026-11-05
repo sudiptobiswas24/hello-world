@@ -989,6 +989,24 @@ class PurchaseRequisitionLine(AuditModel):
             order__status=OrderStatus.CANCELLED
         ).aggregate(total=models.Sum("quantity"))["total"] or Decimal("0")
 
+    def quantity_unconfirmed(self):
+        """
+        How much of this request, in its own unit, no confirmed order has taken over yet (O453): what
+        planning counts as requisition supply and a budget as requested. Each side is taken to the item's
+        stocking unit before they are subtracted; a line with no item is ordered in its own unit.
+        """
+        placed = list(on_confirmed_orders(self.order_lines.all()).select_related("uom"))
+        if self.item_id is None:
+            return max(self.quantity - sum((row.quantity for row in placed), Decimal("0")), Decimal("0"))
+        asked = self.item.to_stock_quantity(self.quantity, self.uom or self.item.uom)
+        ordered = sum((self.item.to_stock_quantity(row.quantity, row.uom or self.item.uom) for row in placed),
+                      Decimal("0"))
+        if asked <= 0 or ordered >= asked:
+            return Decimal("0")
+        if not ordered:
+            return self.quantity
+        return self.quantity * (asked - ordered) / asked
+
     def quantity_quoting(self):
         """How much of this request is out for quotes on a request not yet awarded or cancelled."""
         return self.rfq_lines.filter(rfq__status__in=[RfqStatus.DRAFT, RfqStatus.SENT]).aggregate(
@@ -997,6 +1015,21 @@ class PurchaseRequisitionLine(AuditModel):
     def quantity_open(self):
         """What is left to order or to ask about: nothing or more."""
         return max(self.quantity - self.quantity_ordered() - self.quantity_quoting(), Decimal("0"))
+
+
+def on_confirmed_orders(order_lines):
+    """
+    The order lines that have taken over from a requisition: those on a confirmed order.
+
+    One definition for every reader of "what is still only asked for" (O315 in planning, O453 in the
+    budget), because the readers used to disagree: the requisition stopped counting a line once it was on
+    any order not cancelled, a draft included, while the order side began only at confirmation, so between
+    "convert to order" and "confirm" the quantity was in neither. Planning bought it again; a budget read
+    90,000 available that a draft order was about to spend. A requisition counts until its order is
+    confirmed and the order from then on (received or not), never twice; a draft deleted or an order
+    cancelled hands the quantity back to the requisition.
+    """
+    return order_lines.filter(order__status=OrderStatus.CONFIRMED)
 
 
 def hold_requisition_lines(lines):
@@ -1566,9 +1599,14 @@ class Budget(AuditModel):
         return list(said.values())
 
     def requested(self):
-        """Approved requisitions not yet ordered — asked for, not yet agreed."""
+        """
+        Approved requisitions not yet on a confirmed order — asked for, not yet agreed: what committed()
+        does not count yet (on_confirmed_orders). Netted by every order not cancelled, a draft order took
+        the request out of here a step before committed() took it in (O453).
+        """
+        # Ordered too: a requisition reads "ordered" as soon as a draft order takes all of it.
         lines = PurchaseRequisitionLine.objects.filter(
-            requisition__status=RequisitionStatus.APPROVED,
+            requisition__status__in=(RequisitionStatus.APPROVED, RequisitionStatus.ORDERED),
             requisition__request_date__gte=self.start_date,
             requisition__request_date__lte=self.end_date,
         ).select_related("requisition", "item")
@@ -1576,7 +1614,7 @@ class Budget(AuditModel):
         for line in lines:
             if self._requisition_account(line) != self.account:
                 continue
-            outstanding = max(line.quantity - line.quantity_ordered(), Decimal("0"))
+            outstanding = line.quantity_unconfirmed()
             if outstanding <= 0 or line.estimated_price is None:
                 continue
             total += round_money(outstanding * line.estimated_price)

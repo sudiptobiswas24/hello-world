@@ -364,3 +364,73 @@ class ApprovedFiguresPutInTheBaseMigrationTests(TransactionTestCase):
             window.close()
             executor = MigrationExecutor(connection)
             executor.migrate(executor.loader.graph.leaf_nodes())
+
+
+class ARequisitionIsRequestedUntilItsOrderIsConfirmedTests(BudgetTestCase):
+    """
+    O453, the budget's half of O315: 1,000 kg asked for at 90, in a budget of 200,000 (calc_fix_new/o453.py).
+    Each step's (requested, committed, available): asked 90,000 / 0 / 110,000; on a draft order the same
+    (no vendor has agreed); confirmed 0 / 90,000 / 110,000; 400 received and billed, 0 / 54,000 and 36,000
+    spent; a draft order deleted, or a confirmed one cancelled, 90,000 / 0 again. Netted by every order
+    not cancelled, the draft order read 0 / 0 / 200,000.
+    """
+
+    def setUp(self):
+        super().setUp()
+        Budget.objects.filter(pk=self.budget.pk).update(amount=Decimal("200000"))
+        self.budget.refresh_from_db()
+        self.requisition = PurchaseRequisition.objects.create(
+            requested_by=self.employee, request_date=datetime.date(2026, 2, 1))
+        PurchaseRequisitionLine.objects.create(
+            requisition=self.requisition, item=self.item, uom=self.uom, quantity=Decimal("1000"),
+            estimated_price=Decimal("90"), expense_account=self.expense)
+        self.requisition.submit()
+        self.requisition.approve(by=get_user_model().objects.create_user("m", password="x"))
+
+    def read(self):
+        return self.budget.requested(), self.budget.committed(), self.budget.available()
+
+    def draft_order(self):
+        order = self.requisition.create_order(self.vendor, order_date=datetime.date(2026, 3, 1))
+        order.lines.update(unit_price=Decimal("90"))
+        return PurchaseOrder.objects.get(pk=order.pk)
+
+    def test_each_step_of_the_way(self):
+        D = Decimal
+        self.assertEqual(self.read(), (D("90000"), D("0"), D("110000")), "asked")
+        order = self.draft_order()
+        self.assertEqual(self.read(), (D("90000"), D("0"), D("110000")), "a draft order")
+        order.confirm()
+        self.assertEqual(self.read(), (D("0"), D("90000"), D("110000")), "confirmed")
+        line = order.lines.get()
+        self.receive(order, "400")
+        bill = self.make_bill_for(order, line, "400")
+        self.assertEqual((self.budget.requested(), self.budget.committed(), self.budget.spent()),
+                         (D("0"), D("54000"), D("36000")), "400 received and billed")
+        self.assertEqual(bill.posted, True)
+
+    def test_a_draft_order_deleted_hands_it_back(self):
+        from django.db import transaction
+        from apps.core.models import lock_rows
+
+        order = self.draft_order()
+        with transaction.atomic():  # as the API's delete holds the order first
+            lock_rows(order)
+            order.delete()
+        self.assertEqual(self.read(), (Decimal("90000"), Decimal("0"), Decimal("110000")))
+
+    def test_a_confirmed_order_cancelled_hands_it_back(self):
+        order = self.draft_order()
+        order.confirm()
+        order.cancel()
+        self.assertEqual(self.read(), (Decimal("90000"), Decimal("0"), Decimal("110000")))
+
+    def make_bill_for(self, order, line, quantity):
+        from .models import Bill, BillLine
+
+        bill = Bill.objects.create(vendor=self.vendor, bill_date=datetime.date(2026, 3, 10),
+                                   payable_account=self.payable, purchase_order=order)
+        BillLine.objects.create(bill=bill, order_line=line, quantity=Decimal(quantity), unit_price=Decimal("90"),
+                                expense_account=self.expense)
+        bill.post()
+        return bill
