@@ -79,6 +79,7 @@ from apps.accounting.mixins import (
     RecordedLineTax,
     TaxedDocumentMixin,
     TaxedLineMixin,
+    nothing_left_to_give_back,
     refuse_correcting_a_note,
     refuse_correcting_another_line,
     priced_to_give_back,
@@ -4893,9 +4894,13 @@ class Delivery(AuditModel):
                 if available <= 0:
                     continue
                 taken = min(available, remaining)
+                remaining -= taken
+                if nothing_left_to_give_back(invoice_line.invoice, "credits", "invoice"):
+                    # Credited in full already, a goodwill credit of the whole: the goods it billed come
+                    # back and credit nothing more (O366). Still its goods, so no later invoice is credited.
+                    continue
                 per_invoice = allocations[invoice_line.invoice]
                 per_invoice[invoice_line] = per_invoice.get(invoice_line, Decimal("0")) + taken
-                remaining -= taken
 
         # Every invoice before the first note, in key order: a note is made after them all, and an
         # invoice taken after a note already made would be taken against the key order (O169).

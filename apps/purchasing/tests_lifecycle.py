@@ -429,9 +429,38 @@ class ADebitNoteByHandIsDatedByTheCorrectionRuleTests(PurchasingLifecycleTestCas
 
 
 class OneCeilingForEveryDebitNoteTests(PurchasingLifecycleTestCase):
-    """Review of O298 (probe p2): a goodwill debit of the whole bill, then a return: the return's note is refused."""
+    """
+    Review of O298 (probe p2), then O366: a goodwill debit of the whole bill, then a return. The return's note
+    was refused, and the goods with it. Decided: the goods go back, and nothing more is debited.
+    """
 
-    def test_a_return_after_a_goodwill_debit_of_the_whole_is_refused_at_posting(self):
+    def test_a_return_after_a_goodwill_debit_of_the_whole_sends_the_goods_back_and_debits_nothing(self):
+        self.goodwill_then_return(lambda receipt: receipt.create_return())
+
+    def test_the_same_over_the_api_as_the_warehouse(self):
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        from .models import GoodsReceipt
+
+        call_command("setup_roles", verbosity=0)
+        user = User.objects.create_user("warehouse")
+        user.groups.add(Group.objects.get(name="Warehouse Staff"))
+        client = APIClient()
+        client.force_authenticate(user)
+
+        def over_the_api(receipt):
+            response = client.post(f"/api/purchasing/goods-receipts/{receipt.pk}/return_receipt/", {}, format="json")
+            self.assertEqual(response.status_code, 200, response.content)
+            returned = GoodsReceipt.objects.get(pk=response.json()["id"])
+            returned.debit_notes_created = []
+            return returned
+        self.goodwill_then_return(over_the_api)
+
+    def goodwill_then_return(self, send_back):
+        from apps.accounting.models import JournalLine
+
         # 10 at 5 received and billed: 50.00; a goodwill debit of 50 posted first.
         order = self.make_order(quantity="10", price="5")
         receipt = self.receive(order, 10)
@@ -442,7 +471,14 @@ class OneCeilingForEveryDebitNoteTests(PurchasingLifecycleTestCase):
         BillLine.objects.create(bill=goodwill, description="goodwill", quantity=Decimal("1"),
                                 unit_price=Decimal("50"), expense_account=self.expense)
         goodwill.post()
-        with self.assertRaisesMessage(ValidationError, "has 0 left to give back (50 of 50"):
-            receipt.create_return()
-        self.assertEqual(Bill.objects.filter(debits=bill, posted=True).count(), 1)
-        self.assertEqual(bill.amount_due(), Decimal("0.00"))
+        returned = send_back(receipt)
+        self.assertEqual(returned.debit_notes_created, [])
+        self.assertEqual(self.item.on_hand_at(self.warehouse), Decimal("0"))
+        self.assertEqual(Bill.objects.filter(debits=bill).count(), 1)
+
+        def balance(account):
+            rows = JournalLine.objects.filter(account=account, entry__posted=True)
+            return sum((row.debit - row.credit for row in rows), Decimal("0"))
+
+        self.assertEqual((bill.amount_due(), balance(self.payable), balance(self.inventory)),
+                         (Decimal("0.00"), Decimal("0.00"), Decimal("0.00")))
