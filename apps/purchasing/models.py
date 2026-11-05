@@ -2154,6 +2154,16 @@ class PurchaseOrder(Extensible, TaxesTakenUnder, TaxedDocumentMixin, ChangesWith
         self.status = OrderStatus.CONFIRMED
         self.save(update_fields=["number", "status", "updated_at"])
 
+    def delete(self, *args, **kwargs):
+        """
+        Takes the order before the cascade reaches its lines, in a transaction of its own (O456). The API
+        holds the order first; a management command or a shell did not, and the lock-order sentinel
+        refused the line deleted before its order.
+        """
+        with transaction.atomic():
+            lock_rows(self, deleting=True)
+            return super().delete(*args, **kwargs)
+
     @serialised("status")
     @takes_back
     def cancel(self):
