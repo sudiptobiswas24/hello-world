@@ -72,9 +72,9 @@ class SalesOrderSerializer(ExtensibleSerializerMixin, serializers.ModelSerialize
             "invoice_status", "delivery_status", "is_job_work", "supplied_items",
             "third_party_inspection",
             "freight_terms", "incoterm", "port_of_discharge", "sacks_per_bale", "marking",
-            "invoice_policy", "extra",
+            "invoice_policy", "extra", "taxes_taken_under",
         ]
-        read_only_fields = ["number", "status"]
+        read_only_fields = ["number", "status", "taxes_taken_under"]
 
     supplied_items = serializers.SerializerMethodField()
 
@@ -140,9 +140,10 @@ class InvoiceSerializer(ExtensibleSerializerMixin, serializers.ModelSerializer):
             "lines", "subtotal", "tax_total", "total",
             "amount_paid", "amount_credited", "amount_due", "settlement_status", "sent_at",
             "is_down_payment", "is_opening_balance", "corrects_old_supply", "old_invoice_value",
-            "party_gstin", "not_sendable", "extra",
+            "party_gstin", "not_sendable", "extra", "taxes_taken_under",
         ]
         read_only_fields = [
+            "taxes_taken_under",
             "number", "due_date", "exchange_rate", "credits", "debits", "journal_entry",
             "posted", "posted_at", "sent_at", "is_down_payment", "is_opening_balance",
             "corrects_old_supply", "old_invoice_value", "party_gstin",
@@ -272,10 +273,10 @@ class QuotationSerializer(serializers.ModelSerializer):
             "id", "number", "customer", "customer_name", "quotation_date", "valid_until",
             "reference", "status", "currency", "payment_terms", "billing_address", "shipping_address",
             "sales_rep", "sales_order", "sent_at", "revision", "revision_of",
-            "lines", "subtotal", "tax_total", "total",
+            "lines", "subtotal", "tax_total", "total", "taxes_taken_under",
         ]
         read_only_fields = [
-            "number", "status", "sales_order", "sent_at", "revision", "revision_of",
+            "number", "status", "sales_order", "sent_at", "revision", "revision_of", "taxes_taken_under",
         ]
 
 
@@ -356,9 +357,9 @@ class RecurringInvoiceSerializer(serializers.ModelSerializer):
         fields = [
             "id", "code", "customer", "receivable_account", "currency", "payment_terms",
             "sales_rep", "interval", "interval_count", "start_date", "end_date",
-            "next_run_date", "auto_post", "is_active", "lines", "customer_name",
+            "next_run_date", "auto_post", "is_active", "lines", "customer_name", "taxes_taken_under",
         ]
-        read_only_fields = ["next_run_date"]
+        read_only_fields = ["next_run_date", "taxes_taken_under"]
 
 
 class ThirdPartyReleaseLineSerializer(serializers.ModelSerializer):

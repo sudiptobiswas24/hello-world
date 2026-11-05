@@ -20,6 +20,7 @@ from .models import (
     SalesOrderLine,
 )
 from .tests_base import SalesTestCase
+from apps.core.tests_schema_window import TodaysColumns
 
 
 class ApprovalTestCase(SalesTestCase):
@@ -663,6 +664,7 @@ class ApprovedFiguresPutInTheBaseMigrationTests(TransactionTestCase):
 
         executor = MigrationExecutor(connection)
         executor.migrate(self.before)
+        window = TodaysColumns()  # today's models written at the old schema (apps.core.tests_schema_window)
         try:
             inr = Currency.objects.create(code="INR", name="Rupee", is_base=True)
             eur = Currency.objects.create(code="EUR", name="Euro")
@@ -688,5 +690,6 @@ class ApprovedFiguresPutInTheBaseMigrationTests(TransactionTestCase):
             self.assertEqual(figures["gbp"], kept)   # no rate on 1 March: left as it is, unnamed
             self.assertEqual(figures["named"], in_base)
         finally:
+            window.close()
             executor = MigrationExecutor(connection)
             executor.migrate(executor.loader.graph.leaf_nodes())

@@ -244,6 +244,7 @@ class BillViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         "debit_old_supply": "purchasing.post_bill",
         "deduct_tds": "purchasing.add_tdsdeduction",
         "carried": "purchasing.change_bill",
+        "retake_taxes": "purchasing.change_bill",
         "take_settlement_discount": "purchasing.add_billpayment",
         "match_report": "purchasing.view_bill",
         # Capitalising posts the entry that moves the cost onto the asset account, as
@@ -309,6 +310,16 @@ class BillViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
             raise DRFValidationError(exc.messages)
         bill.refresh_from_db()
         return Response(self.get_serializer(bill).data)
+
+    @action(detail=True, methods=["post"])
+    def retake_taxes(self, request, pk=None):
+        """Every line that took its item's taxes by default takes them again under the vendor's position now (O446)."""
+        bill = self.get_object()
+        try:
+            bill.retake_taxes()
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.messages)
+        return Response(self.get_serializer(self.get_queryset().get(pk=bill.pk)).data)
 
     @action(detail=True, methods=["post", "delete"])
     def carried(self, request, pk=None):

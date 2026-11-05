@@ -6,6 +6,7 @@ from decimal import Decimal
 from django.db import connection
 from django.db.migrations.executor import MigrationExecutor
 from django.test import TransactionTestCase, tag
+from apps.core.tests_schema_window import TodaysColumns
 
 
 @tag("migration")
@@ -20,6 +21,7 @@ class TheKeptLimitIsFilledMigrationTests(TransactionTestCase):
         from .models import Invoice, InvoiceLine
 
         MigrationExecutor(connection).migrate(self.before)
+        window = TodaysColumns()  # today's models written at the old schema (apps.core.tests_schema_window)
         try:
             made = fixture(self, GstReturnTestCase)
             retail = made.party("KA-UNREG", gst_state="29", gst_registration="unregistered")
@@ -41,5 +43,6 @@ class TheKeptLimitIsFilledMigrationTests(TransactionTestCase):
                              (Decimal("250000.00"), Decimal("250000.00"), None))
             self.assertIn("kept the B2CL limit 250000.00 on 2 posted invoice(s)", said.getvalue())
         finally:
+            window.close()
             executor = MigrationExecutor(connection)
             executor.migrate(executor.loader.graph.leaf_nodes())

@@ -79,6 +79,7 @@ from apps.accounting.mixins import (
     RecordedLineTax,
     TaxedDocumentMixin,
     TaxedLineMixin,
+    TaxesTakenUnder,
     nothing_left_to_give_back,
     refuse_correcting_a_note,
     refuse_correcting_another_line,
@@ -591,7 +592,7 @@ class PlacedWhereTheGoodsGo:
 COST_SEEN_WITH = "sales.approve_order"
 
 
-class SalesOrder(PlacedWhereTheGoodsGo, Extensible, TaxedDocumentMixin, ChangesWithinItsApproval,
+class SalesOrder(PlacedWhereTheGoodsGo, Extensible, TaxesTakenUnder, TaxedDocumentMixin, ChangesWithinItsApproval,
                  ApprovableMixin, AuditModel):
     number = models.CharField(max_length=32, blank=True, editable=False)
     customer = models.ForeignKey(Party, on_delete=models.PROTECT, related_name="sales_orders")
@@ -1158,6 +1159,7 @@ class SalesOrder(PlacedWhereTheGoodsGo, Extensible, TaxedDocumentMixin, ChangesW
             invoice_date=invoice_date or timezone.localdate(),
             reference=self.reference,
             sales_order=self,
+            taxes_taken_under=self.taxes_taken_under,  # its lines' taxes are the order's (O446)
             receivable_account=receivable_account,
             currency=self.currency,
             payment_terms=self.payment_terms,
@@ -1282,6 +1284,7 @@ class SalesOrder(PlacedWhereTheGoodsGo, Extensible, TaxedDocumentMixin, ChangesW
             invoice_date=invoice_date or timezone.localdate(),
             reference=self.reference,
             sales_order=self,
+            taxes_taken_under=self.taxes_taken_under,  # its lines' taxes are the order's (O446)
             receivable_account=receivable_account,
             currency=self.currency,
             payment_terms=self.payment_terms,
@@ -1912,7 +1915,7 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
         return self.quantity_invoiced() >= self.invoice_limit()
 
 
-class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
+class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxesTakenUnder, TaxedDocumentMixin, AuditModel):
     """
     Sales invoice. Posting creates a balanced JournalEntry (Dr Accounts
     Receivable / Cr Revenue / Cr tax accounts) via Accounting — Sales
@@ -2911,6 +2914,7 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
             from apps.accounting.gst import refuse_untaxed_lines
 
             refuse_untaxed_lines(self.lines.all(), self.customer, f"{self.number or 'This invoice'} is not posted")
+            self.refuse_taxes_taken_under_another_position()
         # What the order has already been billed, and taken up front, is
         # read below and decided on; two invoices for one order posting
         # at once must not both see the same room. Every order a line
@@ -5624,7 +5628,7 @@ class QuotationStatus(models.TextChoices):
     SUPERSEDED = "superseded", "Superseded by a revision"
 
 
-class Quotation(PlacedWhereTheGoodsGo, TaxedDocumentMixin, AuditModel):
+class Quotation(PlacedWhereTheGoodsGo, TaxesTakenUnder, TaxedDocumentMixin, AuditModel):
     """
     A priced offer that hasn't been committed to. Kept separate from
     SalesOrder rather than folded in as another status: a quotation can
@@ -5818,6 +5822,7 @@ class Quotation(PlacedWhereTheGoodsGo, TaxedDocumentMixin, AuditModel):
         self._assign_number()
 
         revision = Quotation.objects.create(
+            taxes_taken_under=self.taxes_taken_under,  # its lines' taxes are the revised one's (O446)
             customer=self.customer,
             quotation_date=quotation_date or timezone.localdate(),
             valid_until=valid_until if valid_until is not None else self.valid_until,
@@ -5905,6 +5910,7 @@ class Quotation(PlacedWhereTheGoodsGo, TaxedDocumentMixin, AuditModel):
             order_date=order_date or timezone.localdate(),
             reference=self.reference,
             currency=self.currency,
+            taxes_taken_under=self.taxes_taken_under,  # its lines' taxes are the quotation's (O446)
             payment_terms=self.payment_terms,
             billing_address=self.billing_address,
             shipping_address=self.shipping_address,
@@ -6209,7 +6215,7 @@ def commission_report(date_from=None, date_to=None):
     return sorted(rows, key=lambda row: -row["commission"])
 
 
-class RecurringInvoice(AuditModel):
+class RecurringInvoice(TaxesTakenUnder, AuditModel):
     """
     A template that issues the same invoice on a schedule — a retainer, a
     subscription, a maintenance contract. Generation is driven by
@@ -6298,6 +6304,7 @@ class RecurringInvoice(AuditModel):
         # The rule the journal schedules ask (O284), shared: never before the start, never ahead.
         invoice_date = run_date(self, on_date)
         invoice = Invoice.objects.create(
+            taxes_taken_under=self.taxes_taken_under,  # its lines' taxes are the schedule's (O446)
             customer=self.customer, invoice_date=invoice_date,
             receivable_account=self.receivable_account, currency=self.currency,
             payment_terms=self.payment_terms, sales_rep=self.sales_rep,

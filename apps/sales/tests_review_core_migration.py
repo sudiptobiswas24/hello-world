@@ -9,6 +9,7 @@ from django.db.migrations.executor import MigrationExecutor
 from django.test import TransactionTestCase, tag
 
 from apps.core.models import Party, PartyRole, PartyRoleAssignment
+from apps.core.tests_schema_window import TodaysColumns
 
 
 @tag("migration")
@@ -21,6 +22,7 @@ class OneOpportunityAnOrderMigrationProbe(TransactionTestCase):
         from .models import SalesOrder
 
         MigrationExecutor(connection).migrate(self.before)
+        window = TodaysColumns()  # today's models written at the old schema (apps.core.tests_schema_window)
         try:
             customer = Party.objects.create(code="C-OPP", name="Bengal Cement")
             PartyRoleAssignment.objects.create(party=customer, role=PartyRole.CUSTOMER)
@@ -67,5 +69,6 @@ class OneOpportunityAnOrderMigrationProbe(TransactionTestCase):
         finally:
             # Unlinked before going forward again, or the migration refuses the clash this test left standing.
             Opportunity.objects.filter(sales_order__isnull=False).update(sales_order=None)
+            window.close()
             executor = MigrationExecutor(connection)
             executor.migrate(executor.loader.graph.leaf_nodes())
