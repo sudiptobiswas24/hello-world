@@ -141,6 +141,25 @@ class TheAgingReadsWhatTheReceivableHoldsTests(BalancesInBaseCase):
         self.assertEqual((row["amount_due"], self.total(ar_aging(as_of=on)), outstanding_balance(self.customer)),
                          (D("-2499.99"), D("-2499.99"), D("-2499.99")))
 
+    def test_a_multi_line_invoice_received_at_its_own_rate_leaves_nothing_on_the_receivable(self):
+        """
+        O447 (calc_fix_pay/o447.py): three lines of USD 10.01 at 83.25 book 2,499.99; USD 30.03 received on
+        10 Mar at the same 83.25 credits 2,500.00. The bases subtracted are -0.01: a paisa of exchange gain,
+        and the receivable at 0.00. Compared by rate it was 0, and -0.01 stayed held with the invoice settled.
+        """
+        order = SalesOrder.objects.create(customer=self.customer, order_date=MAR(1), currency=self.dollar)
+        for _ in range(3):
+            SalesOrderLine.objects.create(order=order, item=self.item, uom=self.uom, quantity=D("1"),
+                                          unit_price=D("10.01"), revenue_account=self.revenue)
+        order.confirm()
+        invoice = self.bill(order, on=MAR(1))
+        self.receive("30.03", invoice, on=MAR(10))
+        invoice.refresh_from_db()
+        gain = JournalLine.objects.filter(account=self.fx_gain, entry__posted=True).aggregate(
+            credit=Sum("credit"), debit=Sum("debit"))
+        self.assertEqual((invoice.amount_due(), self.held(), (gain["credit"] or D("0")) - (gain["debit"] or D("0"))),
+                         (D("0.00"), D("0.00"), D("0.01")))
+
     def test_the_statement_stays_in_the_customer_s_currency(self):
         invoice = self.dollar_invoice("120")
         self.receive("6000", invoice)
