@@ -392,6 +392,30 @@ class RecurringInvoiceTests(LifecycleTestCase):
         schedule = self.make_schedule()
         self.assertEqual(schedule.next_run_date, datetime.date(2026, 1, 15))
 
+    def test_moving_the_start_moves_the_next_run_until_it_has_run(self):
+        """O355, the journal schedules' mirror: a start moved past the next run refused every run."""
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        call_command("setup_roles", verbosity=0)
+        user = User.objects.create_user("ar")
+        user.groups.add(Group.objects.get(name="AR Manager"))
+        client = APIClient()
+        client.force_authenticate(user)
+        schedule = self.make_schedule()
+        url = f"/api/sales/recurring-invoices/{schedule.pk}/"
+        response = client.patch(url, {"start_date": "2026-02-20"}, format="json")
+        self.assertEqual((response.status_code, response.json()["next_run_date"]), (200, "2026-02-20"), response.content)
+        schedule.refresh_from_db()
+        invoice = schedule.generate_one()
+        self.assertEqual(invoice.invoice_date, datetime.date(2026, 2, 20))
+        schedule.refresh_from_db()
+        self.assertEqual(schedule.next_run_date, datetime.date(2026, 3, 20))
+        refused = client.patch(url, {"start_date": "2026-04-01"}, format="json")
+        self.assertEqual(refused.status_code, 400)
+        self.assertIn("SUB-1 has run since 20 Feb 2026, its next run on 20 Mar 2026", str(refused.json()))
+
     def test_generating_issues_an_invoice_and_advances(self):
         schedule = self.make_schedule()
         invoice = schedule.generate_one()
