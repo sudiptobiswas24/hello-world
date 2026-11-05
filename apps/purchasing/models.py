@@ -1028,6 +1028,11 @@ def on_confirmed_orders(order_lines):
     90,000 available that a draft order was about to spend. A requisition counts until its order is
     confirmed and the order from then on (received or not), never twice; a draft deleted or an order
     cancelled hands the quantity back to the requisition.
+
+    Handed back whole, because nothing is in hand by then: PurchaseOrder.cancel() refuses while any line
+    holds goods net of returns, and a receipt is refused on an order not confirmed, so a cancelled order
+    has received nothing (O455). Part received and no more coming is close_short(), which keeps the
+    order confirmed. Goods returned on a confirmed order are awaited on it again (quantity_open()).
     """
     return order_lines.filter(order__status=OrderStatus.CONFIRMED)
 
