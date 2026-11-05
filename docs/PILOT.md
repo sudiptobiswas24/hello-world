@@ -5,6 +5,48 @@ role. None of that says whether the people at Deccan Polysacks can do
 their day's work in it. The pilot finds that out while the old system
 still carries the business, so a problem costs a day, not a month-end.
 
+## Three weeks before: the equipment
+
+The pilot runs the floor and the weighbridge as well as the office, so
+the server sits in the plant, on the plant network: a cloud server
+would stop weighing and the floor tablets whenever the internet did.
+
+| What | Enough for this plant | Why |
+|---|---|---|
+| Server | 4 cores, 16 GB memory, 512 GB NVMe SSD; Ubuntu 24.04 (RUNBOOK.md) | 8 GB runs it; 16 leaves room for the nightly backup and years of data |
+| UPS | 1 to 1.5 kVA, 20 minutes or more, with a USB link the server reads (NUT, `apt install nut`) so it shuts itself down before the battery is flat | a disk that loses power mid-write is the one ordinary way to lose the database |
+| Backup copy | a second disk or a small NAS, and a daily copy of `backups/` off the premises (cloud storage with `rclone`) | the nightly backup sits beside the database; fire, theft or a dead disk takes both |
+| Network | a fixed address for the server; Wi-Fi that reaches every station, the dispatch bay and the gate | the tablets and the scale bridges find the server by that address |
+| Floor | a tablet or PC at each station in the pilot; a PC beside each scale with a serial or USB-serial lead to its indicator (deploy/scale_bridge/RUNBOOK.md) | the scale posts its own weight; a person never types it |
+| Printing | the printers the old system prints invoices, challans and labels on | printed documents are part of the pilot |
+
+Two things only a person can keep, whatever is bought: a copy of
+`ERP_FIELD_KEYS` off the machine and apart from the backups (without it
+every login's second factor must be reset), and a weekly look that the
+off-site copy arrived.
+
+## Two weeks before: what the plant gathers
+
+The files go in this order, each needing what is above it
+(docs/IMPORT.md has their columns; Bring old records in shows the same
+and checks a file before keeping it). The owner is who answers for the
+file being right, not who types it.
+
+| File | Owner | Note |
+|---|---|---|
+| parties | Accounts with Sales and Purchasing | each GSTIN checked on the portal |
+| employees, then customer_reps | HR Admin, Sales | a login and its role for each pilot person |
+| items | Stores with the Process Engineer | unit, HSN, stock class |
+| tape, fabric, bag, film and liner specifications | Process Engineer | each builds its bill of materials |
+| opening_stock | Stores Manager | counted, at the pilot's first day, per warehouse and batch |
+| open_invoices, open_bills | AR Manager, AP Manager | one row per old document still open |
+| opening_balances | Controller | every other balance; the trial balance must agree with the old one |
+| open_sales_orders, open_purchase_orders | Sales, Purchasing | only what is still to deliver or receive |
+| fixed_assets | Controller | with depreciation already taken |
+| compensation | Payroll Officer | each employee's pay components |
+| price_lists, vendor_prices | Sales, Purchasing | |
+| shipment_history | Production Planner | two or three years of monthly shipments, for the forecast |
+
 ## Before it starts
 
 1. Install on the server (RUNBOOK.md) and restore nothing yet.
@@ -18,8 +60,9 @@ still carries the business, so a problem costs a day, not a month-end.
 
 | Desk | Role to give them | Their flows to run every day |
 |---|---|---|
-| Sales | Sales Rep, AR Manager | order → delivery → invoice → money received; a credit note; aging; a new customer's delivery address and contact, on its page; a price list's breaks; a polymer clause billed at the month's index; a call-off against a schedule; the reminders as they fall due; a buyer's short payment for torn bags credited as a claim, and the quarter's claims by reason; before the order: an enquiry written down as a lead, the call logged with its follow-up, the lead converted to a customer and its first opportunity, valued and quoted from there, won with the order or lost with why; the pipeline by stage at its chance; what each campaign brought; follow-ups due on the home page; before the order: an enquiry written down as a lead, the call logged with its follow-up, the lead converted to a customer and its first opportunity, valued and quoted from there, won with the order or lost with why; the pipeline by stage at its chance; what each campaign brought; follow-ups due on the home page; a confirmed order's acknowledgement and a proforma invoice (with where to pay, once Settings → Company names the bank) printed and emailed from the order; the reps in teams under a leader, each team's and rep's monthly target, and Targets against sales read beside the Sales report by rep; the pipeline as a board, a lead's warmth read from its facts, and a mail to a lead from its page |
+| Sales | Sales Rep, AR Manager | order → delivery → invoice → money received; a credit note; aging; a new customer's delivery address and contact, on its page; a price list's breaks; a polymer clause billed at the month's index; a call-off against a schedule; the reminders as they fall due; a buyer's short payment for torn bags credited as a claim, and the quarter's claims by reason; before the order: an enquiry written down as a lead, the call logged with its follow-up, the lead converted to a customer and its first opportunity, valued and quoted from there, won with the order or lost with why; the pipeline by stage at its chance; what each campaign brought; follow-ups due on the home page; a confirmed order's acknowledgement and a proforma invoice (with where to pay, once Settings → Company names the bank) printed and emailed from the order; the reps in teams under a leader, each team's and rep's monthly target, and Targets against sales read beside the Sales report by rep; the pipeline as a board, a lead's warmth read from its facts, and a mail to a lead from its page |
 | Dispatch | Warehouse Staff | ship an order, choosing batches; a customer return; the transporter, LR and vehicle on each delivery, before the e-way bill; the customer's receipt on each delivery (when, by whom, their GRN number), and the deliveries still unacknowledged; the pick list for a draft delivery and for the day's, bin by bin in walking order, on screen and on paper |
+| Gate | Security Guard | every vehicle in and out as a gate visit; gross and tare on the weighbridge, typed only when the scale cannot send it; a gate pass for goods leaving that are not a sale (a job-work challan's fabric, a repair going out) and its return; a receipt short on the weighbridge, for the Purchase Manager's claim |
 | Purchasing | Purchasing Clerk | purchase order → confirm; close a short line; a requisition approved and ordered; an RFQ put to two vendors and awarded; a release against a blanket order; the agreed vendor prices and reorder rules; what to reorder, from the rules against stock, orders and commitments; what approved requisitions still need put out for quotes as one request, from To quote or from the requisition, and the award ordering the requisition; the vendor scorecard for the year |
 | Stores | Warehouse Staff, Stores Manager | goods in with batch numbers; stock on hand and its movements; a count of one rack, posted by the manager; a transfer between warehouses; fabric out to the laminator on a job-work challan, and what it lost; a customer's own granules received and the unused sent back; a new item and the other units it is bought or sold in; each item's stock class (raw material, packing, stores and spares, semi-finished, finished) for the bank statement; covers and straps drawn off the shelf as each bale is pressed, under the packing reason |
 | Maintenance | Maintenance | a service raised from Maintenance due and completed; a breakdown raised from its stoppage; the day's meter readings; Electricity shows each meter's highest demand and latest power factor in the window, the figures the board bills and penalises on; each machine's positions (the bearing seat, the screen pack) with the spare each takes; a spare issued to a job names the position it went to, so how long a bearing lasts on loom 14 is read off the gaps; the critical spares with none on any shelf; a job that fell due is on the home page and in the morning mail, not only on the Due list; the maintenance calendar, month by month, one work centre or all |
