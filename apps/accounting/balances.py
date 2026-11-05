@@ -163,7 +163,8 @@ def party_balance(side, party):
     for note in _open_notes(side, documents):
         refund = note.refund_due()
         if refund:
-            owed -= in_base_as_booked(note, refund)
+            # What the note booked line by line less what settled it, as an invoice reads (O443, O423).
+            owed -= held_for(side, note, refund)
     received, paid_out = standing_on_account(
         Payment.objects.filter(party=party, counterpart_account__in=side.control_accounts()))
     # The party's own money settles what they owe; ours to them on this account adds to it.
@@ -203,7 +204,7 @@ def aging(side, as_of=None, documents=None):
         refund = note.refund_due()
         if refund > 0:
             credits.append(_row(side, note, side.row_key, getattr(note, side.date_field), 0, -refund,
-                                -in_base_as_booked(note, refund)))
+                                -held_for(side, note, refund)))
     payments = Payment.objects.filter(counterpart_account__in=side.control_accounts(), payment_date__lte=as_of)
     if scoped:
         payments = payments.filter(party__in=documents.values(side.party_field))
