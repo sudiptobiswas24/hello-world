@@ -17,7 +17,10 @@ from reportlab.lib.enums import TA_RIGHT
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from django.utils.html import conditional_escape, format_html
+from django.utils.safestring import mark_safe
+from reportlab.platypus import Paragraph as _ReportlabParagraph
+from reportlab.platypus import SimpleDocTemplate, Spacer, Table, TableStyle
 
 from apps.core import barcode
 from apps.core.models import Company
@@ -48,8 +51,36 @@ def _styles():
     }
 
 
+def printable(value):
+    """
+    Text as reportlab must be given it (O319). A Paragraph reads its text as
+    markup, so a party called "Sharma <Raipur> & Sons" printed "Sharma & Sons":
+    the brackets were taken for a tag and dropped. Everything is escaped
+    unless it was built as markup on purpose, with `format_html`, `lines` or
+    `bold` (Django's safe strings), so a caller cannot forget.
+    """
+    # Quotes are not markup to reportlab outside a tag, and its numeric entity printed "buyer ' s": only
+    # &, < and > are escaped, here and in what format_html escaped for its arguments.
+    escaped = conditional_escape("" if value is None else value)
+    return mark_safe(escaped.replace("&#x27;", "'").replace("&quot;", '"'))
+
+
+def Paragraph(text, style):
+    """The only Paragraph this module builds: its text escaped unless it is markup made on purpose."""
+    return _ReportlabParagraph(printable(text), style)
+
+
+def lines(parts):
+    """Lines one under another, each escaped unless it is markup already."""
+    return mark_safe("<br/>".join(printable(part) for part in parts))
+
+
+def bold(value):
+    return format_html("<b>{}</b>", value)
+
+
 def address_block(address):
-    return "" if address is None else address.formatted().replace("\n", "<br/>")
+    return "" if address is None else lines(address.formatted().splitlines())
 
 
 def grouped(value, places=2, indian=True):
@@ -151,7 +182,7 @@ def render_document(*, heading, document, party, address, meta, totals,
     shown_number = number or getattr(document, "number", "") or ""
     title = [Paragraph(heading, style["title"])]
     if subheading:
-        title.append(Paragraph(f"<b>{subheading}</b>", style["right"]))
+        title.append(Paragraph(bold(subheading), style["right"]))
     if shown_number:
         # The number as Code 128, so the paper scans back into the system
         # (a purchase order at the gate, a challan at dispatch).
@@ -173,10 +204,10 @@ def render_document(*, heading, document, party, address, meta, totals,
         Spacer(1, 2 * mm),
         Table(
             [[Paragraph(party_label, style["h2"]), "", Paragraph("DETAILS", style["h2"])],
-             [Paragraph(party_text or f"<b>{party.name}</b><br/>{address_block(address)}", style["body"]),
+             [Paragraph(party_text or lines([bold(party.name), address_block(address)]), style["body"]),
               "",
               Table(
-                  [[Paragraph(label, style["muted"]), Paragraph(str(value), style["body"])]
+                  [[Paragraph(label, style["muted"]), Paragraph(value, style["body"])]
                    for label, value in meta],
                   colWidths=[24 * mm, 50 * mm],
                   style=TableStyle([
@@ -197,16 +228,16 @@ def render_document(*, heading, document, party, address, meta, totals,
 
     if table is not None:
         header, body, col_widths = table
-        rows = [[Paragraph(f"<b>{cell}</b>", style["muted"]) for cell in header]]
+        rows = [[Paragraph(bold(cell), style["muted"]) for cell in header]]
         for row in body:
             rows.append([
-                Paragraph(str(cell), style["body" if index == 0 else "right"])
+                Paragraph(cell, style["body" if index == 0 else "right"])
                 for index, cell in enumerate(row)
             ])
     else:
         header = ["Description", "Qty", "Unit price", "Disc", "Tax", "Amount"]
         col_widths = [68 * mm, 18 * mm, 26 * mm, 14 * mm, 20 * mm, 28 * mm]
-        rows = [[Paragraph(f"<b>{cell}</b>", style["muted"]) for cell in header]]
+        rows = [[Paragraph(bold(cell), style["muted"]) for cell in header]]
         for line in document.lines.all():
             tax_names = ", ".join(tax.code for tax, _ in line.tax_amounts()) or "—"
             rows.append([
@@ -274,7 +305,7 @@ def render_document(*, heading, document, party, address, meta, totals,
 
     if signatory:
         story.append(Spacer(1, 8 * mm))
-        story.append(Paragraph(f"For <b>{signatory}</b>", style["right"]))
+        story.append(Paragraph(format_html("For <b>{}</b>", signatory), style["right"]))
         story.append(Spacer(1, 12 * mm))
         story.append(Paragraph("Authorised signatory", style["right"]))
 
@@ -308,12 +339,12 @@ def qr_drawing(text, size=38 * mm):
 
 def letterhead(company):
     """The company as the head of every page: name, then where it is and its GSTIN, where it has them."""
-    lines = [f"<b>{company.name}</b>"]
+    parts = [bold(company.name)]
     if company.address_id:
-        lines.extend(company.address.formatted().splitlines())
+        parts.extend(company.address.formatted().splitlines())
     if company.tax_id:
-        lines.append(f"GSTIN {company.tax_id}")
-    return "<br/>".join(lines)
+        parts.append(f"GSTIN {company.tax_id}")
+    return lines(parts)
 
 
 ONES = ["", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve",
@@ -354,3 +385,30 @@ def rupees_in_words(amount):
     rupees, paise = divmod(paise_total, 100)
     text = f"Rupees {in_words(rupees)}" + (f" and {in_words(paise)} paise" if paise else "") + " only"
     return f"Minus {text}" if Decimal(amount) < 0 else text
+
+
+class printed_text:
+    """
+    In a test: what every Paragraph read once reportlab had parsed it, as plain text (O319).
+
+        with printed_text() as seen:
+            invoice.render_pdf()
+        self.assertIn("Sharma <Raipur> & Sons", seen)
+    """
+
+    def __enter__(self):
+        global _ReportlabParagraph
+        self.seen, self._kept = [], _ReportlabParagraph
+        kept, seen = self._kept, self.seen
+
+        def recording(text, style):
+            paragraph = kept(text, style)
+            seen.append(paragraph.getPlainText())
+            return paragraph
+
+        _ReportlabParagraph = recording
+        return self.seen
+
+    def __exit__(self, *exc):
+        global _ReportlabParagraph
+        _ReportlabParagraph = self._kept

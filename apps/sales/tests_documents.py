@@ -116,6 +116,31 @@ class InvoicePdfTests(SalesDocumentTestCase):
         invoice = self.make_invoice(customer=bare)
         self.assertTrue(invoice.render_pdf().startswith(b"%PDF-"))
 
+    def test_angle_brackets_and_ampersands_in_a_party_print_as_typed(self):
+        """O319: reportlab read "<Raipur>" as a tag and printed "Sharma  & Sons"."""
+        from apps.core.documents import printed_text
+
+        self.customer.name = "Sharma <Raipur> & Sons"
+        self.customer.legal_name = "Sharma's <Raipur> & Sons"
+        self.customer.save()
+        self.customer.addresses.update(line1="Plot <7> & 8, GIDC")
+        invoice = self.make_invoice(post=False)
+        invoice.lines.update(description="Sacks <50 kg> & liners")
+        with printed_text() as seen:
+            self.assertTrue(invoice.render_pdf().startswith(b"%PDF-"))
+        printed = "\n".join(seen)
+        self.assertIn("Sharma's <Raipur> & Sons", printed)
+        self.assertIn("Plot <7> & 8, GIDC", printed)
+        self.assertIn("Sacks <50 kg> & liners", printed)
+        with printed_text() as seen:
+            invoice.post()
+            invoice.refresh_from_db()
+            self.assertTrue(invoice.render_pdf().startswith(b"%PDF-"))
+        self.assertIn("Sharma's <Raipur> & Sons", "\n".join(seen))  # the tax invoice prints what it was issued as
+        # The markup the layout means still prints as markup, not as text.
+        self.assertNotIn("<b>", printed)
+        self.assertNotIn("<br/>", printed)
+
 
 @override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
 class InvoiceEmailTests(SalesDocumentTestCase):
