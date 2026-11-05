@@ -1911,16 +1911,22 @@ class Payslip(AuditModel):
         if month <= self.run.period_end < following:
             month_runs.append(self.run)
         opening = min(month_runs, key=lambda run: (run.period_start, run.pk or 0), default=None)
+        # Somebody paid by the hour or the piece that month has no monthly rate to read: their fixed earnings
+        # are 0 or part of it, and read as covered whatever they earned (O367, decided). Theirs is the month's
+        # wages so far at each run, the same sum a whole-month run reads below.
         if opening is not None and (opening.period_start > month
-                                    or opening.period_end < following - datetime.timedelta(days=1)):
+                                    or opening.period_end < following - datetime.timedelta(days=1)) \
+                and not self._paid_by_rate(deciding, month, following):
             return self._monthly_rate(deciding, opening, month, following) <= ceiling
+        # Wages are what was earned: a line of a deciding component taken back as a deduction (a roll voided
+        # after payday) is not wages and does not add to them (O368), as this run's computed holds only earnings.
         lines = PayslipLine.objects.filter(
             payslip__employee=self.employee, payslip__run__status=PayRunStatus.POSTED,
             payslip__run__period_end__gte=month, payslip__run__period_end__lt=following,
+            kind=ComponentKind.EARNING,
         ).exclude(payslip__run=self.run)
-        wages = sum((line.amount for line in lines if (
-            line.component_id in wanted if wanted else line.kind == ComponentKind.EARNING and line.is_taxable)),
-            Decimal("0"))
+        wages = sum((line.amount for line in lines if (line.component_id in wanted if wanted else line.is_taxable)),
+                    Decimal("0"))
         if month <= self.run.period_end < following:
             wages += self._sum_of(component, deciding, computed, running_taxable)
         return wages <= ceiling
@@ -1962,6 +1968,20 @@ class Payslip(AuditModel):
                 least_term, most_term
         self.__dict__.setdefault("_rates", {})[row.pk] = rate
         return rate
+
+    def _paid_by_rate(self, deciding, month, following):
+        """
+        Whether this person has an hourly or piece rate among the deciding earnings (every taxable earning when
+        none is named) in force on any day of the month from `month` to `following`, so that the month's
+        coverage is read from wages so far and not from a monthly rate (O367).
+        """
+        last = following - datetime.timedelta(days=1)
+        rows = EmployeeCompensation.objects.filter(
+            employee=self.employee, component__kind=ComponentKind.EARNING,
+            component__basis__in=(ComponentBasis.PER_HOUR, ComponentBasis.PER_UNIT),
+            effective_from__lte=last).filter(Q(effective_to__isnull=True) | Q(effective_to__gte=month))
+        rows = rows.filter(component__in=deciding) if deciding else rows.filter(component__is_taxable=True)
+        return rows.exists()
 
     def _monthly_rate(self, deciding, opening, month, following):
         """
