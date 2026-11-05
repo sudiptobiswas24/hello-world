@@ -236,5 +236,12 @@ class MoneyLineSerializerMixin(serializers.Serializer):
         if not named and hasattr(line, "default_taxes") and not line.taxes.exists():
             defaults = line.default_taxes()
             if defaults:
+                # Its document keeps the fiscal position they were taken under (O446).
+                from .mixins import TaxesTakenUnder
+
+                document = next((getattr(line, field.name) for field in type(line)._meta.concrete_fields
+                                 if field.many_to_one and field.remote_field.related_name == "lines"), None)
+                if isinstance(document, TaxesTakenUnder):
+                    document.note_taxes_taken()
                 line.taxes.set(defaults)
         return line

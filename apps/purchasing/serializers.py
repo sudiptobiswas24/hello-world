@@ -70,12 +70,12 @@ class PurchaseOrderSerializer(ExtensibleSerializerMixin, serializers.ModelSerial
             "currency", "bill_policy", "lines",
             "payment_terms", "freight_terms", "incoterm", "port_of_loading",
             "shipping_note", "drop_ship_for", "subcontract_warehouse",
-            "receipt_status", "bill_status", "subtotal", "tax_total", "total", "extra",
+            "receipt_status", "bill_status", "subtotal", "tax_total", "total", "extra", "taxes_taken_under",
         ]
         # Status moves by confirm/cancel, which ask what they ask. Written
         # here, a clerk confirmed past the approval tiers. Sales always had
         # it read-only.
-        read_only_fields = ["number", "status"]
+        read_only_fields = ["number", "status", "taxes_taken_under"]
 
 
 class BillLineSerializer(MoneyLineSerializerMixin, serializers.ModelSerializer):
@@ -167,9 +167,10 @@ class BillSerializer(ExtensibleSerializerMixin, serializers.ModelSerializer):
             "is_prepayment",
             "is_opening_balance",
             "corrects_old_supply",
-            "old_bill_value", "extra",
+            "old_bill_value", "extra", "taxes_taken_under",
         ]
         read_only_fields = [
+            "taxes_taken_under",
             "number", "due_date", "debits", "journal_entry", "posted", "posted_at",
             "exchange_rate", "is_prepayment", "is_opening_balance", "corrects_old_supply",
             "old_bill_value",

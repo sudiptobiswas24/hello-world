@@ -356,8 +356,8 @@ class BlanketOrderSerializer(serializers.ModelSerializer):
     class Meta:
         model = BlanketOrder
         fields = ["id", "number", "vendor", "reference", "start_date", "end_date", "currency", "status",
-                  "lines", "vendor_name", "total"]
-        read_only_fields = ["status"]
+                  "lines", "vendor_name", "total", "taxes_taken_under"]
+        read_only_fields = ["status", "taxes_taken_under"]
 
     def get_total(self, obj):
         return obj.total()
