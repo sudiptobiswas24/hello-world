@@ -1999,6 +1999,11 @@ from .gst import LetterOfUndertaking  # noqa: E402,F401
 from .tcs import SeededDefault, TcsDeclaration, TcsRate, TcsSection  # noqa: E402,F401
 
 
+# The reference the go-live opening-balances entry carries (imports.importer): by it a second run finds the
+# first, and an asset brought in as an opening balance finds whether its accounts came in that way already.
+OPENING_BALANCES_REFERENCE = "Opening balances"
+
+
 class BooksOpening(AuditModel):
     """
     The day the books opened, and the equity account opening balances stand
