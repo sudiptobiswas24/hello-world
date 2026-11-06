@@ -168,10 +168,9 @@ class ItemSerializer(HidesStockMoney, ExtensibleSerializerMixin, serializers.Mod
         # taxes would be charged to a customer.
         attrs = super().validate(attrs)
         for key, side in (("sales_taxes", "sales"), ("purchase_taxes", "purchase")):
-            wrong = [tax.code for tax in attrs.get(key, []) if tax.scope not in (side, "both")]
-            if wrong:
-                raise serializers.ValidationError({key: [f"{', '.join(wrong)} {'is' if len(wrong) == 1 else 'are'} "
-                                                         f"not taxes on a {'sale' if side == 'sales' else 'purchase'}."]})
+            refused = Item.taxes_of_the_other_side(attrs.get(key, []), side)
+            if refused:
+                raise serializers.ValidationError({key: [refused]})
         return attrs
 
 

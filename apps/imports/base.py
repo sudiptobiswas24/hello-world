@@ -98,6 +98,30 @@ def codes(row, column):
     return [part.strip() for part in row.get(column, "").split(";") if part.strip()]
 
 
+def taxes_named(row, column):
+    """
+    The taxes a cell names, split on semicolons: a tax's code, or a tax group's, which means every tax in it
+    (GST5 is CGST2.5 and SGST2.5, as setup_indian_books seeds it). A clerk writes the group: the order book
+    of the go-live loading run named GST5 and GST18 and was refused (O467).
+    """
+    from apps.accounting.models import Tax, TaxGroup
+
+    taxes, missing = [], []
+    for code in codes(row, column):
+        tax = Tax.objects.filter(code=code).first()
+        if tax is not None:
+            taxes.append(tax)
+            continue
+        group = TaxGroup.objects.filter(code=code).first()
+        if group is not None and group.taxes.exists():
+            taxes.extend(group.taxes.order_by("sequence", "code"))
+            continue
+        missing.append(code)
+    if missing:
+        raise RowError(column, f"no tax or tax group {', '.join(missing)}.")
+    return taxes
+
+
 def once_only(what, standing, undo, column=""):
     """
     The opening position comes in once: refuse a second run of what an earlier one brought in.

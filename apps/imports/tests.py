@@ -149,6 +149,66 @@ class ItemsTests(ImportTestCase):
         self.assertEqual(Item.objects.get(sku="FAB-20").costing_method, "fifo")
 
 
+class ItemTaxesTests(ImportTestCase):
+    """O467: an item that declares no tax is read as bearing none; the import could set none."""
+
+    def setUp(self):
+        super().setUp()
+        from apps.accounting.models import Tax, TaxGroup
+
+        payable = Account.objects.create(code="2201", name="Output GST", account_type=AccountType.LIABILITY)
+        tax = lambda code, rate, scope="both", group=None: Tax.objects.create(  # noqa: E731
+            code=code, name=code, rate=Decimal(rate), scope=scope, group=group,
+            collected_account=payable, paid_account=payable)
+        group = TaxGroup.objects.create(code="GST18", name="GST 18%")
+        tax("SGST9", "9", group=group)
+        tax("CGST9", "9", group=group)
+        tax("RCM5", "5", scope="purchase")
+
+    def test_an_item_declares_its_taxes_by_code_or_by_group(self):
+        report = run("items", "sku,name,uom,sales_taxes,purchase_taxes\n"
+                              "BAG-1,Cement bag,each,GST18,CGST9;SGST9\n", commit=True)
+        self.assertTrue(report.committed, report.errors)
+        bag = Item.objects.get(sku="BAG-1")
+        self.assertEqual(sorted(bag.sales_taxes.values_list("code", flat=True)), ["CGST9", "SGST9"])
+        self.assertEqual(sorted(bag.purchase_taxes.values_list("code", flat=True)), ["CGST9", "SGST9"])
+
+    def test_a_tax_of_the_other_side_or_none_such_is_refused(self):
+        report = run("items", "sku,name,uom,sales_taxes,purchase_taxes\n"
+                              "BAG-2,Bag,each,RCM5,\n"
+                              "BAG-3,Bag,each,,GST12\n", commit=True)
+        self.assertEqual(self.errors(report), [(2, "sales_taxes"), (3, "purchase_taxes")])
+        self.assertIn("RCM5 is not taxes on a sale", report.errors[0][2])
+        self.assertIn("no tax or tax group GST12", report.errors[1][2])
+        self.assertFalse(Item.objects.filter(sku__in=["BAG-2", "BAG-3"]).exists())
+
+    def test_go_live_check_names_goods_that_declare_no_tax(self):
+        from apps.accounting.gst import GstSettings
+        from apps.gst.tests import gstin
+
+        from apps.accounting.models import FiscalPosition
+
+        GstSettings.objects.create(gstin=gstin("27AABCD1234E1Z"),
+                                   interstate_position=FiscalPosition.objects.create(code="INTER", name="Inter-state"))
+        run("items", "sku,name,uom\nBAG-4,Bag,each\n", commit=True)
+        out = StringIO()
+        try:
+            call_command("go_live_check", stdout=out)
+        except CommandError:
+            pass
+        self.assertIn("Items with no taxes", out.getvalue())
+        self.assertIn("BAG-4", out.getvalue())
+        from apps.accounting.models import Tax
+
+        Item.objects.get(sku="BAG-4").sales_taxes.set(Tax.objects.filter(code="CGST9"))
+        out = StringIO()
+        try:
+            call_command("go_live_check", stdout=out)
+        except CommandError:
+            pass
+        self.assertNotIn("BAG-4", out.getvalue())
+
+
 class OpeningStockTests(ImportTestCase):
     def test_a_cost_with_more_places_than_the_line_keeps_is_refused(self):
         # O4: read at eight places into a four-place field. Refused already by the

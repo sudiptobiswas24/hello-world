@@ -152,6 +152,14 @@ counts them. Run again to move a customer to another rep.
 
 `stock_class` (raw_material, packing, consumable, semi_finished or finished) groups the item on the bank's stock statement; left blank it shows there as unclassified until the controller sets it.
 
+`sales_taxes` and `purchase_taxes` (codes separated by `;`: a tax, such
+as `CGST9;SGST9`, or a tax group, such as `GST18`, meaning every tax in
+it) are what a line of the item takes when it names none. Give each
+taxed good its intra-state pair: the party's fiscal position turns it
+into IGST across a state line. **An item left without them is read as
+bearing no tax**, and its orders, invoices and bills go out with no GST;
+`go_live_check` lists goods that declare none.
+
 ### opening_stock — needs `--date`
 
 `sku*`, `warehouse*` (code), `quantity*` (above nothing), `unit_cost*`
@@ -204,7 +212,7 @@ One row per line; rows with the same `customer*` (or `vendor*`) and
 (default the customer's). Each line: `sku*`, `description`, `quantity*`
 (what is still to deliver or receive, above nothing), `uom` (default the
 item's), `unit_price*`, `delivery_date` / `expected_date`, `warehouse`
-(code), `taxes` (codes separated by `;`). An order is confirmed once all
+(code), `taxes` (codes separated by `;`, a tax or a tax group; blank takes the item's, `none` says none). An order is confirmed once all
 its rows are in, under the same rules as one typed in — an approval the
 policy would ask for is reported as a problem, not skipped. Deliveries
 already made in the old system are not brought in: the quantity is what
