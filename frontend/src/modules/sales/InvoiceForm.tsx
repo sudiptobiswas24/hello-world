@@ -4,9 +4,10 @@ import { Trail } from "../../views/Trail";
 import { useAct, useRecord, useRows } from "../../api/hooks";
 import { useAccess } from "../../auth/me";
 import { ExtraFields } from "../../forms/ExtraFields";
+import { useAsk } from "../../forms/Ask";
 import { ActionButton, DocHeader, Sheet, Totals } from "../../forms/Document";
 import { Field, today } from "../../forms/fields";
-import { Lines, type TradeLine } from "../../forms/Lines";
+import { Lines, NewLines, lineBody, type NewLine, type TradeLine } from "../../forms/Lines";
 import { OldSupplyNote } from "../../forms/OldSupplyNote";
 import { useDraft } from "../../forms/useDraft";
 import { minus, positive } from "../../lib/decimal";
@@ -73,6 +74,7 @@ export default function InvoiceForm() {
   const invoice = record.data;
   const draft = useDraft<Invoice>(isNew ? ({ customer: null, invoice_date: today(), reference: "" } as unknown as Invoice) : invoice);
   const act = useAct<Invoice>();
+  const { ask, dialog } = useAsk();
   const seesPayments = can("sales.view_invoicepayment");
   const allocations = useRows<Allocation>("/api/sales/invoice-payments/", { invoice: invoice?.id }, Boolean(invoice?.posted) && seesPayments);
 
@@ -81,6 +83,7 @@ export default function InvoiceForm() {
 
   const editable = isNew || (!invoice!.posted && can("sales.change_invoice"));
   const value = draft.value;
+  const newLines = ((value as Record<string, unknown>).new_lines as NewLine[] | undefined) ?? [];
   const state = invoice ? invoiceState(invoice) : undefined;
   const title = invoice?.credits ? "Credit note" : "Invoice";
 
@@ -88,6 +91,7 @@ export default function InvoiceForm() {
     if (isNew) {
       const outcome = await act.run("POST", ENDPOINT, {
         customer: value.customer, invoice_date: value.invoice_date, reference: value.reference,
+        new_lines: newLines.map(lineBody),
       }, { done: "Invoice created" });
       if (outcome.ok) {
         draft.reset();
@@ -107,9 +111,11 @@ export default function InvoiceForm() {
     // A deposit is given back by amount: part of what is left, or all of it.
     let body: Record<string, string> = {};
     if (invoice!.is_down_payment) {
-      const amount = window.prompt(`How much of ${invoice!.number} to give back? Leave it empty for all that is left. A credit note is posted at once.`);
-      if (amount === null) return;
-      if (amount.trim()) body = { amount: amount.trim() };
+      const said = await ask({ title: `Credit note on ${invoice!.number}`, submit: "Post the credit note",
+        note: "A credit note is posted at once.",
+        fields: [{ key: "amount", label: "Amount to give back", kind: "money", hint: "Leave it empty for all that is left" }] });
+      if (said === null) return;
+      if (said.amount) body = { amount: said.amount };
     } else if (!window.confirm(`Credit all of ${invoice!.number}? A credit note is posted at once.`)) return;
     const outcome = await act.run("POST", `${ENDPOINT}${invoice!.id}/credit_note/`, body, {
       done: (result) => `Credit note ${(result as Invoice).number} posted`,
@@ -118,11 +124,12 @@ export default function InvoiceForm() {
   };
   const writeOff = async () => {
     // Not a credit note: the sale happened and the money never came.
-    const amount = window.prompt(`How much of ${invoice!.number} to write off to bad debt? Leave it empty for all that is owed.`);
-    if (amount === null) return;
-    const reason = window.prompt("Why will it not be paid?");
-    if (reason === null) return;
-    await act.run("POST", `${ENDPOINT}${invoice!.id}/write_off/`, { reason, ...(amount.trim() ? { amount: amount.trim() } : {}) }, {
+    const said = await ask({ title: `Write off ${invoice!.number}`, submit: "Write off", danger: true, fields: [
+      { key: "amount", label: "Amount to write off", kind: "money", hint: "Leave it empty for all that is owed" },
+      { key: "reason", label: "Why it will not be paid" },
+    ] });
+    if (said === null) return;
+    await act.run("POST", `${ENDPOINT}${invoice!.id}/write_off/`, { reason: said.reason, ...(said.amount ? { amount: said.amount } : {}) }, {
       done: "Written off to bad debt",
     });
   };
@@ -156,6 +163,7 @@ export default function InvoiceForm() {
           <ActionButton pending={act.pending} onClick={() => void email()}>{invoice.sent_at ? "Email again" : "Email"}</ActionButton>
         )}
       </DocHeader>
+      {dialog}
 
       <Sheet>
         <div className="field-grid">
@@ -202,7 +210,12 @@ export default function InvoiceForm() {
             ]} />
           </>
         )}
-        {isNew && <p className="muted">Create the invoice, then add its lines. An invoice for an order is raised from the order.</p>}
+        {isNew && (
+          <>
+            <NewLines lines={newLines} onChange={(next) => draft.set("new_lines" as never, next as never)} errors={draft.errors}  />
+            <p className="muted">Add its lines, then create it: the invoice and its lines are saved together. An invoice for an order is raised from the order.</p>
+          </>
+        )}
         {invoice?.is_opening_balance && (
           <p className="note" role="note">Brought in from the old system: {invoice.reference}, what was still owed on it. A rate difference or a return on it is a credit note with its own GST, below; the Credit note button only clears the balance.</p>
         )}

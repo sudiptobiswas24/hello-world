@@ -235,3 +235,68 @@ class MoneyLineSerializerMixin(serializers.Serializer):
             # Named, even as []: set as sent. Not named: the line takes its defaults as it is saved (O459).
             validated_data["given_taxes"] = validated_data.pop("taxes")
         return super().create(validated_data)
+
+
+class TakesItsLinesMixin(serializers.Serializer):
+    """
+    A trading document made with its lines in one request (O401). The header and every line are written inside
+    the one savepoint AuditableViewSetMixin.perform_create opens around serializer.save(), so a refusal on any line
+    leaves nothing behind: no half-made draft for someone to find, or to post, after a person stopped between steps.
+
+    Each line goes through the document's own line serializer, exactly as one added later through the line endpoint
+    would: its validation, its default taxes when it names none (O459: `taxes` sent, even [], is taken as given), and
+    the taxes_taken_under its document settled on as it was saved (O446). Adding a line needs the line's own add
+    permission, as it does there.
+
+    `new_lines` is asked only when the document is made; a saved one's lines are changed one by one.
+    """
+
+    line_serializer = None  # the document's line serializer
+    line_parent = None  # the line's field naming its document
+
+    new_lines = serializers.ListField(child=serializers.DictField(), write_only=True, required=False)
+
+    def get_field_names(self, declared_fields, info):
+        names = list(super().get_field_names(declared_fields, info))
+        return names if "new_lines" in names else [*names, "new_lines"]
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        if self.instance is not None and "new_lines" in attrs:
+            raise serializers.ValidationError(
+                {"new_lines": ["Lines are sent with a new document only; add one to a saved document on its own."]})
+        return attrs
+
+    def create(self, validated_data):
+        from django.core.exceptions import ValidationError as DjangoValidationError
+        from rest_framework.exceptions import PermissionDenied
+
+        rows = validated_data.pop("new_lines", None) or []
+        document = super().create(validated_data)
+        if not rows:
+            return document
+        request = self.context.get("request")
+        model = self.line_serializer.Meta.model
+        permission = f"{model._meta.app_label}.add_{model._meta.model_name}"
+        if request is not None and not request.user.has_perm(permission):
+            raise PermissionDenied(f"You may not add {model._meta.verbose_name_plural}.")
+        user = getattr(request, "user", None)
+        stamp = {"created_by": user, "updated_by": user} if user is not None and user.is_authenticated else {}
+        said, refused = [], False
+        for row in rows:
+            line = self.line_serializer(data={**row, self.line_parent: document.pk}, context=self.context)
+            if not line.is_valid():
+                said.append(line.errors)
+                refused = True
+                continue
+            try:
+                line.save(**stamp)
+            except DjangoValidationError as error:
+                said.append(error.message_dict if hasattr(error, "error_dict") else {"non_field_errors": error.messages})
+                refused = True
+                continue
+            said.append({})
+        if refused:
+            # Raised inside the savepoint: the header and the lines already written go with it.
+            raise serializers.ValidationError({"new_lines": said})
+        return document
