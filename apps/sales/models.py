@@ -3019,6 +3019,7 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxesTa
             if self.payment_terms_id else self.invoice_date
         )
 
+        self.hold_lines_for_their_taxes()
         if self.is_credit_note():
             original = self.credits
             if not original.posted or not original.journal_entry_id:

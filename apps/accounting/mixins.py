@@ -990,11 +990,31 @@ class PostedTaxDocumentMixin(models.Model):
         """Where the supply is (gst.place_of_supply): a sale that moves goods says; else the party's state."""
         return profile.place_of_supply()
 
+    def hold_lines_for_their_taxes(self):
+        """
+        Hold the lines record_taxes() will write, before the entry posts (O445). Posting an entry takes
+        its accounting period, which the lock order puts last; record_taxes() then wrote each line, a row
+        ranked before the period, so every posting into a period that already stood took its lines out
+        of order. A period made in the same transaction hid it (a row a transaction made is held, not
+        ranked). Every document that posts and records taxes calls this before its entry.
+
+        Its own lines only, the rows record_taxes() writes: a customer return posts its credit notes
+        after the stock came back, and holding the invoice lines a note corrects there took them after
+        the shelf. A bill holds the lines its note debits as well, in its own call (Bill.post).
+        """
+        from apps.core.models import lock_rows
+
+        lines = list(self.lines.all())
+        if lines:
+            lock_rows(*lines, refresh=False)
+        return lines
+
     def record_taxes(self):
         """
         Write down what every line bore. Called last in posting, after the
         journal entry is built from the same figures: a posting that fails
-        before this point leaves nothing that claims to be recorded.
+        before this point leaves nothing that claims to be recorded. Its
+        lines are held before that entry posts (hold_lines_for_their_taxes).
         """
         from .gst import GstSettings
 
