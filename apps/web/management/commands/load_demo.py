@@ -177,6 +177,7 @@ class Command(BaseCommand):
             igst0_out = acc("2204", "IGST output, zero-rated", "liability")
             pf_payable = acc("2420", "PF payable", "liability")
             pt_payable = acc("2430", "Professional tax payable", "liability")
+            esi_payable = acc("2450", "ESI payable", "liability")
             net_pay = acc("2440", "Salaries payable", "liability")
             acc("3000", "Share capital", "equity")
             opening_eq = acc("3900", "Opening balances", "equity")
@@ -192,6 +193,7 @@ class Command(BaseCommand):
             repairs = acc("5400", "Repairs and maintenance", "expense")
             wages = acc("5500", "Salaries and wages", "expense")
             employer_pf = acc("5510", "Employer PF", "expense")
+            employer_esi = acc("5520", "Employer ESI", "expense")
             freight = acc("5600", "Freight outward", "expense")
             travel = acc("5700", "Travel and conveyance", "expense")
             rent = acc("5750", "Rent", "expense")
@@ -738,6 +740,7 @@ class Command(BaseCommand):
                 machines[f"STITCH-{n}"] = Machine.objects.create(work_centre=conv, code=f"STITCH-{n}",
                                                                  name=f"Cut-and-stitch line {n}")
 
+
             def routing(code, name, operations):
                 r = M("manufacturing.Routing").objects.create(code=code, name=name)
                 for n, (operation, centre, setup) in enumerate(operations, start=1):
@@ -1013,6 +1016,35 @@ class Command(BaseCommand):
             epf = Component.objects.create(code="EPF", name="Provident fund (employer)", kind="employer_cost", basis="percent",
                                            expense_account=employer_pf, liability_account=pf_payable, sequence=70,
                                            statutory="pf_employer")
+            # ESI (O452): the law's dated rates and ceiling from statutory/esi.csv (0.75% and 3.25% of a month's
+            # wages, covered up to 21,000), confirmed by the Controller, and both shares marked, so the monthly
+            # contribution file finds its members. Each share is rounded up to the rupee, as ESIC collects it, and
+            # coverage holds for the contribution period of six months from April or October.
+            from apps.hr.management.commands.setup_statutory import load_figures
+            from apps.accounting.statutory_load import Loader
+
+            load_figures(Loader(), "esi")
+            # Every pay input holds its person (hold_the_employee): held here in key order first, as the people
+            # step does, since the insured are given their ESI before the rest their pay.
+            lock_rows(*M("hr.Employee").objects.order_by("pk"), refresh=False)
+            controller = anita.user
+            for figure in M("hr.StatutoryFigure").objects.filter(kind__startswith="esi_").order_by("pk"):
+                figure.confirm(controller)
+            esi = Component.objects.create(code="ESI", name="ESI (employee)", kind="deduction", basis="percent",
+                                           liability_account=esi_payable, sequence=55, statutory="esi",
+                                           rounding="rupee_up", coverage_period_months=6, remit_by_day=15)
+            eesi = Component.objects.create(code="EESI", name="ESI (employer)", kind="employer_cost", basis="percent",
+                                            expense_account=employer_esi, liability_account=esi_payable, sequence=75,
+                                            statutory="esi_employer", rounding="rupee_up", coverage_period_months=6,
+                                            remit_by_day=15)
+            # Under the ceiling, so insured: the security guard, 20,500 a month (16,000 basic and 4,500 HRA).
+            insured = {"raju": "3110045672"}
+            for key, number in insured.items():
+                people[key].esi_number = number
+                people[key].save()
+                for component in (esi, eesi):
+                    Pay.objects.create(employee=people[key], component=component, amount=D("1"),
+                                       effective_from=datetime.date(2026, 4, 1))
             for key, (basic_pay, rent_allowance) in {
                     "rohit": ("62000", "18000"), "imran": ("32000", "9000"), "priya": ("34000", "9500"),
                     "ravi": ("38000", "11000"), "sunita": ("21000", "6000"), "suresh": ("48000", "14000"),

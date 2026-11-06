@@ -3,9 +3,11 @@ What the demo plant prints and files, generated through the API and read back (1
 
 O409: the tax invoice printed a black box for the rupee sign and 1,764,000.00 under words saying "seventeen lakh".
 O411: the PF ECR came back an empty file, as done, for a run of 13 that all had PF deducted.
+O452: no demo run produced an ESI file: the demo had no ESI component, figures or numbers.
 """
 
 import re
+from decimal import Decimal as D
 from io import StringIO
 from unittest import mock
 
@@ -52,6 +54,24 @@ class WhatThePlantPrintsAndFiles(TestCase):
         answer = self.as_("anita").get(f"/api/hr/pay-runs/{run.pk}/ecr/")
         self.assertEqual(answer.status_code, 400, answer.content[:200])
         self.assertIn("No UAN on", str(answer.json()))
+
+    def test_the_posted_run_files_esi_for_the_guard_under_the_ceiling(self):
+        """
+        O452, worked in /home/user/work/calc_fix_demo/o452.py: Raju's 16,000 basic and 4,500 HRA, 20,500, are
+        within the 21,000 ceiling: 0.75% is 153.75, collected as 154; 3.25% is 666.25, 667. Nobody else is.
+        """
+        run = PayRun.objects.filter(status="posted").order_by("pk").first()
+        slip = run.payslips.get(employee__employee_number="203")
+        self.assertEqual({line.component.code: line.amount for line in slip.lines.filter(component__code__in=["ESI", "EESI"])},
+                         {"ESI": D("154.00"), "EESI": D("667.00")})
+        self.assertFalse(PayslipLine.objects.filter(payslip__run=run, component__code="ESI").exclude(
+            payslip=slip).exclude(amount=0).exists())
+        answer = self.as_("kiran").get(f"/api/hr/pay-runs/{run.pk}/esi/")
+        self.assertEqual(answer.status_code, 200, answer.content[:300])
+        rows = [row for row in answer.content.decode().splitlines() if row]
+        self.assertEqual(len(rows), 2, rows)
+        self.assertIn("3110045672", rows[1])
+        self.assertIn("20500", rows[1])
 
     def test_a_run_whose_pf_is_not_marked_is_refused_in_words_not_filed_empty(self):
         # As the demo's runs were worked out before its component was marked: the run keeps the marker it read.
