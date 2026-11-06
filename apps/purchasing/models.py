@@ -354,6 +354,10 @@ class RequestForQuotation(AuditModel):
     the comparison that was the point.
     """
 
+    # The states in which its lines take no change (audit_invariants, O442): an award is made from the lines
+    # as they stood.
+    CLOSED_STATES = ("awarded", "cancelled")
+
     number = models.CharField(max_length=32, blank=True, editable=False)
     requisition = models.ForeignKey(
         "PurchaseRequisition", null=True, blank=True, on_delete=models.PROTECT,
@@ -719,6 +723,10 @@ class PurchaseRequisition(AuditModel):
     commitment, and the answer to it may be "buy it from someone else"
     or "no".
     """
+
+    # The states in which its lines take no change (audit_invariants, O442): decided against, or taken over
+    # by an order.
+    CLOSED_STATES = ("rejected", "ordered", "cancelled")
 
     number = models.CharField(max_length=32, blank=True, editable=False)
     requested_by = models.ForeignKey(
@@ -1226,6 +1234,10 @@ class BlanketOrder(TaxesTakenUnder, AuditModel):
     stays open forever silently skews every receipt and billing report
     that reads open orders.
     """
+
+    # The states in which its lines take no change (audit_invariants, O442): a closed agreement calls off
+    # nothing more.
+    CLOSED_STATES = ("closed",)
 
     number = models.CharField(max_length=32, blank=True, editable=False)
     vendor = models.ForeignKey(Party, on_delete=models.PROTECT, related_name="blanket_orders")
@@ -1873,6 +1885,10 @@ class OrderStatus(models.TextChoices):
 
 
 class PurchaseOrder(Extensible, TaxesTakenUnder, TaxedDocumentMixin, ChangesWithinItsApproval, ApprovableMixin, AuditModel):
+    # The states in which its lines take no change (audit_invariants, O442): a confirmed order changes
+    # within its approval; a cancelled one does not.
+    CLOSED_STATES = ("cancelled",)
+
     number = models.CharField(max_length=32, blank=True, editable=False)
     vendor = models.ForeignKey(Party, on_delete=models.PROTECT, related_name="purchase_orders")
     order_date = models.DateField()

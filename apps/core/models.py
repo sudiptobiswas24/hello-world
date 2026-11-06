@@ -602,6 +602,12 @@ def documents_it_answers_to(line, field):
     return [fk.related_model(pk=pk) for pk in sorted(ids - {None})]
 
 
+def _closed(document):
+    """In a state its lines take no change in: its CLOSED_STATES (O442), else posted."""
+    states = getattr(type(document), "CLOSED_STATES", None)
+    return document.status in states if states is not None else document.posted
+
+
 def answer_to_its_document(line, field, refused, fixed=None):
     """
     Shared rule B: a line is changed, added or removed only while both the
@@ -615,7 +621,7 @@ def answer_to_its_document(line, field, refused, fixed=None):
     the database once held, never from the object in hand.
 
     `fixed(document)` says whether the document takes no change to its
-    lines (default: it is posted); `refused` is the refusal, words or
+    lines (default: a state it names in CLOSED_STATES, else posted); `refused` is the refusal, words or
     words worked out from the document. Call it first in the line's save()
     and delete(), inside their transaction, and name the same rows in the
     line's locked_before_it() (documents_it_answers_to), so an edit through
@@ -625,7 +631,7 @@ def answer_to_its_document(line, field, refused, fixed=None):
         raise RuntimeError("answer_to_its_document() outside a transaction holds nothing.")
     held = documents_it_answers_to(line, field)
     lock_rows(*held, refresh=False)
-    fixed = fixed or (lambda document: document.posted)
+    fixed = fixed or _closed
     model = line._meta.get_field(field).related_model
     for document in model._base_manager.filter(pk__in=[row.pk for row in held]):
         if fixed(document):

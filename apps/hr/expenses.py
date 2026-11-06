@@ -41,6 +41,9 @@ def _text(value):
 
 
 class ExpenseClaim(AuditModel):
+    # The states in which its lines take no change (audit_invariants, O442): what is submitted is what is decided.
+    CLOSED_STATES = ("submitted", "approved", "paid", "rejected")
+
     number = models.CharField(max_length=32, blank=True, editable=False)
     employee = models.ForeignKey(Employee, on_delete=models.PROTECT, related_name="expense_claims")
     claim_date = models.DateField()
@@ -264,15 +267,11 @@ class ExpenseLine(AuditModel):
                 f"{account.code} {account.name} is not an active expense account; a claim is charged to what "
                 "was spent on, not to a bank, a liability or an asset."]})
 
-    def _check_open(self):
-        # Shared rule B: the claim it leaves and the one it joins, both held and both drafts. Asked of
-        # the one it joined alone, a line was moved off an approved claim onto a draft.
-        answer_to_its_document(self, "claim", lambda claim: f"{claim}: {ExpenseClaim.LINES_FIXED}",
-                               fixed=lambda claim: claim.status != ClaimStatus.DRAFT)
-
     @transaction.atomic
     def save(self, *args, **kwargs):
-        self._check_open()
+        # Shared rule B: the claim it leaves and the one it joins, both held and both drafts (its
+        # CLOSED_STATES). Asked of the one it joined alone, a line was moved off an approved claim onto a draft.
+        answer_to_its_document(self, "claim", lambda claim: f"{claim}: {ExpenseClaim.LINES_FIXED}")
         self.description = _text(self.description)
         if not self.description:
             raise ValidationError({"description": ["Say what was bought."]})
@@ -284,5 +283,5 @@ class ExpenseLine(AuditModel):
 
     @transaction.atomic
     def delete(self, *args, **kwargs):
-        self._check_open()
+        answer_to_its_document(self, "claim", lambda claim: f"{claim}: {ExpenseClaim.LINES_FIXED}")
         return super().delete(*args, **kwargs)

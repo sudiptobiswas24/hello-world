@@ -594,6 +594,10 @@ COST_SEEN_WITH = "sales.approve_order"
 
 class SalesOrder(PlacedWhereTheGoodsGo, Extensible, TaxesTakenUnder, TaxedDocumentMixin, ChangesWithinItsApproval,
                  ApprovableMixin, AuditModel):
+    # The states in which its lines take no change (audit_invariants, O442): a confirmed order changes
+    # within its approval; a cancelled one does not.
+    CLOSED_STATES = ("cancelled",)
+
     number = models.CharField(max_length=32, blank=True, editable=False)
     customer = models.ForeignKey(Party, on_delete=models.PROTECT, related_name="sales_orders")
     order_date = models.DateField()
@@ -5636,6 +5640,10 @@ class Quotation(PlacedWhereTheGoodsGo, TaxesTakenUnder, TaxedDocumentMixin, Audi
     expire and be declined, neither of which an order does, and an order
     carries fulfilment state a quote has no business having.
     """
+
+    # The states in which its lines take no change (audit_invariants, O442): what the customer answered is
+    # what was offered.
+    CLOSED_STATES = ("accepted", "declined", "expired", "superseded")
 
     number = models.CharField(max_length=32, blank=True, editable=False)
     customer = models.ForeignKey(Party, on_delete=models.PROTECT, related_name="quotations")
