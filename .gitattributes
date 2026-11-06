@@ -1,0 +1,13 @@
+# Line endings stay LF on every checkout, Windows included. Git for Windows
+# turns LF into CRLF by default, and a shell script with CRLF fails inside
+# the Linux containers ("exec /app/deploy/entrypoint.sh: no such file or
+# directory"), so the web container never starts and the browser shows
+# 502 Bad Gateway. The other text files stay LF so that a rebuilt image
+# holds the same bytes on any machine.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.pdf binary
+*.ico binary
+*.woff binary
+*.woff2 binary

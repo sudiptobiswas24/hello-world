@@ -1,0 +1,4 @@
+kind,state,effective_from,value,source,confirmed_by
+esi_employee_rate,,2019-07-01,0.75,"ESI (Central) Rules 1950 r.51, as amended by G.S.R. 423(E) of 13 June 2019, from 1 July 2019; unchanged under the Code on Social Security 2020 per Tally and Petpooja 2026 guides. Gazette not read",
+esi_employer_rate,,2019-07-01,3.25,"As esi_employee_rate: 3.25% from 1 July 2019",
+esi_ceiling,,2017-01-01,21000,"ESI (Central) Rules 1950 r.50, G.S.R. 1166(E) of 22 December 2016, from 1 January 2017; kept at 21,000 (25,000 for persons with disability) per an ESIC letter of 4 June 2026 (Lakshmikumaran & Sridharan, AscentHR). Gazette not read",

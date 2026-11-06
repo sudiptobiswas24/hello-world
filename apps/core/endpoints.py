@@ -1,0 +1,153 @@
+"""
+Which kind of record each office address serves, read off the routers
+themselves, and whether a login may read one record of a kind.
+
+Reading a kind takes its view permission; reading one record of it takes
+also that the record is among those its own screen shows the login: a
+rep sees only their own customers' orders, and so only their history,
+files, notes and follow-ups. Each module says who sees what in its
+viewsets' get_queryset (apps/sales/scoping.py); this asks those same
+querysets rather than keeping a second copy of the rule that would drift.
+Core imports no module to do it: it walks the URL resolver.
+"""
+
+import re
+from functools import lru_cache
+
+from django.apps import apps
+from django.contrib.auth.models import User
+from django.http import HttpRequest
+from django.urls import URLPattern, URLResolver, get_resolver
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.request import Request
+from rest_framework.response import Response
+from rest_framework.views import APIView
+
+DETAIL = re.compile(r"^\^?(?P<prefix>.*?)\(\?P<\w+>[^)]*\)/\$$")
+
+
+@lru_cache(maxsize=1)
+def served():
+    """({"/api/sales/sales-orders/": "sales.salesorder"}, {"sales.salesorder": [viewset classes]})."""
+    by_endpoint, by_model = {}, {}
+
+    def walk(patterns, prefix):
+        for pattern in patterns:
+            if isinstance(pattern, URLResolver):
+                walk(pattern.url_patterns, prefix + str(pattern.pattern))
+            elif isinstance(pattern, URLPattern):
+                cls = getattr(pattern.callback, "cls", None)
+                actions = getattr(pattern.callback, "actions", None) or {}
+                queryset = getattr(cls, "queryset", None)
+                found = DETAIL.match(str(pattern.pattern))
+                if cls is None or queryset is None or actions.get("get") != "retrieve" or not found:
+                    continue
+                label = queryset.model._meta.label_lower
+                by_endpoint[f"/{prefix}{found['prefix']}"] = label
+                if cls not in by_model.setdefault(label, []):
+                    by_model[label].append(cls)
+
+    walk(get_resolver().url_patterns, "")
+    return by_endpoint, by_model
+
+
+def model_named(label):
+    """The model an app.model label names, or None."""
+    try:
+        return apps.get_model(label)
+    except (LookupError, ValueError):
+        return None
+
+
+def may_read_kind(user, model):
+    return user.has_perm(f"{model._meta.app_label}.view_{model._meta.model_name}")
+
+
+def _view(cls, user):
+    """An instance of viewset `cls` reading one record for `user`, as its retrieve does."""
+    asked = HttpRequest()
+    asked.method = "GET"
+    asked.user = user
+    request = Request(asked)
+    request.user = user
+    view = cls(request=request, args=(), kwargs={}, format_kwarg=None, action="retrieve")
+    view.headers = {}
+    return view
+
+
+def may_read(user, model, pk):
+    """
+    Whether `user` may read record `pk` of `model`: the kind's view
+    permission, and the record among those a screen serving the kind shows
+    them. A kind no screen serves is limited by its permission alone.
+    """
+    if not may_read_kind(user, model):
+        return False
+    classes = served()[1].get(model._meta.label_lower, [])
+    if not classes:
+        return model._default_manager.filter(pk=pk).exists()
+    return any(_view(cls, user).get_queryset().filter(pk=pk).exists() for cls in classes)
+
+
+def _narrowed_by(queryset):
+    """The WHERE of `queryset`, compiled: what narrows it, as SQL and its parameters."""
+    from django.core.exceptions import EmptyResultSet, FullResultSet
+
+    compiler = queryset.query.get_compiler(using=queryset.db)
+    compiler.pre_sql_setup()
+    try:
+        sql, params = compiler.compile(compiler.where)
+    except FullResultSet:
+        return "", ()
+    except EmptyResultSet:
+        return "nothing", ()
+    return sql, tuple(params)
+
+
+def narrows_for(cls, user):
+    """
+    Whether viewset `cls` reads `user` only some of its kind: its queryset
+    for them is narrowed further than for a superuser. Asked of the
+    queryset itself, so a screen that narrows by login says so by being
+    written that way, and declares nothing (review F4: expense claims,
+    their lines and appraisals narrowed by login and said nothing). A
+    queryset that cannot be built for the comparison counts as narrowed.
+    """
+    if user.is_superuser:
+        return False
+    try:
+        everyone = User(username="", is_superuser=True, is_active=True)
+        return _narrowed_by(_view(cls, user).get_queryset()) != _narrowed_by(_view(cls, everyone).get_queryset())
+    except Exception:  # noqa: BLE001 - a rule that cannot be read refuses
+        return True
+
+
+def may_read_gone(user, model):
+    """
+    Whether `user` may read what is left of a deleted record of `model`
+    (its history). Whose it was cannot be asked of a row that is gone, so
+    a login that reads only some of the kind reads none of the gone ones:
+    one the party scope limits (a rep read the deleted order of another
+    rep's customer), or one a screen serving the kind narrows for
+    (narrows_for: O131, a colleague read the history of a deleted leave
+    request; review F4, of an expense claim and an appraisal). One rule
+    for every kind, read off the queryset each screen already asks.
+    """
+    from .scoping import visible_parties
+
+    if not may_read_kind(user, model) or visible_parties(user) is not None:
+        return False
+    return not any(narrows_for(cls, user) for cls in served()[1].get(model._meta.label_lower, []))
+
+
+class EndpointsView(APIView):
+    """
+    {"/api/sales/sales-orders/": "sales.salesorder", ...}: what a record
+    screen knows of itself is its address; this names its kind, for its
+    notes, follow-ups, files and history.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        return Response(served()[0])

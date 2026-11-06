@@ -1,0 +1,11 @@
+state,effective_from,month,above,up_to,amount,source,confirmed_by
+WB,2008-04-01,,0,10000,0,"West Bengal State Tax on Professions, Trades, Callings and Employments Act 1979, Schedule, salary bands as they stood before 1 October 2026 (ClearTax, research note of 14 October 2026)",
+WB,2008-04-01,,10000,15000,110,"As above",
+WB,2008-04-01,,15000,25000,130,"As above",
+WB,2008-04-01,,25000,40000,150,"As above",
+WB,2008-04-01,,40000,,200,"As above",
+WB,2026-10-01,,0,20000,0,"Notification No. 1607-F.T. of 16 September 2026 (Finance Department, Kolkata Gazette Extraordinary), final after draft 1407-F.T. of 18 August 2026: salary bands from 1 October 2026 (TeamLease RegTech, Taxaj, SGCMS, DCPS). Gazette not read",
+WB,2026-10-01,,20000,30000,100,"As above. TeamLease and Taxaj end this band at 30,000; an earlier summary said 25,000. UNSETTLED",
+WB,2026-10-01,,30000,50000,140,"As above",
+WB,2026-10-01,,50000,100000,170,"As above",
+WB,2026-10-01,,100000,,208,"As above",
