@@ -138,10 +138,10 @@ class ABillNeedsItsTaxesAndTheVendorsNumber(UntaxedLinesTestCase):
         # An item nothing has come in of: one received and unbilled would be refused first, rightly, for naming
         # no order line.
         item = Item.objects.exclude(pk__in=GoodsReceiptLine.objects.values("order_line__item")).filter(item_type="goods").first()
-        line = bill.lines.create(item=item, quantity=D("10"), unit_price=D("112.00"),
-                                 expense_account=posted.lines.first().expense_account)
-        if taxes:
-            line.taxes.set(Tax.objects.filter(code__in=["CGST9", "SGST9"]))
+        # Built in code a line takes its item's taxes (O459): one meant to name none says so.
+        bill.lines.create(item=item, quantity=D("10"), unit_price=D("112.00"),
+                          expense_account=posted.lines.first().expense_account,
+                          given_taxes=Tax.objects.filter(code__in=["CGST9", "SGST9"]) if taxes else [])
         return bill
 
     def test_a_bill_without_the_vendor_s_invoice_number_is_not_posted(self):
@@ -188,3 +188,72 @@ class ALineWithNoTaxIsLawfulWhereNoGstIsCharged(UntaxedLinesTestCase):
         bill = self.draft(Bill.objects.filter(posted=True).first().vendor, item)
         posted = self.as_("ravi").post(f"/api/purchasing/bills/{bill.pk}/post_bill/", format="json")
         self.assertEqual(posted.status_code, 200, posted.content)
+
+
+class ALineBuiltInCodeTakesItsItemsTaxes(UntaxedLinesTestCase):
+    """
+    O459: a line built in code took no taxes, because only the API's line serializer applied the item's
+    defaults. The 'Loom shed spares' requisition ordered by ravi gave a draft confirm refused. Worked in
+    /home/user/work/calc_fix_demo/o459.py: 30 x 240.00 + 6 x 1,850.00 = 18,300.00; Loomtech is in Tamil
+    Nadu, so IGST 18% 3,294.00, total 21,594.00.
+    """
+
+    def purchase_codes(self, line):
+        return sorted(tax.code for tax in line.taxes.all())
+
+    def test_an_order_made_from_a_requisition_takes_its_items_taxes_and_confirms(self):
+        from apps.purchasing.models import PurchaseOrder, PurchaseRequisition
+
+        ravi = self.as_("ravi")
+        requisition = PurchaseRequisition.objects.get(justification="Loom shed spares for the quarter")
+        made = ravi.post(f"/api/purchasing/requisitions/{requisition.pk}/order/",
+                         {"vendor": Party.objects.get(code="V-SPAR").pk}, format="json")
+        self.assertIn(made.status_code, (200, 201), made.content)
+        order = PurchaseOrder.objects.get(reference=requisition.number)
+        for line in order.lines.all():
+            self.assertEqual(self.purchase_codes(line), sorted(t.code for t in line.item.purchase_taxes.all()))
+            self.assertTrue(line.taxes.exists())
+        confirmed = ravi.post(f"/api/purchasing/purchase-orders/{order.pk}/confirm/", format="json")
+        self.assertEqual(confirmed.status_code, 200, confirmed.content)
+        order.refresh_from_db()
+        self.assertEqual((order.subtotal(), order.tax_total(), order.total()),
+                         (D("18300.00"), D("3294.00"), D("21594.00")))
+
+    def test_a_drop_ship_order_built_in_code_takes_its_items_taxes(self):
+        from apps.purchasing.models import PurchaseOrder
+
+        imran = self.as_("imran")
+        order, _ = self.order(imran, "C-KONK", "SACK-RICE25", "100", unit_price="11.20")
+        confirmed = imran.post(f"/api/sales/sales-orders/{order.pk}/confirm/", format="json")
+        self.assertEqual(confirmed.status_code, 200, confirmed.content)
+        order.refresh_from_db()
+        made = PurchaseOrder.create_for_drop_ship(order, Party.objects.get(code="V-GRAN"))
+        line = made.lines.get()
+        self.assertEqual(self.purchase_codes(line), sorted(t.code for t in line.item.purchase_taxes.all()))
+        self.assertTrue(line.taxes.exists())
+
+    def test_a_copy_keeps_its_source_s_taxes_and_does_not_take_the_defaults(self):
+        """An exempt customer's order names no tax; invoiced, the invoice names none either, not the item's."""
+        from apps.sales.models import InvoicePolicy
+
+        PartyTaxProfile.objects.filter(party__code="C-KONK").update(tax_exempt=True, exemption_reference="EX-1")
+        imran = self.as_("imran")
+        order, _ = self.order(imran, "C-KONK", "SACK-RICE25", "100", unit_price="11.20", taxes=[])
+        SalesOrder.objects.filter(pk=order.pk).update(invoice_policy=InvoicePolicy.ORDERED)
+        confirmed = imran.post(f"/api/sales/sales-orders/{order.pk}/confirm/", format="json")
+        self.assertEqual(confirmed.status_code, 200, confirmed.content)
+        order.refresh_from_db()
+        receivable = Invoice.objects.filter(posted=True).first().receivable_account
+        invoice = order.create_invoice(receivable)
+        self.assertTrue(order.lines.get().item.sales_taxes.exists())  # the defaults it did not take
+        self.assertFalse(invoice.lines.get().taxes.exists())
+
+    def test_taxes_set_empty_through_the_api_stay_empty_on_a_later_save(self):
+        imran = self.as_("imran")
+        order, line = self.order(imran, "C-KONK", "SACK-RICE25", "100", unit_price="11.20", taxes=[])
+        changed = imran.patch(f"/api/sales/sales-order-lines/{line['id']}/", {"quantity": "120"}, format="json")
+        self.assertEqual(changed.status_code, 200, changed.content)
+        self.assertEqual(changed.json()["taxes"], [])
+        stored = order.lines.get()
+        stored.save()
+        self.assertFalse(stored.taxes.exists())

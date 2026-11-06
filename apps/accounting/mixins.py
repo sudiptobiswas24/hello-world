@@ -517,6 +517,50 @@ class TaxedLineMixin(models.Model):
             return taxes
         return position.map_taxes(taxes) or taxes
 
+    # The taxes a line is created with, when whoever makes it names them (O459): None, the default,
+    # takes the item's defaults as the line is first saved; a list, empty included, is set instead.
+    # A copy names its source's taxes this way, and the API the taxes its caller sent, so "never
+    # defaulted" and "set empty on purpose" are told apart at the one moment they differ: creation.
+    # After that a line's taxes are what was stored, and no later save adds the defaults back.
+    @property
+    def given_taxes(self):
+        return getattr(self, "_given_taxes", None)
+
+    @given_taxes.setter
+    def given_taxes(self, taxes):
+        self._given_taxes = None if taxes is None else list(taxes)
+
+    def save(self, *args, **kwargs):
+        adding = self._state.adding
+        super().save(*args, **kwargs)
+        if adding:
+            self._take_taxes_at_creation()
+
+    def tax_document(self):
+        """The document this line is a line of: the parent whose lines are called `lines`."""
+        return next((getattr(self, field.name) for field in type(self)._meta.concrete_fields
+                     if field.many_to_one and field.remote_field.related_name == "lines"), None)
+
+    def _take_taxes_at_creation(self):
+        """
+        Every line built in code takes its item's taxes for its side, as one typed on screen does (O459):
+        an order made from a requisition carried none, and confirm refused it. The defaults are taken in
+        save() rather than by each caller, so no path that builds a line can leave them out.
+        """
+        given = self.given_taxes
+        if given is not None:
+            if given:
+                self.taxes.set(given)
+            return
+        defaults = self.default_taxes()
+        if not defaults:
+            return
+        document = self.tax_document()
+        if isinstance(document, TaxesTakenUnder):
+            # Its document keeps the fiscal position they were taken under (O446).
+            document.note_taxes_taken()
+        self.taxes.set(defaults)
+
     def fixed_tax_amounts(self):
         """
         [(tax, amount)] this line is bound to rather than computes, or None
