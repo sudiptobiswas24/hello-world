@@ -1094,10 +1094,11 @@ class PlantMonthTests(TestCase):
         ])
 
     def test_the_esi_file_reads_what_was_posted(self):
-        # M1's 25,000 is past the 21,000 coverage: not insured.
+        # M1's 25,000 is past the 21,000 coverage: not insured. Days are days paid for (O460): the
+        # attendance-paid D1 his 24, the leaver 1 to 21 October, the monthly M2 all 31 of October.
         self.assertEqual(self.m.esi.splitlines()[1:], [
-            "3100200304,Bapi Sardar,24,13000,0,", "3100200303,Rina Mondal,18,10000,0,21/10/2026",
-            "3100200302,Anil Banerjee,27,18000,0,"])
+            "3100200304,Bapi Sardar,24,13000,0,", "3100200303,Rina Mondal,21,10000,0,21/10/2026",
+            "3100200302,Anil Banerjee,31,18000,0,"])
 
     def test_the_pt_and_lwf_registers_read_what_was_posted(self):
         self.assertEqual([(row["employee"], row["wages"], row["tax"], row["state"])
