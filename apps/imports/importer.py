@@ -288,8 +288,9 @@ def _employees(rows, report, options):
             report.refuse(number, "manager", " ".join(error.messages))
 
 
-# The reference the opening-balances entry carries, by which a second run finds the first.
-OPENING_BALANCES = "Opening balances"
+# The reference the opening-balances entry carries, by which a second run finds the first (and an
+# asset brought in as an opening balance, whether its accounts came in this way already: O466).
+from apps.accounting.models import OPENING_BALANCES_REFERENCE as OPENING_BALANCES  # noqa: E402
 
 
 def _opening_stock(rows, report, options):

@@ -492,6 +492,7 @@ class FixedAsset(Extensible, AuditModel):
             self.depreciated_before = books.opened_on
         asset_account = self.stands_on("asset_account")
         accumulated = self.stands_on("accumulated_account")
+        self._not_already_in_the_opening_balances(asset_account, accumulated)
         entry = JournalEntry.objects.create(date=books.opened_on, reference=(self.number or "")[:64],
                                             memo=f"Opening balance: {self.name}"[:255])
         rows = [(asset_account, self.cost, Decimal("0")), (books.opening_account, Decimal("0"), self.cost)]
@@ -503,6 +504,34 @@ class FixedAsset(Extensible, AuditModel):
                                        description=f"Opening balance: {self.name}"[:255])
         entry.post()
         return entry
+
+    @staticmethod
+    def _not_already_in_the_opening_balances(*accounts):
+        """
+        O466: the go-live opening balances took the plant-and-machinery cost and its depreciation while no
+        category named those accounts yet (the import refuses a category's accounts, but there was none);
+        the register then put each asset on them again, and the ledger read twice the plant. Whichever
+        comes first, the other is refused: here the register, in opening_balances the balances.
+        """
+        from django.db.models import Sum
+
+        from apps.accounting.models import OPENING_BALANCES_REFERENCE
+
+        carried = (JournalLine.objects
+                   .filter(account__in=[account for account in accounts if account is not None],
+                           entry__reference=OPENING_BALANCES_REFERENCE, entry__posted=True,
+                           entry__reverses__isnull=True, entry__reversed_by__isnull=True)
+                   .values_list("account__code").annotate(debit=Sum("debit"), credit=Sum("credit"))
+                   .order_by("account__code"))
+        if carried:
+            # At two places on every database: SQLite sums without the column's scale.
+            said = ", ".join(f"{code} ({(debit - credit).quantize(Decimal('0.01')):+})"
+                             for code, debit, credit in carried)
+            raise ValidationError(
+                f"The opening balances already carry {said}; brought in as an opening balance, each asset "
+                "puts its own cost and depreciation there, so the register would be counted twice. Reverse "
+                "the opening balances (Accounts, Journal), bring them in again without the fixed-asset "
+                "accounts, then the assets.")
 
     @serialised("status", "disposal_entry", "capitalisation_entry")
     def remove_opening(self, on_date=None, memo=""):

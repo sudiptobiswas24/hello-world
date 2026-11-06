@@ -177,6 +177,29 @@ class AssetRegisterTests(ImportTestCase):
         self.assertEqual([(entry.period_end, entry.amount) for entry in made], [(datetime.date(2026, 10, 31), Decimal("2000.00"))])
         self.assertEqual(loom.periods_due(datetime.date(2026, 12, 31)), [datetime.date(2026, 11, 30), datetime.date(2026, 12, 31)])
 
+    def test_assets_already_in_the_opening_balances_are_not_brought_in_again(self):
+        """O466: balances first, while no category named their accounts, then the register: twice the plant."""
+        from apps.accounting.models import JournalEntry, OPENING_BALANCES_REFERENCE
+
+        acc = lambda c, n, t: Account.objects.create(code=c, name=n, account_type=t)  # noqa: E731
+        looms, worn = acc("1600", "Looms", AccountType.ASSET), acc("1690", "Looms depreciated", AccountType.ASSET)
+        report = run("opening_balances", "account,debit,credit\n1600,120000,\n1690,,48000\n3900,,72000\n",
+                     commit=True)
+        self.assertTrue(report.committed, report.errors)
+        AssetCategory.objects.create(code="LOOMS", name="Looms", asset_account=looms, accumulated_account=worn,
+                                     expense_account=self.category.expense_account,
+                                     disposal_account=self.category.disposal_account, default_life_months=60)
+        register = self.LOOM.replace("PLANT", "LOOMS")
+        report = run("fixed_assets", register, commit=True)
+        self.assertEqual([(row, column) for row, column, _ in report.errors], [(2, "")])
+        self.assertIn("already carry 1600 (+120000.00), 1690 (-48000.00)", report.errors[0][2])
+        self.assertEqual((FixedAsset.objects.count(), self.balance(looms)), (0, Decimal("120000.00")))
+        # What it says to do: reverse the balances, then the register brings the looms in once.
+        JournalEntry.objects.get(reference=OPENING_BALANCES_REFERENCE, posted=True).reverse_by_hand()
+        report = run("fixed_assets", register, commit=True)
+        self.assertTrue(report.committed, report.errors)
+        self.assertEqual((self.balance(looms), self.balance(worn)), (Decimal("120000.00"), Decimal("-48000.00")))
+
     def test_refusals(self):
         from apps.accounting.models import BooksOpening
 
