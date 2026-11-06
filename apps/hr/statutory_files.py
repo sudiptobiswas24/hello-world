@@ -233,7 +233,7 @@ def esi_rows(run):
         if not employee.esi_number:
             unnamed.append(employee.employee_number)
             continue
-        days = sum((slip.kept_days()[0] for slip, _lines in slips), Decimal("0"))
+        days = sum((slip.esi_days() for slip, _lines in slips), Decimal("0"))
         left = employee.termination_date
         rows.append({
             "ip": employee.esi_number, "name": employee.party.name,

@@ -75,10 +75,10 @@ class EsiTests(FilesTestCase):
     def test_only_the_insured_with_their_days_and_wages(self):
         run = self.run_for(*JUNE)
         self.assertEqual(esi_rows(run), [
-            {"ip": "3100200300", "name": "A", "days": 22, "wages": 22300, "reason": 0, "last_day": ""}])
+            {"ip": "3100200300", "name": "A", "days": 30, "wages": 22300, "reason": 0, "last_day": ""}])
         lines = esi_csv(run).splitlines()
         self.assertTrue(lines[0].startswith("IP Number (10 Digits),IP Name"))
-        self.assertEqual(lines[1], "3100200300,A,22,22300,0,")
+        self.assertEqual(lines[1], "3100200300,A,30,22300,0,")
 
     def test_a_leaver_carries_their_last_day(self):
         self.a.termination_date = datetime.date(2026, 6, 19)
@@ -86,7 +86,28 @@ class EsiTests(FilesTestCase):
         self.a.save()
         run = self.run_for(*JUNE)
         [row] = esi_rows(run)
-        self.assertEqual((row["days"], row["last_day"]), (15, "19/06/2026"))
+        # The days paid for (O460): 1 to 19 June, a salary paying its weekly offs; 15 were the working days.
+        self.assertEqual((row["days"], row["last_day"]), (19, "19/06/2026"))
+
+
+class EsiDaysPaidForTests(FilesTestCase):
+    """O460: ESIC counts the days wages were paid for; a month's salary pays its weekly offs and holidays."""
+
+    def test_a_joiner_is_filed_with_the_days_since_joining(self):
+        self.a.hire_date = datetime.date(2026, 6, 16)
+        self.a.save()
+        [row] = esi_rows(self.run_for(*JUNE))
+        self.assertEqual(row["days"], 15)
+
+    def test_unpaid_days_come_off_and_a_slip_from_before_reads_the_same_now(self):
+        from decimal import Decimal
+
+        run = self.run_for(*JUNE)
+        slip = run.payslips.get(employee=self.a)
+        self.assertEqual((slip.kept_esi_days, slip.days_paid_for(Decimal("5"))), (Decimal("30.00"), Decimal("25")))
+        type(slip).objects.filter(pk=slip.pk).update(kept_esi_days=None)
+        [row] = esi_rows(run)
+        self.assertEqual(row["days"], 30)
 
 
 class FilesApiTests(FilesTestCase):
@@ -131,5 +152,5 @@ class FiledAsTheMonthStoodTests(FilesTestCase):
         self.a.working_days = "1234"
         self.a.save()
         [row] = esi_rows(run)
-        self.assertEqual(row["days"], 22)
+        self.assertEqual(row["days"], 30)
         self.assertEqual(ecr_rows(run)[0]["ncp_days"], 0)
