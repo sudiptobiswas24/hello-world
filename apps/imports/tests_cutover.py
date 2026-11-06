@@ -110,6 +110,27 @@ class OrderBookTests(ImportTestCase):
         self.assertEqual([(row, column) for row, column, _ in report.errors], [(3, "sku"), (4, "customer")])
         self.assertEqual(SalesOrder.objects.count(), 0)
 
+    def test_the_taxes_column_blank_takes_the_items_and_none_says_none(self):
+        # O462: since O459 a line made in code takes its item's taxes; the cutover's blank must mean that,
+        # and "none" must still be able to say a line bears none on purpose.
+        from apps.accounting.models import Tax
+
+        payable = Account.objects.create(code="2100", name="GST payable", account_type=AccountType.LIABILITY)
+        gst = Tax.objects.create(code="GST18", name="GST 18%", rate=Decimal("18"),
+                                 collected_account=payable, paid_account=payable)
+        Tax.objects.create(code="GST5", name="GST 5%", rate=Decimal("5"),
+                                   collected_account=payable, paid_account=payable)
+        self.item.sales_taxes.set([gst])
+        text = ("customer,reference,date,sku,quantity,unit_price,taxes\n"
+                f"C-1,OLD-SO-20,2026-09-20,{self.item.sku},10,5,\n"
+                f"C-1,OLD-SO-21,2026-09-20,{self.item.sku},10,5,none\n"
+                f"C-1,OLD-SO-22,2026-09-20,{self.item.sku},10,5,GST5\n")
+        report = run("open_sales_orders", text, commit=True)
+        self.assertTrue(report.committed, report.errors)
+        taken = {order.reference: [tax.code for tax in order.lines.get().taxes.all()]
+                 for order in SalesOrder.objects.filter(reference__startswith="OLD-SO-2")}
+        self.assertEqual(taken, {"OLD-SO-20": ["GST18"], "OLD-SO-21": [], "OLD-SO-22": ["GST5"]})
+
     def test_open_purchase_orders_mirror_it(self):
         text = ("vendor,reference,date,sku,quantity,unit_price,expected_date,warehouse\n"
                 f"V-1,PO/OLD/41,2026-09-18,{self.item.sku},5000,91.25,2026-10-05,WH1\n")
