@@ -384,6 +384,34 @@ class ASalesLineWithNoUnitIsInItsItemsUnitTests(SalesTestCase):
         self.assertEqual(quoted.uom, self.uom)
 
 
+class AnInvoiceTakesItsLinesBeforeItsPeriodTests(SalesTestCase):
+    """
+    O445: an invoice and its credit note posted into a period that already stands. The entry takes the
+    period, ranked last; record_taxes() then wrote each line, ranked before it, and the sentinel refused
+    "sales.invoiceline 1 locked after accounting.accountingperiod 1 (update)". A period made in the same
+    transaction hid it. The lines are held before the entry now.
+    """
+
+    def test_posted_into_a_period_that_stands(self):
+        import datetime
+
+        from apps.accounting.models import AccountingPeriod
+
+        AccountingPeriod.objects.create(name="Jan 2026", start_date=datetime.date(2026, 1, 1),
+                                        end_date=datetime.date(2026, 1, 31))
+        sold = self.make_invoice()
+        sold.post()
+        credit = Invoice.objects.create(customer=self.customer, invoice_date="2026-01-20",
+                                        receivable_account=self.receivable, credits=sold)
+        original = sold.lines.get()
+        InvoiceLine.objects.create(invoice=credit, credits_line=original, item=original.item,
+                                   quantity=original.quantity, unit_price=original.unit_price,
+                                   revenue_account=original.revenue_account)
+        credit.post()
+        self.assertTrue(sold.posted)
+        self.assertTrue(Invoice.objects.get(pk=credit.pk).posted)
+
+
 class ADraftInvoiceHoldsItsMonthsCloseTests(SalesTestCase):
     """O361: January closes with no draft invoice or credit note dated in it; each is named."""
 
