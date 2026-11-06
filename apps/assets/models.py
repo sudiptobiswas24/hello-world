@@ -472,7 +472,7 @@ class FixedAsset(Extensible, AuditModel):
         if books is None:
             raise ValidationError(
                 f"{self} is typed in, so it comes onto the books as an opening balance, and the day the "
-                "books opened is not set. Set it (accounting, books opening) first, or capitalise the "
+                "books opened is not set. Set it on Settings, Books opening first, or capitalise the "
                 "asset from its bill.")
         if to_date(self.acquisition_date) > books.opened_on:
             raise ValidationError(

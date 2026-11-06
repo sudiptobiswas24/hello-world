@@ -419,7 +419,7 @@ def _opening_balances(rows, report, options):
         report.refuse(0, error.column, error.message)
         return
     if on is None:
-        report.refuse(0, "--date", "Set the day the books opened (accounting, books opening) first: "
+        report.refuse(0, "--date", "Set the day the books opened (Settings, Books opening) first: "
                       "opening balances are dated it.")
         return
     try:

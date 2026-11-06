@@ -717,6 +717,16 @@ class TypedInIsAnOpeningBalanceTests(AssetTestCase):
 class TheBooksOpenOnceTests(AssetTestCase):
     """Accounting's books setting: set once, changed only while nothing is posted on or before its day."""
 
+    def test_unset_the_refusal_names_the_screen_that_sets_it(self):
+        # O251: the books' opening had an admin page only; the refusal pointed at "accounting, books opening".
+        from apps.accounting.models import BooksOpening
+
+        BooksOpening.objects.all().delete()
+        typed = FixedAsset.objects.create(name="Loom 8", category=self.category, acquisition_date=datetime.date(2025, 6, 1),
+                                          cost=Decimal("12000"), life_months=48)
+        with self.assertRaisesMessage(ValidationError, "Set it on Settings, Books opening first"):
+            typed.place_in_service()
+
     def test_set_once_and_held_by_what_is_posted(self):
         from apps.accounting.models import BooksOpening
 

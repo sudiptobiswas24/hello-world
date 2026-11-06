@@ -219,7 +219,7 @@ def _fixed_asset(row, options):
     # The day the books opened, as accounting keeps it; a --date given is an override it must agree with.
     on = opening_day(options)
     if on is None:
-        raise RowError("--date", "set the day the books opened (accounting, books opening) first: the "
+        raise RowError("--date", "set the day the books opened (Settings, Books opening) first: the "
                        "register stands at it, and each asset posts its opening balance on it.")
     category = by_code(AssetCategory, row, "category")
     name = required(row, "name")
