@@ -23,7 +23,8 @@ cess, which varies by good, is not seeded.
 
 from decimal import Decimal
 
-from django.core.management.base import BaseCommand
+from django.core.exceptions import ValidationError
+from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
 from apps.accounting.models import (
@@ -122,6 +123,15 @@ class Command(BaseCommand):
         parser.add_argument("--gstin", help="The company's GSTIN, for its GST settings if it has none yet.")
 
     def handle(self, *args, gstin=None, **options):
+        if gstin:
+            # Asked before anything is made, and said in a line (O464): a typing slip in the plant's GSTIN printed
+            # a traceback ending in the validator's message.
+            from apps.accounting.gst import validate_gstin
+
+            try:
+                gstin = validate_gstin(gstin)
+            except ValidationError as refused:
+                raise CommandError(f"--gstin: {' '.join(refused.messages)} Nothing was set up.") from None
         self.made, self.kept, self.collisions = [], [], []
         from apps.core.models import numbering_first
 
