@@ -50,6 +50,17 @@ pg_isready -q || service postgresql start                              # role er
 
 ## 2. Next steps, in order
 
+**g28 is pushed (06b9997, 6 November 2026), all seven lanes green on one tip (gated as 8196001).** Holds the five
+batches of open rows (trade and statutory, payroll, planning and floor, core and audit, pilot UI): O152, O251, O315,
+O316, O319, O355, O359, O366, O367, O368, O401, O417, O418, O442 to O447, O450 to O456, O459, O462, O463; O405 in part
+(demo floor stations, bank details, disposal account; the row stays open for the rest). Still open from this round:
+O457, O458, O460 (ESI days), O461 (Maharashtra PT schedule), O405's remainder, O363, O259, O346; O448 waits on the
+owner, O449 on the tax adviser. Next: the pilot (data-load templates, a dry-run install on the on-site server, UPS and
+off-site backup steps in RUNBOOK).
+- Gate lessons from g28: a commit *subject* naming a row still open fails registercheck, so a partial fix names its id
+  in the body only. A browser test that fails on two lanes in different ways is a defect, not a flake: O463 was a
+  picker's stale blur timer closing the list reopened inside 120 ms (6 in 20 before the fix, 15 of 15 after).
+
 **g27 is pushed (fee871b, 5 November 2026); g26 below.**
 
 **g26 is pushed (07921cc, 4 November 2026), all seven lanes green on one tip (gated as 27e2e1b).** Holds: O429 (the
@@ -58,7 +69,7 @@ fix_coa, fix_scan, fix_setup and fix_logic rounds (O419-O428, O430-O441 less tho
 cancels a first read still on its way before it invalidates (the GSTR-2B screen showed the pre-write answer; pg-c found it).
 - Gate rules learned the hard way (now in scripts/gate/lane.sh's header, in g27): at most two lanes at a time and
   **mig counts as one**; sqlite beside two lanes passes its 9000 s limit. Always keep a harness-tracked watcher job
-  (`timeout 7000 bash -c 'while pgrep -f "lane.sh g26 <lane>" ...'`) while any detached lane runs, or the container is
+  (`timeout 7000 bash -c 'while pgrep -f "[l]ane.sh g26 <lane>" ...'`; the bracket stops it matching itself) while any detached lane runs, or the container is
   reclaimed and the lanes die (two restarts on 4 November). Read a lane's log before rerunning it; lane.sh now keeps the
   previous log as `.prev`. Timings beside one other lane: sqlite 107 min, pg-c 103 min, mig about 6 h in all.
 - g27 is pushed (fee871b, 5 November 2026), all seven lanes green on one tip (gated as e5d5ca6; replayed onto the
