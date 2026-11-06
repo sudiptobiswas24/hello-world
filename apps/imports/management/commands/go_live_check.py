@@ -146,6 +146,18 @@ def _gst(add):
         add(WARN, "GST", "No active registration: no invoice will carry GST and no return compiles.")
         return
     add(OK, "GST", gst.gstin)
+    from apps.inventory.models import Item
+
+    # O467: an item that declares no tax is read as bearing none, and every line of it goes out with no GST
+    # unless the line names one; the items import set none at all until it had the columns.
+    bare = Item.objects.filter(item_type="goods", is_active=True, sales_taxes=None, purchase_taxes=None)
+    if bare.exists():
+        skus = list(bare.order_by("sku").values_list("sku", flat=True)[:6])
+        add(WARN, "Items with no taxes",
+            f"{bare.count()} goods item(s) declare no sales or purchase tax ({', '.join(skus)}"
+            f"{', ...' if bare.count() > len(skus) else ''}): every order, invoice and bill line of them goes "
+            "out with no GST unless the line names one. A supply that truly bears none (diesel) is right to; "
+            "set the rest on each item, or bring items in with their sales_taxes and purchase_taxes.")
     from apps.accounting.gst import interstate_position_faults
 
     faults = interstate_position_faults(gst.interstate_position)

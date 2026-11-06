@@ -269,6 +269,19 @@ class Item(Extensible, AuditModel):
     # order of 2,24,000.00 was confirmed, shipped and invoiced with no GST. The intra-state pair is
     # named here; the party's fiscal position turns it into IGST across a state line, or IGST 0 for an
     # export, as it does for a line that names it.
+    @staticmethod
+    def taxes_of_the_other_side(taxes, side):
+        """
+        Why `taxes` cannot be an item's defaults for `side` ("sales" or "purchase"), or "" (O395): a
+        purchase-only tax among its sales taxes would be charged to a customer. Asked by the item's
+        serializer and by the items import (O467), so neither path is written without it.
+        """
+        wrong = [tax.code for tax in taxes if tax.scope not in (side, "both")]
+        if not wrong:
+            return ""
+        return (f"{', '.join(wrong)} {'is' if len(wrong) == 1 else 'are'} not taxes on a "
+                f"{'sale' if side == 'sales' else 'purchase'}.")
+
     sales_taxes = models.ManyToManyField(
         "accounting.Tax", blank=True, related_name="+",
         help_text="The taxes a sales line of this item takes when it names none: for a GST good, the "

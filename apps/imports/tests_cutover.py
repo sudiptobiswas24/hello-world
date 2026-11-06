@@ -131,6 +131,21 @@ class OrderBookTests(ImportTestCase):
                  for order in SalesOrder.objects.filter(reference__startswith="OLD-SO-2")}
         self.assertEqual(taken, {"OLD-SO-20": ["GST18"], "OLD-SO-21": [], "OLD-SO-22": ["GST5"]})
 
+    def test_a_taxes_cell_may_name_a_tax_group(self):
+        """O467: the loading run's order book named GST5, the group setup_indian_books seeds, and was refused."""
+        from apps.accounting.models import Tax, TaxGroup
+
+        payable = Account.objects.create(code="2100", name="GST payable", account_type=AccountType.LIABILITY)
+        group = TaxGroup.objects.create(code="GST5", name="GST 5%")
+        for code in ("CGST2.5", "SGST2.5"):
+            Tax.objects.create(code=code, name=code, rate=Decimal("2.5"), group=group,
+                               collected_account=payable, paid_account=payable)
+        report = run("open_sales_orders", "customer,reference,date,sku,quantity,unit_price,taxes\n"
+                     f"C-1,OLD-SO-30,2026-09-20,{self.item.sku},10,5,GST5\n", commit=True)
+        self.assertTrue(report.committed, report.errors)
+        line = SalesOrder.objects.get(reference="OLD-SO-30").lines.get()
+        self.assertEqual(sorted(line.taxes.values_list("code", flat=True)), ["CGST2.5", "SGST2.5"])
+
     def test_open_purchase_orders_mirror_it(self):
         text = ("vendor,reference,date,sku,quantity,unit_price,expected_date,warehouse\n"
                 f"V-1,PO/OLD/41,2026-09-18,{self.item.sku},5000,91.25,2026-10-05,WH1\n")

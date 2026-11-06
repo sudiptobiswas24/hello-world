@@ -21,7 +21,8 @@ from django.db import models, transaction
 
 from apps.core.models import lock_rows
 
-from .base import RowError, by_code, clean, codes, date, decimal, once_only, required, whole_number, yes_no
+from .base import (RowError, by_code, clean, codes, date, decimal, once_only, required, taxes_named, whole_number,
+                   yes_no)
 
 SPEC_MODELS = {
     "tape_specs": ("manufacturing", "TapeSpecification"),
@@ -166,12 +167,7 @@ def _open_orders(side):
                     if [code.lower() for code in wanted] == ["none"]:
                         line.given_taxes = []
                     elif wanted:
-                        taxes = list(Tax.objects.filter(code__in=wanted))
-                        missing = sorted(set(wanted) - {tax.code for tax in taxes})
-                        if missing:
-                            raise RowError("taxes", f"no tax {', '.join(missing)}; leave it blank for the item's "
-                                                    "taxes, or write none for no tax.")
-                        line.given_taxes = taxes
+                        line.given_taxes = taxes_named(row, "taxes")
                     line.save()
                     report.created += 1
             except RowError as error:

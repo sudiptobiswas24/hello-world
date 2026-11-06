@@ -27,7 +27,7 @@ from django.core.exceptions import ValidationError
 from django.db import transaction
 
 from .base import Report, by_code, clean, date, decimal, once_only, read, required, stamped_by, yes_no  # noqa: F401
-from .base import RowError
+from .base import RowError, taxes_named
 from .cutover import CUTOVER, CUTOVER_OPENING, CUTOVER_PER_ROW, CUTOVER_WHOLE_FILE, cutover_columns
 
 KINDS = ("accounts", "parties", "employees", "customer_reps", "items", "opening_stock", "open_invoices",
@@ -46,7 +46,7 @@ COLUMNS = {
                   "job_title", "email", "username", "sales_rep", "uan", "esi_number"],
     "customer_reps": ["customer", "rep"],
     "items": ["sku", "name", "uom", "item_type", "hsn_code", "track_inventory", "costing_method",
-              "tracking", "sale_price", "standard_cost", "stock_class"],
+              "tracking", "sale_price", "standard_cost", "stock_class", "sales_taxes", "purchase_taxes"],
     "opening_stock": ["sku", "warehouse", "quantity", "unit_cost", "lot"],
     "open_invoices": ["customer", "reference", "date", "amount", "payment_terms", "currency"],
     "open_bills": ["vendor", "reference", "date", "amount", "payment_terms", "currency"],
@@ -181,8 +181,17 @@ def _item(row, options):
     for column in ("item_type", "costing_method", "tracking", "stock_class"):
         if row.get(column):
             setattr(item, column, row[column].lower())
+    # What a line of it takes when it names none (O467): an item that declares none is read as bearing none
+    # (refuse_untaxed_lines), and every item imported before this went out with no GST.
+    sales, purchase = taxes_named(row, "sales_taxes"), taxes_named(row, "purchase_taxes")
+    for column, taxes, side in (("sales_taxes", sales, "sales"), ("purchase_taxes", purchase, "purchase")):
+        refused = Item.taxes_of_the_other_side(taxes, side)
+        if refused:
+            raise RowError(column, refused)
     clean(item)
     item.save()
+    item.sales_taxes.set(sales)
+    item.purchase_taxes.set(purchase)
 
 
 def _employees(rows, report, options):
