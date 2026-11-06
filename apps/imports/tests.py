@@ -349,6 +349,42 @@ class EmployeesTests(ImportTestCase):
             self.assertEqual(stat.S_IMODE(os.stat(out).st_mode), 0o600)
 
 
+    def test_a_passwords_file_that_cannot_be_made_refuses_before_anyone_is_kept(self):
+        """O465: the file was opened after the commit; a folder it could not write to kept logins nobody could open."""
+        import os
+
+        from django.contrib.auth.models import User
+
+        from apps.hr.models import Employee
+
+        with tempfile.TemporaryDirectory() as folder:
+            source = os.path.join(folder, "employees.csv")
+            with open(source, "w") as handle:
+                handle.write(EMPLOYEES)
+            nowhere = os.path.join(folder, "no-such-folder", "first-passwords.csv")
+            with self.assertRaisesMessage(CommandError, "cannot be made"):
+                call_command("import_csv", "employees", source, "--commit", "--passwords-out", nowhere,
+                             stdout=StringIO())
+            taken = os.path.join(folder, "taken.csv")
+            with open(taken, "w") as handle:
+                handle.write("kept\n")
+            with self.assertRaisesMessage(CommandError, "exists; first passwords are never written over"):
+                call_command("import_csv", "employees", source, "--commit", "--passwords-out", taken,
+                             stdout=StringIO())
+            with open(taken) as handle:
+                self.assertEqual(handle.read(), "kept\n")
+            self.assertFalse(Employee.objects.exists())
+            self.assertFalse(User.objects.filter(username__in=["ravi", "meena"]).exists())
+            # A file refused for its rows leaves no empty passwords file behind, and can be run again.
+            out = os.path.join(folder, "first-passwords.csv")
+            with open(os.path.join(folder, "bad.csv"), "w") as handle:
+                handle.write(EMPLOYEES.replace("2025-01-15", "not a date", 1))
+            with self.assertRaises(CommandError):
+                call_command("import_csv", "employees", os.path.join(folder, "bad.csv"), "--commit",
+                             "--passwords-out", out, stdout=StringIO())
+            self.assertFalse(os.path.exists(out))
+
+
 class ImportGivesNoRolesTests(ImportTestCase):
     """
     O86: the import takes core.import_records alone, and its employees
