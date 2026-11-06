@@ -1186,8 +1186,13 @@ class Payslip(AuditModel):
     )
     kept_paid_days = models.DecimalField(
         max_digits=6, decimal_places=2, null=True, blank=True, editable=False,
-        help_text="Working days employed less unpaid leave and absences, as the slip was worked "
-                  "out: what the ESI return files (O5).",
+        help_text="Working days employed less unpaid leave and absences, as the slip was worked out (O5).",
+    )
+    kept_esi_days = models.DecimalField(
+        max_digits=6, decimal_places=2, null=True, blank=True, editable=False,
+        help_text="The days wages were paid for, as the slip was worked out: what the ESI return files (O460). "
+                  "Paid by the month, every day of the month employed less unpaid days, weekly offs and "
+                  "holidays included; paid by attendance, the working days paid.",
     )
     kept_ncp_days = models.DecimalField(
         max_digits=6, decimal_places=2, null=True, blank=True, editable=False,
@@ -1372,9 +1377,32 @@ class Payslip(AuditModel):
         # check_current refuses a post they have moved under.
         away = self.unpaid_leave_days() + self.absent_days()
         self.kept_paid_days, self.kept_ncp_days = self.days_employed() - away, away
-        super().save(update_fields=["hours", "kept_paid_days", "kept_ncp_days", "kept_coverage", "recoverable",
-                                    "recoverable_component", "updated_at"])
+        self.kept_esi_days = self.days_paid_for(away)
+        super().save(update_fields=["hours", "kept_paid_days", "kept_ncp_days", "kept_esi_days", "kept_coverage",
+                                    "recoverable", "recoverable_component", "updated_at"])
         return list(self.lines.all())
+
+    def days_paid_for(self, away):
+        """
+        The days wages were paid for (O460), `away` the unpaid working days. ESIC counts the days paid, and a
+        month's salary pays its weekly offs and holidays: Raju, paid his whole October, was filed with the 22
+        days he was rostered, where his October was 31 days paid. A day-rated worker is paid the days worked.
+        """
+        if self.employee.paid_by_attendance:
+            return self.days_employed() - away
+        start = max(self.run.period_start, self.employee.hire_date)
+        end = self.run.period_end
+        if self.employee.termination_date:
+            end = min(end, self.employee.termination_date)
+        if end < start:
+            return Decimal("0")
+        return max(Decimal((end - start).days + 1) - away, Decimal("0"))
+
+    def esi_days(self):
+        """The days the ESI return files for this slip: as worked out, or for a slip from before they were kept, now."""
+        if self.kept_esi_days is not None:
+            return self.kept_esi_days
+        return self.days_paid_for(self.kept_days()[1])
 
     def kept_days(self):
         """(paid days, NCP days): as worked out, or for a slip from before they were kept, read now."""
