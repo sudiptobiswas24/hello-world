@@ -240,3 +240,44 @@ class AViewThatForgetsTests(TestCase):
         self.assertFalse(RequiredPermission().has_permission(request, SimpleNamespace()))
         self.assertTrue(RequiredPermission().has_permission(
             request, SimpleNamespace(required_permission="sales.view_invoice")))
+
+
+class BooksOpeningTests(RolesTestCase):
+    """O251: the books' opening day had an admin page only; the accountant sets it from the office."""
+
+    URL = "/api/accounting/books-opening/"
+
+    def setUp(self):
+        super().setUp()
+        from apps.accounting.models import Account, AccountType
+
+        self.equity = Account.objects.create(code="3900", name="Opening balances", account_type=AccountType.EQUITY)
+        self.cash = Account.objects.create(code="1000", name="Cash", account_type=AccountType.ASSET)
+
+    def test_the_controller_sets_it_and_corrects_it(self):
+        controller = self.as_("Controller")
+        made = controller.post(self.URL, {"opened_on": "2026-03-31", "opening_account": self.equity.pk}, format="json")
+        self.assertEqual(made.status_code, 201, made.content)
+        self.assertEqual(made.json()["opening_account_name"], "3900 Opening balances")
+        corrected = controller.patch(f"{self.URL}{made.json()['id']}/", {"opened_on": "2026-04-01"}, format="json")
+        self.assertEqual(corrected.status_code, 200, corrected.content)
+        self.assertEqual(controller.get(self.URL).json()[0]["opened_on"], "2026-04-01")
+        # Its own rules, answered as a 400 in words: one row, and against equity.
+        again = controller.post(self.URL, {"opened_on": "2026-03-31", "opening_account": self.equity.pk}, format="json")
+        self.assertEqual(again.status_code, 400, again.content)
+        self.assertIn("The books opened once", str(again.json()))
+        wrong = controller.patch(f"{self.URL}{made.json()['id']}/", {"opening_account": self.cash.pk}, format="json")
+        self.assertEqual(wrong.status_code, 400, wrong.content)
+        self.assertIn("not an equity account", str(wrong.json()))
+        # Never deleted from the office: no role holds the permission, and the endpoint takes no DELETE.
+        self.assertIn(controller.delete(f"{self.URL}{made.json()['id']}/").status_code, (403, 405))
+        self.assertEqual(len(controller.get(self.URL).json()), 1)
+
+    def test_the_bookkeeper_reads_it_and_others_do_not(self):
+        bookkeeper = self.as_("Bookkeeper")
+        self.assertReads(bookkeeper, self.URL)
+        refused = bookkeeper.post(self.URL, {"opened_on": "2026-03-31", "opening_account": self.equity.pk},
+                                              format="json")
+        self.assertEqual(refused.status_code, 403, refused.content)
+        self.assertRefused(self.as_("Sales Rep"), self.URL)
+        self.assertRefused(self.as_("Stores Manager"), self.URL)

@@ -1500,6 +1500,13 @@ export const MODULES: Module[] = [
         detail: () => import("../modules/settings/FiscalPositionForm"),
       },
       {
+        // The day the books opened (O251): an asset typed in and the opening-balance import refuse until it is set.
+        path: "books-opening", label: "Books opening", permission: "accounting.view_booksopening",
+        create: "accounting.add_booksopening", keep: "accounting.change_booksopening",
+        keywords: "opening day go-live cutover opening balances equity books opened", load: () => import("../modules/settings/BooksOpenings"),
+        detail: () => import("../modules/settings/BooksOpeningForm"),
+      },
+      {
         // The plant's own registration (it had no door but code; seen on a first installation).
         path: "plant-gst", label: "Plant's GST registration", permission: "accounting.view_gstsettings",
         create: "accounting.add_gstsettings", keep: "accounting.change_gstsettings",
