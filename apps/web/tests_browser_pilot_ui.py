@@ -100,10 +100,10 @@ class PilotScreensInTheBrowserTests(BrowserTestCase):
         rep = self.sign_in(self.person("Sales Rep"), "/app/sales/orders/new")
         rep.get_by_role("combobox", name="Customer").fill("Acm")
         rep.get_by_role("option", name=re.compile("Acme")).click()
-        for typed, quantity, price in (("WDG", "3", ""), ("WDG-", "2", "50")):
-            # The second search typed differently: the picker opens on a change of what is typed (O463).
+        for quantity, price in (("3", ""), ("2", "50")):
+            # The same search twice, typed again inside the close a blur schedules (O463): the list stays open.
             expect(rep.get_by_role("combobox", name="Item to add")).to_have_value("")
-            rep.get_by_role("combobox", name="Item to add").fill(typed)
+            rep.get_by_role("combobox", name="Item to add").fill("WDG")
             rep.get_by_role("option", name=re.compile("WDG-1")).click()
             rep.get_by_label("Quantity to add").fill(quantity)
             rep.get_by_label("Unit price to add").fill(price)

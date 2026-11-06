@@ -35,6 +35,11 @@ export function RecordPicker<T extends { id: number }>(props: PickerProps<T>) {
   const [active, setActive] = useState(0);
   const [chosen, setChosen] = useState<T | null>(null);
   const box = useRef<HTMLInputElement>(null);
+  // The close a blur schedules, so a focus that comes back first can call it off (O463). Left to run, it closed the
+  // list someone had just reopened: on the add-line row, quantity, price and Add line could all be answered and the
+  // picker typed in again inside its 120 ms, and the list shut under them with nothing chosen.
+  const closing = useRef<number | undefined>(undefined);
+  useEffect(() => () => window.clearTimeout(closing.current), []);
 
   useEffect(() => {
     const timer = window.setTimeout(() => setSearch(typed), 200);
@@ -80,10 +85,13 @@ export function RecordPicker<T extends { id: number }>(props: PickerProps<T>) {
         placeholder={shown ? undefined : placeholder ?? "Type to search"}
         value={open ? typed : shown ? label(shown) : ""}
         onFocus={() => {
+          window.clearTimeout(closing.current);
           setOpen(true);
           setActive(0);
         }}
-        onBlur={() => window.setTimeout(() => setOpen(false), 120)}
+        onBlur={() => {
+          closing.current = window.setTimeout(() => setOpen(false), 120);
+        }}
         onChange={(event) => {
           setTyped(event.target.value);
           setActive(0);
