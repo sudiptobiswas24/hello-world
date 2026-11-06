@@ -4,9 +4,10 @@ import { Trail } from "../../views/Trail";
 import { useAct, useRecord, useRows } from "../../api/hooks";
 import { useAccess } from "../../auth/me";
 import { ExtraFields } from "../../forms/ExtraFields";
+import { useAsk } from "../../forms/Ask";
 import { ActionButton, DocHeader, Sheet, Totals } from "../../forms/Document";
 import { Field, today } from "../../forms/fields";
-import { Lines, type TradeLine } from "../../forms/Lines";
+import { Lines, NewLines, lineBody, type NewLine, type TradeLine } from "../../forms/Lines";
 import { PartyPicker } from "../../forms/PartyPicker";
 import { RecordPicker } from "../../forms/RecordPicker";
 import { OldSupplyNote } from "../../forms/OldSupplyNote";
@@ -94,6 +95,7 @@ export default function BillForm() {
   const bill = record.data;
   const draft = useDraft<Bill>(isNew ? ({ vendor: null, bill_date: today(), reference: "" } as unknown as Bill) : bill);
   const act = useAct<Bill>();
+  const { ask, dialog } = useAsk();
   const seesPayments = can("purchasing.view_billpayment");
   const allocations = useRows<Allocation>("/api/purchasing/bill-payments/", { bill: bill?.id }, Boolean(bill?.posted) && seesPayments);
 
@@ -102,6 +104,7 @@ export default function BillForm() {
 
   const editable = isNew || (!bill!.posted && can("purchasing.change_bill"));
   const value = draft.value;
+  const newLines = ((value as Record<string, unknown>).new_lines as NewLine[] | undefined) ?? [];
   const state = bill ? billState(bill) : undefined;
   const title = bill?.debits ? "Debit note" : "Bill";
 
@@ -111,6 +114,7 @@ export default function BillForm() {
         vendor: value.vendor, bill_date: value.bill_date, reference: value.reference,
         // The supplier's TCS (section 206C), as its invoice shows it (O234, review F10).
         ...(value.tcs_amount ? { tcs_amount: value.tcs_amount, tcs_section: value.tcs_section ?? "", tcs_account: value.tcs_account ?? null } : {}),
+        new_lines: newLines.map(lineBody),
       }, { done: "Bill created" });
       if (outcome.ok) {
         draft.reset();
@@ -130,9 +134,11 @@ export default function BillForm() {
     // A prepayment is taken back by amount: part of what is left, or all of it.
     let body: Record<string, string> = {};
     if (bill!.is_prepayment) {
-      const amount = window.prompt(`How much of ${bill!.number} to take back? Leave it empty for all that is left. A debit note is posted at once.`);
-      if (amount === null) return;
-      if (amount.trim()) body = { amount: amount.trim() };
+      const said = await ask({ title: `Debit note on ${bill!.number}`, submit: "Post the debit note",
+        note: "A debit note is posted at once.",
+        fields: [{ key: "amount", label: "Amount to take back", kind: "money", hint: "Leave it empty for all that is left" }] });
+      if (said === null) return;
+      if (said.amount) body = { amount: said.amount };
     } else if (!window.confirm(`Debit all of ${bill!.number}? A debit note is posted at once.`)) return;
     const outcome = await act.run("POST", `${ENDPOINT}${bill!.id}/debit_note/`, body, {
       done: (result) => `Debit note ${(result as Bill).number} posted`,
@@ -165,6 +171,7 @@ export default function BillForm() {
           <Link className="btn" to={`/purchasing/payments/new?vendor=${bill.vendor}&bill=${bill.id}`}>Pay</Link>
         )}
       </DocHeader>
+      {dialog}
 
       <Sheet>
         <div className="field-grid">
@@ -236,7 +243,12 @@ export default function BillForm() {
             ]} />
           </>
         )}
-        {isNew && <p className="muted">Create the bill, then add its lines. A bill for an order is raised from the order, so it is checked against what arrived.</p>}
+        {isNew && (
+          <>
+            <NewLines lines={newLines} onChange={(next) => draft.set("new_lines" as never, next as never)} errors={draft.errors} side="purchase" />
+            <p className="muted">Add its lines, then create it: the bill and its lines are saved together. A bill for an order is raised from the order, so it is checked against what arrived.</p>
+          </>
+        )}
         {bill?.is_opening_balance && (
           <p className="note" role="note">Brought in from the old system: {bill.reference}, what was still owing on it. A debit note with GST on it, for short weight or a rate difference, takes the input tax back; the Debit note button only clears the balance.</p>
         )}

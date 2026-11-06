@@ -2,7 +2,7 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from rest_framework import serializers
 
-from apps.accounting.serializers import MoneyLineSerializerMixin
+from apps.accounting.serializers import MoneyLineSerializerMixin, TakesItsLinesMixin
 from apps.inventory.tracking import Lot
 
 from .models import (
@@ -53,7 +53,9 @@ class PurchaseOrderLineSerializer(MoneyLineSerializerMixin, serializers.ModelSer
         return obj.quantity_billed()
 
 
-class PurchaseOrderSerializer(ExtensibleSerializerMixin, serializers.ModelSerializer):
+class PurchaseOrderSerializer(TakesItsLinesMixin, ExtensibleSerializerMixin, serializers.ModelSerializer):
+    line_serializer = PurchaseOrderLineSerializer
+    line_parent = "order"
     lines = PurchaseOrderLineSerializer(many=True, read_only=True)
     # Named, so a list can say who without asking for every vendor.
     vendor_name = serializers.CharField(source="vendor.name", read_only=True)
@@ -110,7 +112,9 @@ class BillPaymentSerializer(serializers.ModelSerializer):
         fields = ["id", "bill", "bill_number", "payment", "payment_number", "amount", "date", "discount_earned"]
 
 
-class BillSerializer(ExtensibleSerializerMixin, serializers.ModelSerializer):
+class BillSerializer(TakesItsLinesMixin, ExtensibleSerializerMixin, serializers.ModelSerializer):
+    line_serializer = BillLineSerializer
+    line_parent = "bill"
     lines = BillLineSerializer(many=True, read_only=True)
     # What is owed on it, as the invoice has always said: without these an
     # AP clerk could post a bill and not read back what it came to.
