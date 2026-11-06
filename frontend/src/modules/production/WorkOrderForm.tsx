@@ -2,6 +2,7 @@ import { useParams } from "react-router";
 
 import { useAct, useRecord } from "../../api/hooks";
 import { useAccess } from "../../auth/me";
+import { useAsk } from "../../forms/Ask";
 import { ActionButton, DocHeader, Sheet, Steps } from "../../forms/Document";
 import { Field } from "../../forms/fields";
 import { date, money, quantity } from "../../lib/format";
@@ -63,6 +64,7 @@ export default function WorkOrderForm() {
   const { can } = useAccess();
   const record = useRecord<WorkOrder>(ENDPOINT, id);
   const act = useAct<WorkOrder>();
+  const { ask, dialog } = useAsk();
 
   if (record.isError) return <ErrorPanel error={record.error} retry={() => void record.refetch()} />;
   const order = record.data;
@@ -84,9 +86,9 @@ export default function WorkOrderForm() {
           }}>Close</ActionButton>
         )}
         {order.status === "closed" && may && (
-          <ActionButton pending={act.pending} onClick={() => {
-            const memo = window.prompt("Why reopen it?");
-            if (memo !== null) void run("reopen", "Reopened", { memo });
+          <ActionButton pending={act.pending} onClick={async () => {
+            const said = await ask({ title: "Reopen the work order", submit: "Reopen", fields: [{ key: "memo", label: "Why reopen it" }] });
+            if (said !== null) void run("reopen", "Reopened", said);
           }}>Reopen</ActionButton>
         )}
         {order.status !== "draft" && (
@@ -98,6 +100,7 @@ export default function WorkOrderForm() {
           }}>Cancel run</ActionButton>
         )}
       </DocHeader>
+      {dialog}
       {order.status !== "cancelled" && <Steps steps={["Draft", "On the floor", "Closed"]} at={AT[order.status] ?? 0} />}
 
       <Sheet>

@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from "react-router";
 
 import { useAct, useRecord } from "../../api/hooks";
 import { useAccess } from "../../auth/me";
+import { useAsk } from "../../forms/Ask";
 import { ActionButton, DocHeader, Sheet, Totals } from "../../forms/Document";
 import { DecimalInput, Field, today } from "../../forms/fields";
 import { RecordPicker } from "../../forms/RecordPicker";
@@ -64,6 +65,7 @@ export default function JournalForm() {
   const entry = record.data;
   const draft = useDraft<Entry>(isNew ? ({ date: today(), reference: "", memo: "" } as unknown as Entry) : entry);
   const act = useAct<Entry>();
+  const { ask, dialog } = useAsk();
   const [account, setAccount] = useState<number | null>(null);
   const [centre, setCentre] = useState<number | null>(null);
   const [side, setSide] = useState<"debit" | "credit">("debit");
@@ -110,13 +112,15 @@ export default function JournalForm() {
         )}
         {entry?.posted && !entry.reverses && !entry.posted_by && can("accounting.post_journalentry") && (
           <ActionButton danger pending={act.pending} onClick={async () => {
-            const memo = window.prompt("Why is it reversed?");
-            if (memo === null) return;
-            const outcome = await act.run("POST", `${ENDPOINT}${entry.id}/reverse/`, { memo }, { done: "Reversed" });
+            const said = await ask({ title: "Reverse the entry", submit: "Reverse", danger: true,
+              fields: [{ key: "memo", label: "Why it is reversed" }] });
+            if (said === null) return;
+            const outcome = await act.run("POST", `${ENDPOINT}${entry.id}/reverse/`, said, { done: "Reversed" });
             if (outcome.ok) navigate(`/accounts/journals/${outcome.data.id}`);
           }}>Reverse</ActionButton>
         )}
       </DocHeader>
+      {dialog}
 
       <Sheet>
         <div className="field-grid">
