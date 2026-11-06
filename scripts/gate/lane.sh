@@ -21,8 +21,10 @@
 # session with no tracked job running is reclaimed with its container: g26
 # lost three detached lanes that way. Keep a tracked watcher job running for
 # as long as any lane runs:
-#   timeout 7000 bash -c 'while pgrep -f "lane.sh <prefix>" >/dev/null; do sleep 60; done'
-# and start another when it ends. Give that job the Bash tool's own timeout
+#   timeout 7000 bash -c 'while pgrep -f "[l]ane.sh <prefix>" >/dev/null; do sleep 60; done'
+# and start another when it ends. The bracket matters: unbracketed, the
+# pattern matches the watcher's own bash -c line, so it never sees the lane
+# end and runs to its timeout (g28 missed pg-a's finish by 40 minutes). Give that job the Bash tool's own timeout
 # of 7200000 too: its default ends the job at 30 minutes (g27).
 # A test lane refuses to start without the built office app, or while a ui
 # lane is building it: g27 started sqlite beside ui, the build emptied
