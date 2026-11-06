@@ -4,6 +4,7 @@ import { useState } from "react";
 
 import { useAct, usePage, useRecord } from "../../api/hooks";
 import { useAccess } from "../../auth/me";
+import { useAsk } from "../../forms/Ask";
 import { ActionButton, DocHeader, Sheet, Steps, Totals } from "../../forms/Document";
 import { Field } from "../../forms/fields";
 import { Pager } from "../../forms/Pager";
@@ -58,6 +59,7 @@ export default function PayRunForm() {
   const [slipPage, setSlipPage] = useState(1);
   const slips = usePage<Slip>("/api/hr/payslips/", { run: run?.id }, slipPage, 100, Boolean(run) && can("hr.view_payslip"));
   const act = useAct<Run>();
+  const { ask, dialog } = useAsk();
   const fileAct = useAct<{ id: number }>();
   // The run's bank file: one row a slip still owed, refused while anybody on it has no bank details.
   const writeBankFile = async () => {
@@ -119,12 +121,14 @@ export default function PayRunForm() {
           <ActionButton pending={fileAct.pending} onClick={() => void writeBankFile()}>Write bank file</ActionButton>
         )}
         {run?.status === "posted" && can("hr.post_payrun") && (
-          <ActionButton danger pending={act.pending} onClick={() => {
-            const day = window.prompt("Void as of which date? (YYYY-MM-DD, blank for today)");
-            if (day !== null) void run_("void", "Voided", day ? { on_date: day } : {});
+          <ActionButton danger pending={act.pending} onClick={async () => {
+            const said = await ask({ title: "Void the pay run", submit: "Void", danger: true,
+              fields: [{ key: "on_date", label: "Void as of", kind: "date", hint: "Blank for today" }] });
+            if (said !== null) void run_("void", "Voided", said.on_date ? { on_date: said.on_date } : {});
           }}>Void</ActionButton>
         )}
       </DocHeader>
+      {dialog}
       {run && run.status !== "voided" && <Steps steps={["Opened", "Worked out", "Posted"]} at={AT[run.status] ?? 0} />}
 
       <Sheet>

@@ -92,9 +92,12 @@ class ReconciliationInTheBrowserTests(BrowserTestCase):
             BankStatementLine.objects.create(statement=statement, date=datetime.date(2026, 3, day), description=words,
                                              amount=Decimal(amount))
         controller = self.sign_in(self.person("Controller"), f"/app/sales/receipts/{self.received.pk}")
-        with self.answering(controller, "Returned unpaid", "2026-03-14"):
-            controller.get_by_role("button", name="Void").click()
-            expect(controller.locator(".toast", has_text="Voided").first).to_be_visible()
+        controller.get_by_role("button", name="Void").click()
+        dialog = controller.get_by_role("dialog", name="Void the payment")
+        dialog.get_by_label("Why it is void").fill("Returned unpaid")
+        dialog.get_by_label("Void on").fill("2026-03-14")
+        dialog.get_by_role("button", name="Void").click()
+        expect(controller.locator(".toast", has_text="Voided").first).to_be_visible()
         self.received.refresh_from_db()
         self.assertEqual(self.received.voided_entry.date, datetime.date(2026, 3, 14))
 

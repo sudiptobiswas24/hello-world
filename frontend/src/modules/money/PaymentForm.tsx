@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 
 import { useAct, usePage, useRecord } from "../../api/hooks";
 import { useAccess } from "../../auth/me";
+import { useAsk } from "../../forms/Ask";
 import { ActionButton, DocHeader, Sheet } from "../../forms/Document";
 import { DecimalInput, Field, today } from "../../forms/fields";
 import { Pager } from "../../forms/Pager";
@@ -92,6 +93,7 @@ export function PaymentForm({ config }: { config: MoneyConfig }) {
   const presetParty = Number(params.get(config.role)) || null;
   const draft = useDraft<Payment>(isNew ? ({ party: presetParty, payment_date: today(), amount: "", reference: "" } as unknown as Payment) : payment);
   const act = useAct<Payment>();
+  const { ask, dialog } = useAsk();
 
   if (!isNew && record.isError) return <ErrorPanel error={record.error} retry={() => void record.refetch()} />;
   if (!isNew && !payment) return <div className="loading">Opening…</div>;
@@ -147,15 +149,17 @@ export function PaymentForm({ config }: { config: MoneyConfig }) {
           </>
         )}
         {payment?.posted && !payment.voided && can("accounting.post_payment") && (
-          <ActionButton danger pending={act.pending} onClick={() => {
-            const memo = window.prompt("Why is it void? (a bounced cheque, a recalled transfer)");
-            if (memo === null) return;
+          <ActionButton danger pending={act.pending} onClick={async () => {
             // The day the bank took it back, so that month's statement reconciles.
-            const date = window.prompt("On which day? (the day the bank returned it)", today());
-            if (date !== null) void act.run("POST", `${ENDPOINT}${payment.id}/void/`, { memo, date }, { done: `Voided: the ${config.field}s it paid are owed again` });
+            const said = await ask({ title: "Void the payment", submit: "Void", danger: true, fields: [
+              { key: "memo", label: "Why it is void", hint: "A bounced cheque, a recalled transfer" },
+              { key: "date", label: "Void on", kind: "date", hint: "The day the bank returned it" },
+            ] });
+            if (said) void act.run("POST", `${ENDPOINT}${payment.id}/void/`, said, { done: `Voided: the ${config.field}s it paid are owed again` });
           }}>Void</ActionButton>
         )}
       </DocHeader>
+      {dialog}
       <Sheet>
         <div className="field-grid">
           <Field label={config.role === "customer" ? "Customer" : "Vendor"} errors={draft.errors.party}>
