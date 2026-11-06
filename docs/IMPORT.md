@@ -122,7 +122,17 @@ on that row.
 
 With `--commit`, `--passwords-out <file>` is required: each new login's
 first password is written there, readable only by whoever ran the
-import, and never shown on the screen. Hand each out, have it changed at
+import, and never shown on the screen. The file is made before anything
+is kept, and a name that exists or a folder that cannot be written to
+refuses the import. Under Docker the application's own user cannot
+write to `imports/`, so this one command runs as root, and the file is
+then root's to read (`sudo cat imports/first_passwords.csv`):
+
+```bash
+docker compose run --rm --user root web python manage.py import_csv employees /app/imports/employees.csv --commit --passwords-out /app/imports/first_passwords.csv
+```
+
+ Hand each out, have it changed at
 the first sign-in, and delete the file. Someone with no manager and no
 department manager has their leave decided by HR, who may decide anyone's.
 
@@ -167,9 +177,12 @@ credit note after go-live.
 
 `account*` (code), `debit` or `credit` (one, above nothing),
 `description`. Every other balance on the old trial balance: bank,
-loans, fixed assets, GST ledgers, and the opening-balance account
-itself, so the file balances. The receivable, payable, inventory and
+loans, deposits, GST ledgers, and the opening-balance account itself,
+so the file balances. The receivable, payable, inventory and
 goods-received accounts are refused here: they come in as documents.
+So are the cost and accumulated-depreciation accounts of every asset
+category: the asset register (`fixed_assets`) posts them, each asset
+its own.
 
 ### tape_specs, fabric_specs, bag_specs, film_specs, liner_specs
 
@@ -204,10 +217,12 @@ is left.
 go-live date), `cost*`, `salvage_value` (default 0), `life_months`
 (default the category's), `depreciated_to_date` (what the old system
 had charged by the go-live date). The asset goes into service with that
-figure recorded against it and no journal entry of its own — the
-opening balances already carry the cost and the accumulated
-depreciation — and this system charges only the months after the
-go-live date. Cut over at a month end, so no month is split between the
+figure recorded against it and posts its own opening entry on the day
+the books opened: its cost to the category's asset account, what was
+depreciated to its accumulated account, the rest against the
+opening-balance account. Leave those two accounts out of
+`opening_balances`, which refuses them. This system charges only the
+months after the go-live date. Cut over at a month end, so no month is split between the
 two systems.
 
 ### compensation
