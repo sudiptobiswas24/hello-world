@@ -86,6 +86,54 @@ class PartiesTests(ImportTestCase):
                          ["customer", "vendor"])
 
 
+class AccountsTests(ImportTestCase):
+    """The plant's own chart, so every line of the old trial balance has an account to come in on."""
+
+    def test_each_refusal_names_its_row_and_column_and_nothing_is_kept(self):
+        text = """code,name,account_type,parent,currency,holds_money
+3900,Opening again,equity,,,
+1501,Lathe,machine,,,
+1502,Lathe,asset,9999,,
+1503,Lathe,asset,3900,,
+4501,Interest earned,income,,,yes
+1504,Euro bank,asset,,XYZ,yes
+1505,,asset,,,
+1506,Good row,asset,,,
+"""
+        report = run("accounts", text, commit=True)
+        self.assertEqual(self.errors(report), [
+            (2, "code"), (3, "account_type"), (4, "parent"), (5, "parent"), (6, "holds_money"),
+            (7, "currency"), (8, "name")])
+        self.assertIn("'3900' already exists", report.errors[0][2])
+        self.assertIn("A sub-account must have the same account_type", report.errors[3][2])
+        self.assertFalse(report.committed)
+        self.assertFalse(Account.objects.filter(code="1506").exists())
+
+    def test_a_chart_with_its_groups_banks_and_loans_comes_in(self):
+        text = """code,name,account_type,parent,currency,holds_money
+1500,Fixed assets,Asset,,,
+1510,Plant and machinery,asset,1500,,
+1205,HDFC Bank current account,asset,,USD,yes
+2510,SBI term loan,liability,,,no
+"""
+        report = run("accounts", text, commit=True)
+        self.assertEqual((report.created, report.errors, report.committed), (4, [], True))
+        machinery = Account.objects.get(code="1510")
+        self.assertEqual((machinery.parent.code, machinery.account_type), ("1500", AccountType.ASSET))
+        bank = Account.objects.get(code="1205")
+        self.assertEqual((bank.holds_money, bank.currency.code), (True, "USD"))
+        self.assertFalse(Account.objects.get(code="2510").holds_money)
+
+    def test_the_opening_balances_then_land_on_them(self):
+        from apps.accounting.models import BooksOpening
+
+        BooksOpening.objects.create(opened_on=GO_LIVE, opening_account=self.opening)
+        run("accounts", "code,name,account_type,holds_money\n1205,HDFC Bank,asset,yes\n", commit=True)
+        report = run("opening_balances", "account,debit,credit\n1205,250000,\n3900,,250000\n", commit=True)
+        self.assertEqual(report.errors, [])
+        self.assertEqual(self.balance(Account.objects.get(code="1205")), Decimal("250000"))
+
+
 class ItemsTests(ImportTestCase):
     def test_items_come_in_with_their_unit_and_refuse_what_the_model_refuses(self):
         report = run("items", "sku,name,uom,hsn_code,costing_method,sale_price\n"
