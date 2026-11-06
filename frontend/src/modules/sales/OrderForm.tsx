@@ -6,7 +6,7 @@ import { ExtraFields } from "../../forms/ExtraFields";
 import { FieldSection } from "../../forms/FieldSection";
 import { ActionButton, DocHeader, Sheet, Steps, Totals } from "../../forms/Document";
 import { Field, today } from "../../forms/fields";
-import { Lines, type TradeLine } from "../../forms/Lines";
+import { Lines, NewLines, lineBody, type NewLine, type TradeLine } from "../../forms/Lines";
 import { PartyPicker } from "../../forms/PartyPicker";
 import { useDraft } from "../../forms/useDraft";
 import { WarehouseChoice } from "../../forms/WarehouseChoice";
@@ -80,11 +80,13 @@ export default function OrderForm() {
 
   const editable = isNew || (order?.status === "draft" && can("sales.change_salesorder"));
   const value = draft.value;
+  const newLines = ((value as Record<string, unknown>).new_lines as NewLine[] | undefined) ?? [];
 
   const save = async () => {
     if (isNew) {
       const outcome = await act.run("POST", ENDPOINT, {
         customer: value.customer, order_date: value.order_date, reference: value.reference,
+        new_lines: newLines.map(lineBody),
       }, { done: "Order created" });
       if (outcome.ok) {
         draft.reset();
@@ -204,7 +206,12 @@ export default function OrderForm() {
             <Totals rows={[["Untaxed", order.subtotal], ["Tax", order.tax_total], ["Total", order.total, true]]} />
           </>
         )}
-        {isNew && <p className="muted">Create the order, then add its lines.</p>}
+        {isNew && (
+          <>
+            <NewLines lines={newLines} onChange={(next) => draft.set("new_lines" as never, next as never)} errors={draft.errors} withUom />
+            <p className="muted">Add its lines, then create it: the order and its lines are saved together, or not at all.</p>
+          </>
+        )}
       </Sheet>
 
       {order && order.status === "confirmed" && (

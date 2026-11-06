@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from apps.accounting.serializers import MoneyLineSerializerMixin
+from apps.accounting.serializers import MoneyLineSerializerMixin, TakesItsLinesMixin
 
 from .models import (
     SuppliedItem,
@@ -53,7 +53,9 @@ class SalesOrderLineSerializer(MoneyLineSerializerMixin, serializers.ModelSerial
         ]
 
 
-class SalesOrderSerializer(ExtensibleSerializerMixin, serializers.ModelSerializer):
+class SalesOrderSerializer(TakesItsLinesMixin, ExtensibleSerializerMixin, serializers.ModelSerializer):
+    line_serializer = SalesOrderLineSerializer
+    line_parent = "order"
     lines = SalesOrderLineSerializer(many=True, read_only=True)
     # Named, so a list can say who without asking for every customer.
     customer_name = serializers.CharField(source="customer.name", read_only=True)
@@ -112,7 +114,9 @@ class InvoiceLineSerializer(MoneyLineSerializerMixin, serializers.ModelSerialize
         extra_kwargs = {"revenue_account": {"required": False}}
 
 
-class InvoiceSerializer(ExtensibleSerializerMixin, serializers.ModelSerializer):
+class InvoiceSerializer(TakesItsLinesMixin, ExtensibleSerializerMixin, serializers.ModelSerializer):
+    line_serializer = InvoiceLineSerializer
+    line_parent = "invoice"
     lines = InvoiceLineSerializer(many=True, read_only=True)
     customer_name = serializers.CharField(source="customer.name", read_only=True)
     subtotal = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)

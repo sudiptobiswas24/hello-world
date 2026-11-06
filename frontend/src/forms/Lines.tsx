@@ -86,38 +86,14 @@ export function Lines({ lines, endpoint, parent, parentId, editable, extra = [],
   // While the taxes load a line says so, not a row id (#1, #2) nobody can read (O394).
   const taxCode = (id: number) => (taxes.data ? taxes.data.find((tax) => tax.id === id)?.code ?? `#${id}` : "…");
 
-  const [item, setItem] = useState<Item | null>(null);
-  const [qty, setQty] = useState("1");
-  // Left empty, the server prices it: the price list, or the vendor's
-  // agreed price. Typed, it is the price, which is how a purchase with no
-  // agreed price is bought at all.
-  const [price, setPrice] = useState("");
-  const { can } = useAccess();
-  const places = useReference<Place>("/api/inventory/warehouses/", undefined,
-    Boolean(receiving && editable && can("inventory.view_warehouse")));
-  const usable = (places.data ?? []).filter(usableWarehouse);
-  const [place, setPlace] = useState<number | null>(null);
-  useEffect(() => {
-    if (place === null && places.data) setPlace(defaultReceiving(places.data));
-  }, [places.data, place]);
-
   const patch = (line: TradeLine, change: Partial<TradeLine>) => {
     const changed = Object.entries(change).some(([key, value]) => JSON.stringify(line[key]) !== JSON.stringify(value));
     if (changed) void act.run("PATCH", `${endpoint}${line.id}/`, change);
   };
 
-  const add = async () => {
-    if (!item || !qty || Number.isNaN(Number(qty))) return;
-    const body: Record<string, unknown> = { [parent]: parentId, item: item.id, quantity: qty };
-    if (withUom) body.uom = item.uom;
-    if (price) body.unit_price = price;
-    if (receiving && place !== null) body.warehouse = place;
-    const outcome = await act.run("POST", endpoint, body, { done: `${item.name} added` });
-    if (outcome.ok) {
-      setItem(null);
-      setQty("1");
-      setPrice("");
-    }
+  const add = async (line: NewLine) => {
+    const outcome = await act.run("POST", endpoint, { [parent]: parentId, ...lineBody(line) }, { done: `${line.label} added` });
+    return outcome.ok;
   };
 
   return (
@@ -200,36 +176,150 @@ export function Lines({ lines, endpoint, parent, parentId, editable, extra = [],
           )}
         </tbody>
       </table>
-      {editable && (
-        <form
-          className="add-line"
-          onSubmit={(event) => {
-            event.preventDefault();
-            void add();
-          }}
-        >
-          <RecordPicker<Item>
-            endpoint="/api/inventory/items/"
-            value={item?.id ?? null}
-            onChange={(_, row) => setItem(row)}
-            label={(row) => `${row.sku} · ${row.name}`}
-            detail={(row) => (row.sale_price ? `List ${money(row.sale_price)}` : "")}
-            fixed={{ is_active: "true" }}
-            placeholder="Add an item: type its code or name"
-            ariaLabel="Item to add"
-          />
-          <DecimalInput value={qty} onChange={setQty} aria-label="Quantity to add" className="qty" />
-          <DecimalInput value={price} onChange={setPrice} places={2} aria-label="Unit price to add" className="qty"
-            placeholder={side === "purchase" ? "Agreed price" : "List price"} />
-          {receiving && places.data && (
-            <select aria-label="Received at" value={place ?? ""} onChange={(e) => setPlace(Number(e.target.value) || null)}>
-              <option value="">Received at…</option>
-              {usable.map((w) => <option key={w.id} value={w.id}>{w.code} · {w.name}</option>)}
-            </select>
-          )}
-          <button type="submit" className="btn" disabled={!item || act.pending}>Add line</button>
-        </form>
+      {editable && <AddLine side={side} receiving={receiving} withUom={withUom} pending={act.pending} onAdd={add} />}
+    </div>
+  );
+}
+
+/** A line of a document not yet saved: sent with its header in one request (O401). */
+export interface NewLine {
+  key: number;
+  item: number;
+  label: string;
+  quantity: string;
+  /** Empty: the server prices it, as it would a line added later. */
+  unit_price: string;
+  uom?: number;
+  warehouse?: number | null;
+}
+
+/** What a line sends: no taxes named, so it takes its item's (O459), as one added later does. */
+export function lineBody(line: NewLine): Record<string, unknown> {
+  const body: Record<string, unknown> = { item: line.item, quantity: line.quantity };
+  if (line.uom !== undefined) body.uom = line.uom;
+  if (line.unit_price) body.unit_price = line.unit_price;
+  if (line.warehouse !== undefined && line.warehouse !== null) body.warehouse = line.warehouse;
+  return body;
+}
+
+let nextKey = 1;
+
+/**
+ * The add-a-line row, the same on a saved document and a new one: an item, a quantity, and a price left empty for
+ * the server to find. `onAdd` says whether it was taken, and the row is cleared only then.
+ */
+function AddLine({ side, receiving, withUom, pending, onAdd }: {
+  side: "sales" | "purchase";
+  receiving?: boolean;
+  withUom?: boolean;
+  pending?: boolean;
+  onAdd: (line: NewLine) => Promise<boolean> | boolean;
+}) {
+  const [item, setItem] = useState<Item | null>(null);
+  const [qty, setQty] = useState("1");
+  // Left empty, the server prices it: the price list, or the vendor's
+  // agreed price. Typed, it is the price, which is how a purchase with no
+  // agreed price is bought at all.
+  const [price, setPrice] = useState("");
+  const { can } = useAccess();
+  const places = useReference<Place>("/api/inventory/warehouses/", undefined,
+    Boolean(receiving && can("inventory.view_warehouse")));
+  const usable = (places.data ?? []).filter(usableWarehouse);
+  const [place, setPlace] = useState<number | null>(null);
+  useEffect(() => {
+    if (place === null && places.data) setPlace(defaultReceiving(places.data));
+  }, [places.data, place]);
+  const add = async () => {
+    if (!item || !qty || Number.isNaN(Number(qty))) return;
+    const line: NewLine = { key: nextKey++, item: item.id, label: `${item.sku} · ${item.name}`, quantity: qty, unit_price: price };
+    if (withUom) line.uom = item.uom;
+    if (receiving && place !== null) line.warehouse = place;
+    if (await onAdd(line)) {
+      setItem(null);
+      setQty("1");
+      setPrice("");
+    }
+  };
+  return (
+    <form
+      className="add-line"
+      onSubmit={(event) => {
+        event.preventDefault();
+        void add();
+      }}
+    >
+      <RecordPicker<Item>
+        endpoint="/api/inventory/items/"
+        value={item?.id ?? null}
+        onChange={(_, row) => setItem(row)}
+        label={(row) => `${row.sku} · ${row.name}`}
+        detail={(row) => (row.sale_price ? `List ${money(row.sale_price)}` : "")}
+        fixed={{ is_active: "true" }}
+        placeholder="Add an item: type its code or name"
+        ariaLabel="Item to add"
+      />
+      <DecimalInput value={qty} onChange={setQty} aria-label="Quantity to add" className="qty" />
+      <DecimalInput value={price} onChange={setPrice} places={2} aria-label="Unit price to add" className="qty"
+        placeholder={side === "purchase" ? "Agreed price" : "List price"} />
+      {receiving && places.data && (
+        <select aria-label="Received at" value={place ?? ""} onChange={(e) => setPlace(Number(e.target.value) || null)}>
+          <option value="">Received at…</option>
+          {usable.map((w) => <option key={w.id} value={w.id}>{w.code} · {w.name}</option>)}
+        </select>
       )}
+      <button type="submit" className="btn" disabled={!item || pending}>Add line</button>
+    </form>
+  );
+}
+
+/**
+ * The lines of a document not yet saved (O401). Kept on the screen and sent with the header in one request, which
+ * makes both or neither: a person who stops half-way leaves nothing behind. Prices left empty and taxes are worked
+ * out by the server as the document is made, so the amounts show once it is.
+ */
+export function NewLines({ lines, onChange, errors, side = "sales", receiving, withUom }: {
+  lines: NewLine[];
+  onChange: (next: NewLine[]) => void;
+  /** What the server said, by path: new_lines[1].quantity. */
+  errors?: Record<string, string[]>;
+  side?: "sales" | "purchase";
+  receiving?: boolean;
+  withUom?: boolean;
+}) {
+  const said = (index: number) => Object.entries(errors ?? {})
+    .filter(([path]) => path.startsWith(`new_lines[${index}]`))
+    .map(([path, messages]) => `${path.slice(`new_lines[${index}]`.length + 1) || "Line"}: ${messages.join(" ")}`);
+  return (
+    <div className="lines">
+      <table aria-label="Lines">
+        <thead>
+          <tr>
+            <th scope="col">Item</th>
+            <th scope="col" className="k-quantity">Quantity</th>
+            <th scope="col" className="k-money">Unit price</th>
+            <th scope="col" aria-label="Remove" />
+          </tr>
+        </thead>
+        <tbody>
+          {lines.map((line, index) => (
+            <tr key={line.key}>
+              <td className="line-what">
+                {line.label}
+                {said(index).map((message) => <div key={message} className="field-error" role="alert">{message}</div>)}
+              </td>
+              <td className="k-quantity">{quantity(line.quantity)}</td>
+              <td className="k-money">{line.unit_price ? money(line.unit_price) : <span className="muted">{side === "purchase" ? "Agreed price" : "List price"}</span>}</td>
+              <td>
+                <button type="button" className="icon-btn" aria-label={`Remove ${line.label}`}
+                  onClick={() => onChange(lines.filter((other) => other.key !== line.key))}>×</button>
+              </td>
+            </tr>
+          ))}
+          {lines.length === 0 && <tr><td colSpan={4} className="empty-line">No lines yet.</td></tr>}
+        </tbody>
+      </table>
+      {errors?.new_lines && <p className="form-error" role="alert">{errors.new_lines.join(" ")}</p>}
+      <AddLine side={side} receiving={receiving} withUom={withUom} onAdd={(line) => { onChange([...lines, line]); return true; }} />
     </div>
   );
 }
