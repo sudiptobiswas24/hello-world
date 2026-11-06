@@ -305,6 +305,28 @@ class PayrollScreensInTheBrowserTests(BrowserTestCase):
         expect(self.links(manager, "Bank and PAN")).to_have_count(0)
         self.assertEqual(self.problems, [])
 
+    def test_the_controller_confirms_a_professional_tax_schedule_on_its_component(self):
+        """O468: nothing on screen confirmed a schedule; O461: Maharashtra's bands for women among it."""
+        from decimal import Decimal
+
+        from apps.hr.payroll import ComponentBasis, ComponentKind, PayComponent, PayComponentSlab, Statutory
+
+        owed = Account.objects.create(code="2330", name="PT payable", account_type=AccountType.LIABILITY)
+        pt = PayComponent.objects.create(code="PT", name="Professional tax", kind=ComponentKind.DEDUCTION,
+                                         basis=ComponentBasis.SLAB, liability_account=owed, statutory=Statutory.PT)
+        for above, up_to, amount, women in (("0", "7500", "0", False), ("7500", None, "200", False),
+                                            ("0", "25000", "0", True), ("25000", None, "200", True)):
+            PayComponentSlab.objects.create(component=pt, state="MH", effective_from=datetime.date(2023, 7, 1),
+                                            above=Decimal(above), up_to=Decimal(up_to) if up_to else None,
+                                            amount=Decimal(amount), for_women=women)
+        page = self.sign_in(self.person("Controller"), f"/app/payroll/pay-components/{pt.pk}")
+        slabs = page.locator("section.related", has=page.get_by_role("heading", name="Slabs"))
+        expect(slabs.get_by_role("row", name=re.compile("Women"))).to_have_count(2)
+        slabs.get_by_role("button", name="Confirm schedule").first.click()
+        expect(page.get_by_text("Confirmed: runs deduct at this schedule from its day")).to_be_visible()
+        self.assertFalse(PayComponentSlab.objects.filter(component=pt, confirmed_on__isnull=True).exists())
+        self.assertEqual(self.problems, [])
+
     def test_a_statutory_figure_entered_on_screen(self):
         from apps.hr.statutory import StatutoryFigure
 

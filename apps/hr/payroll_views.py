@@ -76,11 +76,19 @@ class PayComponentSerializer(serializers.ModelSerializer):
 
 
 class SlabSerializer(serializers.ModelSerializer):
+    # Every band of the schedule this band is of, as this response read them: the screen's Confirm sends them back,
+    # so a band changed since is refused (confirm_schedule), and no screen could confirm a schedule before (O468).
+    schedule_bands = serializers.SerializerMethodField()
+
     class Meta:
         model = PayComponentSlab
-        fields = ["id", "component", "above", "up_to", "month", "amount", "state", "effective_from",
-                  "confirmed_by", "confirmed_on"]
+        fields = ["id", "component", "above", "up_to", "month", "amount", "state", "effective_from", "for_women",
+                  "confirmed_by", "confirmed_on", "schedule_bands"]
         read_only_fields = ["confirmed_by", "confirmed_on"]
+
+    def get_schedule_bands(self, band):
+        return [{"id": other.pk, **{name: getattr(other, name) for name in PayComponentSlab.BAND_FIGURES}}
+                for other in band.schedule()]
 
 
 class RemittanceSerializer(serializers.ModelSerializer):

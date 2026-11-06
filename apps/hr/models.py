@@ -140,6 +140,10 @@ class Employee(Extensible, AuditModel):
         help_text="The ESI insurance number (IP number), ten digits: what the monthly "
                   "contribution file names the person by.",
     )
+    gender = models.CharField(
+        max_length=8, blank=True, choices=[("female", "Female"), ("male", "Male"), ("other", "Other")],
+        help_text="Read where the law treats people differently: Maharashtra's professional tax exempts a "
+                  "woman's salary up to 25,000, a man's up to 7,500 (O461).")
     work_state = models.CharField(
         max_length=32, blank=True,
         help_text="The state they work in, whose professional tax and welfare fund schedules apply. Blank "

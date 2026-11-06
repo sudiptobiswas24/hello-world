@@ -36,6 +36,8 @@ export default function EmployeeForm() {
         { key: "paid_by_attendance", label: "Paid by attendance", kind: "bool", initial: false, hint: "A day-rated worker: the pay run waits until every working day of theirs is on the register" },
         { key: "uan", label: "UAN", hint: "Provident fund, twelve digits: the ECR names them by it" },
         { key: "esi_number", label: "ESI number", hint: "The IP number, ten digits: the ESI file names them by it" },
+        { key: "work_state", label: "Works in state", hint: "MH, WB: whose professional tax and welfare fund apply; needed once two states' schedules are loaded" },
+        { key: "gender", label: "Gender", kind: "choice", initial: "", choices: [["", "Not said"], ["female", "Female"], ["male", "Male"], ["other", "Other"]], hint: "Maharashtra's professional tax exempts a woman's salary up to 25,000" },
       ]}
       panels={[{
         // What they are paid, component by component, from a date: a

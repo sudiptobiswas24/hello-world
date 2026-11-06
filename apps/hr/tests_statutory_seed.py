@@ -106,6 +106,37 @@ class SetupStatutoryTests(LoadedTestCase):
         self.assertIn("Professional tax: no active pay component", self.load())
         self.assertFalse(PayComponentSlab.objects.filter(component=self.wb).exists())
 
+    def test_maharashtras_schedule_loads_with_its_womens_bands_and_is_confirmed_from_the_list(self):
+        """O461 and O468: the file's Maharashtra rows, confirmed as the slab list showed them, tax men and women apart."""
+        self.load()
+        controller = self.in_role("Controller")
+        read = controller.get("/api/hr/pay-component-slabs/", {"component": self.wb.pk}).json()
+        mine = [row for row in read if row["state"] == "MH"]
+        self.assertEqual({(row["above"], row["up_to"], row["month"], row["amount"], row["for_women"])
+                          for row in mine},
+                         {("0.00", "25000.00", None, "0.00", True), ("0.00", "7500.00", None, "0.00", False),
+                          ("10000.00", None, 2, "300.00", False), ("10000.00", None, None, "200.00", False),
+                          ("25000.00", None, 2, "300.00", True), ("25000.00", None, None, "200.00", True),
+                          ("7500.00", "10000.00", None, "175.00", False)})
+        # What the button sends: the bands the row it is on carried, as this list read them.
+        url = f"/api/hr/pay-component-slabs/{mine[0]['id']}/confirm/"
+        band = PayComponentSlab.objects.get(pk=mine[-1]["id"])
+        band.amount += 1
+        band.save()
+        self.assertEqual(controller.post(url, {"bands": mine[0]["schedule_bands"]}, format="json").status_code, 400)
+        band.amount -= 1
+        band.save()
+        answer = controller.post(url, {"bands": mine[0]["schedule_bands"]}, format="json")
+        self.assertEqual(answer.status_code, 200, answer.content)
+        self.assertEqual(len(answer.json()), 7)
+        man, woman = self.worker("MM", work_state="MH", gender="male"), self.worker("MW", work_state="MH", gender="female")
+        for person in (man, woman):
+            self.paid(person, self.basic, "12000")
+            self.paid(person, self.wb, "1")
+        october = self.month_run(2026, 10, post=False, employees=[man, woman])
+        self.assertEqual(self.line(october, man, self.wb).amount, Decimal("200.00"))
+        self.assertFalse(october.payslips.get(employee=woman).lines.filter(component=self.wb).exists())
+
     def test_a_loaded_schedule_is_paid_at_by_no_run_until_the_controller_confirms_it(self):
         self.load()
         person = self.worker("M", work_state="WB")

@@ -49,6 +49,9 @@ export default function PayComponentForm() {
           { key: "above", label: "Above", kind: "money", width: "10rem" },
           { key: "up_to", label: "Up to", kind: "money", width: "10rem" },
           { key: "month", label: "Month", width: "6rem", render: (row) => (row.month ? String(row.month) : "Any") },
+          { key: "state", label: "State", width: "5rem" },
+          { key: "effective_from", label: "From", kind: "date", width: "8rem" },
+          { key: "for_women", label: "For", width: "6rem", render: (row) => (row.for_women ? "Women" : "Everyone") },
           { key: "amount", label: "Amount", kind: "money", width: "10rem" },
         ],
         adder: { label: "Add a slab", permission: "hr.add_paycomponentslab", url: () => "/api/hr/pay-component-slabs/",
@@ -57,10 +60,16 @@ export default function PayComponentForm() {
             { key: "above", label: "Above", kind: "money" },
             { key: "up_to", label: "Up to", kind: "money", hint: "Empty: no top" },
             { key: "month", label: "Only in month", kind: "integer", hint: "1 to 12; empty for every month" },
+            { key: "for_women", label: "Women's band", kind: "bool", hint: "A woman takes the women's bands in place of the general ones (Maharashtra)" },
             { key: "amount", label: "Amount", kind: "money" },
           ],
           body: (values, component) => ({ ...values, component: component.id }) },
         remover: { permission: "hr.delete_paycomponentslab", url: (row) => `/api/hr/pay-component-slabs/${String(row.id)}/` },
+        // The law's schedule, confirmed whole as the Controller read it here (O468): every band this list showed.
+        rowAction: { label: "Confirm schedule", permission: "hr.confirm_statutoryfigure",
+          when: (row) => !row.confirmed_on, done: "Confirmed: runs deduct at this schedule from its day",
+          url: (row) => `/api/hr/pay-component-slabs/${String(row.id)}/confirm/`,
+          body: (row) => ({ bands: row.schedule_bands }) },
       }]}
     />
   );

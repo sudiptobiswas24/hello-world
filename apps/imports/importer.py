@@ -43,7 +43,7 @@ COLUMNS = {
                 "gstin", "gst_state", "gst_registration", "credit_limit", "address_line1",
                 "address_line2", "city", "state", "postal_code", "country"],
     "employees": ["employee_number", "name", "party_code", "hire_date", "department", "manager",
-                  "job_title", "email", "username", "sales_rep", "uan", "esi_number"],
+                  "job_title", "email", "username", "sales_rep", "uan", "esi_number", "work_state", "gender"],
     "customer_reps": ["customer", "rep"],
     "items": ["sku", "name", "uom", "item_type", "hsn_code", "track_inventory", "costing_method",
               "tracking", "sale_price", "standard_cost", "stock_class", "sales_taxes", "purchase_taxes"],
@@ -242,8 +242,10 @@ def _employees(rows, report, options):
                     department=by_code(Department, row, "department", required_=False),
                     job_title=row.get("job_title", ""),
                     uan=row.get("uan", ""), esi_number=row.get("esi_number", ""),
+                    work_state=row.get("work_state", "").upper(), gender=row.get("gender", "").lower(),
                 )
-                clean(employee, {"hire_date": "hire_date", "uan": "uan", "esi_number": "esi_number"})
+                clean(employee, {"hire_date": "hire_date", "uan": "uan", "esi_number": "esi_number",
+                                 "gender": "gender"})
                 if row.get("roles"):
                     raise RowError("roles", "are given on the Logins screen, by someone who holds them; "
                                             "an import gives none.")
