@@ -114,7 +114,12 @@ manager's employee number, in this file or already in), `job_title`,
 is no one else's), `sales_rep`
 (`yes` makes them a sales rep, who can then carry customers), `uan`
 (provident fund, twelve digits) and `esi_number` (the ESI IP number,
-ten digits): the monthly PF and ESI files name each person by these.
+ten digits): the monthly PF and ESI files name each person by these. `work_state` (`MH`, `WB`: whose professional tax
+and welfare fund schedules apply; needed once two states' schedules are
+loaded) and `gender` (`female`, `male`, `other`: Maharashtra's
+professional tax exempts a woman's salary up to 25,000, a man's up to
+7,500, and someone whose gender is not said is taxed as a man;
+`go_live_check` names them).
 
 No roles column: a login's roles are given on the Logins screen, by
 someone who holds them, and a file with a `roles` cell filled is refused

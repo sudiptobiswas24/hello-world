@@ -325,6 +325,12 @@ class PayComponent(AuditModel):
         for several, the person's state decides, and it must be said.
         """
         schedule = self.schedule_on(day, state, who)
+        # A schedule may hold bands for women beside its general ones (O461: Maharashtra exempts a woman's
+        # salary up to 25,000, a man's up to 7,500). A woman takes the women's bands where it has them;
+        # everyone else, and a woman where it has none, the general ones.
+        women = [slab for slab in schedule if slab.for_women]
+        schedule = women if women and getattr(who, "gender", "") == "female" else [
+            slab for slab in schedule if not slab.for_women]
         if not schedule:
             return Decimal("0"), None
         day = to_date(day)
@@ -389,7 +395,7 @@ class PayComponentSlab(Confirmed, AuditModel):
     schedule at once) before any run deducts at it.
     """
 
-    FIGURES = ("component_id", "above", "up_to", "month", "amount", "state", "effective_from")
+    FIGURES = ("component_id", "above", "up_to", "month", "amount", "state", "effective_from", "for_women")
 
     component = models.ForeignKey(PayComponent, on_delete=models.CASCADE, related_name="slabs")
     above = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0"))
@@ -403,9 +409,13 @@ class PayComponentSlab(Confirmed, AuditModel):
         null=True, blank=True,
         help_text="The day the schedule this band is of applies from; blank is from the start. A pay run "
                   "reads the schedule that stood on the last day of its period.")
+    for_women = models.BooleanField(
+        default=False,
+        help_text="A band of the schedule's bands for women, which a woman takes in place of the general ones "
+                  "(Maharashtra's professional tax exempts a woman's salary up to 25,000).")
 
     class Meta:
-        ordering = ["component", "state", "effective_from", "month", "above"]
+        ordering = ["component", "state", "effective_from", "for_women", "month", "above"]
         constraints = [
             models.CheckConstraint(check=Q(amount__gte=0), name="slab_amount_not_negative"),
             models.CheckConstraint(check=Q(above__gte=0), name="slab_above_not_negative"),
@@ -421,10 +431,7 @@ class PayComponentSlab(Confirmed, AuditModel):
         if self.pk is not None:
             lock_rows(self, refresh=False)
             stored = PayComponentSlab.objects.get(pk=self.pk)
-            if [getattr(stored, f) for f in ("component_id", "above", "up_to", "month", "amount", "state",
-                                             "effective_from")] != [
-                    getattr(self, f) for f in ("component_id", "above", "up_to", "month", "amount", "state",
-                                               "effective_from")]:
+            if [getattr(stored, f) for f in self.FIGURES] != [getattr(self, f) for f in self.FIGURES]:
                 refuse_if_kept("slab", stored.pk, str(stored), "changed")
             self.clear_if_changed(stored)
         # Two bands over one wage: slab_for took the first, and tax was
@@ -432,7 +439,7 @@ class PayComponentSlab(Confirmed, AuditModel):
         # month (or for every month) may touch, not overlap.
         others = PayComponentSlab.objects.filter(
             component_id=self.component_id, month=self.month, state=self.state,
-            effective_from=self.effective_from).exclude(pk=self.pk)
+            effective_from=self.effective_from, for_women=self.for_women).exclude(pk=self.pk)
         for other in others:
             starts_below_its_top = other.up_to is None or self.above < other.up_to
             its_start_below_my_top = self.up_to is None or other.above < self.up_to
@@ -453,9 +460,10 @@ class PayComponentSlab(Confirmed, AuditModel):
     def schedule(self):
         """Every band of the schedule this band is of: its component, state and day."""
         return PayComponentSlab.objects.filter(component_id=self.component_id, state=self.state,
-                                               effective_from=self.effective_from).order_by("month", "above", "pk")
+                                               effective_from=self.effective_from).order_by(
+            "for_women", "month", "above", "pk")
 
-    BAND_FIGURES = ("above", "up_to", "month", "amount")
+    BAND_FIGURES = ("above", "up_to", "month", "amount", "for_women")
 
     def confirm_schedule(self, user, seen):
         """
@@ -492,7 +500,9 @@ class PayComponentSlab(Confirmed, AuditModel):
     def __str__(self):
         top = self.up_to if self.up_to is not None else "and over"
         dated = f" from {self.effective_from}" if self.effective_from else ""
-        return f"{self.component.code}{' ' + self.state if self.state else ''}{dated} {self.above}-{top}: {self.amount}"
+        women = " women" if self.for_women else ""
+        return (f"{self.component.code}{' ' + self.state if self.state else ''}{dated}{women} {self.above}-{top}: "
+                f"{self.amount}")
 
 
 class EmployeeCompensation(AuditModel):

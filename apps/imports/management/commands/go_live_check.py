@@ -220,6 +220,17 @@ def _people(add):
             f"{', '.join(nobody)}: HR decides their leave until a manager is set.")
     if not User.objects.filter(is_active=True, is_superuser=True).exists():
         add(WARN, "Administrator", "No active superuser: nobody can open the admin.")
+    # O461: where a schedule has bands for women, a person whose gender is not said takes the general ones.
+    from apps.hr.payroll import PayComponentSlab
+
+    states = set(PayComponentSlab.objects.filter(for_women=True).values_list("state", flat=True))
+    unsaid = sorted(Employee.objects.filter(employment_status="active", gender="", work_state__in=states)
+                    .values_list("employee_number", flat=True))
+    if unsaid:
+        add(WARN, "Employees with no gender said",
+            f"{', '.join(unsaid[:10])}{', ...' if len(unsaid) > 10 else ''}: they work in "
+            f"{', '.join(sorted(states))}, whose professional tax has bands for women, and are taxed at the "
+            "general ones. Say it on each employee's page.")
     _reps(add, users)
 
 

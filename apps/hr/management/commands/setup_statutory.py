@@ -9,7 +9,8 @@ the state where it applies, its value and its source:
     tcs_rates.csv            the TCS section and rate on scrap
     provident_fund.csv       the EPF and EPS wage ceilings
     esi.csv                  the ESI rates and coverage ceiling
-    professional_tax.csv     professional tax schedules (West Bengal from 1 October 2026)
+    professional_tax.csv     professional tax schedules (West Bengal from 1 October 2026; Maharashtra, with its
+                             bands for women, from 1 July 2023)
     labour_welfare_fund.csv  the labour welfare fund (June and December)
     bonus.csv                the bonus rates, the calculation floor and the eligibility ceiling
     overtime.csv             overtime, times the ordinary rate of wages
@@ -57,7 +58,7 @@ def component_for(loader, statutory, what):
 
 def load_slab(loader, component, row, month, above, up_to, amount):
     key = dict(component=component, state=row["state"], effective_from=row["effective_from"], month=month,
-               above=above)
+               above=above, for_women=row.get("for_women", "").lower() == "yes")
     if PayComponentSlab.objects.filter(**key).exists():
         loader.kept.append(f"{component.code} {row['state']} from {row['effective_from']} over {above}")
         return

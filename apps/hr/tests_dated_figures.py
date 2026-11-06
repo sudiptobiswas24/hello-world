@@ -284,6 +284,81 @@ class ProfessionalTaxSchedulesTests(DatedFiguresTestCase):
         self.assertEqual(self.line(october, self.mid, self.wb).amount, Decimal("130.00"))
 
 
+class MaharashtraProfessionalTaxTests(DatedFiguresTestCase):
+    """
+    O461: Maharashtra's schedule from 1 July 2023, men and women apart. A man's salary is nil to 7,500, 175 to
+    10,000, 200 above (300 in February); a woman's is nil to 25,000 and 200 above (300 in February).
+    """
+
+    MH = [("0", "7500", None, "0", False), ("7500", "10000", None, "175", False), ("10000", None, None, "200", False),
+          ("10000", None, 2, "300", False),
+          ("0", "25000", None, "0", True), ("25000", None, None, "200", True), ("25000", None, 2, "300", True)]
+
+    def setUp(self):
+        super().setUp()
+        self.pt = PayComponent.objects.create(code="PTMH", name="Professional tax", kind=ComponentKind.DEDUCTION,
+                                              basis=ComponentBasis.SLAB, liability_account=self.pt_payable,
+                                              sequence=95, statutory=Statutory.PT)
+        self.pt.base_components.set([self.basic])
+        for above, up_to, when, amount, women in self.MH:
+            PayComponentSlab.objects.create(confirmed_on=datetime.date(2000, 1, 1), component=self.pt, state="MH",
+                                            effective_from=D(2023, 7, 1), above=Decimal(above), month=when,
+                                            up_to=Decimal(up_to) if up_to else None, amount=Decimal(amount),
+                                            for_women=women)
+
+    def taken(self, cases, year, number):
+        people = []
+        for code, gender, basic in cases:
+            person = self.worker(f"{code}{year}{number}", work_state="MH", gender=gender)
+            self.paid(person, self.basic, basic)
+            self.paid(person, self.pt, "1")
+            people.append(person)
+        run = self.month_run(year, number, post=False, employees=people)
+        found = {}
+        for (code, _gender, _basic), person in zip(cases, people):
+            line = run.payslips.get(employee=person).lines.filter(component=self.pt).first()
+            found[code] = line.amount if line else Decimal("0.00")
+        return found
+
+    def test_a_woman_takes_the_womens_bands_and_everyone_else_the_general_ones(self):
+        self.assertEqual(self.taken([("M7500", "male", "7500"), ("M7501", "male", "7501"),
+                                     ("M10000", "male", "10000"), ("M12000", "male", "12000"),
+                                     ("W12000", "female", "12000"), ("W25000", "female", "25000"),
+                                     ("W25001", "female", "25001"), ("N12000", "", "12000")], 2026, 10),
+                         {"M7500": Decimal("0.00"), "M7501": Decimal("175.00"), "M10000": Decimal("175.00"),
+                          "M12000": Decimal("200.00"), "W12000": Decimal("0.00"), "W25000": Decimal("0.00"),
+                          "W25001": Decimal("200.00"), "N12000": Decimal("200.00")})
+
+    def test_february_takes_300_above_each_ones_floor(self):
+        self.assertEqual(self.taken([("M9000", "male", "9000"), ("M12000", "male", "12000"),
+                                     ("W30000", "female", "30000"), ("W12000", "female", "12000")], 2027, 2),
+                         {"M9000": Decimal("175.00"), "M12000": Decimal("300.00"), "W30000": Decimal("300.00"),
+                          "W12000": Decimal("0.00")})
+
+    def test_go_live_check_names_who_has_no_gender_said(self):
+        from io import StringIO
+
+        from django.core.management import CommandError, call_command
+
+        self.worker("UNSAID", work_state="MH")
+        self.worker("SAID", work_state="MH", gender="female")
+        self.worker("ELSEWHERE", work_state="WB")
+        out = StringIO()
+        try:
+            call_command("go_live_check", stdout=out)
+        except CommandError:
+            pass
+        said = [line for line in out.getvalue().splitlines() if "no gender said" in line]
+        self.assertEqual(len(said), 1, out.getvalue())
+        self.assertIn("UNSAID: they work in MH", said[0])
+
+    def test_womens_bands_overlap_each_other_only(self):
+        with self.assertRaisesMessage(ValidationError, "overlaps the band"):
+            PayComponentSlab.objects.create(component=self.pt, state="MH", effective_from=D(2023, 7, 1),
+                                            above=Decimal("20000"), up_to=Decimal("30000"), amount=Decimal("1"),
+                                            for_women=True)
+
+
 class LabourWelfareFundTests(DatedFiguresTestCase):
     def test_taken_in_june_and_december_only_with_the_employers_share(self):
         shares = []
