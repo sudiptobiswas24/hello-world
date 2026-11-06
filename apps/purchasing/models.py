@@ -1371,9 +1371,8 @@ class BlanketOrder(TaxesTakenUnder, AuditModel):
                 # At the discount agreed with the price (O97): dropped, 10 @ 100
                 # less 5% was released at 1,000.00, not 950.00.
                 quantity=quantity, unit_price=line.unit_price, discount_percent=line.discount_percent,
-                expected_date=expected_date,
+                expected_date=expected_date, given_taxes=line.taxes.all(),
             )
-            order_line.taxes.set(line.taxes.all())
         return order
 
 
@@ -2324,8 +2323,8 @@ class PurchaseOrder(Extensible, TaxesTakenUnder, TaxedDocumentMixin, ChangesWith
                 unit_price=line.unit_price,
                 discount_percent=line.discount_percent,
                 expense_account=line.expense_account,
+                given_taxes=line.taxes.all(),
             )
-            bill_line.taxes.set(line.taxes.all())
         return bill
 
     def is_drop_ship(self):
@@ -5100,6 +5099,7 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxesTakenUnder, TaxedDocumentMix
                 unit_price=line.unit_price,
                 discount_percent=line.discount_percent,
                 expense_account=line.expense_account,
+                given_taxes=line.taxes.all(),
             )
             if accruals and line in accruals:
                 # What the returned receipt lines accrued, net of the
@@ -5110,7 +5110,6 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxesTakenUnder, TaxedDocumentMix
                 super(BillLine, note_line).save(update_fields=[
                     "accrued_doc", "accrued_base", "updated_at",
                 ])
-            note_line.taxes.set(line.taxes.all())
         self._take_back_tcs(debit_note)
         # `post=False`: raised by someone who may not post bills (a goods return), it waits as a draft,
         # its TCS with it, for the AP side to post (review F8).
@@ -5166,8 +5165,7 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxesTakenUnder, TaxedDocumentMix
                 supplier_note_number=supplier_note_number or "", supplier_note_date=to_date(supplier_note_date),
             )
             for fields, taxes in checked:
-                line = BillLine.objects.create(bill=note, **fields)
-                line.taxes.set(taxes)
+                BillLine.objects.create(bill=note, given_taxes=taxes, **fields)
             check_room(old_value, sum((n.total() for n in earlier), Decimal("0")),
                        note.total(), "bill", "debited")
             note.post(memo=memo or None)

@@ -1182,8 +1182,8 @@ class SalesOrder(PlacedWhereTheGoodsGo, Extensible, TaxesTakenUnder, TaxedDocume
                 unit_price=line.unit_price,
                 discount_percent=line.discount_percent,
                 revenue_account=line.revenue_account,
+                given_taxes=line.taxes.all(),
             )
-            invoice_line.taxes.set(line.taxes.all())
         return invoice
 
     def add_charge(self, charge, amount, description="", quantity=Decimal("1")):
@@ -3142,8 +3142,8 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxesTa
                     unit_price=price,
                     discount_percent=discount,
                     revenue_account=line.revenue_account,
+                    given_taxes=line.taxes.all(),
                 )
-                credit_line.taxes.set(line.taxes.all())
         # `post=False`: raised by someone who may not post invoices (a goods return), it waits as a
         # draft for the AR side to post (O292, purchasing's debit note since review F8).
         if post:
@@ -3293,8 +3293,7 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxesTa
                                       "it was invoiced")
             note = self._credit_note(on_date, corrects_old_supply=True, old_invoice_value=old_value)
             for fields, taxes in checked:
-                line = InvoiceLine.objects.create(invoice=note, **fields)
-                line.taxes.set(taxes)
+                InvoiceLine.objects.create(invoice=note, given_taxes=taxes, **fields)
             check_room(old_value, sum((n.total() for n in earlier), Decimal("0")),
                        note.total(), "invoice", "credited")
             note.post(memo=memo or None)
@@ -5852,9 +5851,8 @@ class Quotation(PlacedWhereTheGoodsGo, TaxesTakenUnder, TaxedDocumentMixin, Audi
                 quantity=line.quantity, unit_price=line.unit_price,
                 discount_percent=line.discount_percent,
                 revenue_account=line.revenue_account,
-                created_by=by, updated_by=by,
+                created_by=by, updated_by=by, given_taxes=line.taxes.all(),
             )
-            revision_line.taxes.set(line.taxes.all())
 
         self.status = QuotationStatus.SUPERSEDED
         super(Quotation, self).save(update_fields=["number", "status", "updated_at"])
@@ -5932,8 +5930,8 @@ class Quotation(PlacedWhereTheGoodsGo, TaxesTakenUnder, TaxedDocumentMixin, Audi
                 quantity=line.quantity, unit_price=line.unit_price,
                 discount_percent=line.discount_percent,
                 revenue_account=line.revenue_account, quotation_line=line,
+                given_taxes=line.taxes.all(),
             )
-            order_line.taxes.set(line.taxes.all())
         # Accepting creates and confirms in one step, so an order that
         # breaches policy has to be approved as part of it. approve_as is
         # the approving user, gated by sales.approve_order at the edge —
@@ -6324,8 +6322,8 @@ class RecurringInvoice(TaxesTakenUnder, AuditModel):
                 invoice=invoice, item=line.item, description=line.description,
                 quantity=line.quantity, unit_price=line.unit_price,
                 discount_percent=line.discount_percent, revenue_account=line.revenue_account,
+                given_taxes=line.taxes.all(),
             )
-            invoice_line.taxes.set(line.taxes.all())
 
         if self.auto_post:
             invoice.post()
