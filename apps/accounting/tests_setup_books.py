@@ -165,6 +165,19 @@ class AFreshInstallIsReadyToPostTests(TestCase):
 class TheExampleInItsOwnWordsRunsTests(TestCase):
     """The command's docstring shows a GSTIN to run it with; that one failed its check character (g22 month)."""
 
+    def test_a_mistyped_gstin_is_refused_in_a_line_before_anything_is_made(self):
+        """O464: the install dry run's typing slip printed a traceback, after the work had started."""
+        from django.core.management.base import CommandError
+
+        from apps.gst.tests import gstin
+
+        good = gstin("27AAACD1234F1Z")
+        slip = good[:14] + ("0" if good[14] != "0" else "1")
+        with self.assertRaisesMessage(CommandError, f"--gstin: {slip} fails its check character"):
+            run(gstin=slip)
+        self.assertFalse(Account.objects.exists())
+        self.assertFalse(GstSettings.objects.exists())
+
     def test_the_gstin_its_docstring_shows_is_taken(self):
         import re
 
