@@ -231,17 +231,7 @@ class MoneyLineSerializerMixin(serializers.Serializer):
 
     def create(self, validated_data):
         """A line that names no taxes takes its item's for its side (O395); one that names none on purpose, []."""
-        named = "taxes" in validated_data
-        line = super().create(validated_data)
-        if not named and hasattr(line, "default_taxes") and not line.taxes.exists():
-            defaults = line.default_taxes()
-            if defaults:
-                # Its document keeps the fiscal position they were taken under (O446).
-                from .mixins import TaxesTakenUnder
-
-                document = next((getattr(line, field.name) for field in type(line)._meta.concrete_fields
-                                 if field.many_to_one and field.remote_field.related_name == "lines"), None)
-                if isinstance(document, TaxesTakenUnder):
-                    document.note_taxes_taken()
-                line.taxes.set(defaults)
-        return line
+        if "taxes" in validated_data and hasattr(self.Meta.model, "given_taxes"):
+            # Named, even as []: set as sent. Not named: the line takes its defaults as it is saved (O459).
+            validated_data["given_taxes"] = validated_data.pop("taxes")
+        return super().create(validated_data)

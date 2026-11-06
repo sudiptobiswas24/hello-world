@@ -599,9 +599,9 @@ def quote(sheet, quotation, taxes):
         quotation=quotation, item=spec.bag_item, uom=spec.bag_item.uom,
         quantity=sheet.quantity, unit_price=sheet.quoted_price,
         description=f"{spec.code}: {spec.construction()}, {sheet.bag_grams:.1f} g"[:255],
+        given_taxes=taxes,
     )
     line.save()
-    line.taxes.set(taxes)
     sheet.quotation_line = line
     sheet._quoting = True
     sheet.save(update_fields=["quotation_line", "updated_at"])
