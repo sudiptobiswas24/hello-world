@@ -159,14 +159,20 @@ def _open_orders(side):
                                 warehouse=by_code(Warehouse, row, "warehouse", required_=False))
                     setattr(line, when, date(row, when, required_=False))
                     clean(line, {when: when})
-                    line.save()
+                    # The taxes column (O462): blank takes the item's taxes, as a line typed on screen does;
+                    # "none" says the line bears none on purpose (an exempt party, an unregistered vendor);
+                    # codes name the taxes themselves. Read before the save, which takes the defaults.
                     wanted = codes(row, "taxes")
-                    if wanted:
+                    if [code.lower() for code in wanted] == ["none"]:
+                        line.given_taxes = []
+                    elif wanted:
                         taxes = list(Tax.objects.filter(code__in=wanted))
                         missing = sorted(set(wanted) - {tax.code for tax in taxes})
                         if missing:
-                            raise RowError("taxes", f"no tax {', '.join(missing)}.")
-                        line.taxes.set(taxes)
+                            raise RowError("taxes", f"no tax {', '.join(missing)}; leave it blank for the item's "
+                                                    "taxes, or write none for no tax.")
+                        line.given_taxes = taxes
+                    line.save()
                     report.created += 1
             except RowError as error:
                 report.refuse(number, error.column, error.message)
