@@ -56,9 +56,12 @@ class WriteOffInTheBrowserTests(BrowserTestCase):
     def test_written_off_in_part_and_recovered(self):
         invoice = self.bill(self.make_order("10", "100"))
         page = self.sign_in(self.person("Controller"), f"/app/sales/invoices/{invoice.pk}")
-        with answering_each(self, page, "600", "Settled at 40 paise"):
-            page.get_by_role("button", name="Write off").click()
-            expect(page.locator(".toast, [role=status]").first).to_contain_text("Written off")
+        page.get_by_role("button", name="Write off").click()
+        dialog = page.get_by_role("dialog", name=f"Write off {invoice.number}")
+        dialog.get_by_label("Amount to write off").fill("600")
+        dialog.get_by_label("Why it will not be paid").fill("Settled at 40 paise")
+        dialog.get_by_role("button", name="Write off").click()
+        expect(page.locator(".toast, [role=status]").first).to_contain_text("Written off")
         write_off = InvoiceWriteOff.objects.get()
         self.assertEqual((write_off.amount, write_off.reason), (Decimal("600.00"), "Settled at 40 paise"))
 

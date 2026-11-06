@@ -646,3 +646,7 @@ form.refuse input { min-width: 260px; }
   .shell, .main { display: block; }
   .content { overflow: visible; padding: 0; }
 }
+
+/* An action's questions (forms/Ask.tsx): a labelled dialog over the screen, not window.prompt (O418). */
+.ask-backdrop { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.35); display: flex; align-items: flex-start; justify-content: center; padding: 10vh 16px; z-index: 50; }
+.ask-backdrop .ask { width: min(560px, 100%); box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25); }
