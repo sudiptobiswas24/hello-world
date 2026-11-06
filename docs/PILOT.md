@@ -14,8 +14,8 @@ would stop weighing and the floor tablets whenever the internet did.
 | What | Enough for this plant | Why |
 |---|---|---|
 | Server | 4 cores, 16 GB memory, 512 GB NVMe SSD; Ubuntu 24.04 (RUNBOOK.md) | 8 GB runs it; 16 leaves room for the nightly backup and years of data |
-| UPS | 1 to 1.5 kVA, 20 minutes or more, with a USB link the server reads (NUT, `apt install nut`) so it shuts itself down before the battery is flat | a disk that loses power mid-write is the one ordinary way to lose the database |
-| Backup copy | a second disk or a small NAS, and a daily copy of `backups/` off the premises (cloud storage with `rclone`) | the nightly backup sits beside the database; fire, theft or a dead disk takes both |
+| UPS | 1 to 1.5 kVA, 20 minutes or more, with a USB link the server reads (NUT; RUNBOOK.md, "The UPS shuts the server down") so it shuts itself down after five minutes on battery | a disk that loses power mid-write is the one ordinary way to lose the database |
+| Backup copy | a second disk or a small NAS, and a daily encrypted copy of `backups/` off the premises (RUNBOOK.md, "The copy off the premises, with rclone") | the nightly backup sits beside the database; fire, theft or a dead disk takes both |
 | Network | a fixed address for the server; Wi-Fi that reaches every station, the dispatch bay and the gate | the tablets and the scale bridges find the server by that address |
 | Floor | a tablet or PC at each station in the pilot; a PC beside each scale with a serial or USB-serial lead to its indicator (deploy/scale_bridge/RUNBOOK.md) | the scale posts its own weight; a person never types it |
 | Printing | the printers the old system prints invoices, challans and labels on | printed documents are part of the pilot |
@@ -50,6 +50,9 @@ file being right, not who types it.
 ## Before it starts
 
 1. Install on the server (RUNBOOK.md) and restore nothing yet.
+   Then pull the UPS's mains plug once and watch the server shut
+   itself down and come back healthy, and see the first night's
+   backup listed off the premises (`rclone lsl erpvault: --max-age 2d`).
 2. Import a **copy** of the old system's records as they stand on the
    pilot's first day (docs/IMPORT.md), employees and logins included,
    and which rep carries each customer: a rep sees only their own.

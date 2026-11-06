@@ -21,12 +21,54 @@ volume. A complete backup is both, and the nightly one takes both.
 ## The server
 
 - Linux (Ubuntu 24.04 LTS is what this was written against), 4 cores,
-  8 GB memory, SSD. A plant of this size fits comfortably.
+  8 GB memory (16 GB for the pilot, docs/PILOT.md), SSD. A plant of this size fits comfortably.
 - Docker Engine with the compose plugin: <https://docs.docker.com/engine/install/ubuntu/>.
 - A fixed address on the plant network, so the tablets on the floor can
   find it.
 - A UPS. PostgreSQL survives a power cut; a disk that dies mid-write
   sometimes does not.
+
+### The UPS shuts the server down before its battery does
+
+A UPS with a USB lead to the server, read by NUT. Without the lead the
+UPS only delays the power cut: when its battery runs flat the server
+still loses power mid-write. These steps shut the server down cleanly
+after five minutes on battery, whatever the battery has left.
+
+```sh
+sudo apt install nut
+sudo nut-scanner -U        # the UPS should be listed; if not, check the USB lead
+```
+
+Then, replacing `<choose one>` with any password (it stays on this
+machine):
+
+| file | lines |
+|---|---|
+| `/etc/nut/nut.conf` | `MODE=standalone` |
+| `/etc/nut/ups.conf` | `[plant]`, then `driver = usbhid-ups` and `port = auto` |
+| `/etc/nut/upsd.users` | `[upsmon]`, then `password = <choose one>` and `upsmon primary` |
+| `/etc/nut/upsmon.conf` | `MONITOR plant@localhost 1 upsmon <choose one> primary`, `SHUTDOWNCMD "/sbin/shutdown -h +0"`, `NOTIFYCMD /usr/sbin/upssched`, `NOTIFYFLAG ONBATT SYSLOG+EXEC`, `NOTIFYFLAG ONLINE SYSLOG+EXEC` |
+| `/etc/nut/upssched.conf` | `CMDSCRIPT /etc/nut/upssched-cmd`, `PIPEFN /run/nut/upssched.pipe`, `LOCKFN /run/nut/upssched.lock`, `AT ONBATT * START-TIMER onbatt 300`, `AT ONLINE * CANCEL-TIMER onbatt` |
+| `/etc/nut/upssched-cmd` | `#!/bin/sh`, then `[ "$1" = onbatt ] && /usr/sbin/upsmon -c fsd`; make it executable (`sudo chmod +x`) |
+
+```sh
+sudo systemctl restart nut-server nut-monitor
+upsc plant@localhost battery.charge    # a number: NUT reads the UPS
+```
+
+In the server's firmware (BIOS) set "restore on AC power loss" to
+"power on", so it starts by itself when the mains returns; the
+containers start with it (`restart: unless-stopped`).
+
+**Prove it once, before the pilot**, with nobody using it: pull the
+UPS's mains plug. The server should shut down after five minutes. Plug
+it back in; when the server is up, `docker compose ps` should show
+`web` healthy within a few minutes. A UPS that has never been tried
+this way is a hope, as an unrestored backup is. These steps were
+written against NUT 2.8 on Ubuntu 24.04 and have not been tried on the
+plant's own UPS: some cheap units need `driver = blazer_usb` or
+`nutdrv_qx` instead, which `nut-scanner` names.
 
 ## Trying it on a laptop first
 
@@ -43,7 +85,8 @@ and set these lines in `.env`; leave the rest as they are:
 
 | setting | on a laptop |
 |---|---|
-| `POSTGRES_PASSWORD`, `DJANGO_SECRET_KEY` | 64 hex characters each: `openssl rand -hex 32`, or `python -c "import secrets; print(secrets.token_hex(32))"` |
+| `POSTGRES_PASSWORD`, `POSTGRES_APP_PASSWORD`, `DJANGO_SECRET_KEY` | 64 hex characters each, all three different: `openssl rand -hex 32`, or `python -c "import secrets; print(secrets.token_hex(32))"` |
+| `ERP_FIELD_KEYS` | `openssl rand -base64 32 \| tr '+/' '-_'` (keep the `=` it ends with) |
 | `ERP_SITE` | `http://localhost` |
 | `ERP_TLS` | empty |
 | `DJANGO_ALLOWED_HOSTS` | `localhost` |
@@ -69,17 +112,21 @@ database with it, to start again from nothing.
 ## First installation
 
 ```sh
+sudo mkdir -p /srv && cd /srv   # the cron lines below expect /srv/erp
 git clone https://github.com/sudiptobiswas24/hello-world.git erp
 cd erp
 cp .env.example .env
-openssl rand -hex 32     # run twice: one for POSTGRES_PASSWORD, one for DJANGO_SECRET_KEY
+openssl rand -hex 32     # run three times: POSTGRES_PASSWORD, POSTGRES_APP_PASSWORD, DJANGO_SECRET_KEY
+openssl rand -base64 32 | tr '+/' '-_'    # once, for ERP_FIELD_KEYS
 nano .env                # fill in every line; see below
 docker compose up -d --build
 docker compose logs -f web   # wait for "Listening at: http://0.0.0.0:8000"
 ```
 
-The first start builds the database from nothing and takes about five
-minutes. Later starts take seconds; after a restore, about twenty.
+Compose refuses to start while any of those four is empty, and names it.
+
+The first start builds the database from nothing and takes five to ten
+minutes (ten on a 4-core test machine, 6 November 2026). Later starts take seconds; after a restore, about twenty.
 Until `web` is listening the browser shows **502 Bad Gateway**: that is
 Caddy saying the application is not up yet, not a fault. Wait.
 
@@ -123,8 +170,16 @@ docker compose run --rm web python manage.py setup_statutory
   confirms it. Professional tax and the welfare fund load into the pay
   components marked as those levies, which `setup_payroll` made.
 
+Take the first backup now: until one exists, `docker compose ps` shows
+`web` as unhealthy and `/healthz/` says "no backup found".
+
+```sh
+docker compose run --rm backup now
+```
+
 Sign in as the first user: the sign-in asks for a code from an
-authenticator app and shows ten recovery codes once. Then, in the
+authenticator app, and the password again to confirm it, and shows ten
+recovery codes once. Then, in the
 application: name the company (Settings > Company), make the warehouses
 (Stores > Configuration > Warehouses), confirm the statutory figures and the
 customs valuation defaults, and review what was seeded (Settings > Seeded
@@ -150,9 +205,10 @@ the fortnight before that.
 
 | setting | what to put |
 |---|---|
-| `POSTGRES_PASSWORD` | output of `openssl rand -hex 32`. Hex only: it goes inside a URL. |
+| `POSTGRES_PASSWORD` | output of `openssl rand -hex 32`. Hex only: it goes inside a URL. The database owner's: migrations, backup and restore. |
+| `POSTGRES_APP_PASSWORD` | another `openssl rand -hex 32`, different from the one above. The application's own login, which owns no table, so the audit trail cannot be switched off from it. |
 | `DJANGO_SECRET_KEY` | another `openssl rand -hex 32`. Signs every login. The server refuses to start without one. |
-| `ERP_FIELD_KEYS` | `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. Seals every login's second factor in the database, so a copy of the database holds none of them. The server refuses to start without one. It is not in any backup: keep a copy off the machine, apart from the backups (see "Backups"). |
+| `ERP_FIELD_KEYS` | `openssl rand -base64 32 \| tr '+/' '-_'` (or `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`). Seals every login's second factor in the database, so a copy of the database holds none of them. The server refuses to start without one. It is not in any backup: keep a copy off the machine, apart from the backups (see "Backups"). |
 | `ERP_SITE` | what people type in the browser: `erp.deccanpolysacks.in`, or `erp.plant.local`, or `192.168.1.10`. |
 | `ERP_TLS` | empty for a public domain name; `tls internal` for a name or address on the plant network. |
 | `DJANGO_ALLOWED_HOSTS` | the same name(s) as `ERP_SITE`, comma-separated. Anything else is refused. |
@@ -387,6 +443,46 @@ against a bad import or a mistaken deletion. They do not protect against
 the disk failing, fire or theft. Copy `backups/` off the machine every
 day: to another computer, a NAS, or cloud storage with `rclone`. Which one
 is the plant's choice. Having none is the one choice that is wrong.
+
+### The copy off the premises, with rclone
+
+The backups hold the whole books and every employee's pay and bank
+details, so the copy leaving the plant is encrypted before it leaves.
+`rclone` does both: a remote for the storage (Google Drive, Backblaze B2,
+an S3 bucket) and a `crypt` remote over it.
+
+```sh
+sudo apt install rclone
+sudo rclone config        # n: new remote "offsite" for the storage, as its prompts ask
+sudo rclone config        # n: new remote "erpvault", type crypt, remote offsite:erp-backups,
+                          #    and let it generate both passwords
+```
+
+**The crypt passwords are the only way to read the copy.** Keep them
+where `ERP_FIELD_KEYS` is kept: off the machine and apart from the
+backups. Without them the off-site copy is noise.
+
+Then one cron line for root (`sudo crontab -e`), after the nightly
+backup has finished (`BACKUP_AT` is 02:00 by default):
+
+```
+30 3 * * * rclone copy /srv/erp/backups erpvault: --max-age 48h --log-file /var/log/erp-offsite.log
+```
+
+`copy`, not `sync`: a backup deleted here, by accident or by
+`BACKUP_KEEP_DAYS`, stays there. Set how long the storage keeps files
+in the storage's own settings (a lifecycle rule), or prune by hand.
+
+Once a week, look that last night's arrived:
+
+```sh
+sudo rclone lsl erpvault: --max-age 2d
+```
+
+It lists the last two days' `.dump`, `.media.tar.gz` and `.media.sha256`.
+Nothing listed means nothing left the plant: read
+`/var/log/erp-offsite.log`. Once a quarter, fetch one back
+(`rclone copy erpvault:<stamp>.dump /tmp/check/`) and prove it as below.
 
 ### Restoring
 
