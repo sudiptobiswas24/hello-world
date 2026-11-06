@@ -1806,12 +1806,32 @@ class Command(BaseCommand):
         return findings
 
     @staticmethod
-    def _is_posted_document(model):
-        """Posted is a flag on some documents and a status on others (a pay run, a remittance)."""
+    def _closed_states(model):
+        """
+        The states in which a document's lines take no change, as the document says (O442): its
+        CLOSED_STATES, else posted, a flag on some documents and a status on others (a pay run, a
+        remittance). None when it says nothing: a document known by status alone (a transfer in
+        transit) was invisible to every check asking "posted", which is how O435 was found by hand.
+        """
+        declared = getattr(model, "CLOSED_STATES", None)
+        if declared is not None:
+            return tuple(declared)
         if "posted" in {f.name for f in model._meta.get_fields()}:
-            return True
+            return ("posted",)
         status = next((f for f in model._meta.fields if f.name == "status"), None)
-        return status is not None and "posted" in dict(status.choices or ())
+        if status is not None and "posted" in dict(status.choices or ()):
+            return ("posted",)
+        return None
+
+    @classmethod
+    def _is_posted_document(cls, model):
+        """A document with states its lines take no change in: posted, or what it declares (O442)."""
+        return bool(cls._closed_states(model))
+
+    @staticmethod
+    def _status_choices(model):
+        status = next((f for f in model._meta.fields if f.name == "status"), None)
+        return [value for value, _ in (status.choices or ())] if status is not None else []
 
     @staticmethod
     def _written_by_own_route():
@@ -1844,12 +1864,25 @@ class Command(BaseCommand):
     # the document they join, unlocked: found when the check was widened to
     # lines (O82) and reported to the module that owns each rather than fixed
     # from outside it. Each comes off when it calls answer_to_its_document.
-    LINES_REPORTED = {}
+    LINES_REPORTED = {
+        # O458: lines of documents known by status alone, seen once O442 asked each document its closed states.
+        # Each guards its own way or not at all; none holds the document it leaves (shared rule B).
+        "inventory.GatePassLine": "O458",
+        "purchasing.BlanketOrderLine": "O458",
+        "purchasing.PurchaseOrderLine": "O458",
+        "purchasing.PurchaseRequisitionLine": "O458",
+        "purchasing.RfqInvitation": "O458",
+        "purchasing.RfqLine": "O458",
+        "sales.QuotationLine": "O458",
+        "sales.SalesOrderLine": "O458",
+        "sales.SuppliedItem": "O458",
+    }
     # Rows hanging off a posted document that are not its lines, with the reason.
     NOT_LINES = {
         "sales.InvoicePayment": "an allocation: deleting it is how it is undone, posted invoice or not",
         "purchasing.BillPayment": "an allocation: deleting it is how it is undone, posted bill or not",
         "sales.DunningNotice": "a notice sent about an invoice, which is always posted",
+        "sales.Activity": "a call or a visit logged against a lead in any state; not a line of it",
     }
 
     def lines_not_answering_to_their_document(self, labels, sources):
@@ -1868,15 +1901,32 @@ class Command(BaseCommand):
         """
         from django.db import models as dj
 
-        findings, reported = [], set()
+        findings, reported, silent = [], set(), set()
         for model in sorted(self._written_by_own_route(), key=lambda m: m._meta.label):
             label = model._meta.app_label
             if label not in labels:
                 continue
+            parents = [field.related_model for field in model._meta.fields
+                       if isinstance(field, dj.ForeignKey) and field.remote_field.on_delete is dj.CASCADE]
+            key = model._meta.label
+            for parent in parents:
+                # Known by its status alone and silent on which states close it: say so, or no line of it
+                # is ever asked about (O442).
+                if self._closed_states(parent) is None and self._status_choices(parent) and \
+                        parent._meta.label not in silent and key not in self.NOT_LINES:
+                    silent.add(parent._meta.label)
+                    findings.append((
+                        "document silent on its closed states",
+                        f"{parent._meta.label} has a status and lines written by their own route ({key}), "
+                        "and declares no CLOSED_STATES: say the states its lines take no change in.",
+                    ))
+                undeclared = set(getattr(parent, "CLOSED_STATES", None) or ()) - set(self._status_choices(parent))
+                if undeclared:
+                    findings.append(("closed state not a status", f"{parent._meta.label}.CLOSED_STATES names "
+                                     f"{', '.join(sorted(undeclared))}, which its status never is."))
             documents = [field for field in model._meta.fields
                          if isinstance(field, dj.ForeignKey) and field.remote_field.on_delete is dj.CASCADE
                          and self._is_posted_document(field.related_model)]
-            key = model._meta.label
             if not documents or key in self.NOT_LINES:
                 continue
             code = non_test_text(sources[label])
