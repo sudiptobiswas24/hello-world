@@ -6,6 +6,7 @@ in this order, because each needs the ones before:
 
 | Order | Kind | What it makes |
 |---|---|---|
+| 0 | `accounts` | The plant's own accounts beside the seeded chart: each bank, loan, asset class and expense head on the old trial balance |
 | 1 | `parties` | Customers, vendors, with GST details, credit limit, billing address |
 | 2 | `employees` | Employees with department and manager, and their logins |
 | 3 | `customer_reps` | Which rep each customer belongs to |
@@ -75,6 +76,21 @@ already has its own opening-balance account names its reason with
 ## Columns
 
 `*` is required.
+
+### accounts
+
+`code*`, `name*`, `account_type*` (`asset`, `liability`, `equity`,
+`income`, `expense`), `parent` (code of an account of the same type,
+above in this file or already in), `currency` (code; default the base),
+`holds_money` (`yes` for a bank, cash box, card or overdraft: what
+payments are made from or into).
+
+`setup_indian_books` has already made the standard chart (RUNBOOK.md);
+this adds the rest of the old trial balance, so `opening_balances` has an
+account for every line. A code already in the system is refused, not
+updated: pick codes the seeded chart does not use (`python manage.py
+shell -c "from apps.accounting.models import Account; [print(a) for a in
+Account.objects.all()]"` lists them, as does Accounts, Chart of accounts).
 
 ### parties
 

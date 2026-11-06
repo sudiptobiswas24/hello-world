@@ -30,7 +30,7 @@ from .base import Report, by_code, clean, date, decimal, once_only, read, requir
 from .base import RowError
 from .cutover import CUTOVER, CUTOVER_OPENING, CUTOVER_PER_ROW, CUTOVER_WHOLE_FILE, cutover_columns
 
-KINDS = ("parties", "employees", "customer_reps", "items", "opening_stock", "open_invoices",
+KINDS = ("accounts", "parties", "employees", "customer_reps", "items", "opening_stock", "open_invoices",
          "open_bills", "opening_balances", "shipment_history", *CUTOVER)
 
 
@@ -38,6 +38,7 @@ KINDS = ("parties", "employees", "customer_reps", "items", "opening_stock", "ope
 # says which are required and what each takes. The cutover kinds' are
 # read off their models (cutover.py).
 COLUMNS = {
+    "accounts": ["code", "name", "account_type", "parent", "currency", "holds_money"],
     "parties": ["code", "name", "roles", "legal_name", "email", "phone", "currency", "payment_terms",
                 "gstin", "gst_state", "gst_registration", "credit_limit", "address_line1",
                 "address_line2", "city", "state", "postal_code", "country"],
@@ -134,6 +135,32 @@ def _party(row, options):
         )
         clean(address, {"line1": "address_line1", "line2": "address_line2"})
         address.save()
+
+
+def _account(row, options):
+    """
+    The plant's own chart beside what setup_indian_books seeded: each bank, loan, asset class and expense
+    head of the old trial balance, so opening_balances has an account to name for every line of it. Without
+    this the Controller typed every ledger in by hand first (the go-live loading run, 6 November 2026).
+    A parent is named by its code, above it in the file or already in.
+    """
+    from apps.accounting.models import Account, AccountType
+    from apps.core.models import Currency
+
+    code = required(row, "code")
+    if Account.objects.filter(code=code).exists():
+        raise RowError("code", f"{code!r} already exists.")
+    kind = required(row, "account_type").strip().lower()
+    if kind not in AccountType.values:
+        raise RowError("account_type", f"{kind!r} is not one of {', '.join(AccountType.values)}.")
+    account = Account(
+        code=code, name=required(row, "name"), account_type=kind,
+        parent=by_code(Account, row, "parent", required_=False),
+        currency=by_code(Currency, row, "currency", required_=False),
+        holds_money=yes_no(row, "holds_money", False),
+    )
+    clean(account)
+    account.save()
 
 
 def _item(row, options):
@@ -499,6 +526,7 @@ def _shipment_history(row, options):
 
 
 PER_ROW = {
+    "accounts": _account,
     "shipment_history": _shipment_history,
     "parties": _party,
     "items": _item,
