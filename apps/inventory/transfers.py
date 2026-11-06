@@ -106,6 +106,9 @@ class StockTransfer(AuditModel):
     a lorry.
     """
 
+    # The states in which its lines take no change (audit_invariants, O442); its lines are what moved.
+    CLOSED_STATES = ("in_transit", "received", "cancelled")
+
     number = models.CharField(max_length=32, blank=True)
     transfer_date = models.DateField()
     from_warehouse = models.ForeignKey(

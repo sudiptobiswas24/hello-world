@@ -408,6 +408,9 @@ class PassStatus(models.TextChoices):
 
 
 class GatePass(AuditModel):
+    # The states in which its lines take no change (audit_invariants, O442): what was approved is what went out.
+    CLOSED_STATES = ("approved", "out", "returned", "cancelled")
+
     number = models.CharField(max_length=32, blank=True, editable=False)
     kind = models.CharField(max_length=16, choices=PassKind.choices)
     pass_date = models.DateField(default=timezone.localdate)

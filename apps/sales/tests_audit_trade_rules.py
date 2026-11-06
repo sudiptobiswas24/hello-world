@@ -54,11 +54,31 @@ class ALineAnswersToItsDocumentTests(SimpleTestCase):
         with mock.patch.object(Command, "LINES_REPORTED", {"inventory.StockAdjustmentLine": "planted"}):
             self.assertEqual(lines("inventory", "StockAdjustmentLine", BOTH), ["stale exemption"])
 
+    def test_a_line_of_a_document_known_by_status_alone_is_asked(self):
+        """O442: a stock transfer has no posted field; its CLOSED_STATES make its lines answer all the same."""
+        self.assertEqual(lines("inventory", "StockTransferLine", (
+            "    def save(self, *args, **kwargs):\n"
+            "        super().save(*args, **kwargs)\n"
+        )), ["line not answering to its document"])
+        self.assertEqual(lines("inventory", "StockTransferLine", BOTH), [])
+
+    def test_a_status_document_silent_on_its_closed_states_is_reported(self):
+        from apps.core.management.commands.audit_invariants import app_sources
+        from apps.inventory.transfers import StockTransfer
+
+        with mock.patch.object(StockTransfer, "CLOSED_STATES", None):
+            found = Command().lines_not_answering_to_their_document(["inventory"], app_sources())
+        self.assertIn(("document silent on its closed states", "inventory.StockTransfer"),
+                      [(shape, detail.split(" ")[0]) for shape, detail in found])
+        with mock.patch.object(StockTransfer, "CLOSED_STATES", ("in_transit", "shipped")):
+            found = Command().lines_not_answering_to_their_document(["inventory"], app_sources())
+        self.assertIn("closed state not a status", [shape for shape, _ in found])
+
     def test_every_line_this_checkout_writes_answers_or_is_reported(self):
         from apps.core.management.commands.audit_invariants import app_sources
 
         self.assertEqual(Command().lines_not_answering_to_their_document(
-            ["sales", "purchasing", "quality", "manufacturing"], app_sources()), [])
+            ["sales", "purchasing", "quality", "manufacturing", "inventory", "hr"], app_sources()), [])
 
 
 def frozen(app="sales", text=None):
