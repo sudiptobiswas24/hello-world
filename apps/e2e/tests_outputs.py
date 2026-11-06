@@ -3,6 +3,8 @@ What the demo plant prints and files, generated through the API and read back (1
 
 O409: the tax invoice printed a black box for the rupee sign and 1,764,000.00 under words saying "seventeen lakh".
 O411: the PF ECR came back an empty file, as done, for a run of 13 that all had PF deducted.
+O405: the demo had no floor station, so the shop-floor terminal could not be shown; no bank details, so no salary
+file; no disposal account, so no asset could be sold.
 O452: no demo run produced an ESI file: the demo had no ESI component, figures or numbers.
 """
 
@@ -72,6 +74,34 @@ class WhatThePlantPrintsAndFiles(TestCase):
         self.assertEqual(len(rows), 2, rows)
         self.assertIn("3110045672", rows[1])
         self.assertIn("20500", rows[1])
+
+    def test_the_floor_tablet_opens_each_station_and_an_operator_s_pin_is_known(self):
+        from apps.hr.models import Employee
+        from apps.manufacturing.station import LoomStation
+
+        self.assertEqual(sorted(LoomStation.objects.values_list("code", flat=True)), ["CONV-1", "LOOM-EXIT", "TAPE-1"])
+        self.assertEqual(LoomStation.objects.get(code="LOOM-EXIT").machines.count(), 6)
+        self.assertTrue(self.client.login(username="floor", password="Trial-2026"))
+        for code in ("LOOM-EXIT", "TAPE-1", "CONV-1"):
+            page = self.client.get(f"/station/{code}/")
+            self.assertEqual(page.status_code, 200, code)
+        self.assertEqual(self.client.get("/api/sales/sales-orders/").status_code, 403)  # the tablet does nothing else
+        self.assertEqual(Employee.objects.exclude(pin_digest=None).count(), 4)
+
+    def test_the_posted_run_writes_a_salary_file_paying_everyone(self):
+        from apps.hr.bank_file import SalaryTransferFile
+
+        run = PayRun.objects.filter(status="posted").order_by("pk").first()
+        made = SalaryTransferFile.prepare(run)
+        slips = [slip for slip in run.payslips.all() if slip.net() > 0]
+        self.assertEqual(made.rows.count(), len(slips))
+        self.assertEqual(len(made.text.splitlines()), len(slips) + 2)  # a heading and a total
+        self.assertEqual(made.total, sum(slip.net() for slip in slips))
+
+    def test_every_asset_category_can_dispose(self):
+        from apps.assets.models import AssetCategory
+
+        self.assertFalse(AssetCategory.objects.filter(disposal_account=None).exists())
 
     def test_a_run_whose_pf_is_not_marked_is_refused_in_words_not_filed_empty(self):
         # As the demo's runs were worked out before its component was marked: the run keeps the marker it read.

@@ -109,6 +109,10 @@ class Command(BaseCommand):
         self.stdout.write(f"  {'admin':8}  plant administrator, sees everything")
         for login, title, roles in LOGINS:
             self.stdout.write(f"  {login:8}  {title}: {roles}")
+        self.stdout.write(f"  {'floor':8}  Shop-floor tablet: Station, at /station/LOOM-EXIT/, TAPE-1 and CONV-1")
+        if getattr(self, "pins", None):
+            self.stdout.write("Operators sign in at a station with their PIN, shown this once: "
+                              + ", ".join(f"{name} {pin}" for name, pin in self.pins.items()))
 
     @contextlib.contextmanager
     def step(self, name, failed):
@@ -740,6 +744,22 @@ class Command(BaseCommand):
                 machines[f"STITCH-{n}"] = Machine.objects.create(work_centre=conv, code=f"STITCH-{n}",
                                                                  name=f"Cut-and-stitch line {n}")
 
+            # The floor's terminals (O405): a station at the loom exit, the tape line and the stitching lines, a
+            # shared tablet login that can do nothing but run them, and a PIN for each operator, printed once.
+            Station = M("manufacturing.LoomStation")
+            for code, name, kind, served in (
+                    ("LOOM-EXIT", "Loom shed exit scale", "loom_exit", [f"LOOM-{n:02d}" for n in range(1, 7)]),
+                    ("TAPE-1", "Tape line take-up", "extrusion", ["EXT-1"]),
+                    ("CONV-1", "Cutting and stitching tables", "conversion", ["STITCH-1", "STITCH-2"])):
+                station = Station.objects.create(code=code, name=name, kind=kind, warehouse=plant,
+                                                 scale_code=f"SC-{code}", printer_code=f"PR-{code}")
+                station.machines.set([machines[m] for m in served])
+                station.supervisors.set([suresh])
+            if not User.objects.filter(username="floor").exists():
+                User.objects.create_user("floor", password=password, first_name="Shop-floor",
+                                         last_name="tablet").groups.add(Group.objects.get(name="Station"))
+            self.pins = {employee.party.name: employee.issue_pin()
+                         for employee in sorted((suresh, mahesh, lakshmi, ganesh), key=lambda e: e.pk)}  # key order
 
             def routing(code, name, operations):
                 r = M("manufacturing.Routing").objects.create(code=code, name=name)
@@ -937,12 +957,14 @@ class Command(BaseCommand):
             # The books opened at the end of June, the day before the opening bank balance: the
             # machines bought before it come onto them as opening balances.
             M("accounting.BooksOpening").objects.create(opened_on=on(2026, 6, 30), opening_account=opening_eq)
+            # Where a sale's gain or loss goes (O405): without it, no asset in the demo could be disposed of.
+            disposals = acc("4930", "Gain or loss on disposal of assets", "income")
             machinery = M("assets.AssetCategory").objects.create(
                 code="PM", name="Plant and machinery", asset_account=plant_acc, accumulated_account=accumulated,
-                expense_account=depreciation, default_life_months=120)
+                expense_account=depreciation, default_life_months=120, disposal_account=disposals)
             office = M("assets.AssetCategory").objects.create(
                 code="OE", name="Office equipment", asset_account=office_acc, accumulated_account=accumulated,
-                expense_account=depreciation, default_life_months=60)
+                expense_account=depreciation, default_life_months=60, disposal_account=disposals)
             for name, category, bought, cost, months in (
                     ("Tape line, 120 mm (EXT-1)", machinery, on(2026, 4, 10), "9500000", 120),
                     ("Circular looms, six (LOOM-01 to 06)", machinery, on(2026, 4, 20), "11100000", 120),
@@ -1037,6 +1059,12 @@ class Command(BaseCommand):
                                             expense_account=employer_esi, liability_account=esi_payable, sequence=75,
                                             statutory="esi_employer", rounding="rupee_up", coverage_period_months=6,
                                             remit_by_day=15)
+            # Where each person is paid (O405), so the run's salary file has a row for everyone: the plant banks
+            # with HDFC Chakan, and so, in the demo, does everyone it pays.
+            for key, employee in sorted(people.items(), key=lambda pair: pair[1].pk):
+                M("hr.EmployeePayDetails").objects.create(
+                    employee=employee, account_holder=employee.party.name,
+                    account_number=f"5010020{int(employee.employee_number):04d}88", ifsc="HDFC0001234")
             # Under the ceiling, so insured: the security guard, 20,500 a month (16,000 basic and 4,500 HRA).
             insured = {"raju": "3110045672"}
             for key, number in insured.items():
