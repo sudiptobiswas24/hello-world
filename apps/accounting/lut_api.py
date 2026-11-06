@@ -120,3 +120,33 @@ class GstReturnFiledViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     search_fields = ["period", "arn"]
     date_field = "filed_on"
     ordering_fields = ["period", "filed_on"]
+
+
+from .models import BooksOpening  # noqa: E402
+
+
+class BooksOpeningSerializer(serializers.ModelSerializer):
+    """
+    The day the books opened and the equity account opening balances stand against (O251). It had an admin page
+    only, while the asset typed in and the opening-balance import both refuse until it is set. BooksOpening.save()
+    keeps it right: an equity account, one row, and no change once anything is posted on or before the day.
+    """
+
+    opening_account_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = BooksOpening
+        fields = ["id", "opened_on", "opening_account", "opening_account_name"]
+
+    def get_opening_account_name(self, row):
+        return f"{row.opening_account.code} {row.opening_account.name}"
+
+
+class BooksOpeningViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    """Settings, Books opening: read by whoever keeps the books, set by the Controller."""
+
+    queryset = BooksOpening.objects.select_related("opening_account").order_by("pk")
+    serializer_class = BooksOpeningSerializer
+    # Set once and corrected while nothing stands on it; never deleted from the office.
+    http_method_names = ["get", "post", "patch", "head", "options"]
+

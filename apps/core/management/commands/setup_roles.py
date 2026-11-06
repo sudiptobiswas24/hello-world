@@ -60,7 +60,7 @@ ROLES = {
         # Sees which months are closed and what was budgeted; keeps the
         # schedules of recurring entries, which run as drafts for the
         # controller to post.
-        *view("accounting", "accountingperiod", "budget", "budgetline"),
+        *view("accounting", "accountingperiod", "budget", "budgetline", "booksopening"),
         *crud("accounting", "recurringjournal"),
         *crud("accounting", "recurringjournalline"),
         *REFERENCE,
@@ -83,6 +83,9 @@ ROLES = {
         # The plant's own GST registration, a setting of the books (it had no door but code; seen on a first
         # installation). The GST Officer reads it.
         *crud("accounting", "gstsettings", actions=("add", "change", "view")),
+        # The day the books opened and the account opening balances stand against (O251): set before an asset is
+        # typed in or the old system's balances imported, both of which refuse until it is.
+        *crud("accounting", "booksopening", actions=("add", "change", "view")),
         *view("quality", "instrument"),
         "quality.set_weighbridge",
         # They keep the ledger, the inventory account included, so they see the stock figures behind it:
