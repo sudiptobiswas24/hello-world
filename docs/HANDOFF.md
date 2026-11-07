@@ -50,6 +50,24 @@ pg_isready -q || service postgresql start                              # role er
 
 ## 2. Next steps, in order
 
+**g29 is pushed (175998f, 7 November 2026), all seven lanes green on one tip (gated as 6c7391a; the replay changed
+one commit message only, `Gate: g29` written where the placeholder belonged).** Holds the pilot loading run's findings
+and two statutory rows: O464 (a mistyped --gstin refused in a line), the `accounts` import kind (the plant's own chart
+before its opening balances), O465 (the first-passwords file is made before employees are kept; IMPORT.md gives the
+Docker command), O466 (an asset whose accounts are already in the opening balances is refused: the documented order
+counted plant and machinery twice), O467 (items import their sales and purchase taxes, tax-group codes accepted;
+go_live_check lists goods with none), O461 (Maharashtra PT with its bands for women; gender and work state on the
+employee), O468 (Confirm schedule on the pay component), O460 (the ESI file sends days paid for, kept on the slip).
+Still open: O405's remainder, O457, O458, O363, O259, O346; O448 waits on the owner, O449 on the tax adviser.
+- Before the first live use: the Maharashtra amounts were written from recall, not the Gazette, and load unconfirmed;
+  the Controller checks them before confirming. The ESI days reading is the common one; PILOT.md says to upload the
+  first ESI file before anything else. The loading run footed to the paisa on my sample files, not the plant's data.
+- Gate lessons from g29: the first run (97d1f29) failed sqlite on tests_plant_month, an end-to-end test still asserting
+  the rostered ESI days O460 replaced. **When a fix changes a figure, grep every test that reads that output, e2e
+  included,** before the gate, not after. Two container restarts in one gate: ist and pg-c re-ran from the start; mig
+  resumed from its .done markers and lost only the app it was in. Push the gate tip to a `claude/erp-*-backup` branch
+  as soon as the lanes start; the commits otherwise exist in one container.
+
 **g28 is pushed (06b9997, 6 November 2026), all seven lanes green on one tip (gated as 8196001).** Holds the five
 batches of open rows (trade and statutory, payroll, planning and floor, core and audit, pilot UI): O152, O251, O315,
 O316, O319, O355, O359, O366, O367, O368, O401, O417, O418, O442 to O447, O450 to O456, O459, O462, O463; O405 in part
