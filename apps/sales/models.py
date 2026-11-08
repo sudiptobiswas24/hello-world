@@ -1367,20 +1367,31 @@ class SuppliedItem(AuditModel):
     def __str__(self):
         return f"{self.item} supplied by {self.order.customer} for {self.order}"
 
-    def _check_open(self):
-        if self.order.status != OrderStatus.DRAFT:
-            raise ValidationError(
-                f"{self.order} is confirmed; what the customer supplies is settled."
-            )
+    def locked_before_it(self):
+        """The orders it leaves and joins, as save() holds them (apps.core.models.answer_to_its_document)."""
+        return documents_it_answers_to(self, "order")
 
+    # Shared rule B (O458): the order it leaves and the one it joins, held and read from the database, both drafts.
+    # Asked of the order in hand, an item read while its order was a draft was changed after the order was
+    # confirmed, and one moved off a confirmed order onto a draft went through.
+    @staticmethod
+    def SETTLED(order):
+        return f"{order} is confirmed; what the customer supplies is settled."
+
+    @staticmethod
+    def _settled(order):
+        return order.status != OrderStatus.DRAFT
+
+    @transaction.atomic
     def save(self, *args, **kwargs):
-        self._check_open()
-        if not self.order.is_job_work:
+        answer_to_its_document(self, "order", self.SETTLED, fixed=self._settled)
+        if not SalesOrder.objects.filter(pk=self.order_id, is_job_work=True).exists():
             raise ValidationError(f"{self.order} is not job work; the customer supplies nothing.")
         super().save(*args, **kwargs)
 
+    @transaction.atomic
     def delete(self, *args, **kwargs):
-        self._check_open()
+        answer_to_its_document(self, "order", self.SETTLED, fixed=self._settled)
         return super().delete(*args, **kwargs)
 
 
@@ -1617,6 +1628,11 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
         "unit_price": BILLED, "discount_percent": BILLED,
     }
 
+    @staticmethod
+    def ORDER_CLOSED(order):
+        """What answer_to_its_document refuses with on an order in its CLOSED_STATES (cancelled)."""
+        return f"{order} is {order.get_status_display().lower()}: its lines take no change."
+
     def what_moved_against_it(self, kind):
         if kind == CONFIRMED:
             stored = SalesOrderLine.objects.filter(pk=self.pk).values_list("order", flat=True).first()
@@ -1666,6 +1682,8 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
         # installation: a line made through the API, which the screens' adder never leaves out).
         if self.item_id and not self.uom_id:
             self.uom = self.item.uom
+        # Shared rule B (O458): the order it leaves and the one it joins, both held, neither cancelled.
+        answer_to_its_document(self, "order", self.ORDER_CLOSED)
         refuse_changing_what_moved(self, self._hold_with_its_orders)
         before = self._policy_before()
         shrinking = self._worth_less_than_stored()
@@ -1789,6 +1807,7 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
 
     @transaction.atomic
     def delete(self, *args, **kwargs):
+        answer_to_its_document(self, "order", self.ORDER_CLOSED)
         if self.quantity_shipped() or self.quantity_invoiced():
             raise ValidationError(
                 "This line has been shipped or invoiced and can no longer be removed."
@@ -2175,6 +2194,7 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxesTa
         return (self.settlement_discount_amount or Decimal("0")) - undone - self.settlement_discount_withdrawn
 
     @serialised("settlement_discount_withdrawn", "settlement_discount_withdrawal_entry")
+    @takes_back
     def withdraw_unearned_discount(self, on_date=None):
         """
         Take back the discount for paying early once the payment that earned it is returned and the
@@ -2285,6 +2305,7 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxesTa
         return entry
 
     @serialised("written_off_amount")
+    @takes_back
     def recover_write_off(self, write_off, on_date=None):
         """
         Undo a write-off because the customer paid after all.
@@ -5985,16 +6006,24 @@ class QuotationLine(TaxedLineMixin, AuditModel):
     def __str__(self):
         return f"{self.label()} x{self.quantity}"
 
-    def _quotation_is_settled(self):
-        return self.quotation_id and Quotation.objects.filter(
-            pk=self.quotation_id, status__in=Quotation.SETTLED_STATUSES
-        ).exists()
+    LINES_FIXED = "This quotation has gone to the customer; revise it instead of editing it."
 
+    def locked_before_it(self):
+        """The quotations it leaves and joins, as save() holds them (apps.core.models.answer_to_its_document)."""
+        return documents_it_answers_to(self, "quotation")
+
+    @staticmethod
+    def _sent(quotation):
+        """
+        Shared rule B (O458): the quotation it leaves and the one it joins, held, both drafts. Asked only of the one
+        in hand and only while sent, accepted or superseded, a declined or expired quotation's lines were edited,
+        rewriting what the customer was told, and a line moved off a sent quotation onto a draft.
+        """
+        return quotation.status != QuotationStatus.DRAFT
+
+    @transaction.atomic
     def delete(self, *args, **kwargs):
-        if self._quotation_is_settled():
-            raise ValidationError(
-                "This quotation has gone to the customer; revise it instead of editing it."
-            )
+        answer_to_its_document(self, "quotation", self.LINES_FIXED, fixed=self._sent)
         super().delete(*args, **kwargs)
 
     def save(self, *args, **kwargs):
@@ -6003,10 +6032,11 @@ class QuotationLine(TaxedLineMixin, AuditModel):
         # installation: a line made through the API, which the screens' adder never leaves out).
         if self.item_id and not self.uom_id:
             self.uom = self.item.uom
-        if self._quotation_is_settled():
-            raise ValidationError(
-                "This quotation has gone to the customer; revise it instead of editing it."
-            )
+        with transaction.atomic():
+            answer_to_its_document(self, "quotation", self.LINES_FIXED, fixed=self._sent)
+            self._save_answered(*args, **kwargs)
+
+    def _save_answered(self, *args, **kwargs):
         if self.is_charge():
             if not self.revenue_account_id:
                 self.revenue_account = self.charge.account_for(is_sale=True)

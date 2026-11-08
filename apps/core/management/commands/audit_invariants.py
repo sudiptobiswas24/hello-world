@@ -114,6 +114,7 @@ class Command(BaseCommand):
         findings += self.entries_kept_past_the_edit_guard(labels, sources)
         findings += self.kept_settings_read_live(labels, sources)
         findings += self.corrections_dated_without_the_rule(labels, sources)
+        findings += self.take_backs_unmarked(labels, sources)
         findings += self.reported_without_the_period(labels, sources)
         findings += self.bank_movements_unregistered(labels, sources)
         findings += self.plain_for_update(labels, sources)
@@ -1864,19 +1865,7 @@ class Command(BaseCommand):
     # the document they join, unlocked: found when the check was widened to
     # lines (O82) and reported to the module that owns each rather than fixed
     # from outside it. Each comes off when it calls answer_to_its_document.
-    LINES_REPORTED = {
-        # O458: lines of documents known by status alone, seen once O442 asked each document its closed states.
-        # Each guards its own way or not at all; none holds the document it leaves (shared rule B).
-        "inventory.GatePassLine": "O458",
-        "purchasing.BlanketOrderLine": "O458",
-        "purchasing.PurchaseOrderLine": "O458",
-        "purchasing.PurchaseRequisitionLine": "O458",
-        "purchasing.RfqInvitation": "O458",
-        "purchasing.RfqLine": "O458",
-        "sales.QuotationLine": "O458",
-        "sales.SalesOrderLine": "O458",
-        "sales.SuppliedItem": "O458",
-    }
+    LINES_REPORTED = {}
     # Rows hanging off a posted document that are not its lines, with the reason.
     NOT_LINES = {
         "sales.InvoicePayment": "an allocation: deleting it is how it is undone, posted invoice or not",
@@ -2530,6 +2519,55 @@ class Command(BaseCommand):
         findings += [("stale exemption", f"{key} is exempted from correction_date() but is no longer a step "
                                          "that needs it.")
                      for key in sorted(set(self.DATED_ELSEWHERE) - exempted) if key.split(".")[0] in labels]
+        return findings
+
+    # Where an earlier entry booked its other side, read to put something back there: the sign that a fresh
+    # entry takes back rather than records anew.
+    BOOKED_BESIDE = re.compile(r"\bbooked_beside\(")
+
+    def take_backs_unmarked(self, labels, sources):
+        """
+        A fresh entry that takes back an earlier one, posted outside apps.core.models.takes_back (O363).
+
+        An account or cost centre switched off takes nothing new (O283), and what takes something back is let
+        through: a reversal by its `reverses`, anything else only under the marker. A write-off recovered
+        whole is its entry reversed and went through; what a credit note left of it was a fresh entry to the
+        bad-debt account the write-off booked, and was refused there once that account was switched off.
+
+        Seen here by booked_beside(), a fresh entry sent where an earlier entry booked its other side. The
+        function is marked, or every function that calls it is. What a check cannot see: a take-back that
+        finds its account some other way (a recorded posted_account read back), or is reached through a caller
+        two steps up. Those are marked by reading them (the 70 steps fix_money2 marked by name).
+        """
+        found = {}
+        for label in labels:
+            for path, text in sorted(sources[label].items()):
+                if "test" in path.name or "migrations" in path.parts or "management" in path.parts:
+                    continue
+                tree = ast.parse(text)
+                names = self._qualified(tree)
+                for fn, qualified in names.items():
+                    code = self._code(fn)
+                    marked = any("takes_back" in ast.unparse(decorator) for decorator in fn.decorator_list)
+                    if not marked and self.BOOKED_BESIDE.search(code) and "JournalEntry.objects.create(" in code:
+                        found[fn.name] = (f"{label}.{qualified} ({path.name}:{fn.lineno})", fn)
+        if not found:
+            return []
+        everywhere = [(code, marked) for label in OUR_APPS for path, text in sorted(sources.get(label, {}).items())
+                      if "test" not in path.name and "migrations" not in path.parts
+                      for fn in self._qualified(ast.parse(text))
+                      for code, marked in [(self._code(fn), any("takes_back" in ast.unparse(d) for d in fn.decorator_list))]]
+        findings = []
+        for name, (where, _fn) in sorted(found.items()):
+            callers = [marked for code, marked in everywhere if re.search(rf"\b{name}\(", code)]
+            if callers and all(callers):
+                continue
+            findings.append((
+                "take-back unmarked",
+                f"{where} posts a fresh entry where an earlier one booked its other side, and neither it nor every "
+                "caller of it is @takes_back: against an account switched off since, the take-back is refused while "
+                "the whole of it, reversed, goes through. Mark it.",
+            ))
         return findings
 
     # -- shape 1: money through a bank that a statement cannot be matched to --
