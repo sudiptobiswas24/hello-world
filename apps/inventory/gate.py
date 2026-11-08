@@ -28,11 +28,13 @@ from decimal import Decimal
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
-from django.db import models
+from django.db import models, transaction
 from django.db.models import Q, Sum
 from django.utils import timezone
 
 from apps.core.models import (
+    answer_to_its_document,
+    documents_it_answers_to,
     AuditModel, DocumentSequence, correction_date, lock_rows, numbered_in_one_transaction, serialised,
     takes_back, to_date,
 )
@@ -709,13 +711,25 @@ class GatePassLine(AuditModel):
         stored = None if self._state.adding else GatePassLine.objects.filter(pk=self.pk).first()
         return stored, {self.gate_pass_id} | ({stored.gate_pass_id} if stored is not None else set())
 
+    def locked_before_it(self):
+        """The passes it leaves and joins, as save() holds them (apps.core.models.answer_to_its_document)."""
+        return documents_it_answers_to(self, "gate_pass")
+
+    # Shared rule B (O458): both passes held before either is read, both drafts. Asked unheld, a line could be added
+    # as the pass was approved.
+    LINES_FIXED = "A pass's lines change only while it is a draft."
+
+    @staticmethod
+    def _approved(gate_pass):
+        return gate_pass.status != PassStatus.DRAFT
+
+    @transaction.atomic
     def save(self, *args, **kwargs):
-        stored, passes = self._passes_asked()
+        stored, _passes = self._passes_asked()
         if stored is not None and stored.gate_pass_id != self.gate_pass_id:
             raise ValidationError({"gate_pass": "A line stays on the pass it was written on; remove it and write "
                                                 "it on the other."})
-        if GatePass.objects.filter(pk__in=passes).exclude(status=PassStatus.DRAFT).exists():
-            raise ValidationError("A pass's lines change only while it is a draft.")
+        answer_to_its_document(self, "gate_pass", self.LINES_FIXED, fixed=self._approved)
         if self.asset_id:
             from apps.assets.models import AssetStatus
 
@@ -725,10 +739,9 @@ class GatePassLine(AuditModel):
                 self.quantity = Decimal("1")
         super().save(*args, **kwargs)
 
+    @transaction.atomic
     def delete(self, *args, **kwargs):
-        _, passes = self._passes_asked()
-        if GatePass.objects.filter(pk__in=passes).exclude(status=PassStatus.DRAFT).exists():
-            raise ValidationError("A pass's lines change only while it is a draft.")
+        answer_to_its_document(self, "gate_pass", self.LINES_FIXED, fixed=self._approved)
         super().delete(*args, **kwargs)
 
 

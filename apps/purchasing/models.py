@@ -173,6 +173,22 @@ def _while(document, statuses, change):
         raise ValidationError(f"{document} is {str(label).lower()}: {change}")
 
 
+def _only_in(statuses, change):
+    """
+    Shared rule B (apps.core.models.answer_to_its_document) for a line of a document known by its status, as its
+    arguments: the document it leaves and the one it joins, both held and both read from the database, each in one
+    of `statuses`, or `change` is refused in words (O458). _while asked only the document in hand: a line moved off
+    a confirmed agreement, an approved requisition or a request out with vendors onto a draft went through, and the
+    first was left short of what it had committed to.
+
+        answer_to_its_document(self, "rfq", **_only_in([RfqStatus.DRAFT], self.LINES_FIXED))
+    """
+    def said(document):
+        label = dict(type(document)._meta.get_field("status").choices).get(document.status, document.status)
+        return f"{document} is {str(label).lower()}: {change}"
+
+    return {"refused": said, "fixed": lambda document: document.status not in statuses}
+
 def _whole_save(kwargs):
     """A save of every field, which a document's own steps never make: they name theirs."""
     return kwargs.get("update_fields") is None
@@ -571,12 +587,18 @@ class RfqLine(AuditModel):
     # the request goes out, the quotes and the order read different things.
     LINES_FIXED = "its lines change while it is a draft, before anyone quotes on them."
 
+    def locked_before_it(self):
+        """The requests it leaves and joins, as save() holds them (apps.core.models.answer_to_its_document)."""
+        return documents_it_answers_to(self, "rfq")
+
+    @transaction.atomic
     def save(self, *args, **kwargs):
-        _while(self.rfq, [RfqStatus.DRAFT], self.LINES_FIXED)
+        answer_to_its_document(self, "rfq", **_only_in([RfqStatus.DRAFT], self.LINES_FIXED))
         super().save(*args, **kwargs)
 
+    @transaction.atomic
     def delete(self, *args, **kwargs):
-        _while(self.rfq, [RfqStatus.DRAFT], self.LINES_FIXED)
+        answer_to_its_document(self, "rfq", **_only_in([RfqStatus.DRAFT], self.LINES_FIXED))
         return super().delete(*args, **kwargs)
 
 
@@ -603,18 +625,31 @@ class RfqInvitation(AuditModel):
     def clean(self):
         self._check_vendor()
 
+    TAKEN_OFF = "a vendor asked is an answer owed; take them off only a draft."
+
+    def locked_before_it(self):
+        """The requests it leaves and joins, as save() holds them (apps.core.models.answer_to_its_document)."""
+        return documents_it_answers_to(self, "rfq")
+
+    @transaction.atomic
     def save(self, *args, **kwargs):
         # In save() as well: ModelSerializer never calls clean(), and the
         # office writes through the API. Only the admin ever asked this.
         self._check_vendor()
+        stored = None if self._state.adding else RfqInvitation.objects.filter(pk=self.pk).values_list(
+            "rfq", flat=True).first()
         if self._state.adding:
             # A vendor may be asked late, while answers are still coming in.
-            _while(self.rfq, [RfqStatus.DRAFT, RfqStatus.SENT],
-                   "vendors are asked before it is awarded or cancelled.")
+            answer_to_its_document(self, "rfq", **_only_in([RfqStatus.DRAFT, RfqStatus.SENT],
+                                                           "vendors are asked before it is awarded or cancelled."))
+        elif stored != self.rfq_id:
+            # Moved, it is taken off the one it leaves: a draft's alone, as a delete is (O458).
+            answer_to_its_document(self, "rfq", **_only_in([RfqStatus.DRAFT], self.TAKEN_OFF))
         super().save(*args, **kwargs)
 
+    @transaction.atomic
     def delete(self, *args, **kwargs):
-        _while(self.rfq, [RfqStatus.DRAFT], "a vendor asked is an answer owed; take them off only a draft.")
+        answer_to_its_document(self, "rfq", **_only_in([RfqStatus.DRAFT], self.TAKEN_OFF))
         return super().delete(*args, **kwargs)
 
     def _check_vendor(self):
@@ -975,12 +1010,18 @@ class PurchaseRequisitionLine(AuditModel):
 
     LINES_FIXED = "its lines change while it is a draft; what is approved is what is ordered."
 
+    def locked_before_it(self):
+        """The requisitions it leaves and joins, as save() holds them (apps.core.models.answer_to_its_document)."""
+        return documents_it_answers_to(self, "requisition")
+
+    @transaction.atomic
     def save(self, *args, **kwargs):
-        _while(self.requisition, [RequisitionStatus.DRAFT], self.LINES_FIXED)
+        answer_to_its_document(self, "requisition", **_only_in([RequisitionStatus.DRAFT], self.LINES_FIXED))
         super().save(*args, **kwargs)
 
+    @transaction.atomic
     def delete(self, *args, **kwargs):
-        _while(self.requisition, [RequisitionStatus.DRAFT], self.LINES_FIXED)
+        answer_to_its_document(self, "requisition", **_only_in([RequisitionStatus.DRAFT], self.LINES_FIXED))
         return super().delete(*args, **kwargs)
 
     def estimated_value(self):
@@ -1393,12 +1434,18 @@ class BlanketOrderLine(TaxedLineMixin, AuditModel):
     # these, and the agreement is the record of what was committed.
     LINES_FIXED = "its lines change while it is a draft; releases are priced from them."
 
+    def locked_before_it(self):
+        """The agreements it leaves and joins, as save() holds them (apps.core.models.answer_to_its_document)."""
+        return documents_it_answers_to(self, "blanket")
+
+    @transaction.atomic
     def save(self, *args, **kwargs):
-        _while(self.blanket, [BlanketStatus.DRAFT], self.LINES_FIXED)
+        answer_to_its_document(self, "blanket", **_only_in([BlanketStatus.DRAFT], self.LINES_FIXED))
         super().save(*args, **kwargs)
 
+    @transaction.atomic
     def delete(self, *args, **kwargs):
-        _while(self.blanket, [BlanketStatus.DRAFT], self.LINES_FIXED)
+        answer_to_its_document(self, "blanket", **_only_in([BlanketStatus.DRAFT], self.LINES_FIXED))
         return super().delete(*args, **kwargs)
 
     class Meta:
@@ -2771,6 +2818,11 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
         "unit_price": BILLED, "discount_percent": BILLED,
     }
 
+    @staticmethod
+    def ORDER_CLOSED(order):
+        """What answer_to_its_document refuses with on an order in its CLOSED_STATES (cancelled)."""
+        return f"{order} is {order.get_status_display().lower()}: its lines take no change."
+
     def what_moved_against_it(self, kind):
         if kind == CONFIRMED:
             stored = PurchaseOrderLine.objects.filter(pk=self.pk).values_list("order", flat=True).first()
@@ -2815,6 +2867,8 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
         # installation: a line made through the API, which the screens' adder never leaves out).
         if self.item_id and not self.uom_id:
             self.uom = self.item.uom
+        # Shared rule B (O458): the order it leaves and the one it joins, both held, neither cancelled.
+        answer_to_its_document(self, "order", self.ORDER_CLOSED)
         refuse_changing_what_moved(self, self._hold_with_its_orders)
         policy_before = self._policy_before()
         shrinking = self._worth_less_than_stored()
@@ -3016,6 +3070,7 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
 
     @transaction.atomic
     def delete(self, *args, **kwargs):
+        answer_to_its_document(self, "order", self.ORDER_CLOSED)
         if self.quantity_received() or self.quantity_billed():
             raise ValidationError(
                 "This line has been received or billed and can no longer be removed."
@@ -3885,6 +3940,7 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxesTakenUnder, TaxedDocumentMix
         return (self.settlement_discount_amount or Decimal("0")) - undone - self.settlement_discount_withdrawn
 
     @serialised("settlement_discount_withdrawn", "settlement_discount_withdrawal_entry")
+    @takes_back
     def withdraw_unearned_discount(self, on_date=None):
         """
         Take back the discount for paying early once the payment that earned it is returned and the

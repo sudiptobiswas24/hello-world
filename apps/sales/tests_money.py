@@ -452,6 +452,28 @@ class WriteOffRecoveredInPartTests(MoneyCase):
         with self.assertRaisesMessage(ValidationError, "already been recovered"):
             invoice.recover_write_off(invoice.write_offs.get())
 
+    def test_what_is_left_is_recovered_to_a_bad_debt_account_switched_off_since(self):
+        """
+        O363. Recovered whole, a write-off is its entry reversed and a switched-off account takes it; what a
+        credit note left (300 of 600) is a fresh entry to the account the write-off booked, and was refused
+        there. It takes back the write-off all the same: bad debt 300 to 0, receivables 0 to 300. A new
+        write-off to that account is still refused.
+        """
+        invoice = self.bill(self.make_order("10", "100"))
+        self.allocate(self.receipt("400"), invoice, "400")
+        invoice.write_off(reason="Customer in liquidation", on_date=datetime.date(2026, 4, 1))
+        invoice = Invoice.objects.get(pk=invoice.pk)
+        invoice.create_credit_note(quantities={invoice.lines.get(): D("3")})
+        self.bad_debt.is_active = False
+        self.bad_debt.save()
+        invoice = Invoice.objects.get(pk=invoice.pk)
+        invoice.recover_write_off(invoice.write_offs.get(), on_date=datetime.date(2026, 5, 1))
+        self.assertEqual((self.balance(self.bad_debt), self.balance(self.ar)), (D("0.00"), D("300.00")))
+
+        other = self.bill(self.make_order("1", "100"))
+        with self.assertRaisesMessage(ValidationError, "is switched off; it takes nothing new"):
+            other.write_off(reason="Gone", on_date=datetime.date(2026, 5, 1))
+
     def test_the_bad_debt_report_reads_what_was_recovered_and_what_a_note_undid(self):
         """Review F7: written off 600, a note undid 300, 300 recovered: net 0, as bad debt in the ledger."""
         from .models import bad_debt_report

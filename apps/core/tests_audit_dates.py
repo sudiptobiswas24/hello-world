@@ -171,3 +171,40 @@ class AnAwarenessQuestionExcusesOnlyItsOwnMomentTests(SimpleTestCase):
         worked_from = ("def f(moment):\n    if timezone.is_aware(moment):\n        moment = timezone.localtime(moment)\n"
                        "    return (moment - datetime.timedelta(days=1)).date()\n")
         self.assertEqual(self.findings(worked_from), [])
+
+
+class EveryFreshTakeBackIsMarkedTests(SimpleTestCase):
+    """
+    O363: a fresh entry sent where an earlier entry booked its other side (booked_beside) runs under takes_back,
+    on itself or on every caller, or a switched-off account refuses it while the whole correction, reversed,
+    goes through. Invoice.recover_write_off was the one found: what a credit note left was refused.
+    """
+
+    POSTS = ("    entry = JournalEntry.objects.create(date=day)\n"
+             "    JournalLine.objects.create(entry=entry, account=booked_beside(earlier, control))\n"
+             "    entry.post()\n")
+
+    def findings(self, text):
+        from pathlib import Path
+
+        from apps.core.management.commands.audit_invariants import Command
+
+        return [detail.split(" ")[0] for _shape, detail in Command().take_backs_unmarked(
+            ["sales"], {"sales": {Path("apps/sales/example.py"): text}})]
+
+    def test_an_unmarked_take_back_is_reported_and_a_marked_one_or_one_called_only_marked_is_not(self):
+        self.assertEqual(self.findings("class Invoice:\n    def recover(self, earlier, control, day):\n"
+                                       + "    " + self.POSTS.replace("\n    ", "\n        ")),
+                         ["sales.Invoice.recover"])
+        self.assertEqual(self.findings("def give_back(earlier, control, day):\n" + self.POSTS
+                                       + "def caller():\n    give_back(1, 2, 3)\n"), ["sales.give_back"])
+        for passes in ("@takes_back\ndef give_back(earlier, control, day):\n" + self.POSTS,
+                       "def give_back(earlier, control, day):\n" + self.POSTS
+                       + "@takes_back\ndef caller():\n    give_back(1, 2, 3)\n",
+                       "def records(day):\n    entry = JournalEntry.objects.create(date=day)\n    entry.post()\n"):
+            self.assertEqual(self.findings(passes), [], passes)
+
+    def test_the_code_as_it_stands_marks_every_one(self):
+        from apps.core.management.commands.audit_invariants import OUR_APPS, Command, app_sources
+
+        self.assertEqual(Command().take_backs_unmarked(list(OUR_APPS), app_sources()), [])
