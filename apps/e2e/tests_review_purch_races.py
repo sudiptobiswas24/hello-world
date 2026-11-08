@@ -126,7 +126,15 @@ class PurchasingReviewRaceTests(races.RaceCase):
         self.assertLessEqual(BlanketOrderLine.objects.get(pk=agreed.pk).quantity_released(), Z("100"))
 
     def test_06_o227_the_same_race_does_fail_when_the_agreements_lock_is_taken_away(self):
-        """Soundness of the refutation's test: with the agreement never locked, both go through and 110 are called off."""
+        """
+        Soundness of the refutation's test: with the agreement never locked, both go through and 110 are called off.
+
+        The order's own lock is taken away too. Since O458 a line's save() holds its order first
+        (answer_to_its_document), and the first lock of a transaction takes the company's numbering row (O257):
+        the raise then held that row before the race's barrier, the release waited on it to number its order,
+        and the two ran one after the other with the agreement unlocked. Serialised by the numbering row, the
+        race proved nothing about the agreement's lock.
+        """
         from apps.purchasing import models
 
         real = models.lock_rows
@@ -136,7 +144,8 @@ class PurchasingReviewRaceTests(races.RaceCase):
             return real(*rows, **kwargs) if rows else None
 
         agreed, raise_it, release_more = self.blanket_scenario()
-        with mock.patch.object(models, "lock_rows", without_the_agreement):
+        with mock.patch.object(models, "lock_rows", without_the_agreement), \
+                mock.patch.object(models, "answer_to_its_document", lambda *args, **kwargs: None):
             outcomes = races.race((PurchaseOrderLine, PurchaseOrder), raise_it, release_more)
         over = BlanketOrderLine.objects.get(pk=agreed.pk).quantity_released()
         self.assertTrue(over > Z("100") or sum(o == "done" for o in outcomes) == 2,
