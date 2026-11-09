@@ -32,6 +32,7 @@ them is corrected.
 """
 
 import datetime
+import re
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
@@ -42,6 +43,8 @@ from django.utils import timezone
 from apps.core.models import AuditModel, DocumentSequence, lock_rows, serialised, to_date
 
 MINUTES_PER_HOUR = Decimal("60")
+# What a shift code may hold (O345): ASCII letters, digits and hyphens.
+SHIFT_CODE = re.compile(r"[A-Za-z0-9-]+")
 
 
 from apps.core.models import takes_back  # noqa: E402  (O354: a correction step)
@@ -138,7 +141,26 @@ class Shift(AuditModel):
                     return True
         return False
 
+    def check_code(self):
+        """
+        A shift code is letters, digits and hyphens (O345): it is printed on
+        every batch code the shift makes and read back off a Code 128 label by
+        a scanner, so a space, a slash or an umlaut would be escaped there into
+        something nobody on the floor recognises. Asked by save(), which every
+        path reaches (the API, the admin, the demo); clean() asks the same so
+        the admin's form shows it beside the field.
+        """
+        if not SHIFT_CODE.fullmatch(self.code or ""):
+            raise ValidationError({"code": (
+                f"A shift code is letters, digits and hyphens only, such as N or NIGHT-2; "
+                f"{self.code!r} is not."
+            )})
+
+    def clean(self):
+        self.check_code()
+
     def save(self, *args, **kwargs):
+        self.check_code()
         if self.hours and Decimal(self.hours) > 24:
             raise ValidationError(f"{self.code} cannot run longer than a day.")
         if self.is_active:
