@@ -752,6 +752,53 @@ class WhatAPolicyChangeLeavesAloneTests(LeaveTestCase):
                                         carried_over=Decimal("5"))
         self.assertEqual(self.policy.entitlement_for(person, 2026), Decimal("25.00"))
 
+    def test_a_carry_entered_under_a_limit_since_lowered_is_kept_and_its_row_still_edits(self):
+        """O364: limit 5, 5 carried into 2026, limit lowered to 2. The row's days still edit (20 to 22: 27), the
+        carry corrects downwards (4: 26) and not back up; a new carry, 2027's, is held to 2 (25 + 2 = 27)."""
+        person = self.employee("C6")
+        self.policy.carry_over_limit = Decimal("5")
+        self.policy.save()
+        row = LeaveEntitlement.objects.create(employee=person, policy=self.policy, year=2026, days=Decimal("20"),
+                                              carried_over=Decimal("5"))
+        self.assertEqual(self.policy.entitlement_for(person, 2026), Decimal("25.00"))
+        self.policy.carry_over_limit = Decimal("2")
+        self.policy.save()
+
+        row.days = Decimal("22")
+        row.save()
+        self.assertEqual(self.policy.entitlement_for(person, 2026), Decimal("27.00"))
+        row.carried_over = Decimal("4")
+        row.save()
+        self.assertEqual(self.policy.entitlement_for(person, 2026), Decimal("26.00"))
+
+        row.carried_over = Decimal("5")
+        with self.assertRaisesMessage(ValidationError, "carries at most 2 days"):
+            row.save()
+        row.refresh_from_db()
+        self.assertEqual(row.carried_over, Decimal("4.00"))
+
+        with self.assertRaisesMessage(ValidationError, "carries at most 2 days"):
+            LeaveEntitlement.objects.create(employee=person, policy=self.policy, year=2027, days=Decimal("25"),
+                                            carried_over=Decimal("3"))
+        LeaveEntitlement.objects.create(employee=person, policy=self.policy, year=2027, days=Decimal("25"),
+                                        carried_over=Decimal("2"))
+        self.assertEqual(self.policy.entitlement_for(person, 2027), Decimal("27.00"))
+
+    def test_an_over_limit_carry_moved_to_another_year_is_a_new_carry_and_asked(self):
+        """O364: the kept carry belongs to the year it was entered for; moved to 2027 it is asked again."""
+        person = self.employee("C7")
+        self.policy.carry_over_limit = Decimal("5")
+        self.policy.save()
+        row = LeaveEntitlement.objects.create(employee=person, policy=self.policy, year=2026, days=Decimal("20"),
+                                              carried_over=Decimal("5"))
+        self.policy.carry_over_limit = Decimal("2")
+        self.policy.save()
+        row.year = 2027
+        with self.assertRaisesMessage(ValidationError, "carries at most 2 days"):
+            row.save()
+        row.refresh_from_db()
+        self.assertEqual((row.year, row.carried_over), (2026, Decimal("5.00")))
+
     def change(self, on, *figures):
         from unittest import mock
 
