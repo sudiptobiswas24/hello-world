@@ -248,8 +248,8 @@ class FixedAsset(Extensible, AuditModel):
     # What the old system had depreciated, as a draft typed in by hand carries it. Nothing reads
     # it until the draft goes into service, whose opening entry posts it, so until then it is
     # corrected like any other figure on the draft (O266); from then on FIXED_IN_SERVICE holds it,
-    # and a draft capitalised from a bill never had any. A change to it waits on the row, so it
-    # cannot slip between place_in_service() reading it and posting it.
+    # and a draft capitalised from a bill never had any. A change to any FIXED_IN_SERVICE figure
+    # waits on the row, so it cannot slip between place_in_service() reading it and posting it.
     FIXED_AT_GO_LIVE = ("depreciated_before", "opening_depreciation")
     # Set by place_in_service, uncapitalise, dispose and reinstate as they save.
     _status_by_method = False
@@ -286,10 +286,11 @@ class FixedAsset(Extensible, AuditModel):
         if self.pk:
             previous = FixedAsset.objects.filter(pk=self.pk).first()
             if previous is not None and any(getattr(previous, name) != getattr(self, name)
-                                            for name in self.FIXED_AT_GO_LIVE):
+                                            for name in self.FIXED_IN_SERVICE):
                 # Asked of the row as held: read before the lock, a draft put into service in
-                # the meantime still read as a draft, and its opening entry would stand at
-                # figures the register no longer had.
+                # the meantime still read as a draft, and the whole row was written back over
+                # it, a draft again beside its posted opening entry. Every figure going into
+                # service reads is asked so, the go-live ones (O266) among them.
                 lock_rows(self, refresh=False)
                 previous = FixedAsset.objects.filter(pk=self.pk).first()
                 # In service or capitalised, FIXED_IN_SERVICE or FIXED_ONCE_CAPITALISED below
@@ -429,9 +430,14 @@ class FixedAsset(Extensible, AuditModel):
     def remaining_to_depreciate(self):
         return max(self.depreciable_base() - self.accumulated(), Decimal("0"))
 
-    # The go-live figures as committed, read under the lock: corrected on the draft (O266) while
-    # this object was in hand, they are what its opening entry posts and what it saves.
-    @serialised("status", *FIXED_AT_GO_LIVE)
+    # Every figure it reads, as committed, read under the lock: corrected on the draft (O266) while
+    # this object was in hand, they are what its opening entry and its schedule are worked out from
+    # (cost, salvage, life, method, accounts, dates, what the old system took), what its block and
+    # capitalisation decide, and what it saves. Read before the lock, a cost corrected from 12,000
+    # to 16,000 as it went into service posted 12,000 against a register of 16,000.
+    READ_GOING_INTO_SERVICE = ("status", "capitalisation_entry_id", "tax_block_id", *FIXED_IN_SERVICE)
+
+    @serialised(*READ_GOING_INTO_SERVICE)
     def place_in_service(self, on_date=None):
         if self.status != AssetStatus.DRAFT:
             raise ValidationError(f"This asset is already {self.get_status_display().lower()}.")

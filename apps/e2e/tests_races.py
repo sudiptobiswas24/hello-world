@@ -3055,15 +3055,16 @@ class AGoLiveCorrectionBesideTheFirstPostingRaceTests(RaceCase):
     Loom 7, 12,000 over 48 months from 1 April 2025, typed as 3,000 depreciated; 2,250 is right.
     """
 
-    def race_them(self, correction_first):
+    def race_them(self, correction_first, field="opening_depreciation", value=Decimal("2250")):
         from apps.assets import tests as assets_fixture
 
         made = fixture(self, assets_fixture.ATypoOnAHandDraftIsCorrectedOnTheDraftTests)
         loom = made.loom()
+        self.made = made
 
         def correct():
             fresh = FixedAsset.objects.get(pk=loom.pk)
-            fresh.opening_depreciation = Decimal("2250")
+            setattr(fresh, field, value)
             fresh.save()
 
         placing = lambda: FixedAsset.objects.get(pk=loom.pk).place_in_service(  # noqa: E731
@@ -3085,3 +3086,22 @@ class AGoLiveCorrectionBesideTheFirstPostingRaceTests(RaceCase):
         outcomes, books = self.race_them(correction_first=True)
         self.assertEqual(outcomes, ["done", "done"])
         self.assertEqual(books, ("in_service", Decimal("2250.00"), Decimal("2250.00")))
+
+    # The cost corrected from 12,000 to 16,000 beside its going into service: read before the lock,
+    # the opening entry put 12,000 on the plant account under a register saying 16,000.
+    def cost_raced(self, correction_first):
+        outcomes, _ = self.race_them(correction_first, field="cost", value=Decimal("16000"))
+        loom = FixedAsset.objects.get(name="Loom 7")
+        plant = loom.capitalisation_entry.lines.get(account=self.made.plant).debit
+        return outcomes, (loom.status, loom.cost, plant)
+
+    def test_put_in_service_first_a_cost_correction_is_refused(self):
+        outcomes, books = self.cost_raced(correction_first=False)
+        self.assertEqual(outcomes[0], "done", outcomes)
+        self.assertIn("Loom 7 is in service", outcomes[1])
+        self.assertEqual(books, ("in_service", Decimal("12000.00"), Decimal("12000.00")))
+
+    def test_cost_corrected_first_the_opening_entry_posts_the_corrected_cost(self):
+        outcomes, books = self.cost_raced(correction_first=True)
+        self.assertEqual(outcomes, ["done", "done"])
+        self.assertEqual(books, ("in_service", Decimal("16000.00"), Decimal("16000.00")))
