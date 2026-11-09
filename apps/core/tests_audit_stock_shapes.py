@@ -48,7 +48,7 @@ class ShelfReadBeforeItsLockTests(SimpleTestCase):
 class PerUnitWithdrawalRateTests(SimpleTestCase):
     def test_a_rate_asked_for_a_withdrawal_is_reported(self):
         (finding,) = asked("per_unit_withdrawal_rates",
-                           "def f():\n    cost = item.removal_unit_cost(shelf, quantity)\n")
+                           "def f():\n    cost = unit_cost_for(item, shelf, quantity)\n")
         self.assertEqual(finding[0], "per-unit withdrawal rate")
         self.assertIn("sales/example.py:2", finding[1])
 

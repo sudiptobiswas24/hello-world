@@ -122,7 +122,6 @@ class WhatARollWeighsTests(RollTestCase):
     def test_converting_both_ways(self):
         roll = self.roll()
         self.assertEqual(roll.metres_for(Decimal("52.2")), Decimal("500.00"))
-        self.assertEqual(roll.kilos_for(Decimal("500")), Decimal("52.200"))
 
     def test_a_core_is_not_fabric(self):
         # Weighed with its core, not edited onto it afterwards: a roll's measures are fixed once it has a weight.

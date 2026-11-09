@@ -63,7 +63,7 @@ class TheAuditFollowsTheShelfAndTheRateTests(SimpleTestCase):
                 "        return quantity * self.average_cost_at(warehouse)\n")
         found = Command().per_unit_withdrawal_rates(["inventory"], self.sources("inventory", "models.py", text))
         self.assertEqual([detail.split(" ")[0] for _shape, detail in found], ["inventory/models.py:3"])
-        handed_on = text.replace("write_down", "removal_unit_cost")
+        handed_on = text.replace("write_down", "average_cost")
         self.assertEqual(Command().per_unit_withdrawal_rates(
             ["inventory"], self.sources("inventory", "models.py", handed_on)), [])
 

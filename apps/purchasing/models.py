@@ -3145,9 +3145,6 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
             currency=self.order.currency, on_date=self.order.order_date, uom=self.uom,
         )
 
-    def has_agreed_price(self):
-        return self.agreed_price() is not None
-
     def price_against_agreement(self):
         """
         How far this line's price sits above what was agreed.
@@ -6083,17 +6080,6 @@ class BillPayment(RealisedOnItsOwnDay, AuditModel):
     def __str__(self):
         return f"{self.payment} -> {self.bill} ({self.amount})"
 
-    @staticmethod
-    def allocated_for(payment, excluding=None):
-        allocations = BillPayment.objects.filter(payment=payment)
-        if excluding is not None and excluding.pk:
-            allocations = allocations.exclude(pk=excluding.pk)
-        return allocations.aggregate(total=models.Sum("amount"))["total"] or Decimal("0")
-
-    @staticmethod
-    def unallocated_for(payment):
-        return payment.amount - allocated_on(payment)
-
     def clean(self):
         if not self.payment_id or not self.bill_id:
             return
@@ -8839,10 +8825,6 @@ class GoodsReceiptLine(AuditModel):
         return sum((self.quantity_at(place) for place in self.places() if place.is_quarantine),
                    Decimal("0"))
 
-    def next_step_from(self, warehouse=None):
-        warehouse = warehouse or self.current_step()
-        return self.warehouse.next_receipt_step(warehouse)
-
     @transaction.atomic
     def advance(self, quantity=None, from_warehouse=None, occurred_at=None):
         """
@@ -8910,12 +8892,6 @@ class GoodsReceiptLine(AuditModel):
             receipt_line=self, from_warehouse=origin, to_warehouse=destination,
             quantity=quantity, transfer=transfer,
         )
-
-    def quantity_inspected(self):
-        """How much of this line has been accepted or rejected."""
-        return self.inspections.aggregate(
-            total=models.Sum("quantity")
-        )["total"] or Decimal("0")
 
     def quantity_uninspected(self):
         """

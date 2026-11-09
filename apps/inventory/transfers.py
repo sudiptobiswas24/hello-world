@@ -147,13 +147,6 @@ class StockTransfer(AuditModel):
     def is_two_step(self):
         return self.transit_warehouse_id is not None
 
-    def is_settled(self):
-        return self.status in (TransferStatus.RECEIVED, TransferStatus.CANCELLED)
-
-    def holding_warehouse(self):
-        """Where the stock is while the transfer is open."""
-        return self.transit_warehouse if self.is_two_step() else self.from_warehouse
-
     # Same building is allowed — shelf to shelf is a real move — so
     # "two warehouses" became "somewhere else", which is a fact about the
     # lines and not about this row. It is checked in _check_somewhere_else()

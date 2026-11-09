@@ -1526,11 +1526,6 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
     def face_area_sqm(self):
         return (self.face_width_cm() / CM_PER_M) * (self.bag_length_cm / CM_PER_M)
 
-    def printed_area_sqm(self):
-        """The faces that carry any print."""
-        faces = (1 if self.print_colours else 0) + (1 if self.print_colours_back else 0)
-        return Decimal(faces) * self.face_area_sqm()
-
     def stitch_rows(self):
         """The bottom's rows by its fold, and one more for a hemmed mouth."""
         return BOTTOM_STITCH_ROWS.get(self.fold_type, 0) + (1 if self.top_hem_cm else 0)
