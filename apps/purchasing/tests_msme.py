@@ -239,7 +239,9 @@ class TheBillSaysTheActsDayTests(MsmeTestCase):
 
     def test_a_micro_vendors_posted_bill_carries_the_acts_day(self):
         bill = self.read(self.bill("1000", terms=self.net60))
-        self.assertEqual((bill["due_date"], bill["act_pay_by"]), ("2026-07-31", "2026-07-16"))
+        # O498: the day it is due is the Act's; the terms' is kept beside it.
+        self.assertEqual((bill["due_date"], bill["terms_due_date"], bill["act_pay_by"]),
+                         ("2026-07-16", "2026-07-31", "2026-07-16"))
 
     def test_a_medium_vendors_bill_and_a_draft_carry_none(self):
         medium = Party.objects.create(code="V-M", name="Medium Mills")
@@ -269,8 +271,10 @@ class DueByTheActTests(MsmeTestCase):
 
         bill = self.bill("1000", terms=self.net60)
         (row,) = msme_bills(JUNE, datetime.date(2026, 6, 30), as_of=datetime.date(2026, 7, 17))
-        self.assertEqual((row["due"], bill.due_date, bill.pay_by()),
-                         (datetime.date(2026, 7, 16), datetime.date(2026, 7, 31), datetime.date(2026, 7, 16)))
+        # The terms' 31 July is kept as the terms'; the bill is due on the Act's day (O498).
+        self.assertEqual((row["due"], bill.terms_due_date, bill.due_date, bill.pay_by()),
+                         (datetime.date(2026, 7, 16), datetime.date(2026, 7, 31), datetime.date(2026, 7, 16),
+                          datetime.date(2026, 7, 16)))
         self.assertNotIn(bill.pk, self.listed(datetime.date(2026, 7, 15)))
         self.assertIn(bill.pk, self.listed(datetime.date(2026, 7, 16)))
         (entry,) = [entry for run in payment_run(due_by=datetime.date(2026, 7, 17)) for entry in run["bills"]]
@@ -539,3 +543,163 @@ class DueDeliveryByDeliveryTests(MsmeTestCase):
         self.assertEqual((entry["due_date"], entry["amount_due"]), (datetime.date(2026, 7, 16), Decimal("600.00")))
         self.assertEqual((bill.pay_by(), bill.pay_by(by=datetime.date(2026, 7, 16))),
                          (datetime.date(2026, 8, 24), datetime.date(2026, 7, 16)))
+
+
+class DueOnTheDayItMustBePaidTests(MsmeTestCase):
+    """
+    O498: a bill's due_date is the day it must be paid by, the earlier of
+    the terms' and the MSMED Act's (s.15) for a vendor micro or small as the
+    bill posted; every list sorted by due date reads it
+    (calc_g34_o498/due.py). Accepted 1 June:
+      micro, net 60: 16 July (terms 31 July);  micro, net 30: 1 July;
+      medium, net 60: 31 July;  small, no terms: 16 June, not 1 June;
+      goods received 10 June after the bill: 25 July;
+      then objected to (standing): 31 July; removed 12 June: 27 July; withdrawn: 25 July;
+      part paid, debited, vendor reclassified after: still 16 July.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        call_command("setup_roles", verbosity=0)
+        self.clients = {}
+        for role in ("AP Manager", "Controller"):
+            user = User.objects.create_user(role.lower().replace(" ", "-"))
+            user.groups.add(Group.objects.get(name=role))
+            self.clients[role] = APIClient()
+            self.clients[role].force_authenticate(user)
+
+    def vendor_of(self, code, category):
+        party = Party.objects.create(code=code, name=f"{category.title()} Mills {code}")
+        PartyRoleAssignment.objects.create(party=party, role=PartyRole.VENDOR)
+        PartyTaxProfile.objects.create(party=party, msme_category=category, udyam_number=f"UDYAM-MH-26-00{code[-5:]}")
+        return party
+
+    def get(self, role, url, params=None):
+        response = self.clients[role].get(url, params or {})
+        self.assertEqual(response.status_code, 200, response.content)
+        return response.json()
+
+    def test_the_bill_is_due_on_the_earlier_day(self):
+        medium = self.vendor_of("V-11111", "medium")
+        small = self.vendor_of("V-22222", "small")
+        cases = [
+            (self.bill("1000", terms=self.net60), "2026-07-16", "2026-07-31"),
+            (self.bill("1000", terms=self.net30), "2026-07-01", "2026-07-01"),
+            (self.bill("1000", terms=self.net60, vendor=medium), "2026-07-31", "2026-07-31"),
+            (self.bill("1000", vendor=small), "2026-06-16", "2026-06-01"),
+        ]
+        for bill, due, terms in cases:
+            read = self.get("AP Manager", f"/api/purchasing/bills/{bill.pk}/")
+            self.assertEqual((read["due_date"], read["terms_due_date"]), (due, terms), bill.vendor.code)
+
+    def test_every_list_sorted_by_due_date_reads_the_acts_day(self):
+        medium = self.vendor_of("V-33333", "medium")
+        net50 = PaymentTerms.objects.create(code="N50", name="Net 50", net_days=50)
+        micro = self.bill("1000", terms=self.net60)  # due 16 July, terms 31 July
+        later = self.bill("1000", terms=net50, vendor=medium)  # due 21 July
+        for role in ("AP Manager", "Controller"):
+            rows = self.get(role, "/api/purchasing/bills/", {"ordering": "due_date", "open": "true"})
+            self.assertEqual([(row["id"], row["due_date"]) for row in rows],
+                             [(micro.pk, "2026-07-16"), (later.pk, "2026-07-21")], role)
+            [run] = [run for run in self.get(role, "/api/purchasing/purchasing-reports/payment-run/",
+                                             {"due_by": "2026-07-16"}) if run["vendor_id"] == self.vendor.pk]
+            self.assertEqual([(row["number"], row["due_date"]) for row in run["bills"]],
+                             [(micro.number, "2026-07-16")], role)
+        aging = self.get("AP Manager", "/api/purchasing/purchasing-reports/aging/", {"as_of": "2026-07-17"})
+        self.assertIn("2026-07-16", str(aging))
+        self.assertNotIn("2026-07-31", str(aging))
+
+    def test_no_terms_is_the_acts_fifteen_days(self):
+        from .models import payment_run
+
+        bill = self.bill("1000", vendor=self.vendor_of("V-44444", "small"))
+        self.assertEqual((bill.due_date, bill.pay_by()), (datetime.date(2026, 6, 16),) * 2)
+        self.assertFalse(bill.is_overdue(datetime.date(2026, 6, 16)))
+        self.assertEqual(bill.days_overdue(datetime.date(2026, 6, 17)), 1)
+        self.assertEqual([entry["bill"].pk for run in payment_run(due_by=datetime.date(2026, 6, 15))
+                          for entry in run["bills"]], [])
+
+    def test_paid_in_part_and_debited_it_keeps_its_day(self):
+        from .models import payment_run
+
+        bill = self.bill("10000", terms=self.net60)
+        self.pay(bill, "5000", datetime.date(2026, 6, 20))
+        bill.create_debit_note(quantities={bill.lines.get(): Decimal("0.2")})
+        bill = Bill.objects.get(pk=bill.pk)
+        self.assertEqual((bill.due_date, bill.amount_due()), (datetime.date(2026, 7, 16), Decimal("3000.00")))
+        (entry,) = [entry for run in payment_run(due_by=datetime.date(2026, 7, 16)) for entry in run["bills"]]
+        self.assertEqual((entry["due_date"], entry["amount_due"]), (datetime.date(2026, 7, 16), Decimal("3000.00")))
+
+    def test_a_vendor_reclassified_after_moves_no_bill(self):
+        bill = self.bill("1000", terms=self.net60)
+        PartyTaxProfile.objects.filter(party=self.vendor).update(msme_category="medium")
+        self.assertEqual(Bill.objects.get(pk=bill.pk).due_date, datetime.date(2026, 7, 16))
+        self.assertEqual(self.bill("1000", terms=self.net60).due_date, datetime.date(2026, 7, 31))
+
+    def test_goods_received_after_the_bill_and_objected_to_move_its_day(self):
+        order, line = AcceptedOnDeliveryTests.order(self)
+        PurchaseOrder.objects.filter(pk=order.pk).update(bill_policy="ordered")  # billed ahead of the goods
+        order.refresh_from_db()
+        bill = AcceptedOnDeliveryTests.bill_for(self, order, line, JUNE, "10")
+        self.assertEqual(bill.due_date, datetime.date(2026, 7, 16))
+        receipt, _ = AcceptedOnDeliveryTests.receive(self, order, line, datetime.date(2026, 6, 10), "10")
+        due = lambda: Bill.objects.get(pk=bill.pk).due_date  # noqa: E731
+        self.assertEqual(due(), datetime.date(2026, 7, 25))
+        receipt.record_objection(datetime.date(2026, 6, 10), "Letter PUR/16: bags 2 g under the agreed GSM")
+        self.assertEqual(due(), datetime.date(2026, 7, 31))
+        receipt.remove_objection(datetime.date(2026, 6, 12))
+        self.assertEqual(due(), datetime.date(2026, 7, 27))
+        receipt.withdraw_objection()
+        self.assertEqual(due(), datetime.date(2026, 7, 25))
+        self.assertEqual(due(), Bill.objects.get(pk=bill.pk).pay_by())
+
+
+@tag("migration")
+class TermsDayKeptMigrationTests(TransactionTestCase):
+    """
+    O498: bills posted before 0090 kept the terms' day as due_date. Each keeps it as its terms' day; a micro
+    vendor's posted bill of 1 June on net 60 is then due on 16 July (after migrate), a medium vendor's stays
+    on 31 July, and a draft has neither.
+    """
+
+    before = [("purchasing", "0089_taxes_taken_under")]
+    after = [("purchasing", "0090_bill_keeps_its_terms_due_date")]
+
+    def test_posted_bills_keep_the_terms_day_and_fall_due_by_the_act(self):
+        from django.db import connection
+        from django.db.migrations.executor import MigrationExecutor
+
+        from .msme import keep_unkept_due_dates
+
+        executor = MigrationExecutor(connection)
+        executor.migrate(self.before)
+        model = executor.loader.project_state(self.before).apps.get_model
+        micro = model("core", "Party").objects.create(code="M", name="Micro")
+        medium = model("core", "Party").objects.create(code="D", name="Medium")
+        payable = model("accounting", "Account").objects.create(code="2000", name="AP", account_type="liability")
+        expense = model("accounting", "Account").objects.create(code="5000", name="Cones", account_type="expense")
+        net60 = model("core", "PaymentTerms").objects.create(code="N60", name="Net 60", net_days=60)
+        july = datetime.date(2026, 7, 31)
+        for party, category, posted in ((micro, "micro", True), (medium, "medium", True), (micro, "", False)):
+            bill = model("purchasing", "Bill").objects.create(
+                vendor=party, bill_date=JUNE, payable_account=payable, payment_terms=net60, posted=posted,
+                msme_category=category, due_date=july if posted else None)
+            model("purchasing", "BillLine").objects.create(
+                bill=bill, description="Cones", quantity=Decimal("1"), unit_price=Decimal("1000"),
+                expense_account=expense)
+        executor = MigrationExecutor(connection)
+        executor.migrate(self.after)
+        Bill = executor.loader.project_state(self.after).apps.get_model("purchasing", "Bill")
+        days = lambda: sorted(Bill.objects.values_list("vendor__code", "posted", "terms_due_date", "due_date"))  # noqa: E731
+        # The migration copies the terms' day; a micro vendor's posted bill waits for the code that reads the Act.
+        self.assertEqual(days(), [("D", True, july, july), ("M", False, None, None), ("M", True, None, july)])
+        executor = MigrationExecutor(connection)
+        executor.migrate(executor.loader.graph.leaf_nodes())
+        keep_unkept_due_dates()
+        self.assertEqual(days(), [("D", True, july, july), ("M", False, None, None),
+                                  ("M", True, july, datetime.date(2026, 7, 16))])
+        keep_unkept_due_dates()  # nothing left to do

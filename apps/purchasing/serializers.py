@@ -128,7 +128,8 @@ class BillSerializer(TakesItsLinesMixin, ExtensibleSerializerMixin, serializers.
     vendor_name = serializers.CharField(source="vendor.name", read_only=True)
     amount_tds = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
     carried = serializers.SerializerMethodField()
-    # The MSME Act's day for a micro or small vendor's posted bill (O483): due_date is the terms' alone.
+    # The MSME Act's day for a micro or small vendor's posted bill (O483). due_date is the day it must be paid
+    # by, the earlier of the two (O498); terms_due_date the terms' alone.
     act_pay_by = serializers.DateField(read_only=True)
 
     def get_carried(self, bill):
@@ -147,6 +148,7 @@ class BillSerializer(TakesItsLinesMixin, ExtensibleSerializerMixin, serializers.
             "vendor_name",
             "bill_date",
             "due_date",
+            "terms_due_date",
             "act_pay_by",
             "currency",
             "payment_terms",
@@ -178,7 +180,7 @@ class BillSerializer(TakesItsLinesMixin, ExtensibleSerializerMixin, serializers.
         ]
         read_only_fields = [
             "taxes_taken_under",
-            "number", "due_date", "debits", "journal_entry", "posted", "posted_at",
+            "number", "due_date", "terms_due_date", "debits", "journal_entry", "posted", "posted_at",
             "exchange_rate", "is_prepayment", "is_opening_balance", "corrects_old_supply",
             "old_bill_value",
         ]

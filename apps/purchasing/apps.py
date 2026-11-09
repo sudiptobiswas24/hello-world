@@ -8,7 +8,14 @@ class PurchasingConfig(AppConfig):
     label = "purchasing"
 
     def ready(self):
+        from django.db.models.signals import post_migrate
+
         from apps.accounting.models import register_dated_draft
+
+        from .msme import keep_unkept_due_dates
+
+        # A micro or small vendor's bill posted before migration 0090 is due by the Act's day (O498).
+        post_migrate.connect(keep_unkept_due_dates, sender=self, dispatch_uid="apps.purchasing.keep_due_dates")
 
         from .imports import BillOfEntry, EntryStatus
         from .models import Bill, GoodsReceipt

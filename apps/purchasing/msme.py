@@ -98,8 +98,9 @@ def lots(bill):
 def _act_day(bill, accepted):
     if accepted is None:
         return None  # an objection stands: the Act has not started the clock
-    if bill.payment_terms_id and bill.due_date:
-        return min(to_date(bill.due_date), accepted + datetime.timedelta(days=AGREED_AT_MOST))
+    # The day agreed is the terms' as the bill posted, never due_date: that is the day this decides (O498).
+    if bill.payment_terms_id and bill.terms_due_date:
+        return min(to_date(bill.terms_due_date), accepted + datetime.timedelta(days=AGREED_AT_MOST))
     return accepted + datetime.timedelta(days=UNAGREED)
 
 
@@ -127,12 +128,17 @@ def msme_due(bill):
     return None if not days or None in days else max(days)
 
 
-def earlier_of(rows, act, settled):
+def earlier_of(rows, act, settled, agreed=True):
     """
     The terms' installments ([{due_date, amount}]) and the Act's parts
     ([(due or None, amount)]) laid over each other, money in order: each
     rupee is due on the earlier of the two days that claim it. Money
     received is applied to the earliest first, as installment_schedule does.
+
+    Not `agreed` (a bill with no terms), the terms' row is only the bill's
+    own date, which nobody agreed: the Act's day stands alone, 15 days from
+    acceptance (s.2(b)), and the bill's date only while an objection keeps
+    the Act's clock from starting.
     """
     out, act = [], [[day, amount] for day, amount in act]
     i = 0
@@ -141,7 +147,10 @@ def earlier_of(rows, act, settled):
         while left > 0:
             day, amount = act[i] if i < len(act) else (None, left)
             take = min(left, amount)
-            due = min(row["due_date"], day) if (day and row["due_date"]) else (row["due_date"] or day)
+            if not agreed:
+                due = day or row["due_date"]
+            else:
+                due = min(row["due_date"], day) if (day and row["due_date"]) else (row["due_date"] or day)
             if out and out[-1]["due_date"] == due:
                 out[-1]["amount"] += take
             else:
@@ -159,6 +168,64 @@ def earlier_of(rows, act, settled):
         remaining -= applied
         row["settled"], row["outstanding"] = applied, row["amount"] - applied
     return out
+
+
+def held_by_the_act(order_lines=()):
+    """
+    The posted bills whose due day the Act may move when what it counts
+    from moves on these order lines (a delivery received, an objection made,
+    removed or withdrawn): a micro or small vendor's bills for goods, in key
+    order, as lock_rows takes them.
+    """
+    from .models import Bill
+
+    return list(Bill.objects.filter(
+        posted=True, debits__isnull=True, is_prepayment=False, msme_category__in=COVERED,
+        lines__order_line__in=[line for line in order_lines if line],
+    ).distinct().order_by("pk"))
+
+
+def keep_due_dates(bills):
+    """
+    Write each posted bill's due_date as pay_by() reads it (O498): the
+    terms' day, or the Act's when that comes first. One rule, read by the
+    bill screen, every list sorted by due date, and the vendor's open bills,
+    as installments() is by the aging and the payment run. The caller holds
+    the bills (lock_rows) and has already written what moved.
+    """
+    from .models import Bill
+
+    for bill in bills:
+        day = bill.pay_by()
+        if day != to_date(bill.due_date):
+            Bill.objects.filter(pk=bill.pk).update(due_date=day)
+            bill.due_date = day
+
+
+def keep_unkept_due_dates(**kwargs):
+    """
+    After migrate (post_migrate): a micro or small vendor's bill posted
+    before the bill kept its terms' day (migration 0090) keeps the day it
+    had as the terms', and is due on pay_by() (O498). Run here, not in the
+    migration, because only the bill's own code works out the Act's day,
+    and it reads the bill as the code stands. Nothing to do once done.
+    """
+    from django.db import transaction
+
+    from apps.core.models import lock_rows
+
+    from .models import Bill
+
+    unkept = Bill.objects.filter(posted=True, terms_due_date__isnull=True, due_date__isnull=False)
+    if not unkept.exists():
+        return
+    with transaction.atomic():
+        bills = list(unkept.order_by("pk"))
+        lock_rows(*bills)
+        for bill in bills:
+            bill.terms_due_date = bill.due_date
+            Bill.objects.filter(pk=bill.pk).update(terms_due_date=bill.terms_due_date)
+        keep_due_dates(bills)
 
 
 def _standing(bill, day):
