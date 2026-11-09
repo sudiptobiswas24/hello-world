@@ -138,6 +138,32 @@ class ABackflushedLoomDrawsByTheDoffTests(TapeLoadTestCase):
             self.load("D-1", "100", CreelSide.WEFT, 9, 5)
         self.assertEqual(TapeLoad.objects.filter(lot=self.doffs["D-1"]).count(), 1)
 
+    def test_creels_loaded_from_another_warehouse_take_nothing_off_this_ones_doff(self):
+        # O265: D-1 has 100 kg on the plant's shelf and 60 kg on W2's. L-20,
+        # at W2's station, has 60 kg of it on its creel. The plant's station
+        # was told D-1 had 100 - 60 = 40 kg free, though no creel held a kilo
+        # of the plant's 100.
+        from django.utils import timezone
+
+        from apps.inventory.models import MovementType, StockMovement, Warehouse
+
+        from .station import LoomStation
+
+        w2 = Warehouse.objects.create(code="W2", name="Second shed")
+        StockMovement.objects.create(item=self.tape, warehouse=w2, movement_type=MovementType.RECEIPT,
+                                     uom=self.kg, quantity=Decimal("60"), unit_cost=Decimal("120"),
+                                     lot=self.doffs["D-1"], occurred_at=timezone.now())
+        self.station.machines.set([self.l17])
+        shed = LoomStation.objects.create(code="LX-2", name="Loom exit 2", warehouse=w2)
+        shed.machines.set([self.l20])
+        with self.assertRaisesMessage(ValidationError, "has 60 kg in"):
+            load_tape(shed, self.operator, self.l20, "D-1", "61", CreelSide.WARP, at=at(TODAY, 8, 55))
+        load_tape(shed, self.operator, self.l20, "D-1", "60", CreelSide.WARP, at=at(TODAY, 9))
+
+        load = self.load("D-1", "100", CreelSide.WARP, 9, 5)
+        self.assertEqual((load.kg, load.station, load.issue), (Decimal("100.000"), self.station, None))
+        self.assertEqual(self.doffs["D-1"].on_hand_at(self.plant), Decimal("100"))
+
     def test_its_roll_draws_the_doffs_on_its_creels(self):
         self.load("D-1", "100", CreelSide.WARP, 9)
         self.load("D-2", "100", CreelSide.WEFT, 9, 5)
