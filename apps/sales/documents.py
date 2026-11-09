@@ -508,6 +508,20 @@ def render_statement_pdf(statement):
     )
 
 
+def batches_shipped(line):
+    """
+    The challan's batch column (O490): the batches that left, as the posted line's allocations say,
+    each with its quantity in the stocking unit when there are several; the batch typed on a draft.
+    """
+    left = [(lot, quantity) for lot, _shelf, quantity in line.lots_shipped() if lot is not None]
+    if not left:
+        return line.lot.code if line.lot_id else "—"
+    if len(left) == 1:
+        return left[0][0].code
+    unit = line.order_line.item.uom.code
+    return ", ".join(f"{lot.code} {counted(quantity)} {unit}" for lot, quantity in left)
+
+
 def render_delivery_pdf(delivery):
     """The delivery challan the lorry carries: what left, for whom, by which transporter and vehicle."""
     order = delivery.sales_order
@@ -532,8 +546,8 @@ def render_delivery_pdf(delivery):
 
     header = ["Description", "Lot", "Quantity", "Unit"]
     rows, total = [], Decimal("0")
-    for line in delivery.lines.select_related("order_line__item", "order_line__uom", "lot"):
-        rows.append([line.order_line.label(), line.lot.code if line.lot_id else "—",
+    for line in delivery.lines.select_related("order_line__item__uom", "order_line__uom", "lot"):
+        rows.append([line.order_line.label(), batches_shipped(line),
                      counted(line.quantity_shipped), line.order_line.uom.code if line.order_line.uom_id else ""])
         total += line.quantity_shipped
     if not rows:

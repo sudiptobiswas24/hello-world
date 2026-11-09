@@ -612,7 +612,9 @@ class DeliveryViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.Model
     ordering_fields = ["delivery_date", "number"]
 
     queryset = Delivery.objects.select_related("sales_order__customer").prefetch_related(
-        Prefetch("lines", queryset=DeliveryLine.objects.select_related("order_line__item")))
+        # The batches each line shipped, once for the page rather than once a line (O490).
+        Prefetch("lines", queryset=DeliveryLine.objects.select_related("order_line__item__uom").prefetch_related(
+            "allocations__lot", "allocations__bin")))
     serializer_class = DeliverySerializer
     action_permission_map = {
         "post_delivery": "sales.post_delivery",
@@ -797,7 +799,8 @@ class DeliveryViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.Model
 
 class DeliveryLineViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.ModelViewSet):
     customer_path = "delivery__sales_order__customer"
-    queryset = DeliveryLine.objects.select_related("delivery", "order_line", "warehouse")
+    queryset = DeliveryLine.objects.select_related("delivery", "order_line__item__uom", "warehouse").prefetch_related(
+        "allocations__lot", "allocations__bin")
     serializer_class = DeliveryLineSerializer
 
 
