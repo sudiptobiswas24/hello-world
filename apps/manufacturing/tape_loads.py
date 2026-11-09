@@ -160,7 +160,9 @@ def void_load(load, station, supervisor, operator, reason):
                                  entry__voided_at__isnull=True).exists():
         raise ValidationError(f"A roll has come off {load.machine.code} since {load} was "
                               "loaded, and names it.")
-    if run.backflush and drawn_by_output(run, load.lot) > loaded(run, load.lot) - load.kg:
+    # Asked of the shelf the load stood on, as the output draws it (O492).
+    place = station.warehouse
+    if run.backflush and drawn_by_output(run, load.lot, place) > loaded(run, load.lot, place) - load.kg:
         raise ValidationError(f"{run}'s output has drawn on {load}; it stands.")
     if load.issue_id:
         load.issue.void_with(load, memo=f"Load withdrawn at {station}: {reason}"[:255])
@@ -170,34 +172,55 @@ def void_load(load, station, supervisor, operator, reason):
     return load
 
 
-def loaded(run, lot):
-    """Kilos of a batch on this run's creels, by its standing loads."""
+def loaded(run, lot, warehouse):
+    """
+    Kilos of a batch on this run's creels loaded off `warehouse`'s shelf,
+    by its standing loads.
+
+    One shelf, always: a backflushed load stays on the shelf it was loaded
+    from, and the output draws from its own station's shelf. Counted over
+    every shelf, a run woven in two sheds set the plant's 100 kg and W2's
+    60 kg against each shelf as 160, and a roll weighed in W2 was sent to
+    draw a doff that stood only in the plant (O492).
+    """
     return sum((load.kg for load in TapeLoad.objects.filter(
-        work_order=run, lot=lot, voided_at__isnull=True)), ZERO)
+        work_order=run, lot=lot, voided_at__isnull=True, station__warehouse=warehouse)), ZERO)
 
 
-def drawn_by_output(run, lot):
-    """What a backflushed run's own output has drawn of a batch, standing."""
+def drawn_by_output(run, lot, warehouse):
+    """What a backflushed run's own output has drawn of a batch from `warehouse`, standing."""
     from .orders import MaterialIssueLine
 
     return sum((line.stock_quantity() for line in MaterialIssueLine.objects.filter(
         issue__work_order=run, lot=lot, issue__posted=True, issue__voided_at__isnull=True,
-        issue__backflushed_by__isnull=False,
+        issue__backflushed_by__isnull=False, issue__warehouse=warehouse,
     ).select_related("item", "uom")), ZERO)
 
 
-def on_the_creels(run, item):
+def creel_warehouses(run):
+    """The shelves a run's standing loads were taken from, for a reader that wants the whole run."""
+    from apps.inventory.models import Warehouse
+
+    return Warehouse.objects.filter(
+        pk__in=TapeLoad.objects.filter(work_order=run, voided_at__isnull=True)
+        .values("station__warehouse")).order_by("pk")
+
+
+def on_the_creels(run, item, warehouse):
     """
-    [(batch, kg)] of `item` loaded on a backflushed run's creels and not
-    yet drawn by its output, in the order it was loaded: what its output
-    draws, by batch, since a batch-kept tape cannot be drawn as no batch.
+    [(batch, kg)] of `item` loaded on a backflushed run's creels off
+    `warehouse`'s shelf and not yet drawn by its output there, in the
+    order it was loaded: what an output booked on that shelf draws, by
+    batch, since a batch-kept tape cannot be drawn as no batch.
     """
     batches = []
-    for load in TapeLoad.objects.filter(work_order=run, lot__item=item, voided_at__isnull=True
+    for load in TapeLoad.objects.filter(work_order=run, lot__item=item, voided_at__isnull=True,
+                                        station__warehouse=warehouse,
                                         ).select_related("lot").order_by("loaded_at", "id"):
         if load.lot not in batches:
             batches.append(load.lot)
-    rows = [(lot, loaded(run, lot) - drawn_by_output(run, lot)) for lot in batches]
+    rows = [(lot, loaded(run, lot, warehouse) - drawn_by_output(run, lot, warehouse))
+            for lot in batches]
     return [(lot, kg) for lot, kg in rows if kg > 0]
 
 
@@ -223,7 +246,8 @@ def creel_promises(lot, warehouse):
         backflush=True, status=WorkOrderStatus.RELEASED, tape_loads__lot=lot,
         tape_loads__voided_at__isnull=True, tape_loads__station__warehouse=warehouse,
     ).distinct().order_by("pk")
-    return [(run, max(loaded(run, lot) - drawn_by_output(run, lot), ZERO)) for run in runs]
+    return [(run, max(loaded(run, lot, warehouse) - drawn_by_output(run, lot, warehouse), ZERO))
+            for run in runs]
 
 
 def tape_for(roll):
