@@ -13,6 +13,9 @@ import datetime
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
+from django.db import IntegrityError, connection, transaction
+from django.db.migrations.executor import MigrationExecutor
+from django.test import TransactionTestCase, tag
 from django.utils import timezone
 
 from apps.core.models import Party, PartyRole, PartyRoleAssignment
@@ -572,3 +575,68 @@ class AShiftCodeIsLettersDigitsAndHyphensTests(RolesTestCase):
         self.assertEqual(response.status_code, 400, response.content)
         self.assertIn("code", response.json())
         self.assertEqual(Shift.objects.get(pk=pk).code, "NIGHT-2")
+
+
+class OneShiftCodeWhateverTheCaseTests(RolesTestCase):
+    """O493: N and n are one shift to the floor and the scanner, so both cannot exist."""
+
+    def shift(self, code, hour):
+        return Shift.objects.create(code=code, name=f"Shift {code}", starts_at=datetime.time(hour),
+                                    hours=Decimal("8"))
+
+    def test_the_model_refuses_the_same_code_in_other_letters(self):
+        night = self.shift("NIGHT-2", 22)
+        with self.assertRaises(ValidationError) as refused:
+            self.shift("night-2", 6)
+        self.assertIn("Shift NIGHT-2 already exists", refused.exception.message_dict["code"][0])
+        day = self.shift("A", 6)
+        day.code = "Night-2"
+        with self.assertRaises(ValidationError):
+            day.save()
+        self.assertEqual(Shift.objects.get(pk=day.pk).code, "A")
+        # A shift may change the case of its own code.
+        night.code = "night-2"
+        night.save()
+        self.assertEqual(Shift.objects.get(pk=night.pk).code, "night-2")
+
+    def test_the_database_refuses_it_where_save_is_not_asked(self):
+        self.shift("N", 22)
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            Shift.objects.bulk_create([Shift(code="n", name="n", starts_at=datetime.time(6),
+                                             hours=Decimal("8"), is_active=False)])
+
+    def test_the_api_refuses_it_for_the_process_engineer(self):
+        engineer = self.as_("Process Engineer")
+        url = "/api/manufacturing/shifts/"
+        body = {"code": "NIGHT-2", "name": "Night", "starts_at": "22:00", "hours": "8"}
+        self.assertEqual(engineer.post(url, body, format="json").status_code, 201)
+        response = engineer.post(url, {**body, "code": "Night-2", "starts_at": "06:00"}, format="json")
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("already exists", str(response.json()["code"]))
+        self.assertEqual(Shift.objects.count(), 1)
+
+
+@tag("migration")
+class ShiftCodesTheSameInOtherLettersStopTheMigrationTests(TransactionTestCase):
+    """O493: a plant already keeping N and n is told which, in words, before the constraint."""
+
+    before = [("manufacturing", "0088_scale_reading_names_its_weighing")]
+    after = [("manufacturing", "0089_shift_code_unique_whatever_the_case")]
+
+    def test_the_pair_is_named_and_the_migration_runs_once_one_is_renamed(self):
+        executor = MigrationExecutor(connection)
+        executor.migrate(self.before)
+        apps = executor.loader.project_state(self.before).apps
+        Old = apps.get_model("manufacturing", "Shift")
+        for code, hour in (("N", 22), ("n", 6), ("A", 14)):
+            Old.objects.create(code=code, name=code, starts_at=datetime.time(hour), hours=Decimal("8"))
+        executor = MigrationExecutor(connection)
+        with self.assertRaisesMessage(RuntimeError, "same code in other letters, which a shift code "
+                                                    "may no longer have: N and n. Rename one"):
+            executor.migrate(self.after)
+        Old.objects.filter(code="n").update(code="N2")
+        executor = MigrationExecutor(connection)
+        executor.migrate(self.after)
+        executor.loader.build_graph()
+        executor.migrate(executor.loader.graph.leaf_nodes())
+        self.assertEqual(sorted(Shift.objects.values_list("code", flat=True)), ["A", "N", "N2"])
