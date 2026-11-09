@@ -3431,7 +3431,15 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxesTakenUnder, TaxedDocumentMix
     number = models.CharField(max_length=32, blank=True, editable=False)
     vendor = models.ForeignKey(Party, on_delete=models.PROTECT, related_name="bills")
     bill_date = models.DateField()
+    # The day it must be paid by (O498): the terms' day, or the MSMED Act's when a micro or small vendor's
+    # bill falls due sooner. Every list, sort, aging and run reads this one day; msme.keep_due_dates writes
+    # it again whenever what the Act counts from moves (a delivery, an objection).
     due_date = models.DateField(null=True, blank=True, editable=False)
+    terms_due_date = models.DateField(
+        null=True, blank=True, editable=False,
+        help_text="The day its payment terms gave as it posted (the bill's own date with none): the period "
+                  "agreed, which the Act caps.",
+    )
     reference = models.CharField(
         max_length=64, blank=True,
         help_text="The vendor's own invoice number — what they will quote when chasing payment.",
@@ -4146,8 +4154,9 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxesTakenUnder, TaxedDocumentMix
             return rows
         from .msme import earlier_of
 
-        # Each delivery's part by its own day (O160), the terms' where they come first.
-        return earlier_of(rows, act, settled=self.total() - self.amount_due())
+        # Each delivery's part by its own day (O160), the terms' where they come first. With no terms
+        # nothing was agreed, and the Act's 15 days stand alone (O498): not the bill's own date.
+        return earlier_of(rows, act, settled=self.total() - self.amount_due(), agreed=bool(self.payment_terms_id))
 
     def act_pay_by(self):
         """
@@ -4591,7 +4600,7 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxesTakenUnder, TaxedDocumentMix
                 )
 
         self.exchange_rate = self._rate_for_posting()
-        self.due_date = (
+        self.terms_due_date = self.due_date = (
             self.payment_terms.due_date(self.bill_date)
             if self.payment_terms_id else self.bill_date
         )
@@ -4651,10 +4660,15 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxesTakenUnder, TaxedDocumentMix
         self.posted_at = timezone.now()
         self.posted_total = self.total()
         super(Bill, self).save(update_fields=[
-            "number", "bill_date", "due_date", "exchange_rate", "journal_entry",
+            "number", "bill_date", "due_date", "terms_due_date", "exchange_rate", "journal_entry",
             "posted", "posted_at", "taxes_recorded", "party_gstin", "party_registration",
             "place_of_supply", "posted_total", "msme_category", "updated_at",
         ])
+        # The day it is due is the Act's when that comes first (O498): written now the bill is posted
+        # and its parts can be read.
+        from .msme import keep_due_dates
+
+        keep_due_dates([self])
 
         self._record_landed_cost()
         if self.is_debit_note():
@@ -7142,6 +7156,18 @@ class GoodsReceipt(AuditModel):
             )
         super().save(*args, **kwargs)
 
+    def _keep_bills_due(self):
+        """
+        An objection moves the day these goods were accepted, and with it the
+        day a micro or small vendor's bill for them is due (O498): the bills
+        are held after this receipt, by the lock order, and written again.
+        """
+        from .msme import held_by_the_act, keep_due_dates
+
+        bills = held_by_the_act(self.lines.values_list("order_line_id", flat=True))
+        lock_rows(*bills)
+        keep_due_dates(bills)
+
     def _objectable(self):
         if not self.posted or self.reverses_id:
             raise ValidationError("An objection is made to goods received: a posted receipt, not a return.")
@@ -7179,6 +7205,7 @@ class GoodsReceipt(AuditModel):
         self.objected_on, self.objection = day, text
         self.updated_by = by or self.updated_by
         self.save(update_fields=sorted(self.OBJECTION_FIELDS))
+        self._keep_bills_due()
         return self
 
     @serialised("objected_on", "objection_removed_on")
@@ -7196,6 +7223,7 @@ class GoodsReceipt(AuditModel):
         self.objection_removed_on = day
         self.updated_by = by or self.updated_by
         self.save(update_fields=sorted(self.OBJECTION_FIELDS))
+        self._keep_bills_due()
         return self
 
     @serialised("objected_on", "objection", "objection_removed_on")
@@ -7207,6 +7235,7 @@ class GoodsReceipt(AuditModel):
         self.objected_on, self.objection, self.objection_removed_on = None, "", None
         self.updated_by = by or self.updated_by
         self.save(update_fields=sorted(self.OBJECTION_FIELDS))
+        self._keep_bills_due()
         return self
 
     @serialised("posted", held_first=True)
@@ -7286,6 +7315,13 @@ class GoodsReceipt(AuditModel):
         # In key order: a return's line puts back what its line's earlier
         # siblings have not (_restore_components).
         lines = list(self.lines.order_by("pk"))
+        # A micro or small vendor's bills for these goods, billed ahead of them, fall due 45 days from
+        # this delivery at most, not from the bill (O498): held now, by the lock order before the lines
+        # and the shelves, and written once the receipt is posted. A return moves no acceptance.
+        from .msme import held_by_the_act, keep_due_dates
+
+        billed_ahead = [] if self.reverses_id else held_by_the_act(line.order_line_id for line in lines)
+        lock_rows(*billed_ahead)
         # Its lines before the shelves, by the lock order: each is written again once its stock has
         # moved (O182).
         lock_in_turn(lines)
@@ -7351,7 +7387,9 @@ class GoodsReceipt(AuditModel):
             self.weight_comparison(lines, check=True)
 
         if self.purchase_order.is_drop_ship():
-            return self._post_drop_ship(lines, is_return=is_return)
+            posted = self._post_drop_ship(lines, is_return=is_return)
+            keep_due_dates(billed_ahead)
+            return posted
 
         # Every shelf this receipt touches. Subcontract lines read the
         # components before consuming them, a receipt into a routed
@@ -7566,6 +7604,7 @@ class GoodsReceipt(AuditModel):
                 "posted_at", "posted_by", "journal_entry", "price_difference_entry", "updated_at",
             ]
         )
+        keep_due_dates(billed_ahead)
         # Received and held, the Quality Manager decides (decision 22): a
         # to-do each now, the mail once this commits. Whoever received the
         # goods is not told to decide; `quality_told` says who was.

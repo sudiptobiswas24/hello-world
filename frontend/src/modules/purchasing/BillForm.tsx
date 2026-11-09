@@ -49,9 +49,10 @@ interface Bill {
   vendor: number | null;
   vendor_name: string;
   bill_date: string;
+  // The day it must be paid by: the terms', or the MSME Act's when that comes first (O498).
   due_date: string | null;
-  // The MSME Act's day for a micro or small vendor's posted bill; due_date is the terms'.
-  act_pay_by: string | null;
+  // The terms' own day, shown beside it only when the Act brings the bill forward.
+  terms_due_date: string | null;
   reference: string;
   purchase_order: number | null;
   debits: number | null;
@@ -187,14 +188,12 @@ export default function BillForm() {
               ? <input id={fid} type="date" value={String(value.bill_date ?? "")} onChange={(e) => draft.set("bill_date", e.target.value as never)} />
               : <output id={fid}>{date(bill?.bill_date)}</output>}
           </Field>
-          <Field label="Due" errors={[]}>
-            {(fid) => <output id={fid}>{bill?.due_date ? date(bill.due_date) : "Set when posted"}</output>}
+          <Field label="Due" errors={[]}
+            hint={bill?.due_date && bill.terms_due_date && bill.terms_due_date !== bill.due_date
+              ? `By the MSME Act: 45 days from acceptance at most. The terms said ${date(bill.terms_due_date)}.`
+              : undefined}>
+            {(fid, described) => <output id={fid} aria-describedby={described}>{bill?.due_date ? date(bill.due_date) : "Set when posted"}</output>}
           </Field>
-          {bill?.act_pay_by && (
-            <Field label="Due under the MSME Act" hint="45 days from acceptance at most, whatever the terms" errors={[]}>
-              {(fid, described) => <output id={fid} aria-describedby={described}>{date(bill.act_pay_by)}</output>}
-            </Field>
-          )}
           <Field label="Their invoice number" hint="As printed on the vendor's invoice" errors={draft.errors.reference}>
             {(fid, described) => editable
               ? <input id={fid} aria-describedby={described} value={String(value.reference ?? "")} onChange={(e) => draft.set("reference", e.target.value as never)} />
