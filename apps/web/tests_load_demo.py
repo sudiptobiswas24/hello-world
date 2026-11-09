@@ -36,6 +36,14 @@ class LoadDemoTests(TestCase):
         self.assertEqual([finding["label"] for finding in integrity(fresh=True)["findings"] if finding["ok"] is False], [])
         self.assert_the_agings_foot_with_a_foreign_document_open()
 
+        # A freight charge to put on a document from its add row (O495), taxed and booked on both sides.
+        from apps.accounting.models import ChargeType
+
+        freight = ChargeType.objects.get(code="FREIGHT")
+        self.assertEqual((freight.revenue_account.code, freight.expense_account.code, freight.is_active),
+                         ("4300", "5610", True))
+        self.assertEqual(sorted(freight.taxes.values_list("code", flat=True)), ["CGST9", "SGST9"])
+
         # A rep signs in and sees only the customers they carry.
         self.assertTrue(self.client.login(username="imran", password="Trial-2026"))
         rows = self.client.get("/api/sales/sales-orders/", {"page_size": 100}).json()

@@ -1699,8 +1699,7 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
             # sides, so a fix to either is a fix to both.
             self.item.check_uom(self.uom)
         if self.is_charge():
-            if not self.revenue_account_id:
-                self.revenue_account = self.charge.account_for(is_sale=True)
+            self.take_its_charges_account()  # shared with every charge line (O496)
             if self.unit_price is None:
                 raise ValidationError(
                     f"Give the {self.charge} charge an explicit amount; a charge has no "
@@ -3604,6 +3603,8 @@ class InvoiceLine(PostedLineMixin, TaxedLineMixin, AuditModel):
         answer_to_its_document(
             self, "invoice", "Cannot modify a line on a posted invoice. Issue a credit note instead.")
         refuse_naming_another_order_line(self, self.invoice, "customer", "sales_order")
+        # Before the note's checks, so a typed note line's charge account is asked against its original's (O496).
+        self.take_its_charges_account()
         refuse_correcting_another_line(self, self.invoice, "credits_line", "credits", fill=True)
         if self.credits_line_id and not self.invoice.claim_reason and not self.credits_line.invoice.is_down_payment:
             # Goods given back, drafts waiting counted (O336); a claim and an advance are held by value.
@@ -3614,8 +3615,7 @@ class InvoiceLine(PostedLineMixin, TaxedLineMixin, AuditModel):
         # and invoicing such a line was a database error rather than a
         # sentence. Here, where every invoice line is made.
         if not self.revenue_account_id:
-            self.revenue_account = (self.charge.account_for(is_sale=True) if self.charge_id
-                                    else default_account("revenue", "revenue_account"))
+            self.revenue_account = default_account("revenue", "revenue_account")
         with transaction.atomic():
             super().save(*args, **kwargs)
             self.invoice.check_place()
@@ -6022,8 +6022,7 @@ class QuotationLine(TaxedLineMixin, AuditModel):
 
     def _save_answered(self, *args, **kwargs):
         if self.is_charge():
-            if not self.revenue_account_id:
-                self.revenue_account = self.charge.account_for(is_sale=True)
+            self.take_its_charges_account()  # shared with every charge line (O496)
             if self.unit_price is None:
                 raise ValidationError(
                     f"Give the {self.charge} charge an explicit amount; a charge has no "
