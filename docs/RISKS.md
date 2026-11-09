@@ -310,6 +310,7 @@ missing), **minor**.
 | O489 | purchasing | PurchaseOrderLine.has_agreed_price is called by nothing; price_against_agreement and the screens ask agreed_price directly (seen 2026-11-09, g32; audit_invariants uncalled_model_methods, exempted in UNCALLED_REPORTED until fixed) | rule | minor |
 | O490 | sales | DeliveryLine.lots_shipped is called by nothing outside tests: no delivery note or screen lists batches shipped through it (seen 2026-11-09, g32; audit_invariants uncalled_model_methods, exempted in UNCALLED_REPORTED until fixed) | rule | minor |
 | O491 | sales | SalesOrder.reservation_shortfalls is called by tests only: no screen or report shows what an order promised and cannot cover (seen 2026-11-09, g32; audit_invariants uncalled_model_methods, exempted in UNCALLED_REPORTED until fixed) | rule | minor |
+| O494 | accounting, sales, purchasing | A charge line that names no taxes (taxes: []) confirms and posts untaxed even when its charge declares GST; refuse_untaxed_lines (accounting/gst.py) asks item lines only. That keeps a deliberate "no tax" working; whether a charge is refused as an item is, is the owner's (seen 2026-11-09, g33 O488) | decide | charge lines entered with no tax |
 
 Upgrade notes, true of data made before the 8 October fixes:
 - Landed cost allocated before the stores fix releases to cost of sales, and old inventory differences stay where they were.
