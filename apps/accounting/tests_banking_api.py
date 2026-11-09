@@ -88,6 +88,27 @@ class BankingApiTests(ReconciliationTestCase):
         self.assertEqual(late.status_code, 400)
         self.assertIn("closed", late.content.decode())
 
+    def test_the_report_and_each_payment_say_whether_they_are_reconciled(self):
+        """O470: whether the bank has seen a payment, and whether the month would close, read through the API."""
+        bookkeeper, controller = self.as_("Bookkeeper"), self.as_("Controller")
+        pk, (_deposit, charge) = self.keyed_in(bookkeeper)
+        reconciled = lambda payment: bookkeeper.get(f"/api/accounting/payments/{payment.pk}/").json()["reconciled"]
+        self.assertEqual((reconciled(self.received), reconciled(self.cheque)), (False, False))
+        self.assertFalse(bookkeeper.get(f"{STATEMENTS}{pk}/reconciliation/").json()["reconciled"])
+
+        bookkeeper.post(f"{STATEMENTS}{pk}/auto_match/", {}, format="json")
+        # The receipt is on the statement; the cheque is not cashed yet.
+        self.assertEqual((reconciled(self.received), reconciled(self.cheque)), (True, False))
+        # 50 still unexplained: the bank's charge.
+        report = bookkeeper.get(f"{STATEMENTS}{pk}/reconciliation/").json()
+        self.assertEqual((report["difference"], report["reconciled"]), ("50.00", False))
+
+        controller.post(f"{STATEMENTS}{pk}/post_line/", {"line": charge["id"], "account": self.charges.pk},
+                        format="json")
+        report = bookkeeper.get(f"{STATEMENTS}{pk}/reconciliation/").json()
+        self.assertEqual((report["difference"], report["reconciled"]), ("0.00", True))
+        self.assertEqual(controller.post(f"{STATEMENTS}{pk}/close/", {}, format="json").status_code, 200)
+
     def test_an_explained_line_is_not_changed_or_dropped(self):
         bookkeeper, controller = self.as_("Bookkeeper"), self.as_("Controller")
         pk, (deposit, charge) = self.keyed_in(bookkeeper)

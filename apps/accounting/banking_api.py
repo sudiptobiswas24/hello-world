@@ -104,7 +104,8 @@ class BankStatementViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=["get"])
     def reconciliation(self, request, pk=None):
         """Books to bank, with every reconciling item named."""
-        report = self.get_object().reconciliation()
+        statement = self.get_object()
+        report = statement.reconciliation()
         # To the paisa: a sum comes back at the column's scale on
         # PostgreSQL and bare on SQLite.
         return Response({
@@ -119,6 +120,8 @@ class BankStatementViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
             "unresolved_lines": len(report["unresolved_lines"]),
             "statement_difference": round_money(report["statement_difference"]),
             "difference": round_money(report["difference"]),
+            # Whether close() would sign it off: nothing unexplained, nothing left over.
+            "reconciled": statement.is_reconciled(report),
         })
 
     @action(detail=True, methods=["get"])
