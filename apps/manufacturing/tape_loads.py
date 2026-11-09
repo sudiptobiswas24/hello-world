@@ -70,6 +70,7 @@ def load_tape(station, operator, machine, code, kg, side, at=None):
     """Put `kg` of doff `code` on `machine`'s warp or weft, issued to its run by batch."""
     from apps.inventory.locking import lock_positions
     from apps.inventory.models import Lot
+    from apps.inventory.tracking import committed_elsewhere
     from apps.quality.release import check_released
 
     from .machines import Machine
@@ -109,8 +110,11 @@ def load_tape(station, operator, machine, code, kg, side, at=None):
     lock_positions([(lot.item, station.warehouse)])
     # A load on a backflushed run stays on the shelf until the output draws
     # it, so what other creels already hold of the doff is not free: one
-    # 100 kg doff loaded twice at 100 kg was taken both times.
-    free = lot.on_hand_at(station.warehouse) - on_creels_undrawn(lot)
+    # 100 kg doff loaded twice at 100 kg was taken both times. Asked of the
+    # station's shelf by the rule every other draw asks: counted from any
+    # shelf, creels loaded in another warehouse took kilos off this one's
+    # on-hand (O265).
+    free = lot.on_hand_at(station.warehouse) - committed_elsewhere(lot, station.warehouse)
     if kg > free:
         raise ValidationError(f"{lot} has {format(free.normalize(), 'f')} kg in "
                               f"{station.warehouse} that no creel holds yet, not "
@@ -197,10 +201,12 @@ def on_the_creels(run, item):
     return [(lot, kg) for lot, kg in rows if kg > 0]
 
 
-def on_creels_undrawn(lot, warehouse=None):
+def creel_promises(lot, warehouse):
     """
-    Kilos of a batch on the creels of backflushed runs still open that
-    their output has not drawn yet.
+    [(run, kg)] of `lot` on `warehouse` on the creels of backflushed runs
+    still open, not yet drawn. Asked through committed_elsewhere(), by the
+    tape-load check and every other draw, always of one shelf: asked of
+    none, creels anywhere were set against one shelf's on-hand (O265).
 
     A run closed or cancelled holds nothing on its creels. A backflushed
     load issues nothing, so what its output did not draw never left the
@@ -209,21 +215,6 @@ def on_creels_undrawn(lot, warehouse=None):
     a 100 kg doff after a run drew 80 and closed could never be loaded
     again, nor its load withdrawn.
     """
-    from .orders import WorkOrder, WorkOrderStatus
-
-    runs = WorkOrder.objects.filter(
-        backflush=True, status=WorkOrderStatus.RELEASED,
-        tape_loads__lot=lot, tape_loads__voided_at__isnull=True,
-    )
-    if warehouse is not None:
-        # Asked of one shelf (allocate, O133): the creels loaded from it.
-        runs = runs.filter(tape_loads__station__warehouse=warehouse)
-    runs = runs.distinct()
-    return sum((max(loaded(run, lot) - drawn_by_output(run, lot), ZERO) for run in runs), ZERO)
-
-
-def creel_promises(lot, warehouse):
-    """[(run, kg)] of `lot` on `warehouse` on the creels of backflushed runs still open, not yet drawn."""
     from .orders import WorkOrder, WorkOrderStatus
 
     if lot is None:
