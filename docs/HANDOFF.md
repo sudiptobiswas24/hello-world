@@ -50,6 +50,24 @@ pg_isready -q || service postgresql start                              # role er
 
 ## 2. Next steps, in order
 
+**g30 is pushed (e56d4a8, 9 November 2026), all seven lanes green on one tip (gated as 4f80e6f).** Holds two rows:
+O363 (every correction that takes back money booked to an account since switched off is marked `takes_back`: the
+partial recovery of a written-off invoice was refused once its bad-debt account was switched off; both unearned-
+discount withdrawals marked too; `audit_invariants` now reports `take-back unmarked` for any function that posts a
+fresh entry beside an earlier one without the marker) and O458 (shared rule B on every line whose document can close:
+sales and purchase order lines refuse a cancelled order; quotation, RFQ, requisition, blanket and gate-pass lines,
+customer-supplied items and RFQ invitations change only while their document allows, moved or deleted alike).
+Still open: O405's remainder, O457, O259, O346; O448 waits on the owner, O449 on the tax adviser.
+- Gate lessons from g30: the first run (32e9205) failed pg-c on `test_06_o227`, the control that proves the
+  blanket-agreement race can be seen. O458 made a purchase order line lock its order in save(); the first lock of a
+  transaction takes the numbering row (O257), so the raise held it before the race's barrier, the release waited on it,
+  and the two ran in turn with the agreement unlocked. The code was right; the control now takes away both locks.
+  **A new lock in a save() can blind a race control test: before the gate, run `apps/e2e/tests_*races*` on
+  PostgreSQL whenever a change adds a lock.** Also: a new gate worktree needs `.venv` and `frontend/node_modules`
+  linked in (scripts/gate/README.md), or the ui lane fails on missing types; and never run three apps' tests in the
+  foreground (one run was killed at the 10-minute limit): detach and watch. The mig watcher outlives its two-hour
+  limit; re-arm it, the lane keeps running.
+
 **g29 is pushed (175998f, 7 November 2026), all seven lanes green on one tip (gated as 6c7391a; the replay changed
 one commit message only, `Gate: g29` written where the placeholder belonged).** Holds the pilot loading run's findings
 and two statutory rows: O464 (a mistyped --gstin refused in a line), the `accounts` import kind (the plant's own chart
@@ -58,7 +76,7 @@ Docker command), O466 (an asset whose accounts are already in the opening balanc
 counted plant and machinery twice), O467 (items import their sales and purchase taxes, tax-group codes accepted;
 go_live_check lists goods with none), O461 (Maharashtra PT with its bands for women; gender and work state on the
 employee), O468 (Confirm schedule on the pay component), O460 (the ESI file sends days paid for, kept on the slip).
-Still open: O405's remainder, O457, O458, O363, O259, O346; O448 waits on the owner, O449 on the tax adviser.
+Still open after g29: see g30 above.
 - Before the first live use: the Maharashtra amounts were written from recall, not the Gazette, and load unconfirmed;
   the Controller checks them before confirming. The ESI days reading is the common one; PILOT.md says to upload the
   first ESI file before anything else. The loading run footed to the paisa on my sample files, not the plant's data.
