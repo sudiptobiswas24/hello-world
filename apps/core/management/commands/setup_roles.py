@@ -299,6 +299,8 @@ ROLES = {
         *crud("purchasing", "purchaseorderline"),
         *crud("purchasing", "bill"),
         *crud("purchasing", "billline"),
+        # Freight or packing a vendor charges, added to an order or a bill from its add row (O495).
+        *crud("accounting", "chargetype", actions=("view",)),
         *crud("core", "party", actions=("add", "change", "view")),
         *crud("core", "address", actions=("add", "change", "view")),
         *crud("core", "contact", actions=("add", "change", "view")),
@@ -329,6 +331,7 @@ ROLES = {
         *crud("purchasing", "purchaseorderline"),
         *crud("purchasing", "bill"),
         *crud("purchasing", "billline"),
+        *crud("accounting", "chargetype", actions=("view",)),
         *crud("purchasing", "requestforquotation"),
         *crud("purchasing", "rfqline"),
         *crud("purchasing", "rfqinvitation"),
