@@ -257,3 +257,118 @@ class ALineBuiltInCodeTakesItsItemsTaxes(UntaxedLinesTestCase):
         stored = order.lines.get()
         stored.save()
         self.assertFalse(stored.taxes.exists())
+
+
+class AChargeLineTakesItsChargesTaxes(UntaxedLinesTestCase):
+    """
+    O488: a charge line added through the API named no taxes and took none, where SalesOrder.add_charge and
+    PurchaseOrder.add_charge, called by tests only, gave it the charge's. Freight recharged at 1,000.00 went out
+    with no GST. A line with no item now takes its charge's taxes for its side, through the party's fiscal
+    position, as an item line takes its item's: one rule (TaxedLineMixin.default_taxes) for every line built,
+    whoever builds it.
+
+    Numbers, worked in /home/user/work/calc_g32_o488/cases.py: freight 1,000.00 under GST 18%;
+    in the state CGST 9% 90.00 + SGST 9% 90.00, across a state line IGST 18% 180.00, total 1,180.00 either way;
+    an export under LUT IGST 0% 0.00, total 1,000.00; named CGST 2.5% + SGST 2.5% 25.00 + 25.00, total 1,050.00;
+    named none, 1,000.00.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        from apps.accounting.models import AccountType, ChargeType
+
+        cls.freight = ChargeType.objects.create(
+            code="FRT", name="Freight", hsn_code="9965",
+            revenue_account=Account.objects.create(code="4190", name="Freight recharged", account_type=AccountType.INCOME),
+            expense_account=Account.objects.create(code="5190", name="Freight inward", account_type=AccountType.EXPENSE))
+        cls.freight.taxes.set(Tax.objects.filter(code__in=["CGST9", "SGST9"]))
+
+    def sales_charge(self, client, customer_code, **line):
+        customer = Party.objects.get(code=customer_code)
+        made = client.post("/api/sales/sales-orders/", {"customer": customer.pk, "order_date": str(timezone.localdate())},
+                           format="json")
+        self.assertEqual(made.status_code, 201, made.content)
+        added = client.post("/api/sales/sales-order-lines/", {
+            "order": made.json()["id"], "charge": self.freight.pk, "quantity": "1", "unit_price": "1000.00", **line},
+            format="json")
+        self.assertEqual(added.status_code, 201, added.content)
+        return SalesOrder.objects.get(pk=made.json()["id"]), added.json()
+
+    def purchase_charge(self, client, vendor_code, **line):
+        from apps.purchasing.models import PurchaseOrder
+
+        vendor = Party.objects.get(code=vendor_code)
+        made = client.post("/api/purchasing/purchase-orders/", {"vendor": vendor.pk, "order_date": str(timezone.localdate())},
+                           format="json")
+        self.assertEqual(made.status_code, 201, made.content)
+        added = client.post("/api/purchasing/purchase-order-lines/", {
+            "order": made.json()["id"], "charge": self.freight.pk, "quantity": "1", "unit_price": "1000.00", **line},
+            format="json")
+        self.assertEqual(added.status_code, 201, added.content)
+        return PurchaseOrder.objects.get(pk=made.json()["id"]), added.json()
+
+    def codes(self, line):
+        return sorted(Tax.objects.filter(pk__in=line["taxes"]).values_list("code", flat=True))
+
+    def test_a_rep_s_freight_in_the_state_bears_cgst_and_sgst(self):
+        imran = self.as_("imran")
+        order, line = self.sales_charge(imran, "C-KONK")
+        self.assertEqual(self.codes(line), ["CGST9", "SGST9"])
+        self.assertEqual([(tax.code, amount) for tax, amount in order.lines.get().tax_amounts()],
+                         [("CGST9", D("90.00")), ("SGST9", D("90.00"))])
+        self.assertEqual(line["total"], "1180.00")
+
+    def test_freight_across_a_state_line_bears_igst(self):
+        order, _ = self.sales_charge(self.as_("rohit"), "C-GODA")  # Andhra Pradesh; the plant is in Maharashtra
+        self.assertEqual([(tax.code, amount) for tax, amount in order.lines.get().tax_amounts()],
+                         [("IGST18", D("180.00"))])
+        self.assertEqual(order.total(), D("1180.00"))
+
+    def test_freight_on_an_export_under_lut_is_stored_as_igst_nil(self):
+        # Mapped through the customer's position as it is entered, as an item's taxes are (O427).
+        order, line = self.sales_charge(self.as_("rohit"), "C-GULF")
+        self.assertEqual(self.codes(line), ["IGST0"])
+        self.assertEqual(order.total(), D("1000.00"))
+
+    def test_a_vendor_s_freight_in_the_state_bears_cgst_and_sgst(self):
+        order, line = self.purchase_charge(self.as_("ravi"), "V-WMB")  # Thane
+        self.assertEqual(self.codes(line), ["CGST9", "SGST9"])
+        self.assertEqual([(tax.code, amount) for tax, amount in order.lines.get().tax_amounts()],
+                         [("CGST9", D("90.00")), ("SGST9", D("90.00"))])
+        self.assertEqual(line["total"], "1180.00")
+
+    def test_a_vendor_s_freight_across_a_state_line_bears_igst(self):
+        order, _ = self.purchase_charge(self.as_("ravi"), "V-GRAN")  # Vadodara, Gujarat
+        self.assertEqual([(tax.code, amount) for tax, amount in order.lines.get().tax_amounts()],
+                         [("IGST18", D("180.00"))])
+        self.assertEqual(order.total(), D("1180.00"))
+
+    def test_taxes_named_win_over_the_charge_s(self):
+        cgst, sgst = Tax.objects.get(code="CGST9"), Tax.objects.get(code="SGST9")
+        named = [Tax.objects.create(code=f"{tax.gst_head.upper()}2.5", name=tax.name, rate=D("2.5"), gst_head=tax.gst_head,
+                                    collected_account=tax.collected_account, paid_account=tax.paid_account).pk
+                 for tax in (cgst, sgst)]
+        _, sold = self.sales_charge(self.as_("imran"), "C-KONK", taxes=named)
+        self.assertEqual(self.codes(sold), ["CGST2.5", "SGST2.5"])
+        self.assertEqual(sold["total"], "1050.00")
+        _, bought = self.purchase_charge(self.as_("ravi"), "V-WMB", taxes=named)
+        self.assertEqual(self.codes(bought), ["CGST2.5", "SGST2.5"])
+        self.assertEqual(bought["total"], "1050.00")
+
+    def test_none_named_stays_none(self):
+        imran = self.as_("imran")
+        order, sold = self.sales_charge(imran, "C-KONK", taxes=[])
+        self.assertEqual((sold["taxes"], sold["total"]), ([], "1000.00"))
+        self.assertEqual(list(order.lines.get().taxes.all()), [])
+        _, bought = self.purchase_charge(self.as_("ravi"), "V-WMB", taxes=[])
+        self.assertEqual((bought["taxes"], bought["total"]), ([], "1000.00"))
+
+    def test_a_charge_s_tax_for_the_other_side_is_not_taken(self):
+        # One charge serves both directions; a tax kept for purchases only is not put on a sale, as an item's is not.
+        sgst = Tax.objects.get(code="SGST9")
+        purchase_only = Tax.objects.create(code="PCESS1", name="Purchase cess", rate=D("1"), scope="purchase",
+                                           paid_account=sgst.paid_account)
+        self.freight.taxes.add(purchase_only)
+        _, sold = self.sales_charge(self.as_("imran"), "C-KONK")
+        self.assertEqual(self.codes(sold), ["CGST9", "SGST9"])
