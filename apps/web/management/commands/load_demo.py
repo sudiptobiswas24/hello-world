@@ -425,7 +425,11 @@ class Command(BaseCommand):
 
         with step("Sales reps, teams, targets and what each customer is allowed"):
             Rep, Team = M("sales.SalesRep"), M("sales.SalesTeam")
-            rep_rohit, rep_imran, rep_priya = (Rep.objects.create(party=e.party) for e in (rohit, imran, priya))
+            # The executives earn 1.5% of what they invoice (O405); the manager is on salary alone.
+            on_invoices = M("sales.CommissionPlan").objects.create(code="EXEC-1.5", name="Sales executive",
+                                                                   percent=D("1.50"), basis="invoiced")
+            rep_rohit = Rep.objects.create(party=rohit.party)
+            rep_imran, rep_priya = (Rep.objects.create(party=e.party, plan=on_invoices) for e in (imran, priya))
             west = Team.objects.create(code="WEST", name="West zone", leader=rep_rohit)
             south = Team.objects.create(code="SOUTH", name="South and export", leader=rep_priya)
             for rep, team in ((rep_rohit, west), (rep_imran, west), (rep_priya, south)):
@@ -846,6 +850,57 @@ class Command(BaseCommand):
         with step("A change order on the cement sack's bill of materials"):
             raise_change(cement_bom, day(14), "Thread to 1,000 denier polyester after the seam complaint", by=admin)
 
+        with step("Specifications: a tape, a fabric, a film and an atta sack, their recipes built from them"):
+            # O405: the plant writes what it makes as specifications and the recipes and inspection plans follow
+            # from them. On items of their own, so the hand-written recipes the runs above used stay as they are.
+            # The tape is kept by lot, so its specification writes a plan, and two lots of it are inspected.
+            Tape, Fabric, Bag = (M("manufacturing.TapeSpecification"), M("manufacturing.FabricSpecification"),
+                                 M("manufacturing.BagSpecification"))
+            tape_1000 = item("TAPE-1000", "PP tape, 1,000 denier", kg, "130", hsn="54062000")
+            tape_1000.tracking = "lot"
+            tape_1000.save()
+            fabric_50 = item("FAB-50-87", "Circular woven fabric, 50 cm, 87.5 GSM", kg, "141", hsn="54074200")
+            atta = item("SACK-ATTA25", "Atta flour sack 25 kg, 2-colour print", nos, "6.40", "8.90", "63053300")
+            ldpe = item("LDPE-GRAN", "LDPE granule, film grade", kg, "118", hsn="39011010")
+            film_40 = item("FILM-LF40", "LDPE lay-flat film, 40 micron", kg, "132", hsn="39201019")
+            t1000 = Tape.objects.create(
+                code="T-1000", tape_item=tape_1000, denier=D("1000"), tape_width_mm=D("2.5"), virgin_granule=virgin,
+                regrind_item=regrind, regrind_percent=D("5"), filler_item=filler, filler_percent=D("16"),
+                masterbatch_item=uv, masterbatch_percent=D("1"), extrusion_waste_percent=D("3"),
+                waste_recovered_percent=D("80"), routing=tape_bom.routing)
+            f50 = Fabric.objects.create(
+                code="F-50", fabric_item=fabric_50, warp_tape=t1000, ends_per_inch=D("10"), picks_per_inch=D("10"),
+                lay_flat_width_cm=D("50"), weave="tubular", shrink_percent=D("0"), target_gsm=D("87.5"),
+                gsm_tolerance_percent=D("5"), weaving_waste_percent=D("2"), waste_recovered_percent=D("85"),
+                loom_waste_item=regrind, routing=fabric_bom.routing)
+            Bag.objects.create(
+                code="B-ATTA25", bag_item=atta, fabric=f50, bag_width_cm=D("50"), bag_length_cm=D("75"),
+                bottom_hem_cm=D("3"), top_hem_cm=D("2"), thread_item=thread, thread_grams_per_bag=D("1.0"),
+                print_colours=2, ink_item=ink, conversion_waste_percent=D("2.5"), waste_recovered_percent=D("70"),
+                cutting_waste_item=regrind, routing=sack_route)
+            M("manufacturing.FilmSpecification").objects.create(
+                code="LF-40", film_item=film_40, micron=D("40"), lay_flat_width_cm=D("48"), base_polymer=ldpe)
+
+            # A run of the tape on its specification's recipe, made in two lots, each measured for denier.
+            t1000.refresh_from_db()
+            spec_bom = t1000.bom
+            lock_positions([(tape_1000, plant)] + [(row.item, plant) for row in spec_bom.components.all()])
+            spec_run = start_run(tape_1000, spec_bom, "2000", ext, day(-3), 6)
+            issue_all(spec_run, day(-3))
+            plan = t1000.inspection_plan
+            for code, qty, readings in (("TP-1000-01", "980", ("992", "1004", "1011")),
+                                        ("TP-1000-02", "960", ("1018", "1009", "997"))):
+                lot = M("inventory.Lot").objects.create(item=tape_1000, code=code)
+                M("manufacturing.ProductionEntry").objects.create(
+                    work_order=spec_run, entry_date=day(-2), warehouse=plant, quantity_produced=D(qty),
+                    quantity_scrapped=D("0"), uom=tape_1000.uom, work_centre=ext, lot=lot).post()
+                inspection = M("quality.Inspection").objects.create(lot=lot, plan=plan, inspected_on=day(-2))
+                for line in plan.lines.order_by("line_number"):
+                    for number, value in enumerate(readings[:line.sample_size], start=1):
+                        M("quality.Reading").objects.create(inspection=inspection, plan_line=line, value=D(value),
+                                                            sample_reference=f"S{number}")
+                inspection.post(by=meena.user)
+
         with step("Stoppages"):
             for code, when, reason, minutes, shift, note in (
                     ("LOOM-03", day(-6), "BRK", 95, 0, "Shuttle wheel bearing seized"),
@@ -856,6 +911,22 @@ class Command(BaseCommand):
                 M("manufacturing.Downtime").objects.create(work_centre=machine.work_centre, machine=machine, shift_date=when,
                                                            reason=reasons[reason], minutes=minutes, shift=shifts[shift],
                                                            notes=note)
+
+        with step("Energy: meters on the extruder and the looms, a week of readings"):
+            # O405: what the extruder and the loom shed draw, read at the end of each day. The extruder's meter
+            # reads kWh straight; the loom shed's sits behind current transformers, its dial a twentieth of it.
+            Meter, Reading = M("manufacturing.EnergyMeter"), M("manufacturing.MeterReading")
+            for code, where, multiplier, start, per_day in (
+                    ("EM-EXT1", {"machine": machines["EXT-1"]}, "1", "184220", "2410"),
+                    ("EM-LOOMS", {"work_centre": looms}, "20", "61870", "92.5")):
+                meter = Meter.objects.create(code=code, multiplier=D(multiplier), installed_on=day(-90),
+                                             initial_reading=D(start), **where)
+                for n in range(7):
+                    last = n == 6
+                    Reading.objects.create(meter=meter, shift_date=day(n - 7), read_by=vikas,
+                                           reading=D(start) + D(per_day) * (n + 1),
+                                           max_demand_kva=D("142") if last else None,
+                                           power_factor=D("0.94") if last else None)
 
         with step("Quality: alerts, a complaint, corrective actions, instruments"):
             Alert, Action = M("manufacturing.QualityAlert"), M("manufacturing.CorrectiveAction")
@@ -1033,8 +1104,10 @@ class Command(BaseCommand):
             # Marked, so the monthly ECR finds its members (O411): unmarked, it came back an empty file.
             pf = Component.objects.create(code="PF", name="Provident fund (employee)", kind="deduction", basis="percent",
                                           liability_account=pf_payable, sequence=50, statutory="pf")
-            pt = Component.objects.create(code="PT", name="Professional tax", kind="deduction", basis="fixed",
-                                          liability_account=pt_payable, sequence=60)
+            # Professional tax by Maharashtra's schedule (O405, O461), not a flat 200: the bands of a month's gross
+            # from statutory/professional_tax.csv, a woman's salary up to 25,000 exempt, 300 in February.
+            pt = Component.objects.create(code="PT", name="Professional tax", kind="deduction", basis="slab",
+                                          liability_account=pt_payable, sequence=60, statutory="pt")
             epf = Component.objects.create(code="EPF", name="Provident fund (employer)", kind="employer_cost", basis="percent",
                                            expense_account=employer_pf, liability_account=pf_payable, sequence=70,
                                            statutory="pf_employer")
@@ -1052,6 +1125,20 @@ class Command(BaseCommand):
             controller = anita.user
             for figure in M("hr.StatutoryFigure").objects.filter(kind__startswith="esi_").order_by("pk"):
                 figure.confirm(controller)
+            pt.base_components.set([basic, hra])
+            from apps.hr.management.commands.setup_statutory import load_professional_tax
+
+            load_professional_tax(Loader())
+            # The Controller confirms the bands, as the plant's would after checking them against the Gazette
+            # (PILOT.md): loaded from recall, a run refuses to work out a levy on an unconfirmed band.
+            for band in pt.slabs.filter(state="MH").order_by("pk"):
+                band.confirm(controller)
+            # Everyone works at Chakan; who is a woman decides the exemption.
+            women = {"sunita", "303", "meena", "anita", "priya"}
+            for key, employee in sorted(people.items(), key=lambda pair: pair[1].pk):
+                employee.work_state = "MH"
+                employee.gender = "female" if key in women else "male"
+                employee.save()
             esi = Component.objects.create(code="ESI", name="ESI (employee)", kind="deduction", basis="percent",
                                            liability_account=esi_payable, sequence=55, statutory="esi",
                                            rounding="rupee_up", coverage_period_months=6, remit_by_day=15)
@@ -1079,7 +1166,7 @@ class Command(BaseCommand):
                     "302": ("18500", "5000"), "303": ("17800", "5000"), "304": ("17200", "5000"),
                     "meena": ("29000", "8500"), "vikas": ("26000", "7500"), "anita": ("52000", "15000"),
                     "kiran": ("36000", "10000"), "raju": ("16000", "4500")}.items():
-                for component, amount in ((basic, basic_pay), (hra, rent_allowance), (pf, "12"), (pt, "200"), (epf, "12")):
+                for component, amount in ((basic, basic_pay), (hra, rent_allowance), (pf, "12"), (pt, "1"), (epf, "12")):
                     Pay.objects.create(employee=people[key], component=component, amount=D(amount),
                                        effective_from=datetime.date(2026, 4, 1))
             for offset, post in ((-2, True), (-1, False)):
@@ -1139,8 +1226,19 @@ class Command(BaseCommand):
                                                              phone=phone)
                 for next_stage in stages[1:stages.index(stage) + 1]:
                     applicant.advance(next_stage)
-            M("hr.LeaveRequest").objects.create(employee=lakshmi, leave_type="vacation", start_date=day(5), end_date=day(7),
-                                                reason="Family function, Solapur")
-            M("hr.LeaveRequest").objects.create(employee=ravi, leave_type="sick", start_date=day(-9), end_date=day(-8),
-                                                reason="Fever")
+            # The plant's leave rules (O405): earned leave a twelfth a month, up to 30 days carried; sick leave that
+            # may go overdrawn; leave without pay. Lakshmi carried 6 days of last year's earned leave into this one.
+            Policy = M("hr.LeavePolicy")
+            earned = Policy.objects.create(code="EL", name="Earned leave", leave_type="vacation", annual_days=D("18"),
+                                           accrues_monthly=True, carry_over_limit=D("30"))
+            sick = Policy.objects.create(code="SL", name="Sick leave", leave_type="sick", annual_days=D("8"),
+                                         allows_negative=True)
+            Policy.objects.create(code="LWP", name="Leave without pay", leave_type="unpaid", allows_negative=True,
+                                  is_paid=False)
+            M("hr.LeaveEntitlement").objects.create(employee=lakshmi, policy=earned, year=TODAY.year, days=D("18"),
+                                                    carried_over=D("6"), note="Carried from the previous year")
+            M("hr.LeaveRequest").objects.create(employee=lakshmi, policy=earned, leave_type="vacation", start_date=day(5),
+                                                end_date=day(7), reason="Family function, Solapur")
+            M("hr.LeaveRequest").objects.create(employee=ravi, policy=sick, leave_type="sick", start_date=day(-9),
+                                                end_date=day(-8), reason="Fever")
 
