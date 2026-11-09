@@ -71,7 +71,7 @@ class EmployeeViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     # number blank (the morning check's list).
     extra_params = ("missing",)
     # A person's leave is read under the leave rule, not the employee's (leave_readable).
-    action_permission_map = {"leave": "hr.view_leaverequest"}
+    action_permission_map = {"leave": "hr.view_leaverequest", "revoke_pin": "hr.change_employee"}
 
     def _check_login(self, serializer):
         """The login linked to a person, as the import links one (users_api.refused_link)."""
@@ -103,6 +103,13 @@ class EmployeeViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
                 raise DRFValidationError({"missing": ["Ask for uan or esi_number."]})
             queryset = members_without(queryset, missing, kinds, timezone.localdate())
         return queryset
+
+    @action(detail=True, methods=["post"], url_path="revoke-pin")
+    def revoke_pin(self, request, pk=None):
+        """Take the person's station PIN away: the personnel office's, as keeping the employee is."""
+        employee = self.get_object()
+        employee.revoke_pin(by=request.user)
+        return Response(self.get_serializer(employee).data)
 
     @action(detail=True, methods=["get"], url_path="leave")
     def leave(self, request, pk=None):

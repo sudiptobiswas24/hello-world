@@ -19,6 +19,11 @@ export default function EmployeeForm() {
       heading={(row) => String(row.employee_number ?? "") + " · " + String(row.name ?? "")}
       state={(row) => (row.employment_status === "terminated" ? { label: "Left", tone: "draft" } : null)}
       permissions={{ add: "hr.add_employee", change: "hr.change_employee", delete: "hr.delete_employee" }}
+      actions={[
+        // The PIN itself is issued once and shown once; taking it away ends any station session it opened.
+        { label: "Revoke station PIN", path: "revoke-pin", permission: "hr.change_employee", danger: true,
+          when: (row) => row.has_pin === true, done: "Station PIN revoked" },
+      ]}
       fields={[
         { key: "name", label: "Name", readOnly: true, existingOnly: true },
         { key: "new_name", label: "Name", newOnly: true, hint: "Who is being taken on" },
