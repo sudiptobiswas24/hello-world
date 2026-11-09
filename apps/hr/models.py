@@ -670,14 +670,31 @@ class LeaveEntitlement(AuditModel):
         return f"{self.employee} {self.policy.code} {self.year}: {self.days}"
 
     def save(self, *args, **kwargs):
-        # The help text said "already capped by that year's policy" and nothing capped it (O307): limit 5,
-        # 10 carried in, and the year had 30 days where 25 is right.
-        limit = self.policy.carry_over_limit
-        if self.carried_over is not None and self.carried_over > limit:
-            raise ValidationError({"carried_over": [
-                f"{self.policy.code} carries at most {format(limit.normalize(), 'f')} days into a year; the rest "
-                "lapses. Enter what carries."]})
-        super().save(*args, **kwargs)
+        """
+        The help text said "already capped by that year's policy" and nothing capped it (O307): limit 5,
+        10 carried in, and the year had 30 days where 25 is right.
+
+        The cap is asked when the carry is entered, against the limit standing then (O364). A carry recorded
+        under a limit since lowered is a fact of that year, kept as it was: lowering 5 to 2 left a row
+        carrying 5 that could not have its days edited at all. So the limit is asked of a new row, of a carry
+        moved to another person, policy or year (a carry into a different year is a new carry), and of a carry
+        raised; a carry corrected downwards is never more than the limit it was entered under allowed. A
+        lowered limit caps the next carry entered, next year's included.
+        """
+        with transaction.atomic():
+            kept = None
+            if self.pk:
+                numbering_first()  # a raw row lock, after the company's numbering row (O257)
+                kept = LeaveEntitlement.objects.select_for_update(no_key=True).filter(pk=self.pk).values_list(
+                    "employee_id", "policy_id", "year", "carried_over").first()
+            same_carry = kept is not None and kept[:3] == (self.employee_id, self.policy_id, self.year)
+            limit = self.policy.carry_over_limit
+            if (self.carried_over is not None and self.carried_over > limit
+                    and not (same_carry and self.carried_over <= kept[3])):
+                raise ValidationError({"carried_over": [
+                    f"{self.policy.code} carries at most {format(limit.normalize(), 'f')} days into a year; the "
+                    "rest lapses. Enter what carries."]})
+            super().save(*args, **kwargs)
 
 
 class LeaveStatus(models.TextChoices):
