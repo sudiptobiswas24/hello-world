@@ -1671,8 +1671,9 @@ class BankStatement(AuditModel):
             "difference": (ledger - adjustment) - self.closing_balance,
         }
 
-    def is_reconciled(self):
-        report = self.reconciliation()
+    def is_reconciled(self, report=None):
+        """Books and bank agree with nothing unexplained: what close() asks before it signs off."""
+        report = report if report is not None else self.reconciliation()
         return (
             report["difference"] == 0
             and report["statement_difference"] == 0
