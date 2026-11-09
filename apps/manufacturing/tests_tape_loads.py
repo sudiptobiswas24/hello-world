@@ -138,11 +138,8 @@ class ABackflushedLoomDrawsByTheDoffTests(TapeLoadTestCase):
             self.load("D-1", "100", CreelSide.WEFT, 9, 5)
         self.assertEqual(TapeLoad.objects.filter(lot=self.doffs["D-1"]).count(), 1)
 
-    def test_creels_loaded_from_another_warehouse_take_nothing_off_this_ones_doff(self):
-        # O265: D-1 has 100 kg on the plant's shelf and 60 kg on W2's. L-20,
-        # at W2's station, has 60 kg of it on its creel. The plant's station
-        # was told D-1 had 100 - 60 = 40 kg free, though no creel held a kilo
-        # of the plant's 100.
+    def second_shed(self):
+        """W2, its own 60 kg of D-1, and LX-2 there serving L-20; LX-1 in the plant keeps L-17."""
         from django.utils import timezone
 
         from apps.inventory.models import MovementType, StockMovement, Warehouse
@@ -156,13 +153,51 @@ class ABackflushedLoomDrawsByTheDoffTests(TapeLoadTestCase):
         self.station.machines.set([self.l17])
         shed = LoomStation.objects.create(code="LX-2", name="Loom exit 2", warehouse=w2)
         shed.machines.set([self.l20])
+        return w2, shed
+
+    def test_creels_loaded_from_another_warehouse_take_nothing_off_this_ones_doff(self):
+        # O265: D-1 has 100 kg on the plant's shelf and 60 kg on W2's. L-20,
+        # at W2's station, has 60 kg of it on its creel. The plant's station
+        # was told D-1 had 100 - 60 = 40 kg free, though no creel held a kilo
+        # of the plant's 100.
+        # O492: with both loaded, one run, each shelf read 160 promised: the
+        # run's loads were counted from every shelf. Each shelf holds what
+        # was loaded off it, and a roll weighed in the plant draws the
+        # plant's doff and leaves W2's creel as it was.
+        from apps.inventory.tracking import committed_elsewhere
+
+        w2, shed = self.second_shed()
+        doff = self.doffs["D-1"]
         with self.assertRaisesMessage(ValidationError, "has 60 kg in"):
             load_tape(shed, self.operator, self.l20, "D-1", "61", CreelSide.WARP, at=at(TODAY, 8, 55))
         load_tape(shed, self.operator, self.l20, "D-1", "60", CreelSide.WARP, at=at(TODAY, 9))
 
         load = self.load("D-1", "100", CreelSide.WARP, 9, 5)
         self.assertEqual((load.kg, load.station, load.issue), (Decimal("100.000"), self.station, None))
-        self.assertEqual(self.doffs["D-1"].on_hand_at(self.plant), Decimal("100"))
+        self.assertEqual(doff.on_hand_at(self.plant), Decimal("100"))
+        self.assertEqual((committed_elsewhere(doff, self.plant), committed_elsewhere(doff, w2)),
+                         (Decimal("100"), Decimal("60")))
+
+        roll = self.weigh(gross="52.6", declared="481", when=at(TODAY, 10, 42))
+        issue = roll.entry.backflush_issue
+        self.assertEqual((issue.warehouse, {line.lot for line in issue.lines.all()}), (self.plant, {doff}))
+        # Whatever the roll drew of the plant's doff, the rest is still on L-17's creel: nothing free.
+        self.assertEqual(doff.on_hand_at(self.plant) - committed_elsewhere(doff, self.plant), Decimal("0"))
+        self.assertEqual((doff.on_hand_at(w2), committed_elsewhere(doff, w2)), (Decimal("60"), Decimal("60")))
+
+    def test_a_roll_weighed_in_one_shed_does_not_draw_a_doff_loaded_in_another(self):
+        # O492: the output draws off its own station's shelf, and was handed
+        # every doff on the run's creels wherever it was loaded: a roll
+        # weighed at LX-2 in W2 was sent to draw D-2, which stood only on
+        # L-17's creel in the plant. W2's creels hold no tape at all.
+        from .station import record_roll
+
+        _w2, shed = self.second_shed()
+        self.load("D-2", "100", CreelSide.WARP, 9)
+        with self.assertRaisesMessage(ValidationError, "creels hold 0 "):
+            record_roll(shed, self.operator, self.l20, Decimal("52.6"), self.core, Decimal("481"),
+                        at=at(TODAY, 10, 42))
+        self.assertEqual(self.doffs["D-2"].on_hand_at(self.plant), Decimal("100"))
 
     def test_its_roll_draws_the_doffs_on_its_creels(self):
         self.load("D-1", "100", CreelSide.WARP, 9)
