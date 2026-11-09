@@ -87,6 +87,13 @@ def _refuse_counting_twice(line, others):
             )
 
 
+class NoCostToTake(ValidationError):
+    """A gain with no cost given, of something the warehouse holds none of (or holds at nothing)."""
+
+    def __init__(self, message, item):
+        super().__init__(message)
+        self.item = item
+
 class AdjustmentDirection(models.TextChoices):
     INCREASE = "increase", "Increase only"
     DECREASE = "decrease", "Decrease only"
@@ -573,9 +580,10 @@ class StockAdjustmentLine(AuditModel):
                 # 9,000 worth 30,000.00 says 10,000.00 (O328).
                 held, worth = item._replay_valuation(adjustment.warehouse)
                 if quantity > 0 and (held <= 0 or worth <= 0):
-                    raise ValidationError(
+                    raise NoCostToTake(
                         f"There is no {item} at {adjustment.warehouse} to take a cost from. "
-                        "Give the line an explicit unit cost (Cost each, on the adjustment's line)."
+                        "Give the line an explicit unit cost (Cost each, on the adjustment's line).",
+                        item=item,
                     )
                 self.posted_value = to_paisa(worth * quantity / held) if held > 0 else Decimal("0")
                 # The rate is for reading, at the places the line keeps.
@@ -853,7 +861,15 @@ class StockCount(AuditModel):
                         f"books said {line.system_quantity} {line.item.uom}"
                     ),
                 )
-            adjustment.post()
+            try:
+                adjustment.post()
+            except NoCostToTake as refused:
+                # O268: a count carries no cost, so the adjustment's own words ("Cost each, on the adjustment's
+                # line") pointed at a line nobody can reach from the sheet.
+                raise ValidationError(
+                    f"The count found {refused.item} at {self.warehouse}, where there is none to take a cost from, "
+                    "and a count carries no cost. Take that line off this sheet and count it in on a stock "
+                    "adjustment, giving its cost each there.") from refused
 
         self.posted = True
         self.posted_at = timezone.now()
