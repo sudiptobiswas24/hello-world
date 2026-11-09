@@ -38,6 +38,7 @@ from decimal import Decimal
 from django.core.exceptions import ValidationError
 from django.db import models, transaction
 from django.db.models import Q
+from django.db.models.functions import Lower
 from django.utils import timezone
 
 from apps.core.models import AuditModel, DocumentSequence, lock_rows, serialised, to_date
@@ -59,7 +60,8 @@ class Shift(AuditModel):
     and a rule would only ever hold the second.
     """
 
-    code = models.CharField(max_length=16, unique=True)
+    # Unique whatever the case (O493): the constraint in Meta, in words in check_code().
+    code = models.CharField(max_length=16, db_index=True)
     name = models.CharField(max_length=64)
     starts_at = models.TimeField(
         help_text="Clock time the shift begins. Wall clock, not a duration "
@@ -77,6 +79,11 @@ class Shift(AuditModel):
             models.CheckConstraint(
                 check=Q(hours__gt=0) & Q(hours__lte=24),
                 name="shift_hours_in_a_day",
+            ),
+            # N and n are one shift to the floor and to a scanner (O493).
+            models.UniqueConstraint(
+                Lower("code"), name="shift_code_unique_whatever_the_case",
+                violation_error_message="Another shift already has this code in other letters.",
             ),
         ]
 
@@ -154,6 +161,17 @@ class Shift(AuditModel):
             raise ValidationError({"code": (
                 f"A shift code is letters, digits and hyphens only, such as N or NIGHT-2; "
                 f"{self.code!r} is not."
+            )})
+        # N and n would be one shift on the noticeboard and two in the books
+        # (O493); the constraint in Meta holds it against two saves at once.
+        taken = Shift.objects.filter(code__iexact=self.code)
+        if self.pk:
+            taken = taken.exclude(pk=self.pk)
+        other = taken.values_list("code", flat=True).first()
+        if other is not None:
+            raise ValidationError({"code": (
+                f"Shift {other} already exists; {self.code} is the same code in other "
+                f"letters, and a code is the same shift whatever the case."
             )})
 
     def clean(self):
