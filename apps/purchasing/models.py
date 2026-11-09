@@ -2176,7 +2176,6 @@ class PurchaseOrder(Extensible, TaxesTakenUnder, TaxedDocumentMixin, ChangesWith
             )
 
     @serialised("status")
-    @serialised("status")
     def confirm(self):
         """
         Commit to the order. Until this happens it is a shopping list, and
@@ -3153,15 +3152,6 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
 
     def is_subcontract(self):
         return self.components.exists()
-
-    def component_cost(self, warehouse):
-        """What one finished unit's components are worth."""
-        return sum(
-            (round_money(component.quantity_per
-                         * component.item.average_cost_at(warehouse))
-             for component in self.components.select_related("item")),
-            Decimal("0"),
-        )
 
     def agreed_price(self):
         """What the vendor has agreed for this line, if anything."""
