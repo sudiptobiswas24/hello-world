@@ -56,7 +56,7 @@ class PurchaseChargeTestCase(PurchasingLifecycleTestCase):
 class PurchaseChargeBasicsTests(PurchaseChargeTestCase):
     def test_a_charge_bills_to_its_own_expense_account(self):
         order = self.make_order("10", "5")
-        order.add_charge(self.freight, Decimal("30"))
+        order.lines.create(charge=self.freight, description=self.freight.name, quantity=1, unit_price=Decimal("30"))
         self.receive(order, "10")
 
         bill = order.create_bill(self.payable)
@@ -68,7 +68,7 @@ class PurchaseChargeBasicsTests(PurchaseChargeTestCase):
 
     def test_a_charge_needs_no_item_or_uom(self):
         order = self.make_order("10", "5")
-        line = order.add_charge(self.freight, Decimal("30"))
+        line = order.lines.create(charge=self.freight, description=self.freight.name, quantity=1, unit_price=Decimal("30"))
         self.assertIsNone(line.item_id)
         self.assertIsNone(line.uom_id)
         self.assertTrue(line.is_charge())
@@ -105,7 +105,7 @@ class PurchaseChargeBasicsTests(PurchaseChargeTestCase):
         )
         order = self.make_order("10", "5")
         with self.assertRaisesMessage(ValidationError, "no expense account"):
-            order.add_charge(sales_only, Decimal("30"))
+            order.lines.create(charge=sales_only, description=sales_only.name, quantity=1, unit_price=Decimal("30"))
 
 
 class PurchaseChargeTaxTests(PurchaseChargeTestCase):
@@ -123,12 +123,12 @@ class PurchaseChargeTaxTests(PurchaseChargeTestCase):
 
     def test_the_charge_brings_its_taxes_with_it(self):
         order = self.make_order("10", "5")
-        line = order.add_charge(self.freight, Decimal("30"))
+        line = order.lines.create(charge=self.freight, description=self.freight.name, quantity=1, unit_price=Decimal("30"))
         self.assertEqual(line.tax_total(), Decimal("6"))
 
     def test_the_tax_reaches_the_bill_and_the_ledger(self):
         order = self.make_order("10", "5")
-        order.add_charge(self.freight, Decimal("30"))
+        order.lines.create(charge=self.freight, description=self.freight.name, quantity=1, unit_price=Decimal("30"))
         self.receive(order, "10")
         bill = order.create_bill(self.payable)
         bill.post()
@@ -140,7 +140,7 @@ class PurchaseChargeTaxTests(PurchaseChargeTestCase):
 class PurchaseChargeFulfilmentTests(PurchaseChargeTestCase):
     def test_a_charge_cannot_be_received(self):
         order = self.make_order("10", "5")
-        charge_line = order.add_charge(self.freight, Decimal("30"))
+        charge_line = order.lines.create(charge=self.freight, description=self.freight.name, quantity=1, unit_price=Decimal("30"))
         receipt = GoodsReceipt.objects.create(
             purchase_order=order, receipt_date=datetime.date(2026, 1, 5)
         )
@@ -152,7 +152,7 @@ class PurchaseChargeFulfilmentTests(PurchaseChargeTestCase):
 
     def test_a_charge_does_not_hold_the_order_at_partly_received(self):
         order = self.make_order("10", "5")
-        order.add_charge(self.freight, Decimal("30"))
+        order.lines.create(charge=self.freight, description=self.freight.name, quantity=1, unit_price=Decimal("30"))
         self.receive(order, "10")
         self.assertEqual(order.receipt_status(), FulfilmentStatus.FULL)
 
@@ -160,7 +160,7 @@ class PurchaseChargeFulfilmentTests(PurchaseChargeTestCase):
         """Nothing will ever arrive for it, so a bill-on-receipt policy
         would otherwise strand the freight on the order."""
         order = self.make_order("10", "5")
-        order.add_charge(self.freight, Decimal("30"))
+        order.lines.create(charge=self.freight, description=self.freight.name, quantity=1, unit_price=Decimal("30"))
 
         bill = order.create_bill(self.payable)
         bill.post()
@@ -169,7 +169,7 @@ class PurchaseChargeFulfilmentTests(PurchaseChargeTestCase):
 
     def test_a_charge_only_bills_once(self):
         order = self.make_order("10", "5")
-        order.add_charge(self.freight, Decimal("30"))
+        order.lines.create(charge=self.freight, description=self.freight.name, quantity=1, unit_price=Decimal("30"))
         order.create_bill(self.payable).post()
         self.receive(order, "10")
 
@@ -180,7 +180,7 @@ class PurchaseChargeFulfilmentTests(PurchaseChargeTestCase):
 
     def test_a_debit_note_gives_the_charge_back(self):
         order = self.make_order("10", "5")
-        order.add_charge(self.freight, Decimal("30"))
+        order.lines.create(charge=self.freight, description=self.freight.name, quantity=1, unit_price=Decimal("30"))
         self.receive(order, "10")
         bill = order.create_bill(self.payable)
         bill.post()

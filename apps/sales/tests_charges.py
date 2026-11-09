@@ -44,7 +44,7 @@ class ChargeBasicsTests(ChargeLineTestCase):
         """Keeping it out of product revenue is the whole point: freight
         with no cost behind it otherwise flatters gross margin."""
         order = self.make_order("10", "100")
-        order.add_charge(self.freight, Decimal("50"))
+        order.lines.create(charge=self.freight, description=self.freight.name, quantity=1, unit_price=Decimal("50"))
         invoice = self.bill(order)
 
         self.assertEqual(invoice.total(), Decimal("1050"))
@@ -53,7 +53,7 @@ class ChargeBasicsTests(ChargeLineTestCase):
 
     def test_a_charge_needs_no_item_or_uom(self):
         order = self.make_order("10", "100")
-        line = order.add_charge(self.freight, Decimal("50"))
+        line = order.lines.create(charge=self.freight, description=self.freight.name, quantity=1, unit_price=Decimal("50"))
         self.assertIsNone(line.item_id)
         self.assertIsNone(line.uom_id)
         self.assertTrue(line.is_charge())
@@ -85,7 +85,7 @@ class ChargeBasicsTests(ChargeLineTestCase):
 
     def test_it_shows_its_own_name_on_the_document(self):
         order = self.make_order("10", "100")
-        line = order.add_charge(self.freight, Decimal("50"))
+        line = order.lines.create(charge=self.freight, description=self.freight.name, quantity=1, unit_price=Decimal("50"))
         self.assertEqual(line.label(), "Shipping")
         self.assertIn("Shipping", str(line))
 
@@ -107,12 +107,12 @@ class ChargeTaxTests(ChargeLineTestCase):
         """Billing freight untaxed where the jurisdiction taxes it is the
         commonest way to get this wrong."""
         order = self.make_order("10", "100")
-        line = order.add_charge(self.freight, Decimal("50"))
+        line = order.lines.create(charge=self.freight, description=self.freight.name, quantity=1, unit_price=Decimal("50"))
         self.assertEqual(line.tax_total(), Decimal("10.00"))
 
     def test_the_tax_reaches_the_invoice_and_the_ledger(self):
         order = self.make_order("10", "100")
-        order.add_charge(self.freight, Decimal("50"))
+        order.lines.create(charge=self.freight, description=self.freight.name, quantity=1, unit_price=Decimal("50"))
         invoice = self.bill(order)
 
         self.assertEqual(invoice.total(), Decimal("1060"))
@@ -122,7 +122,7 @@ class ChargeTaxTests(ChargeLineTestCase):
 class ChargeFulfilmentTests(ChargeLineTestCase):
     def test_a_charge_cannot_be_shipped(self):
         order = self.make_order("10", "100")
-        charge_line = order.add_charge(self.freight, Decimal("50"))
+        charge_line = order.lines.create(charge=self.freight, description=self.freight.name, quantity=1, unit_price=Decimal("50"))
         delivery = Delivery.objects.create(
             sales_order=order, delivery_date=datetime.date(2026, 3, 3)
         )
@@ -136,13 +136,13 @@ class ChargeFulfilmentTests(ChargeLineTestCase):
         """Nothing will ever ship against it, so counting it would pin the
         order at PARTIAL forever."""
         order = self.make_order("10", "100")
-        order.add_charge(self.freight, Decimal("50"))
+        order.lines.create(charge=self.freight, description=self.freight.name, quantity=1, unit_price=Decimal("50"))
         self.ship(order, "10")
         self.assertEqual(order.delivery_status(), FulfilmentStatus.FULL)
 
     def test_a_charge_is_billable_without_waiting_for_a_delivery(self):
         order = self.make_order("10", "100", policy=InvoicePolicy.DELIVERED)
-        charge_line = order.add_charge(self.freight, Decimal("50"))
+        charge_line = order.lines.create(charge=self.freight, description=self.freight.name, quantity=1, unit_price=Decimal("50"))
 
         invoice = self.bill(order)
 
@@ -151,7 +151,7 @@ class ChargeFulfilmentTests(ChargeLineTestCase):
 
     def test_a_charge_only_bills_once(self):
         order = self.make_order("10", "100", policy=InvoicePolicy.DELIVERED)
-        order.add_charge(self.freight, Decimal("50"))
+        order.lines.create(charge=self.freight, description=self.freight.name, quantity=1, unit_price=Decimal("50"))
         self.bill(order)
         self.ship(order, "10")
         second = self.bill(order)
@@ -161,7 +161,7 @@ class ChargeFulfilmentTests(ChargeLineTestCase):
 class ChargeCorrectionTests(ChargeLineTestCase):
     def test_a_credit_note_gives_the_charge_back_too(self):
         order = self.make_order("10", "100")
-        order.add_charge(self.freight, Decimal("50"))
+        order.lines.create(charge=self.freight, description=self.freight.name, quantity=1, unit_price=Decimal("50"))
         invoice = self.bill(order)
 
         note = invoice.create_credit_note()
@@ -171,7 +171,7 @@ class ChargeCorrectionTests(ChargeLineTestCase):
 
     def test_charge_revenue_is_reported_under_its_own_name(self):
         order = self.make_order("10", "100")
-        order.add_charge(self.freight, Decimal("50"))
+        order.lines.create(charge=self.freight, description=self.freight.name, quantity=1, unit_price=Decimal("50"))
         self.bill(order)
 
         rows = {row["key"]: row["net"] for row in revenue_report(group_by="item")}

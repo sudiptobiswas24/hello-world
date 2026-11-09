@@ -504,13 +504,24 @@ class TaxedLineMixin(models.Model):
         position maps a tax it has produced to itself (FiscalPositionTaxMapping
         refuses a chain), so nothing is mapped twice. Where the position drops
         every tax the item's stand, as before: a line naming none of an item
-        that declares some is refused (refuse_untaxed_lines). Nothing for a
-        line with no item, or a kind of line that has not said its side.
+        that declares some is refused (refuse_untaxed_lines).
+
+        A charge line (freight, handling) takes its charge's taxes the same
+        way (O488): those kept for its side or for both, since one charge
+        serves both directions. Before, only an add_charge called by tests
+        alone gave them, and a charge added through the API took none.
+        Nothing for a line with neither, or a kind of line that has not
+        said its side.
         """
-        item = getattr(self, "item", None)
-        if item is None or self.TAX_SIDE not in ("sales", "purchase"):
+        if self.TAX_SIDE not in ("sales", "purchase"):
             return []
-        taxes = item.sales_taxes if self.TAX_SIDE == "sales" else item.purchase_taxes
+        item = getattr(self, "item", None)
+        if item is not None:
+            taxes = item.sales_taxes if self.TAX_SIDE == "sales" else item.purchase_taxes
+        elif getattr(self, "charge_id", None) is not None:
+            taxes = self.charge.taxes.filter(scope__in=(self.TAX_SIDE, "both"))
+        else:
+            return []
         taxes = list(taxes.filter(is_active=True))
         position = position_for_defaults(self.party_for_tax()) if under is _NOW else under
         if position is None:

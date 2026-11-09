@@ -73,7 +73,7 @@ class ShelfAgainstLedger(LandedCostTestCase):
 
     def test_landed_cost_then_a_sale_then_a_take_back(self):
         order = self.make_order("7", "4.01")
-        order.add_charge(self.freight, D("10.00"))
+        order.lines.create(charge=self.freight, description=self.freight.name, quantity=1, unit_price=D("10.00"))
         r1 = self.receive_part(order, "3")
         r2 = self.receive_part(order, "4")
         self.agree("received")
@@ -88,7 +88,7 @@ class ShelfAgainstLedger(LandedCostTestCase):
 
     def test_landed_cost_and_a_return(self):
         order = self.make_order("7", "4.01")
-        order.add_charge(self.freight, D("10.00"))
+        order.lines.create(charge=self.freight, description=self.freight.name, quantity=1, unit_price=D("10.00"))
         r1 = self.receive_part(order, "3")
         r2 = self.receive_part(order, "4")
         bill = order.create_bill(self.payable)

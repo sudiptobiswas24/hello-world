@@ -172,7 +172,8 @@ class ClosedShortTests(ToleranceTestCase):
         self.ship_it(billed, "90")
         with self.assertRaisesMessage(ValidationError, "Credit the difference first"):
             billed.lines.get().close_short("x")
-        charge = order.add_charge(self._freight(), Decimal("50"))
+        freight = self._freight()
+        charge = order.lines.create(charge=freight, description=freight.name, quantity=1, unit_price=Decimal("50"))
         with self.assertRaisesMessage(ValidationError, "A charge is not shipped"):
             charge.close_short("x")
 
