@@ -317,10 +317,13 @@ def on_its_creels(order, item):
     supply and left whole in the demand, the 100 kg on the warp creel was
     counted twice and a purchase raised for tape standing on the loom.
     """
-    from apps.manufacturing.tape_loads import on_the_creels
+    from apps.manufacturing.tape_loads import creel_warehouses, on_the_creels
 
     # A run that does not backflush took its loads off the shelf as it loaded them: issued, not promised.
-    held = on_the_creels(order, item) if order.backflush else []
+    # The whole run's creels, shelf by shelf: its demand is met by tape on
+    # any of them, and each shelf's supply has its own creels taken off.
+    held = ([row for place in creel_warehouses(order) for row in on_the_creels(order, item, place)]
+            if order.backflush else [])
     return sum((kg for _lot, kg in held), Decimal("0"))
 
 

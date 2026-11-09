@@ -1578,7 +1578,7 @@ class FloorRaceTests(RaceCase):
                               made.operator, "Wrong doff"))
         self.once(outcomes)
         load.refresh_from_db()
-        self.assertEqual(load.voided_at is None, drawn_by_output(made.run, made.doffs["D-1"]) > 0)
+        self.assertEqual(load.voided_at is None, drawn_by_output(made.run, made.doffs["D-1"], made.station.warehouse) > 0)
 
     def test_two_challans_do_not_both_send_past_the_run(self):
         """

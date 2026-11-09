@@ -3087,7 +3087,8 @@ class ProductionEntry(VoidedNotDeleted, AuditModel):
             # is issued: drawn as no batch, the output could not be booked
             # at all, and a recall of the doff would not find the roll.
             needed = item.to_stock_quantity(wanted, component.uom)
-            for lot, kg in on_the_creels(self.work_order, item):
+            # Off this output's own shelf, the one it draws from (O492).
+            for lot, kg in on_the_creels(self.work_order, item, self.warehouse):
                 take = min(kg - taken.get(lot, Decimal("0")), needed).quantize(STOCK_PLACES)
                 if take <= 0:
                     continue
