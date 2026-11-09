@@ -587,12 +587,6 @@ class Item(Extensible, AuditModel):
 
         return cost_of_removing(self, warehouse, quantity, lot=lot)
 
-    def removal_unit_cost(self, warehouse, quantity, lot=None):
-        """`cost_of_removing` per unit, for movements that need a rate."""
-        from .costing import unit_cost_for
-
-        return unit_cost_for(self, warehouse, quantity, lot=lot)
-
     def average_cost_at(self, warehouse, before_id=None):
         """
         Weighted average unit cost, optionally as it stood before a movement, at the eight places a movement's

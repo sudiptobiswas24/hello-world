@@ -14,6 +14,7 @@ from decimal import Decimal
 from django.core.exceptions import ValidationError
 
 from apps.accounting.models import Payment, PaymentDirection
+from apps.accounting.settlement import allocated_on
 from apps.core.models import Currency, ExchangeRate, Party, PartyRole, PartyRoleAssignment
 
 from .models import (
@@ -83,7 +84,7 @@ class BillSettlementTests(PaymentTestCase):
         BillPayment.objects.create(bill=first, payment=payment, amount=Decimal("20"))
         BillPayment.objects.create(bill=second, payment=payment, amount=Decimal("30"))
 
-        self.assertEqual(BillPayment.unallocated_for(payment), Decimal("0"))
+        self.assertEqual(payment.amount - allocated_on(payment), Decimal("0"))
         self.assertEqual(vendor_balance(self.vendor), Decimal("0"))
 
     def test_over_allocating_the_payment_is_refused(self):

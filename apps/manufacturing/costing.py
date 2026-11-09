@@ -462,13 +462,6 @@ class StandardCost(AuditModel):
         self._refuse_once_published("deleted")
         return super().delete(*args, **kwargs)
 
-    def share_of(self, element):
-        """What fraction of the total one element is, as a percentage."""
-        if not self.total:
-            return None
-        value = getattr(self, element)
-        return (value / self.total * Decimal("100")).quantize(Decimal("0.01"))
-
 
 def explain(version, item):
     """

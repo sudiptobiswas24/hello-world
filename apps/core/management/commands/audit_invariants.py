@@ -297,27 +297,12 @@ class Command(BaseCommand):
     UNCALLED_REPORTED = {
         "accounting.BankStatement.is_reconciled": "O470",
         "accounting.Payment.is_reconciled": "O470",
-        "hr.Employee.management_chain": "O472",
         "hr.PayRun.total_cost": "O473",
         "hr.Timesheet.billable_hours": "O474",
         "inventory.GateVisit.hours_in": "O475",
-        "inventory.Item.removal_unit_cost": "O476",
-        "inventory.Lot.is_serial": "O477",
-        "inventory.StockTransfer.is_settled": "O478",
-        "inventory.StockTransfer.holding_warehouse": "O478",
-        "manufacturing.BagSpecification.printed_area_sqm": "O479",
-        "manufacturing.FabricRoll.kilos_for": "O480",
         "manufacturing.Machine.rate_per_hour": "O481",
-        "manufacturing.StandardCost.share_of": "O482",
         "purchasing.Bill.act_pay_by": "O483",
-        "purchasing.BillPayment.allocated_for": "O484",
-        "purchasing.BillPayment.unallocated_for": "O484",
-        "sales.InvoicePayment.allocated_for": "O484",
-        "sales.InvoicePayment.unallocated_for": "O484",
-        "purchasing.GoodsReceiptLine.next_step_from": "O485",
-        "purchasing.GoodsReceiptLine.quantity_inspected": "O486",
         "purchasing.PurchaseOrder.issue_components": "O487",
-        "purchasing.PurchaseOrderLine.has_agreed_price": "O489",
         "sales.DeliveryLine.lots_shipped": "O490",
         "sales.SalesOrder.reservation_shortfalls": "O491",
     }
@@ -1225,13 +1210,12 @@ class Command(BaseCommand):
     # inventory/models.py was allowed for the one Item method that hands the rate on).
     PER_UNIT_RATE_ALLOWED = {
         "inventory/costing.py": "where the rate is defined",
-        "inventory/models.py:Item.removal_unit_cost": "the Item method that hands the rate on",
         "inventory/models.py:Item.average_cost": "the average across warehouses, for a margin check: nothing is booked",
         "manufacturing/bom.py": "a planned cost: nothing is booked or moved at it",
         "manufacturing/costing.py:against_actual": "a report of standard against actual: nothing is booked",
         "inventory/adjustments.py:StockAdjustmentLine.post": "a gain priced at the shelf's average: stock coming in, not a withdrawal",
     }
-    PER_UNIT_RATES = ("removal_unit_cost", "unit_cost_for", "average_cost_at")
+    PER_UNIT_RATES = ("unit_cost_for", "average_cost_at")
 
     # Doors that take a named batch off and are asked the promise elsewhere, with why.
     PROMISE_ASKED_ELSEWHERE = {

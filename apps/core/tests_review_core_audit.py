@@ -76,9 +76,9 @@ class Shelf(SimpleTestCase):
         self.assertEqual(self.found(text), ["sales/deliveries.py:post"])
 
     def test_the_rate_is_reported_in_a_function_that_is_not_the_named_one_of_the_same_file(self):
-        text = ("class Item:\n    def removal_unit_cost(self, w):\n        return self.average_cost_at(w)\n"
+        text = ("class Item:\n    def average_cost(self, w):\n        return self.average_cost_at(w)\n"
                 "    def write_down(self, w, q):\n        return q * self.average_cost_at(w)\n"
-                "    def margin(self, w):\n        return self.removal_unit_cost(w)\n")
+                "    def margin(self, w):\n        return unit_cost_for(self, w)\n")
         found = Command().per_unit_withdrawal_rates(["inventory"], {"inventory": {Path("apps/inventory/models.py"): text}})
         self.assertEqual(sorted(where(found)), ["inventory/models.py:5", "inventory/models.py:7"])
 

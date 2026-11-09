@@ -257,16 +257,6 @@ class Employee(Extensible, AuditModel):
             return False
         return self.termination_date is None or on_date <= self.termination_date
 
-    def management_chain(self):
-        """Everyone above this person, closest first."""
-        chain, seen = [], {self.pk}
-        node = self.manager
-        while node is not None and node.pk not in seen:
-            seen.add(node.pk)
-            chain.append(node)
-            node = node.manager
-        return chain
-
     def _check_statutory_ids(self):
         if self.uan and not (self.uan.isdigit() and len(self.uan) == 12):
             raise ValidationError({"uan": ["A UAN is twelve digits."]})

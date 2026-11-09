@@ -113,14 +113,14 @@ class ColourTests(FinishingTestCase):
     def test_colours_on_each_face(self):
         bag = self.printed()
         self.assertTrue(close(bag.ink_grams(), "1.8"))
-        self.assertTrue(close(bag.printed_area_sqm(), "1.2"))
+        self.assertTrue(close(bag.face_area_sqm(), "0.6"))
         self.assertTrue(close(bag.bag_grams(), "113.23628"))
         self.assertTrue(close(self.row(bag, self.ink), "1.8"))
 
     def test_the_front_only(self):
         bag = self.printed(print_colours=3, print_colours_back=0)
         self.assertTrue(close(bag.ink_grams(), "0.9"))
-        self.assertTrue(close(bag.printed_area_sqm(), "0.6"))
+        self.assertTrue(close(bag.face_area_sqm(), "0.6"))
 
     def test_back_colours_need_an_ink_too(self):
         self.refused("printed in 2 colour(s)", self.bag, print_colours_back=2)

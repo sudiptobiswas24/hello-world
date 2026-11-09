@@ -76,9 +76,6 @@ class Lot(AuditModel):
     def __str__(self):
         return f"{self.item.sku} / {self.code}"
 
-    def is_serial(self):
-        return self.item.tracking == TrackingMode.SERIAL
-
     def has_expired(self, on_date=None):
         if self.expires_on is None:
             return False

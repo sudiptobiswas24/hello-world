@@ -28,6 +28,7 @@ from apps.core.models import (
     UnitOfMeasureCategory,
 )
 
+from .costing import unit_cost_for
 from .models import (
     AdjustmentReason,
     CostingMethod,
@@ -109,7 +110,7 @@ class ReportTestCase(TestCase):
         return StockMovement.objects.create(
             item=target, warehouse=shelf, movement_type=MovementType.ISSUE,
             uom=target.uom, quantity=-Decimal(quantity),
-            unit_cost=target.removal_unit_cost(shelf, Decimal(quantity)),
+            unit_cost=unit_cost_for(target, shelf, Decimal(quantity)),
             occurred_at=when,
         )
 
