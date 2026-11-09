@@ -257,6 +257,12 @@ class CalculatedThenChangedOverTheApiTests(AsTheRolesTestCase):
         self.assertEqual(officer.post(base + "calculate/", {}, format="json").status_code, 200)
         return base
 
+    def test_the_officer_reads_what_the_run_costs_the_company(self):
+        """O473: gross 5,000 and the employer's pension at 3 per cent, 150: the company spends 5,150."""
+        run = self.clients["Payroll Officer"].get(self.calculated_june()).json()
+        self.assertEqual((run["gross"], run["net"], run["employer_cost"], run["total_cost"]),
+                         ("5000.00", "3750.00", "150.00", "5150.00"))
+
     def test_stretched_to_july_it_is_calculated_again_before_it_posts(self):
         base = self.calculated_june()
         patched = self.clients["Payroll Officer"].patch(base, {"period_end": "2026-07-31"}, format="json")

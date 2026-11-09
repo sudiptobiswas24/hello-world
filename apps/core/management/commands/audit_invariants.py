@@ -295,7 +295,6 @@ class Command(BaseCommand):
     # Methods nothing calls, each on the register (docs/RISKS.md) until the commit that wires or removes it
     # takes it off here, as DELETABLE_REPORTED does for its shape.
     UNCALLED_REPORTED = {
-        "hr.PayRun.total_cost": "O473",
         "hr.Timesheet.billable_hours": "O474",
         "inventory.GateVisit.hours_in": "O475",
         "manufacturing.Machine.rate_per_hour": "O481",
