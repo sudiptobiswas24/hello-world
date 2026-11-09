@@ -71,7 +71,8 @@ class EmployeeViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     # number blank (the morning check's list).
     extra_params = ("missing",)
     # A person's leave is read under the leave rule, not the employee's (leave_readable).
-    action_permission_map = {"leave": "hr.view_leaverequest", "revoke_pin": "hr.change_employee"}
+    action_permission_map = {"leave": "hr.view_leaverequest", "revoke_pin": "hr.change_employee",
+                             "issue_pin": "hr.change_employee"}
 
     def _check_login(self, serializer):
         """The login linked to a person, as the import links one (users_api.refused_link)."""
@@ -103,6 +104,21 @@ class EmployeeViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
                 raise DRFValidationError({"missing": ["Ask for uan or esi_number."]})
             queryset = members_without(queryset, missing, kinds, timezone.localdate())
         return queryset
+
+    @action(detail=True, methods=["post"], url_path="issue-pin")
+    def issue_pin(self, request, pk=None):
+        """
+        Issue, or re-issue, the person's station PIN. The PIN is in this
+        answer and nowhere else: only its keyed digest is kept, the edit log
+        says only that the digest changed, and no later read carries it.
+        """
+        employee = self.get_object()
+        pin = employee.issue_pin(by=request.user)
+        answer = dict(self.get_serializer(employee).data)
+        answer["pin"] = pin
+        response = Response(answer)
+        response["Cache-Control"] = "no-store"
+        return response
 
     @action(detail=True, methods=["post"], url_path="revoke-pin")
     def revoke_pin(self, request, pk=None):
