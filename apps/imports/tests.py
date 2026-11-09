@@ -11,7 +11,7 @@ from io import StringIO
 
 from django.core.management import CommandError, call_command
 from django.db.models import Sum
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
 
 from apps.accounting.models import Account, AccountType, JournalLine
 from apps.core.models import Company, Party
@@ -740,3 +740,15 @@ class TheOpeningPositionComesInOnceTests(ImportTestCase):
         found = Command().opening_kinds_brought_in_twice({"opening_loans": _opening_loans})
         self.assertEqual([shape for shape, _ in found], ["opening kind brought in twice"])
         self.assertEqual(Command().opening_kinds_brought_in_twice(), [])
+
+
+class WhatEachFileSaysItTakesTests(SimpleTestCase):
+    """O263: the screen's line for a file names roles only where the file has a roles column."""
+
+    def test_roles_named_only_where_a_roles_column_is(self):
+        from .api import WHAT
+        from .importer import columns_of
+        for kind, words in WHAT.items():
+            with self.subTest(kind=kind):
+                if "roles" in words.lower() and "logins screen" not in words.lower():
+                    self.assertIn("roles", columns_of(kind), words)

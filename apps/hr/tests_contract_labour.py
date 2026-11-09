@@ -113,3 +113,36 @@ class NoWorkerJoinsAStoppedContractorTests(TestCase):
         with self.assertRaisesMessage(ValidationError, "no longer active"):
             mohan.save()
         self.assertEqual(ContractWorker.objects.get(pk=ravi.pk).contractor, working)
+
+
+class ALicenceCutBelowItsWorkersTests(TestCase):
+    """O362: the licence's count is held to the most on the register at once from today on, the same count a
+    worker joining is held to; a worker who has left before today no longer counts."""
+
+    def test_cut_below_the_busiest_day_ahead_is_refused_and_down_to_it_is_not(self):
+        from django.utils import timezone
+        today = timezone.localdate()
+        party = Party.objects.create(code="V-LAB2", name="Om Labour Co")
+        PartyRoleAssignment.objects.create(party=party, role=PartyRole.VENDOR)
+        contractor = LabourContractor.objects.create(
+            party=party, licence_number="CLRA/2026/90", licence_valid_to=today + datetime.timedelta(days=200),
+            work_nature="Loading", max_workers=4)
+
+        def worker(name, joined, left=None):
+            return ContractWorker.objects.create(contractor=contractor, name=name, gender="male", daily_wage="540",
+                                                 joined_on=joined, left_on=left)
+
+        month_ago = today - datetime.timedelta(days=30)
+        worker("Arun", month_ago)
+        worker("Bala", month_ago)
+        worker("Dinesh", month_ago, left=today - datetime.timedelta(days=1))
+        joins_later = today + datetime.timedelta(days=10)
+        worker("Chetan", joins_later)
+        contractor.max_workers = 2
+        with self.assertRaisesMessage(ValidationError, f"3 workers are on {contractor}'s register on "
+                                                       f"{joins_later:%d %b %Y}"):
+            contractor.save()
+        contractor.max_workers = 3
+        contractor.save()
+        contractor.refresh_from_db()
+        self.assertEqual(contractor.max_workers, 3)
