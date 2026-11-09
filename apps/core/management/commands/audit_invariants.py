@@ -318,8 +318,6 @@ class Command(BaseCommand):
         "purchasing.GoodsReceiptLine.next_step_from": "O485",
         "purchasing.GoodsReceiptLine.quantity_inspected": "O486",
         "purchasing.PurchaseOrder.issue_components": "O487",
-        "purchasing.PurchaseOrder.add_charge": "O488",
-        "sales.SalesOrder.add_charge": "O488",
         "purchasing.PurchaseOrderLine.has_agreed_price": "O489",
         "sales.DeliveryLine.lots_shipped": "O490",
         "sales.SalesOrder.reservation_shortfalls": "O491",

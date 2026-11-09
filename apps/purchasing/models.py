@@ -2510,22 +2510,6 @@ class PurchaseOrder(Extensible, TaxesTakenUnder, TaxedDocumentMixin, ChangesWith
             moved.append((item, quantity))
         return moved
 
-    def add_charge(self, charge, amount, description="", quantity=Decimal("1")):
-        """
-        Put freight, handling or a surcharge from the vendor on this order.
-
-        The charge's default taxes come across, because the commonest way
-        to get freight wrong is to leave it untaxed where the jurisdiction
-        taxes it at the same rate as the goods.
-        """
-        line = PurchaseOrderLine.objects.create(
-            order=self, charge=charge, description=description or charge.name,
-            quantity=Decimal(quantity), unit_price=round_money(Decimal(amount)),
-            expense_account=charge.account_for(is_sale=False),
-        )
-        line.taxes.set(charge.taxes.all())
-        return line
-
     def prepayments(self):
         """Posted prepayment bills raised against this order."""
         return self.bills.filter(is_prepayment=True, posted=True)

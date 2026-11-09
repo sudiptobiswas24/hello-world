@@ -225,7 +225,7 @@ class ScopeTests(PerformanceTestCase):
             ),
         )
         order = self.order("100")
-        order.add_charge(freight, Decimal("50"))
+        order.lines.create(charge=freight, description=freight.name, quantity=1, unit_price=Decimal("50"))
 
         self.assertEqual(self.row_for()["order_lines"], 1)
 
