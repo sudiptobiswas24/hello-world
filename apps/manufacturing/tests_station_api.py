@@ -353,3 +353,53 @@ class HrRevokesAStationPinTests(StationApiTestCase):
         self.operator.refresh_from_db()
         self.assertIsNotNone(self.operator.pin_digest)
         self.assertEqual(self.sign_in().status_code, 200)
+
+    # -- issuing from the product (a PIN was issued only by load_demo) -----
+
+    def issue_url(self, employee=None):
+        return f"/api/hr/employees/{(employee or self.operator).pk}/issue-pin/"
+
+    def test_hr_issues_a_pin_that_signs_in(self):
+        self.operator.revoke_pin()
+        hr, user = self.as_role("HR Admin")
+        response = hr.post(self.issue_url(), {}, format="json")
+        self.assertEqual(response.status_code, 200, response.content)
+        pin = response.json()["pin"]
+        self.assertRegex(pin, r"^\d{6}$")
+        self.assertTrue(response.json()["has_pin"])
+        self.assertEqual(response["Cache-Control"], "no-store")
+        self.operator.refresh_from_db()
+        self.assertEqual(self.operator.updated_by, user)
+        self.assertNotEqual(self.operator.pin_digest, pin)
+        self.assertEqual(self.sign_in(pin).status_code, 200)
+        # Nothing read later carries it: the record, the list, nor its history.
+        later = hr.get(f"/api/hr/employees/{self.operator.pk}/").content.decode()
+        self.assertNotIn(pin, later)
+        self.assertNotIn("pin_digest", later)
+        self.assertNotIn(pin, hr.get("/api/hr/employees/").content.decode())
+        from apps.core.history import RecordEvent
+        events = [str(row.__dict__) for row in RecordEvent.objects.all()]
+        self.assertTrue(events)
+        self.assertFalse([row for row in events if pin in row])
+
+    def test_a_reissue_ends_the_old_pin_and_its_session(self):
+        self.assertEqual(self.sign_in().status_code, 200)
+        hr, _ = self.as_role("HR Admin")
+        response = hr.post(self.issue_url(), {}, format="json")
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertIsNone(self.client.get(self.base).json()["operator"])
+        self.assertEqual(self.sign_in().status_code, 400)
+        self.assertEqual(self.sign_in(response.json()["pin"]).status_code, 200)
+
+    def test_who_only_reads_employees_may_not_issue(self):
+        payroll, _ = self.as_role("Payroll Officer")
+        self.assertEqual(payroll.post(self.issue_url(), {}, format="json").status_code, 403)
+        self.assertEqual(self.sign_in().status_code, 200)
+
+    def test_a_leaver_is_refused_a_pin(self):
+        Employee.objects.filter(pk=self.operator.pk).update(termination_date=TODAY - datetime.timedelta(days=1))
+        hr, _ = self.as_role("HR Admin")
+        response = hr.post(self.issue_url(), {}, format="json")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("has left", response.content.decode())
+        self.assertNotIn('"pin"', response.content.decode())

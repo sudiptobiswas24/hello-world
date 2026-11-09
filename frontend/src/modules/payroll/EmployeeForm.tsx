@@ -1,3 +1,6 @@
+import { useState } from "react";
+import { useAct } from "../../api/hooks";
+import { useAccess } from "../../auth/me";
 import { RecordScreen, type FieldDef } from "../../views/RecordScreen";
 
 type Row = Record<string, unknown>;
@@ -44,6 +47,7 @@ export default function EmployeeForm() {
         { key: "work_state", label: "Works in state", hint: "MH, WB: whose professional tax and welfare fund apply; needed once two states' schedules are loaded" },
         { key: "gender", label: "Gender", kind: "choice", initial: "", choices: [["", "Not said"], ["female", "Female"], ["male", "Male"], ["other", "Other"]], hint: "Maharashtra's professional tax exempts a woman's salary up to 25,000" },
       ]}
+      below={(employee) => <StationPin employee={employee} />}
       panels={[{
         // What they are paid, component by component, from a date: a
         // change is a new row from its date, never an edit of the old one.
@@ -65,5 +69,41 @@ export default function EmployeeForm() {
           body: (values, employee) => ({ ...values, employee: employee.id }) },
       }]}
     />
+  );
+}
+
+/**
+ * Issue or re-issue the person's station PIN. The server answers with the PIN once and keeps only its digest,
+ * so it is shown here until dismissed and never read back: held in this component's state, nowhere else.
+ */
+export function StationPin({ employee }: { employee: Row }) {
+  const { can } = useAccess();
+  const act = useAct<Row>();
+  const [shown, setShown] = useState<string | null>(null);
+  if (!can("hr.change_employee") || employee.employment_status === "terminated") return null;
+  const held = employee.has_pin === true;
+  const issue = async () => {
+    const outcome = await act.run("POST", `/api/hr/employees/${String(employee.id)}/issue-pin/`, {},
+      { done: held ? "Station PIN re-issued" : "Station PIN issued" });
+    if (outcome.ok) setShown(String(outcome.data.pin));
+  };
+  return (
+    <section className="related" aria-label="Station PIN">
+      <h2 className="section-title">Station PIN</h2>
+      {shown ? (
+        <div className="sheet" role="alert">
+          <p>New PIN for {String(employee.name ?? "")}: <strong className="mono">{shown}</strong></p>
+          <p>Write it down now and give it to them: it is not shown again. The old PIN, if any, no longer signs in.</p>
+          <button type="button" className="btn" onClick={() => setShown(null)}>Done</button>
+        </div>
+      ) : (
+        <p>
+          {held ? "Holds a station PIN." : "Holds no station PIN."}{" "}
+          <button type="button" className="btn" disabled={act.pending} onClick={() => void issue()}>
+            {held ? "Re-issue station PIN" : "Issue station PIN"}
+          </button>
+        </p>
+      )}
+    </section>
   );
 }

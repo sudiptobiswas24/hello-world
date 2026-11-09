@@ -675,7 +675,6 @@ class Command(BaseCommand):
     # State changes that take no row lock of their own, and why that is right.
     SERIALISED_ELSEWHERE = {
         "accounting.PostedTaxDocumentMixin.record_taxes": "the last step of its document's post, which holds the lock",
-        "hr.Employee.issue_pin": "the database's unique key on the PIN's digest refuses a shared PIN",
         "inventory.StockAdjustmentLine.post": "called only by its adjustment's post, which holds the adjustment",
         "inventory.StockAdjustmentLine.reverse": "called only by its adjustment's void, which holds the adjustment",
         "inventory.StockTransferLine.move": "called only by its transfer's dispatch and receive, which hold the transfer "
