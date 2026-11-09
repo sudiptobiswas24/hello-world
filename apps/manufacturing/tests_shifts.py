@@ -16,6 +16,7 @@ from django.core.exceptions import ValidationError
 from django.utils import timezone
 
 from apps.core.models import Party, PartyRole, PartyRoleAssignment
+from apps.core.tests_roles import RolesTestCase
 from apps.hr.models import Employee, EmploymentStatus
 
 from .oee import availability, by_operator, by_shift, effectiveness, performance, quality
@@ -508,3 +509,66 @@ class AWindowThatMeansSomethingTests(ShiftTestCase):
         with self.assertRaises(ValidationError) as caught:
             effectiveness(self.loom, DAY, DAY - datetime.timedelta(days=7))
         self.assertIn("runs backwards", str(caught.exception))
+
+
+class AShiftCodeIsLettersDigitsAndHyphensTests(RolesTestCase):
+    """
+    O345: a shift code is printed into every batch code the shift makes and
+    scanned back off a Code 128 label, so it is letters, digits and hyphens,
+    refused otherwise, on every path that writes one.
+    """
+
+    BAD = ("Früh 1", "N/2", "A B", "N_1", "", "B.")
+
+    def shift(self, code, hour, **extra):
+        return Shift.objects.create(code=code, name=f"Shift {code}", starts_at=datetime.time(hour),
+                                    hours=Decimal("8"), **extra)
+
+    def test_the_model_refuses_any_other_code_on_create_and_on_edit(self):
+        for code in self.BAD:
+            with self.subTest(code=code), self.assertRaises(ValidationError) as refused:
+                self.shift(code, 6)
+            self.assertIn("letters, digits and hyphens", refused.exception.message_dict["code"][0])
+        self.assertFalse(Shift.objects.exists())
+        for code, hour in (("A", 6), ("N", 14), ("NIGHTSHIFT-LONGX", 22)):
+            self.shift(code, hour)
+        night = Shift.objects.get(code="NIGHTSHIFT-LONGX")
+        night.code = "NIGHT SHIFT"
+        with self.assertRaises(ValidationError):
+            night.save()
+        self.assertTrue(Shift.objects.filter(code="NIGHTSHIFT-LONGX").exists())
+        # The admin's form asks clean(), and hears the same beside the field.
+        night.code = "N/2"
+        with self.assertRaises(ValidationError) as refused:
+            night.full_clean()
+        self.assertIn("code", refused.exception.message_dict)
+
+    def test_a_row_kept_from_before_the_rule_is_renamed_before_anything_else_changes(self):
+        shift = self.shift("D", 6)
+        Shift.objects.filter(pk=shift.pk).update(code="Früh 1")
+        shift.refresh_from_db()
+        shift.name = "Morning"
+        with self.assertRaises(ValidationError):
+            shift.save()
+        shift.code = "FRUEH-1"
+        shift.save()
+        self.assertEqual(Shift.objects.get(pk=shift.pk).name, "Morning")
+
+    def test_the_api_refuses_it_for_the_process_engineer_and_takes_a_hyphenated_code(self):
+        engineer = self.as_("Process Engineer")
+        url = "/api/manufacturing/shifts/"
+        for code in ("N/2", "Früh 1"):
+            with self.subTest(code=code):
+                response = engineer.post(url, {"code": code, "name": "Night", "starts_at": "22:00",
+                                               "hours": "8"}, format="json")
+                self.assertEqual(response.status_code, 400, response.content)
+                self.assertIn("letters, digits and hyphens", str(response.json()["code"]))
+        self.assertFalse(Shift.objects.exists())
+        response = engineer.post(url, {"code": "NIGHT-2", "name": "Night", "starts_at": "22:00",
+                                       "hours": "8"}, format="json")
+        self.assertEqual(response.status_code, 201, response.content)
+        pk = response.json()["id"]
+        response = engineer.patch(f"{url}{pk}/", {"code": "NIGHT 2"}, format="json")
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("code", response.json())
+        self.assertEqual(Shift.objects.get(pk=pk).code, "NIGHT-2")
