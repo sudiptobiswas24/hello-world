@@ -40,8 +40,8 @@ export interface FieldDef {
   negative?: boolean;
   /** Shown, never sent: the server works it out. */
   readOnly?: boolean;
-  /** Set when the record is made and fixed after. */
-  createOnly?: boolean;
+  /** Set when the record is made and fixed after; or fixed after for the records this says (a draft capitalised from its bill). */
+  createOnly?: boolean | ((record: Row) => boolean);
   /** Changed even where the screen's `editable` says the record is not: a computed plan's certificate (O433). */
   evenWhenFixed?: boolean;
   /** Left out of the new form. */
@@ -422,7 +422,7 @@ export function RecordScreen(props: RecordScreenProps) {
   // A picker reads its list; whoever may not read it sees the value, not a box.
   const mayChange = Boolean(permissions.change && can(permissions.change));
   const open = (field: FieldDef) =>
-    (mayEdit || (!isNew && mayChange && Boolean(field.evenWhenFixed))) && !field.readOnly && !(field.createOnly && !isNew)
+    (mayEdit || (!isNew && mayChange && Boolean(field.evenWhenFixed))) && !field.readOnly && !(!isNew && (typeof field.createOnly === "function" ? field.createOnly(saved!) : field.createOnly))
     && !(field.pick?.permission && !can(field.pick.permission));
   const anyOpen = mayEdit || fields.some(open);
 

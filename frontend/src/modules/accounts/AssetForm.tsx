@@ -10,6 +10,9 @@ const VENDOR: FieldDef["pick"] = {
 const draft = (row: Row) => row.status === "draft";
 const inService = (row: Row) => row.status === "in_service";
 const disposed = (row: Row) => row.status === "disposed";
+// What the old system had depreciated: corrected on a draft typed in by hand, which has posted nothing (O266);
+// a draft from a bill has posted its capitalisation, and carries none.
+const capitalised = (row: Row) => Boolean(row.capitalisation_entry);
 
 /**
  * A machine, a building, a vehicle: capitalised at cost, depreciated
@@ -37,9 +40,9 @@ export default function AssetForm() {
         { key: "salvage_value", label: "Salvage value", kind: "money", initial: "0" },
         { key: "life_months", label: "Life (months)", kind: "integer", hint: "The category's, if left empty" },
         { key: "in_service_date", label: "In service from", readOnly: true, kind: "date" },
-        { key: "depreciated_before", label: "Depreciated elsewhere until", kind: "date", createOnly: true,
+        { key: "depreciated_before", label: "Depreciated elsewhere until", kind: "date", createOnly: capitalised,
           hint: "Brought in at go-live: the old system's months, carried in the opening balances" },
-        { key: "opening_depreciation", label: "Depreciated elsewhere", kind: "money", createOnly: true, initial: "0",
+        { key: "opening_depreciation", label: "Depreciated elsewhere", kind: "money", createOnly: capitalised, initial: "0",
           hint: "What the old system had charged by that date" },
         { key: "accumulated", label: "Depreciated so far", readOnly: true, kind: "money" },
         { key: "net_book_value", label: "Book value", readOnly: true, kind: "money" },
