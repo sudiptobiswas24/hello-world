@@ -86,6 +86,7 @@ class Command(BaseCommand):
         findings = []
         findings += self.unread_settings(all_code)
         findings += self.uncalled_helpers(labels, sources, all_code)
+        findings += self.uncalled_model_methods(labels)
         findings += self.unlocked_stock_writers(labels, sources)
         findings += self.movements_in_another_unit(labels, sources)
         findings += self.unlocked_open_runs(labels, sources)
@@ -289,6 +290,123 @@ class Command(BaseCommand):
                             f"{key}() is defined in {path.name} and called by nothing "
                             "outside it — built, and not wired to anything.",
                         ))
+        return findings
+
+    # Methods nothing calls, each on the register (docs/RISKS.md) until the commit that wires or removes it
+    # takes it off here, as DELETABLE_REPORTED does for its shape.
+    UNCALLED_REPORTED = {
+        "accounting.BankStatement.is_reconciled": "O470",
+        "accounting.Payment.is_reconciled": "O470",
+        "hr.Employee.revoke_pin": "O471",
+        "hr.Employee.management_chain": "O472",
+        "hr.PayRun.total_cost": "O473",
+        "hr.Timesheet.billable_hours": "O474",
+        "inventory.GateVisit.hours_in": "O475",
+        "inventory.Item.removal_unit_cost": "O476",
+        "inventory.Lot.is_serial": "O477",
+        "inventory.StockTransfer.is_settled": "O478",
+        "inventory.StockTransfer.holding_warehouse": "O478",
+        "manufacturing.BagSpecification.printed_area_sqm": "O479",
+        "manufacturing.FabricRoll.kilos_for": "O480",
+        "manufacturing.Machine.rate_per_hour": "O481",
+        "manufacturing.StandardCost.share_of": "O482",
+        "purchasing.Bill.act_pay_by": "O483",
+        "purchasing.BillPayment.allocated_for": "O484",
+        "purchasing.BillPayment.unallocated_for": "O484",
+        "sales.InvoicePayment.allocated_for": "O484",
+        "sales.InvoicePayment.unallocated_for": "O484",
+        "purchasing.GoodsReceiptLine.next_step_from": "O485",
+        "purchasing.GoodsReceiptLine.quantity_inspected": "O486",
+        "purchasing.PurchaseOrder.issue_components": "O487",
+        "purchasing.PurchaseOrder.add_charge": "O488",
+        "sales.SalesOrder.add_charge": "O488",
+        "purchasing.PurchaseOrderLine.has_agreed_price": "O489",
+        "sales.DeliveryLine.lots_shipped": "O490",
+        "sales.SalesOrder.reservation_shortfalls": "O491",
+    }
+
+    # Methods Django, DRF or the admin call on a model by their name, never written as a call in our code.
+    CALLED_BY_DJANGO = frozenset({
+        "save", "delete", "clean", "clean_fields", "full_clean", "validate_unique", "validate_constraints",
+        "get_absolute_url", "natural_key", "refresh_from_db", "from_db", "check",
+    })
+
+    @staticmethod
+    def method_corpus():
+        """
+        Every place a model's method can be asked for by name: the code under apps/ (the unaudited apps
+        included: a caller there is a caller), less tests and migrations, and the templates, which read
+        an attribute by name. Less this file too, whose exemption keys name what they exempt.
+        """
+        here = Path(__file__).resolve()
+        texts = []
+        for path in sorted(Path("apps").rglob("*")):
+            if not path.is_file() or "migrations" in path.parts or "test" in path.name:
+                continue
+            if path.suffix == ".py" and path.resolve() != here:
+                texts.append(path.read_text(encoding="utf-8"))
+            elif path.suffix in (".html", ".txt") and "templates" in path.parts:
+                texts.append(path.read_text(encoding="utf-8"))
+        return "\n".join(texts)
+
+    @staticmethod
+    def our_model_classes(labels):
+        """Each concrete model in these apps, and each abstract base or mixin of ours it is built on, once."""
+        seen = {}
+        for model in django_apps.get_models():
+            for cls in model.__mro__:
+                parts = cls.__module__.split(".")
+                if len(parts) > 1 and parts[0] == "apps" and parts[1] in labels and cls not in seen:
+                    seen[cls] = parts[1]
+        return [(label, cls) for cls, label in seen.items()]
+
+    def uncalled_model_methods(self, labels, classes=None, corpus=None):
+        """
+        A public method or property on a model that nothing asks for (O320).
+
+        uncalled_helpers reads module-level functions only, so a method escaped it: a planning run's
+        list of fenced orders and of messages into the frozen zone, a unit's conversion to its base,
+        each built and tested and asked by nothing. Asked means named anywhere outside a test, a
+        string included: a serializer's field list or source, the admin's list_display and a
+        template all ask by name. A name two classes define counts its definitions out, so one
+        caller of either keeps both: the check reads words, not types.
+        """
+        if classes is None:
+            classes = self.our_model_classes(labels)
+        if corpus is None:
+            corpus = self.method_corpus()
+        # Counted once for the whole corpus: a search per name over every file took minutes.
+        from collections import Counter
+        mentions = Counter(re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", corpus))
+        mentions.subtract(Counter(re.findall(r"\bdef ([A-Za-z_][A-Za-z0-9_]*)\(", corpus)))
+        findings, defined = [], set()
+        for label, cls in sorted(classes, key=lambda pair: (pair[0], pair[1].__name__)):
+            for name, value in vars(cls).items():
+                if name.startswith("_") or name in self.CALLED_BY_DJANGO:
+                    continue
+                function = value.fget if isinstance(value, property) else getattr(value, "__func__", value)
+                if not inspect.isfunction(function):
+                    continue
+                function = inspect.unwrap(function)
+                key = f"{label}.{cls.__name__}.{name}"
+                defined.add(key)
+                if key in self.CALLED_FROM_OUTSIDE or key in self.UNCALLED_REPORTED:
+                    continue
+                if mentions[name] <= 0:
+                    try:
+                        where = f"{Path(inspect.getsourcefile(function)).name}:{inspect.getsourcelines(function)[1]}"
+                    except (OSError, TypeError):
+                        where = cls.__module__
+                    findings.append((
+                        "uncalled method",
+                        f"{key}() ({where}) is asked for by nothing outside its tests: built, and not wired "
+                        "to anything. Wire it, remove it, or say in CALLED_FROM_OUTSIDE who calls it by name.",
+                    ))
+        # An exemption for a method no longer there is a reason outliving its subject.
+        findings += [("stale exemption", f"{key} is exempted as an uncalled method that no longer exists: "
+                                         "take it off the list that names it.")
+                     for key in sorted({*self.CALLED_FROM_OUTSIDE, *self.UNCALLED_REPORTED})
+                     if key.count(".") == 2 and key.split(".")[0] in labels and key not in defined]
         return findings
 
     # Files that write stock without holding a position, with the reason.
