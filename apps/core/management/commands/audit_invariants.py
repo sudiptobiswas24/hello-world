@@ -1116,7 +1116,6 @@ class Command(BaseCommand):
         "manufacturing/bom.py": "a planned cost: nothing is booked or moved at it",
         "manufacturing/costing.py:against_actual": "a report of standard against actual: nothing is booked",
         "inventory/adjustments.py:StockAdjustmentLine.post": "a gain priced at the shelf's average: stock coming in, not a withdrawal",
-        "purchasing/models.py:PurchaseOrderLine.component_cost": "called by nothing; reported (fix_core, g22)",
     }
     PER_UNIT_RATES = ("removal_unit_cost", "unit_cost_for", "average_cost_at")
 

@@ -434,6 +434,17 @@ class StockCountTests(AdjustmentTestCase):
         self.assertEqual(self.item.on_hand_at(self.warehouse), Decimal("96"))
         self.assertEqual(self.balance(self.shrinkage), Decimal("20.00"))
 
+    def test_something_never_stocked_found_by_a_count_is_sent_to_an_adjustment_in_words(self):
+        # O268: the sheet carries no cost, and the adjustment's own words pointed at a line nobody can reach.
+        count = self.sheet()
+        count.add(self.item, "500")
+        with self.assertRaisesMessage(ValidationError, "count it in on a stock adjustment, giving its cost each"):
+            count.post()
+        count.refresh_from_db()
+        self.assertFalse(count.posted)
+        self.assertFalse(StockAdjustment.objects.filter(count=count).exists())
+        self.assertEqual(self.item.on_hand_at(self.warehouse), Decimal("0"))
+
     def test_a_surplus_writes_the_shelf_up(self):
         self.stock("100", "5")
         count = self.sheet()
