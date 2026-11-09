@@ -108,14 +108,21 @@ class TwoFactorProbes(Probe):
             self.assertEqual(web.post(step, {"code": self.code(factor, later)}).status_code, 200,
                              f"a code from {later}s away signed in")
         SecondFactor.objects.filter(pk=factor.pk).update(failures=0, locked_until=None)
+        # Both codes worked out once, from one moment. Asked again for "30 seconds from now" after a window's
+        # boundary had passed, the test was given the next window's code, unused and one window ahead, and it
+        # rightly signed in: the g31 gate's pg-a lane failed on it, and a boundary forced between the two
+        # sign-ins fails it every time.
+        moment = timezone.now()
+        ahead = pyotp.TOTP(factor.secret).at(moment + datetime.timedelta(seconds=30))
+        current = pyotp.TOTP(factor.secret).at(moment)
         # One window either side is the usual tolerance for a phone's clock; it signs in once.
         web, step = self.password("ctl")
-        self.assertEqual(web.post(step, {"code": self.code(factor, 30)}).status_code, 302)
+        self.assertEqual(web.post(step, {"code": ahead}).status_code, 302)
         web2, step2 = self.password("ctl")
-        self.assertEqual(web2.post(step2, {"code": self.code(factor, 30)}).status_code, 200)
+        self.assertEqual(web2.post(step2, {"code": ahead}).status_code, 200)
         # The code of the window before the one taken is refused too (steps only go forward).
         web3, step3 = self.password("ctl")
-        self.assertEqual(web3.post(step3, {"code": self.code(factor, 0)}).status_code, 200)
+        self.assertEqual(web3.post(step3, {"code": current}).status_code, 200)
 
     def test_p03_a_recovery_code_signs_in_once_and_only_its_own_login(self):
         a, b = self.person("ctla", "Controller"), self.person("ctlb", "Controller")
