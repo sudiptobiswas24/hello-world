@@ -297,7 +297,6 @@ class Command(BaseCommand):
     UNCALLED_REPORTED = {
         "hr.Timesheet.billable_hours": "O474",
         "manufacturing.Machine.rate_per_hour": "O481",
-        "sales.DeliveryLine.lots_shipped": "O490",
     }
 
     # Methods Django, DRF or the admin call on a model by their name, never written as a call in our code.

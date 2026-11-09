@@ -594,6 +594,50 @@ class ACutUnderTheDepositThroughTheApiTests(ScreensTestCase):
         self.assertEqual(line.quantity, Decimal("10"))
 
 
+class BatchesShippedTests(ScreensTestCase):
+    """
+    O490: what left, batch by batch, read by the warehouse. 30 of batch SOONER (expiring August) and 50 of
+    LATER (December); 40 shipped naming no batch takes the soonest first: all 30 of SOONER, then 10 of LATER.
+    """
+
+    def test_the_line_and_the_challan_name_each_batch_that_left(self):
+        import datetime as dt
+
+        from django.utils import timezone
+
+        from apps.inventory.models import Item, Lot, MovementType, StockMovement
+        from apps.inventory.tracking import TrackingMode
+
+        from .documents import batches_shipped
+        from .models import Delivery, DeliveryLine, SalesOrder, SalesOrderLine
+
+        batched = Item.objects.create(sku="BAT-1", name="Batched", uom=self.uom, tracking=TrackingMode.LOT)
+        sooner = Lot.objects.create(item=batched, code="SOONER", expires_on=dt.date(2026, 8, 1))
+        later = Lot.objects.create(item=batched, code="LATER", expires_on=dt.date(2026, 12, 1))
+        for lot, quantity in ((sooner, "30"), (later, "50")):
+            StockMovement.objects.create(item=batched, warehouse=self.warehouse, lot=lot, uom=self.uom,
+                                         movement_type=MovementType.RECEIPT, quantity=Decimal(quantity),
+                                         unit_cost=Decimal("5"), occurred_at=timezone.now())
+        order = SalesOrder.objects.create(customer=self.customer, order_date=dt.date(2026, 3, 1), currency=self.usd)
+        line = SalesOrderLine.objects.create(order=order, item=batched, uom=self.uom, quantity=Decimal("40"),
+                                             unit_price=Decimal("10"), revenue_account=self.revenue)
+        order.confirm()
+        delivery = Delivery.objects.create(sales_order=order, delivery_date=dt.date(2026, 3, 3))
+        shipped = DeliveryLine.objects.create(delivery=delivery, order_line=line, warehouse=self.warehouse,
+                                              quantity_shipped=Decimal("40"))
+        self.assertEqual(batches_shipped(shipped), "—", "a draft has shipped nothing yet")
+        delivery.post()
+
+        read = self.as_("Warehouse Staff").get(f"/api/sales/deliveries/{delivery.pk}/")
+        self.assertEqual(read.status_code, 200, read.content)
+        (row,) = read.json()["lines"]
+        self.assertEqual([(each["lot_code"], each["quantity"], each["uom"]) for each in row["lots_shipped"]],
+                         [("SOONER", "30.0000", "each"), ("LATER", "10.0000", "each")])
+        self.assertEqual(batches_shipped(shipped), "SOONER 30 each, LATER 10 each")
+        challan = self.as_("Warehouse Staff").get(f"/api/sales/deliveries/{delivery.pk}/pdf/")
+        self.assertEqual(challan.status_code, 200)
+
+
 class DeliveryChallanPdfTests(ScreensTestCase):
     """The challan the lorry carries, read by whoever may read the delivery and nobody else."""
 
