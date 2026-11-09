@@ -70,8 +70,8 @@ class StoresReviewCreelProbes(base.TapeLoadTestCase):
         with self.assertRaises(ValidationError):
             plan_issue(self.tape, self.plant, free_d3 + D("1"))
         # and exactly the undrawn of D-1 and D-2 is what is on the creels
-        from apps.manufacturing.tape_loads import on_creels_undrawn
-        self.assertEqual((on_creels_undrawn(self.doffs["D-1"]), on_creels_undrawn(self.doffs["D-2"])), (d1, d2))
+        from apps.inventory.tracking import committed_elsewhere
+        self.assertEqual((committed_elsewhere(self.doffs["D-1"], self.plant), committed_elsewhere(self.doffs["D-2"], self.plant)), (d1, d2))
 
     def test_q4_a_run_closed_early_frees_its_creels_for_a_pick(self):
         from apps.inventory.picking import plan_issue
@@ -91,14 +91,14 @@ class StoresReviewCreelProbes(base.TapeLoadTestCase):
         self.assertEqual(sum(q for _l, _b, q in plan_issue(self.tape, self.plant, D("300"))), D("300"))
 
     def test_q6_two_stations_in_two_warehouses_do_not_block_each_others_doff(self):
-        # Seen #3: the load check asks on_creels_undrawn(lot) with no warehouse.
-        from apps.manufacturing.tape_loads import on_creels_undrawn
+        # Seen #3 (O265): the load check asked what creels hold of no warehouse.
+        from apps.inventory.tracking import committed_elsewhere
         from apps.inventory.models import Warehouse
 
         self.load("D-1", "100", CreelSide.WARP, 9)
         elsewhere = Warehouse.objects.create(code="W9", name="Other")
-        self.assertEqual(on_creels_undrawn(self.doffs["D-1"], elsewhere), D("0"))
-        self.assertEqual(on_creels_undrawn(self.doffs["D-1"], self.plant), D("100"))
+        self.assertEqual(committed_elsewhere(self.doffs["D-1"], elsewhere), D("0"))
+        self.assertEqual(committed_elsewhere(self.doffs["D-1"], self.plant), D("100"))
 
 
 # ---------------------------------------------------------------------------------------- O232
