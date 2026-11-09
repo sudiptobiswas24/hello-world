@@ -81,6 +81,8 @@ class PurchaseOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         "prepayment": "purchasing.add_bill",
         "confirm": "purchasing.change_purchaseorder",
         "cancel": "purchasing.change_purchaseorder",
+        # The components leave one shelf of ours for another, the subcontractor's: a transfer.
+        "issue_components": "inventory.add_stocktransfer",
     }
 
     def filter_queryset(self, queryset):
@@ -115,6 +117,31 @@ class PurchaseOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
             warehouse=record_or_404(Warehouse, warehouse, "warehouse", optional=True),
         )
         return Response(GoodsReceiptSerializer(receipt).data, status=201)
+
+    @action(detail=True, methods=["post"])
+    def issue_components(self, request, pk=None):
+        """
+        {warehouse, quantities?}: send a subcontract order's components from that warehouse to the
+        subcontractor's. Without quantities, what the order still needs that has not gone; with
+        {"<item id>": "2"}, exactly that on top, the top-up for what the subcontractor scrapped.
+        """
+        from apps.inventory.models import Item
+
+        order = self.get_object()
+        warehouse = record_or_404(Warehouse, request.data.get("warehouse"), "warehouse")
+        given = request.data.get("quantities") or None
+        quantities = None
+        if given is not None:
+            if not isinstance(given, dict):
+                raise DRFValidationError({"quantities": ["Name each component by its item's id: {\"<id>\": \"2\"}."]})
+            quantities = {record_or_404(Item, key, "quantities"): number(given, key, 4)
+                          for key in given}
+        try:
+            moved = order.issue_components(warehouse, quantities=quantities)
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.messages)
+        return Response({"issued": [{"item": item.pk, "sku": item.sku, "quantity": quantity}
+                                    for item, quantity in moved]})
 
     @action(detail=True, methods=["post"])
     def confirm(self, request, pk=None):

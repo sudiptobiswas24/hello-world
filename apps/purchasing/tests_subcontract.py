@@ -91,6 +91,61 @@ class SubcontractTestCase(PurchasingLifecycleTestCase):
         return (rows["debit"] or Decimal("0")) - (rows["credit"] or Decimal("0"))
 
 
+class ComponentsIssuedThroughTheApiTests(SubcontractTestCase):
+    """
+    O487: the stores send the subcontractor its components through the API. Ten assemblies at one frame
+    and two motors each: 10 frames and 20 motors go to Acme's shelf.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        call_command("setup_roles", verbosity=0)
+        self.clients = {}
+        for role in ("Warehouse Staff", "Purchasing Clerk"):
+            user = User.objects.create_user(role.replace(" ", "-").lower())
+            user.groups.add(Group.objects.get(name=role))
+            self.clients[role] = APIClient()
+            self.clients[role].force_authenticate(user)
+
+    def issue(self, order, role="Warehouse Staff", **body):
+        return self.clients[role].post(f"/api/purchasing/purchase-orders/{order.pk}/issue_components/",
+                                       {"warehouse": self.warehouse.pk, **body}, format="json")
+
+    def at_the_subcontractor(self, item):
+        return item.on_hand_at(self.subcontractor)
+
+    def test_the_warehouse_sends_what_the_order_needs_once(self):
+        order = self.subcontract_order("10")
+        sent = self.issue(order)
+        self.assertEqual(sent.status_code, 200, sent.content)
+        self.assertEqual(sorted((row["sku"], row["quantity"]) for row in sent.json()["issued"]),
+                         [("FRM", "10.00"), ("MTR", "20.00")])
+        self.assertEqual((self.at_the_subcontractor(self.frame), self.at_the_subcontractor(self.motor)),
+                         (Decimal("10"), Decimal("20")))
+        again = self.issue(order)
+        self.assertEqual(again.status_code, 400)
+        self.assertIn("already been issued", again.content.decode())
+
+    def test_a_top_up_sends_exactly_what_is_named(self):
+        order = self.subcontract_order("10")
+        self.issue(order)
+        topped = self.issue(order, quantities={str(self.frame.pk): "2"})
+        self.assertEqual(topped.status_code, 200, topped.content)
+        self.assertEqual(self.at_the_subcontractor(self.frame), Decimal("12"))
+        refused = self.issue(order, quantities={str(self.assembly.pk): "1"})
+        self.assertEqual(refused.status_code, 400)
+        self.assertIn("is not a component", refused.content.decode())
+
+    def test_purchasing_does_not_move_stock(self):
+        order = self.subcontract_order("10")
+        self.assertEqual(self.issue(order, role="Purchasing Clerk").status_code, 403)
+        self.assertEqual(self.at_the_subcontractor(self.frame), Decimal("0"))
+
+
 class ComponentIssueTests(SubcontractTestCase):
     def test_components_move_rather_than_leaving_the_company(self):
         """Stock at a subcontractor is still stock you own and still
