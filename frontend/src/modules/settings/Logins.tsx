@@ -1,4 +1,5 @@
 import { ListView, type Column } from "../../views/ListView";
+import { loginStanding } from "./loginStanding";
 
 type Row = Record<string, unknown> & { id: number };
 
@@ -8,7 +9,11 @@ const COLUMNS: Column<Row>[] = [
   { key: "roles", label: "Roles", render: (row) => (row.roles as string[]).join(", ") },
   { key: "employee_number", label: "Employee", width: "8rem" },
   { key: "last_login", label: "Last signed in", kind: "date", sort: "last_login", width: "9rem" },
-  { key: "is_active", label: "", width: "7rem", render: (row) => (row.is_active ? "" : "Deactivated") },
+  // Ended: the person's leaving date has passed, so sign-in refuses it though nothing switched it off (O333).
+  { key: "is_active", label: "", width: "7rem", render: (row) => {
+    const standing = loginStanding(row);
+    return standing.label === "Active" ? "" : <span title={standing.why}>{standing.label}</span>;
+  } },
 ];
 
 /** Who may sign in, and as what: the roles decide every screen and button. */
