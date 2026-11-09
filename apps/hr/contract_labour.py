@@ -32,12 +32,43 @@ class LabourContractor(AuditModel):
     def __str__(self):
         return f"{self.party.name} ({self.licence_number})"
 
+    def save(self, *args, **kwargs):
+        if self._state.adding:
+            return super().save(*args, **kwargs)
+        with transaction.atomic():
+            lock_rows(self, refresh=False)  # keep the edit in hand; the workers are what is read after the lock
+            # O362: a licence cut below the workers already on it from today on is refused, as a worker
+            # joining past the count is: the same count (most_at_once) answers both.
+            today = timezone.localdate()
+            busiest, on = most_at_once(self, today)
+            if busiest > self.max_workers:
+                raise ValidationError({"max_workers": f"{busiest} workers are on {self}'s register on "
+                                                      f"{on:%d %b %Y}; give the day some of them leave first."})
+            super().save(*args, **kwargs)
+
     def delete(self, *args, **kwargs):
         raise ValidationError("A contractor stays in the register; mark it no longer active.")
 
     def working_on(self, day):
         day = to_date(day)
         return self.workers.filter(joined_on__lte=day).filter(Q(left_on__isnull=True) | Q(left_on__gte=day))
+
+
+def most_at_once(contractor, start, end=None, exclude=None):
+    """
+    The most workers on a contractor's register at once between start and end (open: from start on), and the
+    day it comes. The count only rises on a day someone joins, so those days and start are all it reads.
+    """
+    workers = contractor.workers.exclude(pk=exclude) if exclude else contractor.workers.all()
+    joins = workers.filter(joined_on__gt=start)
+    if end:
+        joins = joins.filter(joined_on__lte=end)
+    busiest, on = 0, start
+    for day in sorted({start, *joins.values_list("joined_on", flat=True)}):
+        here = contractor.working_on(day).exclude(pk=exclude).count()
+        if here > busiest:
+            busiest, on = here, day
+    return busiest, on
 
 
 class Gender(models.TextChoices):
@@ -90,16 +121,11 @@ class ContractWorker(AuditModel):
             if self.joined_on > contractor.licence_valid_to:
                 raise ValidationError({"joined_on": f"{contractor}'s licence ran out on "
                                                     f"{contractor.licence_valid_to:%d %b %Y}."})
-            # The most at once over this worker's time comes on a day
-            # someone joins: theirs, or another's within it.
-            span = contractor.workers.exclude(pk=self.pk).filter(joined_on__gt=self.joined_on)
-            if self.left_on:
-                span = span.filter(joined_on__lte=self.left_on)
-            for day in sorted({self.joined_on, *span.values_list("joined_on", flat=True)}):
-                others = contractor.working_on(day).exclude(pk=self.pk).count()
-                if others >= contractor.max_workers:
-                    raise ValidationError({"joined_on": f"{contractor}'s licence covers {contractor.max_workers} at "
-                                                        f"once, and {others} others are working on {day:%d %b %Y}."})
+            # The most at once over this worker's time, the count a cut licence is held to as well (O362).
+            others, day = most_at_once(contractor, self.joined_on, self.left_on, exclude=self.pk)
+            if others >= contractor.max_workers:
+                raise ValidationError({"joined_on": f"{contractor}'s licence covers {contractor.max_workers} at "
+                                                    f"once, and {others} others are working on {day:%d %b %Y}."})
             super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):

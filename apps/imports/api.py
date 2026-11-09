@@ -22,7 +22,7 @@ from .importer import KINDS, NEEDS, columns_of, run, template
 
 WHAT = {
     "parties": "Customers and vendors, with GST details, credit limit and billing address",
-    "employees": "Employees with department, manager, login and roles",
+    "employees": "Employees with department, manager and login; roles are given on the Logins screen",
     "customer_reps": "Which rep each customer belongs to",
     "items": "Items with their unit, HSN and costing",
     "tape_specs": "Tape specifications; each builds its bill of materials",
