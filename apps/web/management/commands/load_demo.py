@@ -245,6 +245,13 @@ class Command(BaseCommand):
             lut = position("LUT", "Export under LUT", igst0)
             registration = M("accounting.GstSettings").objects.create(
                 gstin=gstin("27AAECD4821K1Z"), interstate_position=inter)
+            # Freight as a line on a document (O495, O496): recharged to a customer or charged by a carrier, GST 18%
+            # either way, booked to its own accounts so recharged freight does not flatter the sacks' margin.
+            charge = M("accounting.ChargeType").objects.create(
+                code="FREIGHT", name="Freight", hsn_code="9965",
+                revenue_account=acc("4300", "Freight recharged", "income"),
+                expense_account=acc("5610", "Freight inward", "expense"))
+            charge.taxes.set(gst18)
             # Exports go out under LUT, and posting one asks for the LUT in force on its day (O218).
             M("accounting.LetterOfUndertaking").objects.create(
                 registration=registration, arn="AD270326000123X", financial_year="2026-27",

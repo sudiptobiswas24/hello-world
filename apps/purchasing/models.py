@@ -2859,8 +2859,7 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
         if shrinking:
             self._hold_for_prepayments()
         self._check_outside_step()
-        if self.is_charge() and not self.expense_account_id:
-            self.expense_account = self.charge.account_for(is_sale=False)
+        self.take_its_charges_account()  # shared with every charge line (O496)
         if self.item_id and self.uom_id:
             # Refuse a unit the item cannot be counted in now, while the
             # line is still a draft, rather than when the goods are on the
@@ -5904,6 +5903,9 @@ class BillLine(PostedLineMixin, TaxedLineMixin, AuditModel):
         # bill posted showed 100.00 on a bill whose payable held 50.00.
         answer_to_its_document(self, "bill", "Cannot modify a line on a posted bill. Issue a debit note instead.")
         refuse_naming_another_order_line(self, self.bill, "vendor", "purchase_order")
+        # Freight typed on a bill booked to the default purchase expense, not its charge's (O496); before the
+        # note's checks, so a typed note line's charge account is asked against its original's.
+        self.take_its_charges_account()
         refuse_correcting_another_line(self, self.bill, "debits_line", "debits", fill=True)
         if self.debits_line_id:
             self.refuse_giving_back_what_moved()
