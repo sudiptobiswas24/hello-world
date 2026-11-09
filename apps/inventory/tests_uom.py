@@ -1,8 +1,8 @@
 """
 One ledger, one unit.
 
-`UnitOfMeasure.to_base_quantity()` existed, was tested, and was called by
-nothing. Every document line carried a `uom` and no document converted,
+A unit conversion (`to_base_quantity()`, since removed for `convert_to()`)
+existed, was tested, and was called by nothing. Every document line carried a `uom` and no document converted,
 so ten cases of twelve booked ten units at sixty each instead of a
 hundred and twenty at five — quantity and valuation both wrong, and
 nothing said so. A widget counted in eaches could be ordered by the

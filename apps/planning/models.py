@@ -482,9 +482,6 @@ class PlannedOrder(AuditModel):
         """Whether this needed starting before the plan was even run."""
         return self.release_on < self.run.planned_on
 
-    def was_fenced(self):
-        return self.fenced_from is not None
-
     def why_late(self):
         """
         Lead time, a full machine, or both.

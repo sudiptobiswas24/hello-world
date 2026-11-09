@@ -24,14 +24,14 @@ class BaseCurrencyTests(TestCase):
 class UnitOfMeasureConversionTests(TestCase):
     def test_unit_without_base_converts_to_itself(self):
         each = UnitOfMeasure.objects.create(code="each", name="Each")
-        self.assertEqual(each.to_base_quantity(Decimal("5")), Decimal("5"))
+        self.assertEqual(each.convert_to(Decimal("5"), each.root()), Decimal("5"))
 
-    def test_derived_unit_converts_to_base_quantity(self):
+    def test_derived_unit_converts_to_its_base_unit(self):
         each = UnitOfMeasure.objects.create(code="each", name="Each")
         case = UnitOfMeasure.objects.create(
             code="case", name="Case of 12", base_unit=each, conversion_factor=Decimal("12")
         )
-        self.assertEqual(case.to_base_quantity(Decimal("3")), Decimal("36"))
+        self.assertEqual(case.convert_to(Decimal("3"), each), Decimal("36"))
 
     def test_base_unit_must_share_category(self):
         each = UnitOfMeasure.objects.create(code="each", name="Each")
