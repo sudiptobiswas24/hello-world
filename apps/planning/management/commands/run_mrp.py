@@ -72,6 +72,22 @@ class Command(BaseCommand):
             for action in rows:
                 self.stdout.write(f"  {action.document()}: {action.sentence()}")
 
+        # The frozen zone, said in its own words. Each message below is
+        # also in the list above it; these are the ones that would change
+        # what the floor was promised, and want a planner's word first.
+        inside = list(run.into_the_fence())
+        if inside:
+            self.stdout.write(f"\nInside the frozen zone (to {run.fence_ends}), ask before moving:")
+            for action in inside:
+                self.stdout.write(f"  {action.document()}: {action.sentence()}")
+        fenced = list(run.fenced().select_related("item"))
+        if fenced:
+            self.stdout.write(f"\nPushed out of the frozen zone to {run.fence_ends}:")
+            for order in fenced:
+                self.stdout.write(
+                    f"  {order.quantity} {order.item.uom} {order.item.sku} wanted {order.fenced_from}"
+                )
+
         weeks = overloaded_weeks(
             LoadBook(run.warehouse, run.planned_on, run.horizon_end),
             WorkCentre.objects.filter(is_active=True),

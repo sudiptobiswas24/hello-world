@@ -926,12 +926,6 @@ class UnitOfMeasure(AuditModel):
         if self.base_unit_id and self.base_unit.category != self.category:
             raise ValidationError("base_unit must be in the same category as this unit.")
 
-    def to_base_quantity(self, quantity):
-        """Convert a quantity expressed in this unit into the base unit's quantity."""
-        if not self.base_unit_id:
-            return quantity
-        return quantity * self.conversion_factor
-
     def root(self):
         """
         The unit at the bottom of this one's chain — the one everything in

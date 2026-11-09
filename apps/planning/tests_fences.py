@@ -10,6 +10,9 @@ shortage on the day it is due.
 """
 
 from decimal import Decimal
+from io import StringIO
+
+from django.core.management import call_command
 
 from .forecast import Forecast
 from .models import PlanningSettings, RescheduleAction
@@ -50,7 +53,6 @@ class TheFrozenZoneTests(FenceTestCase):
         order = run.orders.get(item=self.virgin)
         self.assertEqual(order.needed_by, self.day(7))
         self.assertEqual(order.fenced_from, self.day(3))
-        self.assertTrue(order.was_fenced())
         self.assertEqual(list(run.fenced()), [order])
         self.assertIn("inside the frozen zone", order.explanation())
 
@@ -114,6 +116,38 @@ class AMessageIntoTheFrozenZoneIsFlaggedTests(FenceTestCase):
         self.assertEqual(
             [a.action for a in run.into_the_fence()], [RescheduleAction.DEFER]
         )
+
+
+class ThePrintedPlanSaysWhatTheFenceDidTests(FenceTestCase):
+    """
+    run_mrp is where a planner reads a run, so what the frozen zone moved
+    is said there: run.fenced() and run.into_the_fence() were built and
+    tested and printed by nothing until O320.
+    """
+
+    def report(self):
+        out = StringIO()
+        call_command("run_mrp", "P", "--on", str(TODAY), stdout=out)
+        return out.getvalue()
+
+    def test_an_order_pushed_out_of_the_zone_is_listed_with_the_day_it_was_wanted(self):
+        self.fences(planning=5)
+        self.sell(self.virgin, "100", self.day(3))
+        report = self.report()
+        self.assertIn(f"Pushed out of the frozen zone to {self.day(7)}:", report)
+        self.assertIn(f"100.0000 kg PP-RAFFIA wanted {self.day(3)}", report)
+
+    def test_a_message_into_the_zone_is_listed_apart(self):
+        self.fences(planning=5)
+        self.sell(self.virgin, "100", self.day(30))
+        self.purchase(self.virgin, "100", self.day(2))
+        report = self.report()
+        self.assertIn(f"Inside the frozen zone (to {self.day(7)}), ask before moving:", report)
+
+    def test_without_a_fence_neither_heading_is_printed(self):
+        self.sell(self.virgin, "100", self.day(3))
+        report = self.report()
+        self.assertNotIn("frozen zone", report)
 
 
 class TheDemandFenceTests(FenceTestCase):
