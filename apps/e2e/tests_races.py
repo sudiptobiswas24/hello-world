@@ -3041,3 +3041,47 @@ class TwoClerksScanningIntoOneCountTests(RaceCase):
         self.assertEqual(sorted(answer.status_code for answer in answers), [200, 200],
                          [answer.content for answer in answers])
         self.assertEqual(count.lines.get().counted_quantity, Decimal("12"))
+
+
+@tag("race")
+@unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
+class AGoLiveCorrectionBesideTheFirstPostingRaceTests(RaceCase):
+    """
+    O266: a hand draft's go-live figures are corrected while it has posted nothing. A correction
+    and its going into service at once: read before the lock, the correction saw a draft and wrote
+    the whole row back over the asset just put in service (a draft again, its opening entry
+    posted); and an asset in hand from before the correction posted the figure it held. The
+    correction now holds the row before it asks, and going into service reads the figures under it.
+    Loom 7, 12,000 over 48 months from 1 April 2025, typed as 3,000 depreciated; 2,250 is right.
+    """
+
+    def race_them(self, correction_first):
+        from apps.assets import tests as assets_fixture
+
+        made = fixture(self, assets_fixture.ATypoOnAHandDraftIsCorrectedOnTheDraftTests)
+        loom = made.loom()
+
+        def correct():
+            fresh = FixedAsset.objects.get(pk=loom.pk)
+            fresh.opening_depreciation = Decimal("2250")
+            fresh.save()
+
+        placing = lambda: FixedAsset.objects.get(pk=loom.pk).place_in_service(  # noqa: E731
+            on_date=datetime.date(2025, 4, 1))
+        pair = (correct, placing) if correction_first else (placing, correct)
+        outcomes = race_in_order(FixedAsset, *pair)
+        loom.refresh_from_db()
+        posted = loom.capitalisation_entry.lines.get(account=made.accumulated).credit
+        return outcomes, (loom.status, loom.opening_depreciation, posted)
+
+    def test_put_in_service_first_the_correction_is_refused(self):
+        outcomes, books = self.race_them(correction_first=False)
+        self.assertEqual(outcomes[0], "done", outcomes)
+        # Asked of the row as held, it is in service: a draft no longer, whatever the object in hand said.
+        self.assertIn("Loom 7 is in service", outcomes[1])
+        self.assertEqual(books, ("in_service", Decimal("3000.00"), Decimal("3000.00")))
+
+    def test_corrected_first_the_opening_entry_posts_the_correction(self):
+        outcomes, books = self.race_them(correction_first=True)
+        self.assertEqual(outcomes, ["done", "done"])
+        self.assertEqual(books, ("in_service", Decimal("2250.00"), Decimal("2250.00")))

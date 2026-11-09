@@ -627,21 +627,116 @@ class DepreciationBroughtInAtGoLiveTests(AssetTestCase):
             self.drafted(depreciated_before=datetime.date(2025, 12, 31))
 
     def test_not_changed_after_it_was_brought_in(self):
+        # Brought in is put into service: its opening entry read the figures and posted them.
         loom = self.drafted(depreciated_before=datetime.date(2026, 3, 31), opening_depreciation=Decimal("3000"))
+        loom.place_in_service(on_date=datetime.date(2026, 1, 1))
         loom.depreciated_before = datetime.date(2026, 6, 30)
-        with self.assertRaisesMessage(ValidationError, "are not changed after"):
+        with self.assertRaisesMessage(ValidationError, "its depreciated_before can no longer change"):
             loom.save()
         controller = self.as_role("Controller")
         refused = controller.patch(f"/api/assets/assets/{loom.pk}/", {"opening_depreciation": "6000.00"},
                                    format="json")
         self.assertEqual(refused.status_code, 400, refused.content)
         self.assertEqual(FixedAsset.objects.get(pk=loom.pk).opening_depreciation, Decimal("3000.00"))
-        renamed = controller.patch(f"/api/assets/assets/{loom.pk}/", {"name": "Loom 7A"}, format="json")
-        self.assertEqual(renamed.status_code, 200, renamed.content)
         loom.refresh_from_db()
-        loom.place_in_service(on_date=datetime.date(2026, 1, 1))
         self.assertEqual([row.period_end for row in loom.depreciate(through=datetime.date(2026, 4, 30))],
                          [datetime.date(2026, 4, 30)])
+
+
+class ATypoOnAHandDraftIsCorrectedOnTheDraftTests(AssetTestCase):
+    """
+    O266: on a draft typed in by hand, what the old system had depreciated
+    was refused an edit from the moment it was created, though nothing had
+    read it: a typo was corrected only by registering the asset again.
+    Loom 7, 12,000 over 48 months (250 a month), in service from 1 April
+    2025; the books opened 1 January 2026. Typed as 3,000 to 31 December
+    2025, twelve months' worth for the nine it had run: 2,250 is right.
+    Corrected on the draft, its opening entry posts 2,250, and three
+    months of 250 to 31 March leave it at 9,000. Once that entry has read
+    the figures they are fixed; a depreciation run fixes nothing more.
+    """
+
+    def loom(self):
+        return FixedAsset.objects.create(name="Loom 7", category=self.category, cost=Decimal("12000"),
+                                         life_months=48, acquisition_date=datetime.date(2025, 4, 1),
+                                         depreciated_before=datetime.date(2025, 12, 31),
+                                         opening_depreciation=Decimal("3000"))
+
+    def opening_lines(self, loom):
+        return sorted((line.account.code, line.debit, line.credit) for line in loom.capitalisation_entry.lines.all())
+
+    def test_corrected_on_the_draft_by_the_model(self):
+        loom = self.loom()
+        loom.opening_depreciation = Decimal("2250")
+        loom.save()
+        loom = FixedAsset.objects.get(pk=loom.pk)
+        loom.place_in_service(on_date=datetime.date(2025, 4, 1))
+        self.assertEqual(self.opening_lines(loom),
+                         [("1500", Decimal("12000.00"), Decimal("0.00")), ("1590", Decimal("0.00"), Decimal("2250.00")),
+                          ("3900", Decimal("0.00"), Decimal("12000.00")), ("3900", Decimal("2250.00"), Decimal("0.00"))])
+        loom.depreciate(through=datetime.date(2026, 3, 31))
+        self.assertEqual((loom.accumulated(), loom.net_book_value()), (Decimal("3000.00"), Decimal("9000.00")))
+
+    def test_corrected_on_the_draft_through_the_api_by_the_controller(self):
+        loom = self.loom()
+        controller = self.as_role("Controller")
+        changed = controller.patch(f"/api/assets/assets/{loom.pk}/",
+                                   {"opening_depreciation": "2250.00", "depreciated_before": "2025-12-31"},
+                                   format="json")
+        self.assertEqual(changed.status_code, 200, changed.content)
+        self.assertEqual(changed.json()["opening_depreciation"], "2250.00")
+        placed = controller.post(f"/api/assets/assets/{loom.pk}/place-in-service/", {"on_date": "2025-04-01"},
+                                 format="json")
+        self.assertEqual(placed.status_code, 200, placed.content)
+        loom.refresh_from_db()
+        self.assertEqual(self.opening_lines(loom)[1], ("1590", Decimal("0.00"), Decimal("2250.00")))
+
+    def test_the_draft_is_still_asked_what_was_taken_and_to_when(self):
+        loom = self.loom()
+        loom.opening_depreciation = Decimal("12000.01")
+        with self.assertRaisesMessage(ValidationError, "is more than the 12000 there is to depreciate"):
+            loom.save()
+        loom = FixedAsset.objects.get(pk=loom.pk)
+        loom.depreciated_before = datetime.date(2025, 3, 31)
+        with self.assertRaisesMessage(ValidationError, "Nothing was depreciated before the asset was in service"):
+            loom.save()
+
+    def test_fixed_once_its_opening_entry_and_a_run_have_read_it(self):
+        loom = self.loom()
+        loom.place_in_service(on_date=datetime.date(2025, 4, 1))
+        loom.depreciate(through=datetime.date(2026, 3, 31))
+        self.assertEqual(loom.accumulated(), Decimal("3750.00"))
+        loom.opening_depreciation = Decimal("2250")
+        with self.assertRaisesMessage(ValidationError, "its opening_depreciation can no longer change"):
+            loom.save()
+        controller = self.as_role("Controller")
+        refused = controller.patch(f"/api/assets/assets/{loom.pk}/", {"opening_depreciation": "2250.00"},
+                                   format="json")
+        self.assertEqual(refused.status_code, 400, refused.content)
+        self.assertIn("can no longer change", refused.content.decode())
+        self.assertEqual(FixedAsset.objects.get(pk=loom.pk).opening_depreciation, Decimal("3000.00"))
+
+    def test_an_opening_removed_does_not_make_it_a_draft_again(self):
+        # The reverse path: its opening entry reversed, it is cancelled, and the reversed entry
+        # still says what was posted from the figures; registered again, a new draft takes new ones.
+        loom = self.loom()
+        loom.place_in_service(on_date=datetime.date(2025, 4, 1))
+        loom.remove_opening()
+        loom.refresh_from_db()
+        loom.opening_depreciation = Decimal("2250")
+        with self.assertRaisesMessage(ValidationError, "its opening_depreciation can no longer change"):
+            loom.save()
+
+    def test_an_edit_waits_on_the_row_a_first_posting_holds(self):
+        # The go-live figures are read again under the lock by place_in_service(), so an
+        # object in hand from before a correction posts the corrected figure, not its own.
+        loom = self.loom()
+        in_hand = FixedAsset.objects.get(pk=loom.pk)
+        loom.opening_depreciation = Decimal("2250")
+        loom.save()
+        in_hand.place_in_service(on_date=datetime.date(2025, 4, 1))
+        self.assertEqual(self.opening_lines(in_hand)[1], ("1590", Decimal("0.00"), Decimal("2250.00")))
+        self.assertEqual(FixedAsset.objects.get(pk=loom.pk).opening_depreciation, Decimal("2250.00"))
 
 
 class ItsStatusIsWhatHappenedToItTests(AssetTestCase):

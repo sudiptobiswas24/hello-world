@@ -32,7 +32,8 @@ from apps.accounting.models import (
     round_money,
 )
 from apps.core.models import (
-    Extensible, AuditModel, DocumentSequence, Party, correction_date, day_that_has_come, serialised, to_date,
+    Extensible, AuditModel, DocumentSequence, Party, correction_date, day_that_has_come, lock_rows, serialised,
+    to_date,
 )
 
 
@@ -244,7 +245,11 @@ class FixedAsset(Extensible, AuditModel):
     # to 15,000 against 12,000 posted, its disposal took 15,000 off the
     # plant account and left it at -3,000; moved to another category, it
     # came off that category's account and left 12,000 on the first.
-    # On a draft typed in by hand, what the go-live import alone sets.
+    # What the old system had depreciated, as a draft typed in by hand carries it. Nothing reads
+    # it until the draft goes into service, whose opening entry posts it, so until then it is
+    # corrected like any other figure on the draft (O266); from then on FIXED_IN_SERVICE holds it,
+    # and a draft capitalised from a bill never had any. A change to it waits on the row, so it
+    # cannot slip between place_in_service() reading it and posting it.
     FIXED_AT_GO_LIVE = ("depreciated_before", "opening_depreciation")
     # Set by place_in_service, uncapitalise, dispose and reinstate as they save.
     _status_by_method = False
@@ -261,6 +266,8 @@ class FixedAsset(Extensible, AuditModel):
     # what this one stands on; `manage.py audit_invariants` refuses that read.
     KEPT_FROM = {"category": STANDS_ON}
 
+    # In a transaction of its own: a correction of the go-live figures holds the row (below).
+    @transaction.atomic
     def save(self, *args, **kwargs):
         # `clean()` is not called for an asset made in code — which is
         # every asset capitalised from a bill — or through the API, so
@@ -278,6 +285,20 @@ class FixedAsset(Extensible, AuditModel):
                     kwargs["update_fields"] = [*kwargs["update_fields"], *kept]
         if self.pk:
             previous = FixedAsset.objects.filter(pk=self.pk).first()
+            if previous is not None and any(getattr(previous, name) != getattr(self, name)
+                                            for name in self.FIXED_AT_GO_LIVE):
+                # Asked of the row as held: read before the lock, a draft put into service in
+                # the meantime still read as a draft, and its opening entry would stand at
+                # figures the register no longer had.
+                lock_rows(self, refresh=False)
+                previous = FixedAsset.objects.filter(pk=self.pk).first()
+                # In service or capitalised, FIXED_IN_SERVICE or FIXED_ONCE_CAPITALISED below
+                # refuses it in its own words; a draft is asked here what else has read them.
+                if previous is not None and previous.status == AssetStatus.DRAFT \
+                        and not previous.capitalisation_entry_id and not previous._has_posted_nothing():
+                    raise ValidationError(
+                        f"{self} has been charged or disposed of, which read what the old system had "
+                        "depreciated; those figures can no longer change.")
             if previous is not None and previous.tax_block_id != self.tax_block_id and previous.in_service_date:
                 from .tax import TaxDepreciationYear, year_end
 
@@ -303,16 +324,8 @@ class FixedAsset(Extensible, AuditModel):
                 raise ValidationError(
                     f"{self} is {previous.get_status_display().lower()}; its status changes by what "
                     "happens to it: put it into service, dispose of it, reinstate it or un-capitalise it.")
-            # Set as the register is brought in at go-live, and never after (O13); by going into
-            # service itself, which carries the months before the books opened into them (review F4).
-            if previous is not None and not fixed and not self._status_by_method:
-                fixed = self.FIXED_AT_GO_LIVE
             changed = [name for name in fixed if getattr(previous, name) != getattr(self, name)]
             names = ", ".join(n.replace("_id", "") for n in changed)
-            if changed and fixed is self.FIXED_AT_GO_LIVE:
-                raise ValidationError(
-                    f"{self}'s {names} say what the old system had depreciated when the register was "
-                    "brought in at go-live, and are not changed after. Register it again if they were wrong.")
             if changed and previous.status != AssetStatus.DRAFT:
                 raise ValidationError(
                     f"{self} is {previous.get_status_display().lower()}; "
@@ -327,6 +340,15 @@ class FixedAsset(Extensible, AuditModel):
                 )
         super().save(*args, **kwargs)
         self._status_by_method = False
+
+    def _has_posted_nothing(self):
+        """
+        Nothing on the books reads its figures yet: a draft not capitalised from a bill, never
+        brought in as an opening balance, never charged and never disposed of. Its first posting
+        (place_in_service's opening entry, a capitalisation) is what reads them.
+        """
+        return (self.status == AssetStatus.DRAFT and not self.capitalisation_entry_id
+                and not self.disposal_entry_id and not self.depreciation_entries.exists())
 
     @serialised("capitalisation_entry", "status")
     def delete(self, *args, **kwargs):
@@ -407,7 +429,9 @@ class FixedAsset(Extensible, AuditModel):
     def remaining_to_depreciate(self):
         return max(self.depreciable_base() - self.accumulated(), Decimal("0"))
 
-    @serialised("status")
+    # The go-live figures as committed, read under the lock: corrected on the draft (O266) while
+    # this object was in hand, they are what its opening entry posts and what it saves.
+    @serialised("status", *FIXED_AT_GO_LIVE)
     def place_in_service(self, on_date=None):
         if self.status != AssetStatus.DRAFT:
             raise ValidationError(f"This asset is already {self.get_status_display().lower()}.")

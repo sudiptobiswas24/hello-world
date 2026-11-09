@@ -191,10 +191,10 @@ class StoresReviewAssetProbes(base.AssetTestCase):
         with self.assertRaises(ValidationError):
             self.loom(depreciated_before=tomorrow, opening_depreciation=D("100"))
         loom = self.loom(depreciated_before=DAY(2025, 12, 31), opening_depreciation=D("3000"))
+        # O266: a typo on the draft is corrected there, nothing having read it yet
         loom.opening_depreciation = D("2000")
-        with self.assertRaises(ValidationError):
-            loom.save()
-        # placed in service, still never edited
+        loom.save()
+        # placed in service, never edited
         loom.refresh_from_db()
         loom.place_in_service(on_date=DAY(2025, 4, 1))
         loom.depreciated_before = DAY(2025, 11, 30)
