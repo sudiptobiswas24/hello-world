@@ -50,6 +50,20 @@ pg_isready -q || service postgresql start                              # role er
 
 ## 2. Next steps, in order
 
+**g31 is pushed (7a27e21, 9 November 2026), all seven lanes green on one tip (gated as 5474b24).** Holds O405's
+remainder (the demo now shows tape, fabric, film and atta-sack specifications with spec-built BOMs, two tape lots
+inspected and released, energy meters with a week of readings, a sales commission plan, earned/sick/unpaid leave with
+a carried-over entitlement, and Maharashtra PT from the statutory slabs with the women's exemption) and a clock fix.
+O346 stays open with its cause unknown: the traceback was lost to the missing tblib, pinned since c6105e4; it was not
+seen in g25-g31 nor in 12 runs at --parallel 2 under load. When it recurs, read its traceback before changing anything.
+- Gate lessons from g31: pg-a failed on d33747b at `test_p02` (302 != 200). The test asked the clock twice for two
+  two-factor codes, and a run that crossed a 30-second window's edge between the two asked for the wrong one; a probe
+  sleeping to the next window reproduced it every time. **A test that asks the clock twice can straddle a window's
+  edge: work the moment out once and derive every code from it.** The gate took eight and a half hours because ui ran
+  alone first and mig, the longest lane at over three hours, ran last; `scripts/gate/lane.sh` now orders two slots,
+  mig then pg-c beside ui, pg-a, sqlite, pg-b, ist, about five hours. A side run of mig groups beside the lane collided
+  with the lane reaching the same group and both wrote one log: do not run a lane's groups beside it.
+
 **g30 is pushed (e56d4a8, 9 November 2026), all seven lanes green on one tip (gated as 4f80e6f).** Holds two rows:
 O363 (every correction that takes back money booked to an account since switched off is marked `takes_back`: the
 partial recovery of a written-off invoice was refused once its bad-debt account was switched off; both unearned-

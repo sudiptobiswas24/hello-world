@@ -11,9 +11,14 @@
 # has no verdict. Each lane runs two workers on a four-core machine, so run
 # two lanes at a time, never more: five at once (g25) ran every one past the
 # limit. Beside one other lane, sqlite and ist take about 100 minutes each
-# and pg-a about 65. Run ui first: it builds the office app the browser
-# tests need. Then sqlite with pg-a, ist with pg-b, then pg-c, then mig
-# alone and detached: it runs longer than a job may (see mig below).
+# and pg-a about 65. Order, as two slots:
+#   slot 1: mig, then pg-c
+#   slot 2: ui, then pg-a, sqlite, pg-b, ist
+# Start mig at minute zero, detached: it is the longest lane (over three
+# hours in g31) and builds nothing the others need. ui must still finish
+# before sqlite or ist start: it builds the office app the browser tests
+# need. g31 ran ui alone and mig last and took eight and a half hours;
+# this order keeps two lanes busy throughout, about five.
 # mig counts as a lane. g26 ran sqlite beside ist and mig: sqlite passed
 # its own 9000-second limit twice with no verdict, and each rerun cost two
 # hours. So mig runs beside at most one other lane.
