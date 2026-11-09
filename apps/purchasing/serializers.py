@@ -128,6 +128,8 @@ class BillSerializer(TakesItsLinesMixin, ExtensibleSerializerMixin, serializers.
     vendor_name = serializers.CharField(source="vendor.name", read_only=True)
     amount_tds = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
     carried = serializers.SerializerMethodField()
+    # The MSME Act's day for a micro or small vendor's posted bill (O483): due_date is the terms' alone.
+    act_pay_by = serializers.DateField(read_only=True)
 
     def get_carried(self, bill):
         return [{"id": row.pk, "delivery": row.delivery_id, "number": row.delivery.number,
@@ -145,6 +147,7 @@ class BillSerializer(TakesItsLinesMixin, ExtensibleSerializerMixin, serializers.
             "vendor_name",
             "bill_date",
             "due_date",
+            "act_pay_by",
             "currency",
             "payment_terms",
             "reference",
