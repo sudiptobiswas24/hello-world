@@ -198,7 +198,7 @@ export default function InvoiceForm() {
 
         {invoice && (
           <>
-            <Lines lines={invoice.lines} endpoint="/api/sales/invoice-lines/" parent="invoice" parentId={invoice.id}
+            <Lines lines={invoice.lines} endpoint="/api/sales/invoice-lines/" parent="invoice" parentId={invoice.id} charges
               editable={!invoice.posted && can("sales.change_invoice")} />
             <Totals rows={[
               ["Untaxed", invoice.subtotal], ["Tax", invoice.tax_total], ["Total", invoice.total, true],
@@ -212,7 +212,7 @@ export default function InvoiceForm() {
         )}
         {isNew && (
           <>
-            <NewLines lines={newLines} onChange={(next) => draft.set("new_lines" as never, next as never)} errors={draft.errors}  />
+            <NewLines lines={newLines} onChange={(next) => draft.set("new_lines" as never, next as never)} errors={draft.errors} charges />
             <p className="muted">Add its lines, then create it: the invoice and its lines are saved together. An invoice for an order is raised from the order.</p>
           </>
         )}

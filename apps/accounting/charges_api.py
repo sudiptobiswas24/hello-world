@@ -26,7 +26,9 @@ class ChargeTypeSerializer(serializers.ModelSerializer):
 class ChargeTypeViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = ChargeType.objects.select_related("revenue_account", "expense_account").prefetch_related("taxes")
     serializer_class = ChargeTypeSerializer
-    filter_fields = ["is_active", "capitalise_into_inventory"]
+    # Which side a charge is kept for (O495): an account to book it to, revenue on a sale, expense on a purchase,
+    # as a line's save asks (ChargeType.account_for).
+    filter_fields = ["is_active", "capitalise_into_inventory", "revenue_account__isnull", "expense_account__isnull"]
     search_fields = ["code", "name", "hsn_code"]
     action_permission_map = {"taxes": "accounting.change_chargetype"}
 
