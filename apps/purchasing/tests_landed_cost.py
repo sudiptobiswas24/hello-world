@@ -57,7 +57,7 @@ class LandedCostTestCase(PurchasingLifecycleTestCase):
 class LandedCostBasicsTests(LandedCostTestCase):
     def test_it_lands_in_inventory_not_in_expense(self):
         order = self.make_order("10", "5")
-        order.add_charge(self.freight, Decimal("30"))
+        order.lines.create(charge=self.freight, description=self.freight.name, quantity=1, unit_price=Decimal("30"))
         self.receive(order, "10")
 
         bill = order.create_bill(self.payable)
@@ -70,7 +70,7 @@ class LandedCostBasicsTests(LandedCostTestCase):
         """The whole point: the GL and average_cost() have to agree, or
         the next sale relieves inventory it never had."""
         order = self.make_order("10", "5")
-        order.add_charge(self.freight, Decimal("30"))
+        order.lines.create(charge=self.freight, description=self.freight.name, quantity=1, unit_price=Decimal("30"))
         self.receive(order, "10")
         order.create_bill(self.payable).post()
 
@@ -80,7 +80,7 @@ class LandedCostBasicsTests(LandedCostTestCase):
 
     def test_a_charge_that_does_not_capitalise_still_expenses(self):
         order = self.make_order("10", "5")
-        order.add_charge(self.plain_freight, Decimal("30"))
+        order.lines.create(charge=self.plain_freight, description=self.plain_freight.name, quantity=1, unit_price=Decimal("30"))
         self.receive(order, "10")
         order.create_bill(self.payable).post()
 
@@ -89,7 +89,7 @@ class LandedCostBasicsTests(LandedCostTestCase):
 
     def test_the_entry_still_balances(self):
         order = self.make_order("10", "5")
-        order.add_charge(self.freight, Decimal("30"))
+        order.lines.create(charge=self.freight, description=self.freight.name, quantity=1, unit_price=Decimal("30"))
         self.receive(order, "10")
         bill = order.create_bill(self.payable)
         bill.post()
@@ -102,7 +102,7 @@ class LandedCostBasicsTests(LandedCostTestCase):
         """Nothing on the bill to absorb it. Refusing would block a
         legitimate bill; inventing an allocation would be worse."""
         order = self.make_order("10", "5")
-        order.add_charge(self.freight, Decimal("30"))
+        order.lines.create(charge=self.freight, description=self.freight.name, quantity=1, unit_price=Decimal("30"))
 
         bill = order.create_bill(self.payable)
         bill.post()
@@ -143,7 +143,7 @@ class LandedCostAllocationTests(LandedCostTestCase):
 
     def test_it_splits_by_value_across_the_goods(self):
         order = self.two_item_order()
-        order.add_charge(self.freight, Decimal("40"))
+        order.lines.create(charge=self.freight, description=self.freight.name, quantity=1, unit_price=Decimal("40"))
         self.receive_all(order)
 
         order.create_bill(self.payable).post()
@@ -154,7 +154,7 @@ class LandedCostAllocationTests(LandedCostTestCase):
 
     def test_the_rounding_remainder_does_not_vanish(self):
         order = self.two_item_order()
-        order.add_charge(self.freight, Decimal("10"))
+        order.lines.create(charge=self.freight, description=self.freight.name, quantity=1, unit_price=Decimal("10"))
         self.receive_all(order)
 
         order.create_bill(self.payable).post()
@@ -171,7 +171,7 @@ class LandedCostAllocationTests(LandedCostTestCase):
         dumping the whole charge on one site would skew it."""
         second = Warehouse.objects.create(code="WH2", name="South")
         order = self.make_order("10", "5")
-        order.add_charge(self.freight, Decimal("40"))
+        order.lines.create(charge=self.freight, description=self.freight.name, quantity=1, unit_price=Decimal("40"))
 
         receipt = GoodsReceipt.objects.create(
             purchase_order=order, receipt_date=datetime.date(2026, 1, 5)
@@ -195,8 +195,8 @@ class LandedCostAllocationTests(LandedCostTestCase):
 
     def test_several_charges_all_land(self):
         order = self.make_order("10", "5")
-        order.add_charge(self.freight, Decimal("20"))
-        order.add_charge(self.freight, Decimal("10"), description="Customs")
+        order.lines.create(charge=self.freight, description=self.freight.name, quantity=1, unit_price=Decimal("20"))
+        order.lines.create(charge=self.freight, description="Customs", quantity=1, unit_price=Decimal("10"))
         self.receive(order, "10")
 
         order.create_bill(self.payable).post()
@@ -213,7 +213,7 @@ class LandedCostAndMarginTests(LandedCostTestCase):
         from apps.core.models import Party, PartyRole, PartyRoleAssignment
 
         order = self.make_order("10", "5")
-        order.add_charge(self.freight, Decimal("30"))
+        order.lines.create(charge=self.freight, description=self.freight.name, quantity=1, unit_price=Decimal("30"))
         self.receive(order, "10")
         order.create_bill(self.payable).post()
 

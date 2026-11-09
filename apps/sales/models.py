@@ -1186,22 +1186,6 @@ class SalesOrder(PlacedWhereTheGoodsGo, Extensible, TaxesTakenUnder, TaxedDocume
             )
         return invoice
 
-    def add_charge(self, charge, amount, description="", quantity=Decimal("1")):
-        """
-        Put freight, handling or a surcharge on this order.
-
-        The charge's default taxes come across, because the commonest way
-        to get freight wrong is to bill it untaxed when the jurisdiction
-        taxes it at the same rate as the goods.
-        """
-        line = SalesOrderLine.objects.create(
-            order=self, charge=charge, description=description or charge.name,
-            quantity=Decimal(quantity), unit_price=round_money(Decimal(amount)),
-            revenue_account=charge.account_for(is_sale=True),
-        )
-        line.taxes.set(charge.taxes.all())
-        return line
-
     def deposits(self):
         """Posted down-payment invoices raised against this order."""
         return self.invoices.filter(is_down_payment=True, posted=True)
