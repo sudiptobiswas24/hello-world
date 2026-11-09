@@ -214,6 +214,42 @@ class CategoryKeptMigrationTests(TransactionTestCase):
         executor.migrate(executor.loader.graph.leaf_nodes())
 
 
+class TheBillSaysTheActsDayTests(MsmeTestCase):
+    """
+    O483: the bill read through the API says the Act's day beside the terms'. Bill of 1 June, net 60, a
+    micro vendor, nothing received: the terms say 31 July, the Act 16 July (45 days from 1 June).
+    """
+
+    def setUp(self):
+        super().setUp()
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        call_command("setup_roles", verbosity=0)
+        user = User.objects.create_user("ap-manager")
+        user.groups.add(Group.objects.get(name="AP Manager"))
+        self.ap = APIClient()
+        self.ap.force_authenticate(user)
+
+    def read(self, bill):
+        response = self.ap.get(f"/api/purchasing/bills/{bill.pk}/")
+        self.assertEqual(response.status_code, 200, response.content)
+        return response.json()
+
+    def test_a_micro_vendors_posted_bill_carries_the_acts_day(self):
+        bill = self.read(self.bill("1000", terms=self.net60))
+        self.assertEqual((bill["due_date"], bill["act_pay_by"]), ("2026-07-31", "2026-07-16"))
+
+    def test_a_medium_vendors_bill_and_a_draft_carry_none(self):
+        medium = Party.objects.create(code="V-M", name="Medium Mills")
+        PartyRoleAssignment.objects.create(party=medium, role=PartyRole.VENDOR)
+        PartyTaxProfile.objects.create(party=medium, msme_category="medium", udyam_number="UDYAM-MH-26-0099999")
+        self.assertIsNone(self.read(self.bill("1000", terms=self.net60, vendor=medium))["act_pay_by"])
+        draft = Bill.objects.create(vendor=self.vendor, bill_date=JUNE, payable_account=self.payable)
+        self.assertIsNone(self.read(draft)["act_pay_by"])
+
+
 class DueByTheActTests(MsmeTestCase):
     """
     A micro vendor's bill is due by the earlier of its terms and 45 days from
