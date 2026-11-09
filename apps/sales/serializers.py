@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from rest_framework import serializers
 
 from apps.accounting.serializers import MoneyLineSerializerMixin, TakesItsLinesMixin
@@ -179,15 +181,25 @@ class DeliveryLineSerializer(serializers.ModelSerializer):
     description = serializers.SerializerMethodField()
     # The batch as its label reads, for the pick-by-scan screen's lines.
     lot_code = serializers.CharField(source="lot.code", read_only=True, default="")
+    # What actually left, batch by batch and shelf by shelf, once posted (O490): the answer a recall
+    # needs. In the item's stocking unit, which it names, as the allocation holds it.
+    lots_shipped = serializers.SerializerMethodField()
 
     class Meta:
         model = DeliveryLine
         fields = ["id", "delivery", "order_line", "description", "warehouse", "quantity_shipped",
-            "bin", "lot", "lot_code",
+            "bin", "lot", "lot_code", "lots_shipped",
         ]
 
     def get_description(self, obj):
         return obj.order_line.description or obj.order_line.label()
+
+    def get_lots_shipped(self, obj):
+        unit = obj.order_line.item.uom.code if obj.order_line.item_id else ""
+        return [{"lot": lot.pk if lot else None, "lot_code": lot.code if lot else "",
+                 "bin": shelf.pk if shelf else None, "bin_code": shelf.code if shelf else "",
+                 "quantity": quantity.quantize(Decimal("0.0001")), "uom": unit}
+                for lot, shelf, quantity in obj.lots_shipped()]
 
 
 class BackorderMixin(serializers.Serializer):

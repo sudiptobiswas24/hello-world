@@ -5139,10 +5139,8 @@ class DeliveryLine(AuditModel):
 
     def lots_shipped(self):
         """What actually left, batch by batch, in walking order."""
-        return [
-            (row.lot, row.bin, row.quantity)
-            for row in self.allocations.select_related("lot", "bin")
-        ]
+        # all(): a list of deliveries prefetches them with their batches and shelves (sales/views.py).
+        return [(row.lot, row.bin, row.quantity) for row in self.allocations.all()]
 
     def quantity_returned(self):
         """Taken back so far on posted returns of this line."""
