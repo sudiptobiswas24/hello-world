@@ -795,6 +795,95 @@ class AWriteOffReadsItsOwnDocumentsFigureTests(ALeaversAdvanceLeftIsSettledTests
     test_what_it_is_settled_against_and_with_is_checked = None
 
 
+class AStrayDebitIsNoDocumentsDebtTests(ALeaversAdvanceLeftIsSettledTests):
+    """
+    O372. A3 owes 3,860.00 of advance X after June, against 1300. On 5 July 500.00 is paid out to A3 against
+    1300 with no advance recording it, and on 10 July 1,000.00 is paid back and not yet matched. The books
+    show 3,360.00; X's figure is 3,860.00 - 1,000.00 = 2,860.00, the stray 500.00 no document's debt.
+    Figures: calc_g32_o372/o372.py.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.stray = self.money(self.leaver.party, "500.00", counterpart=self.advances, day=D(2026, 7, 5))
+        self.unmatched = self.paid_back("1000.00")
+
+    def written_off(self):
+        from apps.hr.shortfalls import ShortfallSettlement
+
+        return ShortfallSettlement.objects.filter(kind="write_off", voided_at__isnull=True)
+
+    def test_a_stray_debit_does_not_raise_what_may_be_written_off(self):
+        self.assertEqual(self.owed_by(self.leaver), Decimal("3360.00"))
+        with self.assertRaisesMessage(ValidationError, "the books show 2860.00 still owed, not 3360.00"):
+            self.settle("write_off", "3360.00")
+        with self.assertRaisesMessage(ValidationError, "the books show 2860.00 still owed, not 2860.01"):
+            self.settle("write_off", "2860.01")
+        # A part, then the rest: 860.00 is left to give up on, not 1,360.00.
+        self.settle("write_off", "2000.00")
+        with self.assertRaisesMessage(ValidationError, "the books show 860.00 still owed, not 860.01"):
+            self.settle("write_off", "860.01")
+        self.settle("write_off", "860.00")
+        self.settle("receipt", "1000.00", payment=self.unmatched)
+        self.assertEqual((self.advance.balance(), self.owed_by(self.leaver), self.balance(self.loss)),
+                         (Decimal("0.00"), Decimal("500.00"), Decimal("2860.00")))
+
+    def test_without_a_stray_the_whole_figure_goes_and_a_stray_alone_lowers_nothing(self):
+        from apps.hr.shortfalls import ShortfallSettlement
+
+        bounced = Payment.objects.get(pk=self.unmatched.pk)
+        bounced.void(on_date=D(2026, 7, 10))
+        self.assertEqual(self.owed_by(self.leaver), Decimal("4360.00"))
+        with self.assertRaisesMessage(ValidationError, "owes 3860.00 on"):
+            self.settle("write_off", "3860.01")
+        written = self.settle("write_off", "3860.00")
+        ShortfallSettlement.objects.get(pk=written.pk).void(on_date=D(2026, 7, 10))
+        Payment.objects.get(pk=self.stray.pk).void(on_date=D(2026, 7, 10))
+        self.assertEqual(self.owed_by(self.leaver), Decimal("3860.00"))
+        self.settle("write_off", "3860.00")
+        self.assertEqual((self.advance.balance(), self.owed_by(self.leaver), self.balance(self.loss)),
+                         (Decimal("0.00"), Decimal("0.00"), Decimal("3860.00")))
+
+    def test_through_the_api_and_back_each_void_reads_the_documents_again(self):
+        controller = self.as_role("Controller")
+
+        def write_off(amount):
+            return controller.post("/api/hr/shortfall-settlements/", {
+                "payslip": self.slip.pk, "advance": self.advance.pk, "kind": "write_off", "amount": amount,
+                "reason": "Left the state", "date": "2026-07-10"}, format="json")
+
+        refused = write_off("3360.00")
+        self.assertEqual(refused.status_code, 400, refused.content)
+        self.assertIn("the books show 2860.00 still owed, not 3360.00", refused.content.decode())
+        written = write_off("2860.00")
+        self.assertEqual(written.status_code, 201, written.content)
+        self.assertEqual((self.advance.balance(), self.owed_by(self.leaver)), (Decimal("1000.00"), Decimal("500.00")))
+        refused = write_off("0.01")
+        self.assertEqual(refused.status_code, 400, refused.content)
+        self.assertIn("the books show 0.00 still owed, not 0.01", refused.content.decode())
+        # The write-off voided: 2,860.00 may go again, not 3,360.00.
+        voided = controller.post(f"/api/hr/shortfall-settlements/{written.json()['id']}/void/",
+                                 {"on_date": "2026-07-10"}, format="json")
+        self.assertEqual(voided.status_code, 200, voided.content)
+        self.assertEqual((self.advance.balance(), self.owed_by(self.leaver)), (Decimal("3860.00"), Decimal("3360.00")))
+        self.assertEqual(write_off("3360.00").status_code, 400)
+        written = write_off("2860.00")
+        self.assertEqual(written.status_code, 201, written.content)
+        # The 1,000.00 bounced: 1,000.00 more may go, which is all X has left.
+        Payment.objects.get(pk=self.unmatched.pk).void(on_date=D(2026, 7, 10))
+        self.assertEqual(self.owed_by(self.leaver), Decimal("1500.00"))
+        self.assertEqual(write_off("1000.01").status_code, 400)
+        self.assertEqual(write_off("1000.00").status_code, 201)
+        self.assertEqual((self.advance.balance(), self.owed_by(self.leaver), self.balance(self.loss),
+                          self.written_off().count()),
+                         (Decimal("0.00"), Decimal("500.00"), Decimal("3860.00"), 2))
+
+    # The parent's tests run once, there.
+    test_what_is_left_is_paid_back_then_written_off_through_the_api_and_each_voids_back = None
+    test_an_advance_never_recovered_stands_while_a_write_off_of_it_does = None
+    test_what_it_is_settled_against_and_with_is_checked = None
+
+
 class ALeaverNoRunPaidSettlesTheirAdvanceTests(ALeaversAdvanceLeftIsSettledTests):
     """
     O262's reverse path. E5 is given 5,000 on 20 May, recovered from June, and leaves on 25 May: no run ever
