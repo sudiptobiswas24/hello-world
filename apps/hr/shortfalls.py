@@ -75,8 +75,8 @@ def owed_elsewhere(account, employee, leaving_out):
     """
     What every other document of `employee`'s still owes on `account` (O270): each advance of theirs given
     against it, by its balance(), and each final slip's shortfall owed into it, by owed_back(); `leaving_out`
-    (the advance or the slip a settlement settles) left out. The person's balance on the account less this
-    is what the books show owed on that one document.
+    (the advance or the slip a settlement settles) left out. What the documents carry on the account less this
+    (owed_on_the_books, O372) is what the books show owed on that one document.
     """
     from .advances import SalaryAdvance
     from .payroll import Payslip, PayRunStatus
@@ -92,6 +92,40 @@ def owed_elsewhere(account, employee, leaving_out):
         if line is not None and line.account_id == account.pk:
             total += owed_back(slip)
     return total
+
+
+def owed_on_the_books(account, employee):
+    """
+    What the books show `employee` owing on `account` that their documents carry (O372): the posted lines
+    against them there, less each debit no advance's payment and no pay run of theirs posted. A debit
+    nothing records (500.00 paid out against 1300 with no advance, a journal typed by hand) is not a
+    document's debt: counted, it raised a write-off's ceiling by as much, and 500.00 more was given up on
+    than the documents owe. Credits all count, matched or not: money paid back and not yet matched lowers
+    it. An entry and its reversal are taken together, by the entry reversed (a reversal is never reversed
+    itself), so a voided stray payment counts for nothing and a voided run is still a run's.
+
+    Read in one query, so a payment posting meanwhile is in both the balance and the strays or in neither.
+    Netted per entry: a stray debit taken back by a credit typed separately stays a stray, and the credit
+    lowers it as money paid back would, so it errs low, never high.
+    """
+    from apps.accounting.models import JournalLine
+
+    from .advances import SalaryAdvance
+    from .payroll import PayRun
+
+    lines = list(JournalLine.objects.filter(account=account, party=employee.party, entry__posted=True)
+                 .values_list("entry_id", "entry__reverses_id", "debit", "credit"))
+    carried = set(SalaryAdvance.objects.filter(employee=employee, payment__journal_entry__isnull=False)
+                  .values_list("payment__journal_entry_id", flat=True))
+    carried |= set(PayRun.objects.filter(payslips__employee=employee, journal_entry__isnull=False)
+                   .values_list("journal_entry_id", flat=True))
+    books, unrecorded = Decimal("0.00"), {}
+    for entry, reverses, debit, credit in lines:
+        books += debit - credit
+        root = reverses or entry
+        if root not in carried:
+            unrecorded[root] = unrecorded.get(root, Decimal("0.00")) + debit - credit
+    return books - sum((net for net in unrecorded.values() if net > 0), Decimal("0.00"))
 
 
 def hold_the_payer(payment):
@@ -262,9 +296,9 @@ class ShortfallSettlement(AuditModel):
         # advances and shortfalls still owe there. Asked of the whole balance, a write-off of a 5,000 advance
         # passed against 7,860.00 that was 3,860.00 another advance's and 1,000.00 paid back unmatched.
         # Read under the person's lock, which a receipt from them holds as it posts (hold_the_payer).
+        # And only what documents carry (O372): a debit no advance or run posted is no document's debt.
         employee = self.person()
-        on_the_books = sum((row.debit - row.credit for row in JournalLine.objects.filter(
-            account=account, party=employee.party, entry__posted=True)), Decimal("0.00")) - owed_elsewhere(
+        on_the_books = owed_on_the_books(account, employee) - owed_elsewhere(
             account, employee, self.advance if self.advance_id is not None else self.payslip)
         if self.amount > on_the_books:
             raise ValidationError({"amount": (
