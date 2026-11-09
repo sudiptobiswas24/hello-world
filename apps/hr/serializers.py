@@ -21,6 +21,11 @@ class EmployeeSerializer(ExtensibleSerializerMixin, serializers.ModelSerializer)
     # HR makes the person with the employee: whoever keeps employees need
     # not also keep customers and vendors to take somebody on.
     new_name = serializers.CharField(write_only=True, required=False, max_length=255)
+    # Whether a station PIN is held, never the PIN or its digest: the screen offers Revoke only then.
+    has_pin = serializers.SerializerMethodField()
+
+    def get_has_pin(self, instance):
+        return bool(instance.pin_digest)
 
     # Statutory identifiers are the personnel and payroll offices' (O311), as pay details hide PAN, bank and
     # birth date: the floor and a line manager read names, and were served every employee's UAN and ESI number.
@@ -67,7 +72,7 @@ class EmployeeSerializer(ExtensibleSerializerMixin, serializers.ModelSerializer)
             "termination_date",
             "employment_status",
             "working_days", "holiday_region", "paid_by_attendance", "uan", "esi_number", "work_state", "gender", "hours_a_day", "user", "name",
-            "department_name", "new_name", "extra",
+            "department_name", "new_name", "extra", "has_pin",
         ]
         extra_kwargs = {"party": {"required": False}}
 
