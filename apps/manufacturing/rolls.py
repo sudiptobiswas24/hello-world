@@ -245,13 +245,6 @@ class FabricRoll(AuditModel):
         """How many metres `kilos` off this roll comes to."""
         return (Decimal(kilos) * self.metres_per_kg()).quantize(Decimal("0.01"))
 
-    def kilos_for(self, metres):
-        """What to take off the shelf to get `metres` of this roll."""
-        rate = self.metres_per_kg()
-        if rate <= 0:
-            return Decimal("0")
-        return (Decimal(metres) / rate).quantize(Decimal("0.001"))
-
     # -- how it reads against what it was meant to be --------------------
 
     def target_gsm(self):

@@ -7,6 +7,7 @@ from django.core.exceptions import ValidationError
 from django.test import TestCase
 
 from apps.accounting.models import Account, AccountType, Payment, PaymentDirection
+from apps.accounting.settlement import allocated_on
 from apps.core.models import (
     Currency,
     Party,
@@ -171,7 +172,7 @@ class AllocationTests(SettlementTestCase):
 
         self.assertEqual(first.settlement_status(), SettlementStatus.PAID)
         self.assertEqual(second.settlement_status(), SettlementStatus.PAID)
-        self.assertEqual(InvoicePayment.unallocated_for(payment), Decimal("0"))
+        self.assertEqual(payment.amount - allocated_on(payment), Decimal("0"))
 
     def test_over_allocating_across_invoices_is_caught(self):
         first = self.make_invoice("80")
@@ -219,9 +220,9 @@ class AllocationTests(SettlementTestCase):
     def test_unallocated_amount_tracks_applications(self):
         invoice = self.make_invoice("100")
         payment = self.make_payment("100")
-        self.assertEqual(InvoicePayment.unallocated_for(payment), Decimal("100"))
+        self.assertEqual(payment.amount - allocated_on(payment), Decimal("100"))
         InvoicePayment.objects.create(invoice=invoice, payment=payment, amount=Decimal("35"))
-        self.assertEqual(InvoicePayment.unallocated_for(payment), Decimal("65"))
+        self.assertEqual(payment.amount - allocated_on(payment), Decimal("65"))
 
 
 class CreditNoteSettlementTests(SettlementTestCase):

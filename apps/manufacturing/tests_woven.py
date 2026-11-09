@@ -177,9 +177,9 @@ class TheArithmeticTests(WovenTestCase):
             print_colours=2, print_colours_back=2, ink_item=self.colour,
             ink_grams_per_sqm_per_colour=Decimal("3"),
         )
-        # Printing covers the sack's face, not the hems: 2 x 0.60 x 1.00
-        # = 1.2 square metres, x 3 g x 2 colours = 7.2 g.
-        self.assertTrue(close(bag.printed_area_sqm(), "1.2"))
+        # Printing covers the sack's face, not the hems: 0.60 x 1.00 = 0.6
+        # square metres a face, x 2 faces x 3 g x 2 colours = 7.2 g.
+        self.assertTrue(close(bag.face_area_sqm(), "0.6"))
         self.assertTrue(close(bag.ink_grams(), "7.2"))
 
 

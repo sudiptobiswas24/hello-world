@@ -3699,17 +3699,6 @@ class InvoicePayment(RealisedOnItsOwnDay, AuditModel):
     def __str__(self):
         return f"{self.payment} -> {self.invoice} ({self.amount})"
 
-    @staticmethod
-    def allocated_for(payment, excluding=None):
-        allocations = InvoicePayment.objects.filter(payment=payment)
-        if excluding is not None and excluding.pk:
-            allocations = allocations.exclude(pk=excluding.pk)
-        return allocations.aggregate(total=models.Sum("amount"))["total"] or Decimal("0")
-
-    @staticmethod
-    def unallocated_for(payment):
-        return payment.amount - allocated_on(payment)
-
     def clean(self):
         if not self.payment_id or not self.invoice_id:
             return
