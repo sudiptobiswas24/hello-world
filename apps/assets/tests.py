@@ -638,7 +638,11 @@ class DepreciationBroughtInAtGoLiveTests(AssetTestCase):
                                    format="json")
         self.assertEqual(refused.status_code, 400, refused.content)
         self.assertEqual(FixedAsset.objects.get(pk=loom.pk).opening_depreciation, Decimal("3000.00"))
+        # The freeze is of the figures its depreciation is worked out from, not of the asset.
+        renamed = controller.patch(f"/api/assets/assets/{loom.pk}/", {"name": "Loom 7A"}, format="json")
+        self.assertEqual(renamed.status_code, 200, renamed.content)
         loom.refresh_from_db()
+        self.assertEqual((loom.name, loom.opening_depreciation), ("Loom 7A", Decimal("3000.00")))
         self.assertEqual([row.period_end for row in loom.depreciate(through=datetime.date(2026, 4, 30))],
                          [datetime.date(2026, 4, 30)])
 
