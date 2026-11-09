@@ -6,6 +6,8 @@ or an asset by its code and name, and the pickers below answer with nothing more
 holds no right to read the item master or the asset register, both of which carry money.
 """
 
+from decimal import Decimal
+
 from django.db.models import Q
 from django.shortcuts import get_object_or_404
 from rest_framework import serializers, viewsets
@@ -60,13 +62,20 @@ class WeighingSerializer(serializers.ModelSerializer):
 class GateVisitSerializer(serializers.ModelSerializer):
     weighings = WeighingSerializer(many=True, read_only=True)
     passes = serializers.SerializerMethodField()
+    # Time on site, to the hundredth of an hour: so far while in, gate to gate once out.
+    hours_in = serializers.SerializerMethodField()
 
     class Meta:
         model = GateVisit
         fields = ["id", "number", "vehicle_number", "driver_name", "driver_mobile", "transporter_name", "purpose",
                   "reference", "carried", "status", "in_at", "out_at", "cancelled_at", "cancel_reason",
-                  "weighings", "passes"]
+                  "weighings", "passes", "hours_in"]
         read_only_fields = ["number", "status", "in_at", "out_at", "cancelled_at", "cancel_reason"]
+
+    def get_hours_in(self, visit):
+        if visit.in_at is None:
+            return None
+        return visit.hours_in().quantize(Decimal("0.01"))
 
     def get_passes(self, visit):
         return [{"id": each.pk, "number": each.number, "status": each.status} for each in visit.gate_passes.all()]
