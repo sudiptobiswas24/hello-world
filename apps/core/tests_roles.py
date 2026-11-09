@@ -281,3 +281,43 @@ class BooksOpeningTests(RolesTestCase):
         self.assertEqual(refused.status_code, 403, refused.content)
         self.assertRefused(self.as_("Sales Rep"), self.URL)
         self.assertRefused(self.as_("Stores Manager"), self.URL)
+
+
+class ALoginReadsEndedOnceItsPersonHasLeftTests(RolesTestCase):
+    """
+    O333: a leaving date set while still to come left the login reading active on the Logins
+    screen after it passed, though sign-in refused it. The list now says `ended`, from the rule
+    sign-in asks (core.models.login_ended, hr's leaver_login): the leaving day itself is still
+    worked, so a leaving date yesterday reads ended, and today or tomorrow read in effect.
+    """
+
+    def test_the_hr_admin_reads_which_logins_have_ended(self):
+        import datetime
+
+        from django.utils import timezone
+
+        from apps.hr.models import Employee, EmploymentStatus
+        from apps.hr.tests_people import make_employee_party
+
+        today = timezone.localdate()
+        # Each leaving date set ten days before today, while it was still to come: nothing switched
+        # the login off, and nothing writes it since.
+        with patch("django.utils.timezone.localdate", return_value=today - datetime.timedelta(days=10)):
+            for code, days in (("YESTERDAY", -1), ("TODAY", 0), ("TOMORROW", 1)):
+                login = User.objects.create_user(code.lower())
+                Employee.objects.create(party=make_employee_party(code, code), employee_number=code, user=login,
+                                        hire_date=datetime.date(2020, 1, 1),
+                                        termination_date=today + datetime.timedelta(days=days),
+                                        employment_status=EmploymentStatus.TERMINATED)
+        client = self.as_("HR Admin")
+        response = client.get("/api/core/users/")
+        self.assertEqual(response.status_code, 200)
+        read = {row["username"]: (row["is_active"], row["ended"]) for row in response.json()}
+        gone = (today - datetime.timedelta(days=1)).strftime("%d-%m-%Y")
+        self.assertEqual(read["yesterday"][0], True)  # still switched on: the derived state is what tells
+        self.assertIn(f"has left (leaving date {gone})", read["yesterday"][1])
+        self.assertEqual(read["today"], (True, None))
+        self.assertEqual(read["tomorrow"], (True, None))
+        # The same login, one by one, reads the same.
+        one = User.objects.get(username="yesterday")
+        self.assertIn("has left", client.get(f"/api/core/users/{one.pk}/").json()["ended"])

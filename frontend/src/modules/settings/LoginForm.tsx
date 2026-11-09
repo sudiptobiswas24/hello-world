@@ -1,4 +1,5 @@
 import { RecordScreen, type FieldDef } from "../../views/RecordScreen";
+import { loginStanding } from "./loginStanding";
 
 type Row = Record<string, unknown>;
 
@@ -18,7 +19,7 @@ export default function LoginForm() {
       backLabel="Logins and roles"
       newTitle="New login"
       heading={(row) => `${String(row.username ?? "")}${row.first_name ? ` · ${String(row.first_name)} ${String(row.last_name ?? "")}` : ""}`}
-      state={(row) => (row.is_active === false ? { label: "Deactivated", tone: "draft" } : { label: "Active", tone: "open" })}
+      state={(row) => { const { label, tone } = loginStanding(row); return { label, tone }; }}
       permissions={{ add: "auth.add_user", change: "auth.change_user" }}
       fields={[
         { key: "username", label: "Login", createOnly: true, hint: "Short, no spaces: asha" },
@@ -29,6 +30,8 @@ export default function LoginForm() {
         { key: "employee_number", label: "Employee", readOnly: true, existingOnly: true,
           show: (row) => (row.employee_number ? `${String(row.employee_number)} · ${String(row.employee_name ?? "")}` : "Not linked: set it on the employee") },
         { key: "last_login", label: "Last signed in", readOnly: true, existingOnly: true, kind: "date" },
+        { key: "ended", label: "Signs in", readOnly: true, existingOnly: true,
+          show: (row) => (row.is_active === false ? "No: deactivated" : row.ended ? `No: ${String(row.ended)}` : "Yes") },
       ]}
       actions={[
         { label: "Set a password", path: "set_password", permission: "auth.change_user", done: "Password set",
