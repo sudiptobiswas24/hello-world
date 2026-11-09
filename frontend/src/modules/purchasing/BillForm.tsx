@@ -227,7 +227,7 @@ export default function BillForm() {
 
         {bill && (
           <>
-            <Lines lines={bill.lines} endpoint="/api/purchasing/bill-lines/" parent="bill" parentId={bill.id} side="purchase"
+            <Lines lines={bill.lines} endpoint="/api/purchasing/bill-lines/" parent="bill" parentId={bill.id} side="purchase" charges
               editable={!bill.posted && can("purchasing.change_bill")} centres={can("accounting.view_costcentre")} />
             <Totals rows={[
               ["Untaxed", bill.subtotal], ["Tax", bill.tax_total],
@@ -245,7 +245,7 @@ export default function BillForm() {
         )}
         {isNew && (
           <>
-            <NewLines lines={newLines} onChange={(next) => draft.set("new_lines" as never, next as never)} errors={draft.errors} side="purchase" />
+            <NewLines lines={newLines} onChange={(next) => draft.set("new_lines" as never, next as never)} errors={draft.errors} side="purchase" charges />
             <p className="muted">Add its lines, then create it: the bill and its lines are saved together. A bill for an order is raised from the order, so it is checked against what arrived.</p>
           </>
         )}

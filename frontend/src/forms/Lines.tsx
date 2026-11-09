@@ -33,6 +33,13 @@ interface Item {
   sale_price: string | null;
 }
 
+/** Freight, packing, handling: a line that is not stock (accounting ChargeType). */
+interface Charge {
+  id: number;
+  code: string;
+  name: string;
+}
+
 interface Tax {
   id: number;
   code: string;
@@ -60,7 +67,7 @@ interface Centre { id: number; code: string; name: string }
  */
 interface Place { id: number; code: string; name: string; [field: string]: unknown }
 
-export function Lines({ lines, endpoint, parent, parentId, editable, extra = [], withUom, side = "sales", closable, centres, receiving }: {
+export function Lines({ lines, endpoint, parent, parentId, editable, extra = [], withUom, side = "sales", closable, centres, receiving, charges }: {
   lines: TradeLine[];
   endpoint: string; // /api/sales/sales-order-lines/
   parent: string; // "order", "quotation", "invoice"
@@ -79,6 +86,8 @@ export function Lines({ lines, endpoint, parent, parentId, editable, extra = [],
    * is planned there only, and a planner in another warehouse was told to cancel what the plant needed (O415).
    */
   receiving?: boolean;
+  /** The document's lines take a charge (freight, packing) as well as an item: its line model has one (O495). */
+  charges?: boolean;
 }) {
   const act = useAct();
   const taxes = useReference<Tax>("/api/accounting/taxes/");
@@ -176,7 +185,7 @@ export function Lines({ lines, endpoint, parent, parentId, editable, extra = [],
           )}
         </tbody>
       </table>
-      {editable && <AddLine side={side} receiving={receiving} withUom={withUom} pending={act.pending} onAdd={add} />}
+      {editable && <AddLine side={side} receiving={receiving} withUom={withUom} charges={charges} pending={act.pending} onAdd={add} />}
     </div>
   );
 }
@@ -184,7 +193,11 @@ export function Lines({ lines, endpoint, parent, parentId, editable, extra = [],
 /** A line of a document not yet saved: sent with its header in one request (O401). */
 export interface NewLine {
   key: number;
-  item: number;
+  /** An item, or a charge (O495): one of the two, as the server's line requires. */
+  item?: number;
+  charge?: number;
+  /** A charge's: its name unless retyped. An item's is the item's own, so none is sent. */
+  description?: string;
   label: string;
   quantity: string;
   /** Empty: the server prices it, as it would a line added later. */
@@ -193,9 +206,14 @@ export interface NewLine {
   warehouse?: number | null;
 }
 
-/** What a line sends: no taxes named, so it takes its item's (O459), as one added later does. */
+/**
+ * What a line sends: no taxes named, so it takes its item's (O459), or its charge's (O488), as one added later does.
+ */
 export function lineBody(line: NewLine): Record<string, unknown> {
-  const body: Record<string, unknown> = { item: line.item, quantity: line.quantity };
+  const body: Record<string, unknown> = line.charge !== undefined
+    ? { charge: line.charge, quantity: line.quantity }
+    : { item: line.item, quantity: line.quantity };
+  if (line.description) body.description = line.description;
   if (line.uom !== undefined) body.uom = line.uom;
   if (line.unit_price) body.unit_price = line.unit_price;
   if (line.warehouse !== undefined && line.warehouse !== null) body.warehouse = line.warehouse;
@@ -207,14 +225,23 @@ let nextKey = 1;
 /**
  * The add-a-line row, the same on a saved document and a new one: an item, a quantity, and a price left empty for
  * the server to find. `onAdd` says whether it was taken, and the row is cleared only then.
+ *
+ * Where the document takes a charge and the person may read the charges, the row adds one instead (O495): a charge
+ * kept for this side (an account to book it to: revenue on a sale, expense on a purchase, as the line's save asks),
+ * described by its name unless retyped, one of it, at a price typed, since a charge has no price list. Its taxes are
+ * left for the server, which gives it the charge's, as it gives an item line the item's.
  */
-function AddLine({ side, receiving, withUom, pending, onAdd }: {
+export function AddLine({ side, receiving, withUom, charges, pending, onAdd }: {
   side: "sales" | "purchase";
   receiving?: boolean;
   withUom?: boolean;
+  charges?: boolean;
   pending?: boolean;
   onAdd: (line: NewLine) => Promise<boolean> | boolean;
 }) {
+  const [kind, setKind] = useState<"item" | "charge">("item");
+  const [charge, setCharge] = useState<Charge | null>(null);
+  const [description, setDescription] = useState("");
   const [item, setItem] = useState<Item | null>(null);
   const [qty, setQty] = useState("1");
   // Left empty, the server prices it: the price list, or the vendor's
@@ -222,6 +249,8 @@ function AddLine({ side, receiving, withUom, pending, onAdd }: {
   // agreed price is bought at all.
   const [price, setPrice] = useState("");
   const { can } = useAccess();
+  const mayCharge = Boolean(charges && can("accounting.view_chargetype"));
+  const asCharge = mayCharge && kind === "charge";
   const places = useReference<Place>("/api/inventory/warehouses/", undefined,
     Boolean(receiving && can("inventory.view_warehouse")));
   const usable = (places.data ?? []).filter(usableWarehouse);
@@ -229,16 +258,33 @@ function AddLine({ side, receiving, withUom, pending, onAdd }: {
   useEffect(() => {
     if (place === null && places.data) setPlace(defaultReceiving(places.data));
   }, [places.data, place]);
+  const ready = asCharge ? Boolean(charge && price && qty) : Boolean(item);
   const add = async () => {
-    if (!item || !qty || Number.isNaN(Number(qty))) return;
-    const line: NewLine = { key: nextKey++, item: item.id, label: `${item.sku} · ${item.name}`, quantity: qty, unit_price: price };
-    if (withUom) line.uom = item.uom;
-    if (receiving && place !== null) line.warehouse = place;
+    if (!ready || !qty || Number.isNaN(Number(qty))) return;
+    let line: NewLine;
+    if (asCharge && charge) {
+      const said = description.trim() || charge.name;
+      line = { key: nextKey++, charge: charge.id, description: said, label: said, quantity: qty, unit_price: price };
+    } else if (item) {
+      line = { key: nextKey++, item: item.id, label: `${item.sku} · ${item.name}`, quantity: qty, unit_price: price };
+      if (withUom) line.uom = item.uom;
+      // A charge is not received anywhere: only an item is asked where.
+      if (receiving && place !== null) line.warehouse = place;
+    } else return;
     if (await onAdd(line)) {
       setItem(null);
+      setCharge(null);
+      setDescription("");
       setQty("1");
       setPrice("");
     }
+  };
+  const choose = (next: "item" | "charge") => {
+    setKind(next);
+    setItem(null);
+    setCharge(null);
+    setDescription("");
+    setQty("1");
   };
   return (
     <form
@@ -248,26 +294,55 @@ function AddLine({ side, receiving, withUom, pending, onAdd }: {
         void add();
       }}
     >
-      <RecordPicker<Item>
-        endpoint="/api/inventory/items/"
-        value={item?.id ?? null}
-        onChange={(_, row) => setItem(row)}
-        label={(row) => `${row.sku} · ${row.name}`}
-        detail={(row) => (row.sale_price ? `List ${money(row.sale_price)}` : "")}
-        fixed={{ is_active: "true" }}
-        placeholder="Add an item: type its code or name"
-        ariaLabel="Item to add"
-      />
+      {mayCharge && (
+        <div className="segmented" role="group" aria-label="Add an item or a charge">
+          {(["item", "charge"] as const).map((each) => (
+            <button key={each} type="button" className={kind === each ? "on" : undefined} aria-pressed={kind === each}
+              onClick={() => choose(each)}>{each === "item" ? "Item" : "Charge"}</button>
+          ))}
+        </div>
+      )}
+      {asCharge ? (
+        <>
+          <RecordPicker<Charge>
+            endpoint="/api/accounting/charge-types/"
+            value={charge?.id ?? null}
+            onChange={(_, row) => {
+              setCharge(row);
+              setDescription(row?.name ?? "");
+            }}
+            label={(row) => `${row.code} · ${row.name}`}
+            fixed={side === "purchase"
+              ? { is_active: "true", expense_account__isnull: "false" }
+              : { is_active: "true", revenue_account__isnull: "false" }}
+            placeholder="Add a charge: freight, packing, handling"
+            ariaLabel="Charge to add"
+          />
+          <input aria-label="Description to add" value={description} placeholder="Description"
+            onChange={(event) => setDescription(event.target.value)} />
+        </>
+      ) : (
+        <RecordPicker<Item>
+          endpoint="/api/inventory/items/"
+          value={item?.id ?? null}
+          onChange={(_, row) => setItem(row)}
+          label={(row) => `${row.sku} · ${row.name}`}
+          detail={(row) => (row.sale_price ? `List ${money(row.sale_price)}` : "")}
+          fixed={{ is_active: "true" }}
+          placeholder="Add an item: type its code or name"
+          ariaLabel="Item to add"
+        />
+      )}
       <DecimalInput value={qty} onChange={setQty} aria-label="Quantity to add" className="qty" />
       <DecimalInput value={price} onChange={setPrice} places={2} aria-label="Unit price to add" className="qty"
-        placeholder={side === "purchase" ? "Agreed price" : "List price"} />
-      {receiving && places.data && (
+        placeholder={asCharge ? "Amount" : side === "purchase" ? "Agreed price" : "List price"} />
+      {receiving && places.data && !asCharge && (
         <select aria-label="Received at" value={place ?? ""} onChange={(e) => setPlace(Number(e.target.value) || null)}>
           <option value="">Received at…</option>
           {usable.map((w) => <option key={w.id} value={w.id}>{w.code} · {w.name}</option>)}
         </select>
       )}
-      <button type="submit" className="btn" disabled={!item || pending}>Add line</button>
+      <button type="submit" className="btn" disabled={!ready || pending}>Add line</button>
     </form>
   );
 }
@@ -277,7 +352,7 @@ function AddLine({ side, receiving, withUom, pending, onAdd }: {
  * makes both or neither: a person who stops half-way leaves nothing behind. Prices left empty and taxes are worked
  * out by the server as the document is made, so the amounts show once it is.
  */
-export function NewLines({ lines, onChange, errors, side = "sales", receiving, withUom }: {
+export function NewLines({ lines, onChange, errors, side = "sales", receiving, withUom, charges }: {
   lines: NewLine[];
   onChange: (next: NewLine[]) => void;
   /** What the server said, by path: new_lines[1].quantity. */
@@ -285,6 +360,8 @@ export function NewLines({ lines, onChange, errors, side = "sales", receiving, w
   side?: "sales" | "purchase";
   receiving?: boolean;
   withUom?: boolean;
+  /** As Lines' (O495). */
+  charges?: boolean;
 }) {
   const said = (index: number) => Object.entries(errors ?? {})
     .filter(([path]) => path.startsWith(`new_lines[${index}]`))
@@ -319,7 +396,7 @@ export function NewLines({ lines, onChange, errors, side = "sales", receiving, w
         </tbody>
       </table>
       {errors?.new_lines && <p className="form-error" role="alert">{errors.new_lines.join(" ")}</p>}
-      <AddLine side={side} receiving={receiving} withUom={withUom} onAdd={(line) => { onChange([...lines, line]); return true; }} />
+      <AddLine side={side} receiving={receiving} withUom={withUom} charges={charges} onAdd={(line) => { onChange([...lines, line]); return true; }} />
     </div>
   );
 }
