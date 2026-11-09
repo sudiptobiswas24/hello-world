@@ -297,7 +297,6 @@ class Command(BaseCommand):
     UNCALLED_REPORTED = {
         "accounting.BankStatement.is_reconciled": "O470",
         "accounting.Payment.is_reconciled": "O470",
-        "hr.Employee.revoke_pin": "O471",
         "hr.Employee.management_chain": "O472",
         "hr.PayRun.total_cost": "O473",
         "hr.Timesheet.billable_hours": "O474",
