@@ -196,6 +196,8 @@ class PaymentSerializer(serializers.ModelSerializer):
     # up the allocations it happened to load (200 at most). Read through
     # the reverse relations, so accounting imports neither trading module.
     unallocated = serializers.SerializerMethodField()
+    # Matched to a line of the bank's statement: the bank has seen it.
+    reconciled = serializers.BooleanField(source="is_reconciled", read_only=True)
 
     def get_unallocated(self, obj):
         applied = sum((row.amount for row in obj.invoice_allocations.all()), Decimal("0")) + sum(
@@ -212,7 +214,7 @@ class PaymentSerializer(serializers.ModelSerializer):
         fields = [
             "id", "number", "party", "party_name", "direction", "payment_date", "amount", "currency",
             "exchange_rate", "bank_account", "bank_account_name", "counterpart_account", "reference", "memo",
-            "journal_entry", "posted", "posted_at", "voided", "unallocated",
+            "journal_entry", "posted", "posted_at", "voided", "unallocated", "reconciled",
         ]
         read_only_fields = ["number", "exchange_rate", "journal_entry", "posted", "posted_at"]
         # Left out, the company's defaults (Payment.save).
