@@ -642,6 +642,25 @@ class TaxedLineMixin(models.Model):
         """True for a line billing a service charge rather than an item."""
         return getattr(self, "charge_id", None) is not None
 
+    def take_its_charges_account(self):
+        """
+        A charge line naming no account takes its charge's for its side (O496): revenue on a sale, expense on a
+        purchase, and a charge with none for that side is refused (ChargeType.account_for), as an order line's
+        always was. An account the line names is kept. One rule for every line that bills a charge: the bill line
+        alone never asked, so freight typed on a bill booked to the company's default purchase expense, not to
+        "Freight inward", while the same freight on its order went there.
+
+        A note line giving back another line is not asked: it is booked where that line was
+        (refuse_correcting_another_line fills it), not where the charge points today.
+        """
+        if not self.is_charge() or self.TAX_SIDE not in ("sales", "purchase"):
+            return
+        if getattr(self, "credits_line_id", None) or getattr(self, "debits_line_id", None):
+            return
+        field = "revenue_account" if self.TAX_SIDE == "sales" else "expense_account"
+        if getattr(self, f"{field}_id") is None:
+            setattr(self, field, self.charge.account_for(is_sale=self.TAX_SIDE == "sales"))
+
     def label(self):
         """What this line is called on a document."""
         return (

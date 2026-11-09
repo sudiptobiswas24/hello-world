@@ -372,3 +372,108 @@ class AChargeLineTakesItsChargesTaxes(UntaxedLinesTestCase):
         self.freight.taxes.add(purchase_only)
         _, sold = self.sales_charge(self.as_("imran"), "C-KONK")
         self.assertEqual(self.codes(sold), ["CGST9", "SGST9"])
+
+
+class AChargeLineBooksToItsChargesAccount(UntaxedLinesTestCase):
+    """
+    O496: a charge line takes its charge's account for its side on every document, by one rule
+    (TaxedLineMixin.take_its_charges_account). The bill line alone never asked: freight typed on a bill booked to
+    the company's default purchase expense, not to the charge's "Freight inward", where the same freight on its
+    purchase order went there. An account the line names is kept; a charge with no account for the side is refused,
+    as an order line's always was; a note giving a line back is booked where that line was.
+
+    Numbers, worked in /home/user/work/calc_g33_charges/o496.py: freight 1,000.00 from a vendor in the state at
+    CGST 9% + SGST 9%: Dr Freight inward 1,000.00, Dr input CGST 90.00, Dr input SGST 90.00, Cr the vendor
+    1,180.00; its debit note the same, each side the other way. Freight recharged on an invoice in the state:
+    Cr Freight recharged 1,000.00, CGST 90.00, SGST 90.00, Dr the customer 1,180.00; its credit note reversed.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        from apps.accounting.models import AccountType, ChargeType
+
+        cls.inward = Account.objects.create(code="5191", name="Freight inward", account_type=AccountType.EXPENSE)
+        cls.recharged = Account.objects.create(code="4191", name="Freight recharged", account_type=AccountType.INCOME)
+        cls.freight = ChargeType.objects.create(code="FRB", name="Freight", hsn_code="9965",
+                                                revenue_account=cls.recharged, expense_account=cls.inward)
+        cls.freight.taxes.set(Tax.objects.filter(code__in=["CGST9", "SGST9"]))
+
+    def bill(self, client, **line):
+        vendor = Party.objects.get(code="V-WMB")  # Thane, in the plant's state
+        made = client.post("/api/purchasing/bills/", {
+            "vendor": vendor.pk, "bill_date": str(timezone.localdate()), "reference": f"WMB/{Bill.objects.count() + 1}",
+            "new_lines": [{"charge": self.freight.pk, "quantity": "1", "unit_price": "1000.00", **line}]}, format="json")
+        return made
+
+    def entry(self, document):
+        """What the entry booked, by account code: debit positive."""
+        rows = {}
+        for row in document.journal_entry.lines.all():
+            rows[row.account.code] = rows.get(row.account.code, D("0")) + row.debit - row.credit
+        return rows
+
+    def test_freight_typed_on_a_bill_books_to_its_charge_and_its_debit_note_back(self):
+        ravi = self.as_("ravi")  # AP Manager
+        made = self.bill(ravi)
+        self.assertEqual(made.status_code, 201, made.content)
+        bill = Bill.objects.get(pk=made.json()["id"])
+        line = bill.lines.get()
+        self.assertEqual(line.expense_account, self.inward)
+        posted = ravi.post(f"/api/purchasing/bills/{bill.pk}/post_bill/", format="json")
+        self.assertEqual(posted.status_code, 200, posted.content)
+        bill.refresh_from_db()
+        cgst, sgst = Tax.objects.get(code="CGST9"), Tax.objects.get(code="SGST9")
+        payable = bill.payable_account.code
+        self.assertNotEqual(cgst.paid_account_id, sgst.paid_account_id)
+        self.assertEqual(self.entry(bill), {
+            "5191": D("1000.00"), cgst.paid_account.code: D("90.00"), sgst.paid_account.code: D("90.00"),
+            payable: D("-1180.00")})
+
+        noted = ravi.post(f"/api/purchasing/bills/{bill.pk}/debit_note/", {"memo": "Freight not owed"}, format="json")
+        self.assertEqual(noted.status_code, 200, noted.content)
+        note = Bill.objects.get(pk=noted.json()["id"])
+        if not note.posted:
+            again = ravi.post(f"/api/purchasing/bills/{note.pk}/post_bill/", format="json")
+            self.assertEqual(again.status_code, 200, again.content)
+            note.refresh_from_db()
+        self.assertEqual(note.lines.get().expense_account, self.inward)
+        self.assertEqual({code: -amount for code, amount in self.entry(note).items()}, self.entry(bill))
+
+    def test_an_account_the_bill_line_names_is_kept(self):
+        from apps.accounting.models import AccountType
+
+        carriage = Account.objects.create(code="5192", name="Carriage", account_type=AccountType.EXPENSE)
+        made = self.bill(self.as_("ravi"), expense_account=carriage.pk)
+        self.assertEqual(made.status_code, 201, made.content)
+        self.assertEqual(Bill.objects.get(pk=made.json()["id"]).lines.get().expense_account, carriage)
+
+    def test_a_charge_with_no_expense_account_is_refused_on_a_bill(self):
+        # As on a purchase order: the add row does not offer it on either (expense_account__isnull=false).
+        self.freight.expense_account = None
+        self.freight.save()
+        made = self.bill(self.as_("ravi"))
+        self.assertEqual(made.status_code, 400, made.content)
+        self.assertIn("has no expense account configured", str(made.json()))
+        self.assertFalse(Bill.objects.filter(vendor__code="V-WMB", reference__startswith="WMB/").exists())
+
+    def test_freight_on_an_invoice_books_to_its_charge_and_its_credit_note_back(self):
+        rohit = self.as_("rohit")  # AR Manager
+        customer = Party.objects.get(code="C-KONK")
+        made = rohit.post("/api/sales/invoices/", {
+            "customer": customer.pk, "invoice_date": str(timezone.localdate()),
+            "new_lines": [{"charge": self.freight.pk, "quantity": "1", "unit_price": "1000.00"}]}, format="json")
+        self.assertEqual(made.status_code, 201, made.content)
+        invoice = Invoice.objects.get(pk=made.json()["id"])
+        self.assertEqual(invoice.lines.get().revenue_account, self.recharged)
+        posted = rohit.post(f"/api/sales/invoices/{invoice.pk}/post_invoice/", format="json")
+        self.assertEqual(posted.status_code, 200, posted.content)
+        invoice.refresh_from_db()
+        booked = self.entry(invoice)
+        self.assertEqual((booked["4191"], booked[invoice.receivable_account.code]), (D("-1000.00"), D("1180.00")))
+        self.assertEqual(sum(booked.values(), D("0")), D("0"))
+        noted = rohit.post(f"/api/sales/invoices/{invoice.pk}/credit_note/", {"memo": "Freight waived"}, format="json")
+        self.assertEqual(noted.status_code, 200, noted.content)
+        note = Invoice.objects.get(pk=noted.json()["id"])
+        self.assertEqual(note.lines.get().revenue_account, self.recharged)
+        self.assertEqual({code: -amount for code, amount in self.entry(note).items()}, booked)
