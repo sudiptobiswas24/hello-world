@@ -304,3 +304,52 @@ class TheAdminOffersNothingAWeighedRollRefusesTests(StationApiTestCase):
         browser.post("/admin/manufacturing/fabricroll/", {"action": "delete_selected", "_selected_action": [roll.pk],
                                                           "post": "yes"})
         self.assertTrue(FabricRoll.objects.filter(pk=roll.pk).exists())
+
+
+class HrRevokesAStationPinTests(StationApiTestCase):
+    """O471: the personnel office takes a PIN away over the API, and the station stops taking it."""
+
+    def setUp(self):
+        super().setUp()
+        from django.core.management import call_command
+        call_command("setup_roles", verbosity=0)
+        self.url = f"/api/hr/employees/{self.operator.pk}/revoke-pin/"
+
+    def as_role(self, role):
+        from django.contrib.auth.models import Group
+        user = User.objects.create_user(role.replace(" ", "_").lower())
+        user.groups.add(Group.objects.get(name=role))
+        client = APIClient()
+        client.force_authenticate(user)
+        return client, user
+
+    def test_hr_revokes_and_the_next_sign_in_is_refused(self):
+        self.assertEqual(self.sign_in().status_code, 200)
+        hr, user = self.as_role("HR Admin")
+        self.assertTrue(hr.get(f"/api/hr/employees/{self.operator.pk}/").json()["has_pin"])
+        response = hr.post(self.url, {}, format="json")
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertFalse(response.json()["has_pin"])
+        self.operator.refresh_from_db()
+        self.assertIsNone(self.operator.pin_digest)
+        self.assertEqual(self.operator.updated_by, user)
+        # The session the PIN opened ends on its next request, and the PIN opens no other.
+        self.assertIsNone(self.client.get(self.base).json()["operator"])
+        self.assertEqual(self.sign_in().status_code, 400)
+        # Nor does it sign anything as a supervisor's would.
+        self.assertIsNone(Employee.by_pin(self.pin, on_date=TODAY))
+
+    def test_a_second_revoke_says_there_is_none(self):
+        hr, _ = self.as_role("HR Admin")
+        self.assertEqual(hr.post(self.url, {}, format="json").status_code, 200)
+        again = hr.post(self.url, {}, format="json")
+        self.assertEqual(again.status_code, 400)
+        self.assertIn("holds no station PIN", again.content.decode())
+
+    def test_who_only_reads_employees_may_not(self):
+        payroll, _ = self.as_role("Payroll Officer")
+        self.assertEqual(payroll.get(f"/api/hr/employees/{self.operator.pk}/").status_code, 200)
+        self.assertEqual(payroll.post(self.url, {}, format="json").status_code, 403)
+        self.operator.refresh_from_db()
+        self.assertIsNotNone(self.operator.pin_digest)
+        self.assertEqual(self.sign_in().status_code, 200)

@@ -201,9 +201,25 @@ class Employee(Extensible, AuditModel):
                 return pin
         raise ValidationError("Could not find a free PIN; ask again.")
 
-    def revoke_pin(self):
+    @serialised("pin_digest")
+    def revoke_pin(self, by=None):
+        """
+        Take this person's PIN away; the next station sign-in with it is
+        refused (by_pin finds nobody). A station session it opened ends on
+        its next request: the station asks the PIN's digest again each
+        time (StationViewSet._operator). A new PIN is issue_pin().
+
+        Refused when there is none to take, so a second click says so
+        rather than reporting a revocation that did nothing.
+        """
+        if not self.pin_digest:
+            raise ValidationError(f"{self.party.name} holds no station PIN.")
         self.pin_digest = None
-        super().save(update_fields=["pin_digest", "updated_at"])
+        fields = ["pin_digest", "updated_at"]
+        if by is not None:
+            self.updated_by = by
+            fields.append("updated_by")
+        super().save(update_fields=fields)
 
     @classmethod
     def by_pin(cls, pin, on_date=None):
