@@ -52,6 +52,7 @@ from rest_framework.response import Response
 from . import second_factor
 from .api import required
 from .audit import AuditableViewSetMixin
+from .models import login_ended
 from .roles import (KeptCredential, ProposalStatus, give_or_propose, held_beyond, lapse_what_died, may_give,
                     may_propose, password_reset_through_email, record_credential, trusted_for_reset)
 
@@ -226,6 +227,10 @@ class UserSerializer(serializers.ModelSerializer):
         # Proposed and not yet confirmed by someone who holds them (apps/core/roles.py).
         data["proposed_roles"] = sorted(instance.role_proposals.filter(status=ProposalStatus.PENDING)
                                         .values_list("group__name", flat=True))
+        # Why the login no longer signs in or decides today, or None (O333). Derived from the rule
+        # sign-in asks (core.models.login_ended: a leaving date before the plant's today), never
+        # stored: a leaving date set while still to come leaves is_active on after it passes.
+        data["ended"] = login_ended(instance)
         return data
 
     def validate_roles(self, names):
