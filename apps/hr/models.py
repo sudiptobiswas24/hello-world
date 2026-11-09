@@ -178,9 +178,15 @@ class Employee(Extensible, AuditModel):
 
     # -- the shop-floor PIN ------------------------------------------------
 
-    def issue_pin(self):
+    @serialised("pin_digest", "employment_status", "termination_date")
+    def issue_pin(self, by=None):
         """
         Give this person a new six-digit PIN and return it, once.
+
+        Re-issuing replaces the old one: the old PIN signs nobody in, and a
+        station session it opened ends on its next request, as a revoke's
+        does. Refused for somebody who has left: by_pin would refuse them
+        anyway, so the PIN would be a credential nobody can use.
 
         Issued rather than chosen. A PIN is the whole of a station
         login, so no two people may share one — and a person choosing
@@ -192,12 +198,19 @@ class Employee(Extensible, AuditModel):
         That makes the digest only as private as SECRET_KEY; the station
         lockout, not the digest, is what stops guessing.
         """
+        if self.employment_status == EmploymentStatus.TERMINATED or (
+                self.termination_date is not None and self.termination_date < timezone.localdate()):
+            raise ValidationError(f"{self.party.name} has left: a station PIN is for somebody who works here.")
+        fields = ["pin_digest", "updated_at"]
+        if by is not None:
+            self.updated_by = by
+            fields.append("updated_by")
         for _ in range(50):
             pin = f"{secrets.randbelow(10**6):06d}"
             digest = pin_digest(pin)
             if len(set(pin)) > 1 and not Employee.objects.filter(pin_digest=digest).exists():
                 self.pin_digest = digest
-                super().save(update_fields=["pin_digest", "updated_at"])
+                super().save(update_fields=fields)
                 return pin
         raise ValidationError("Could not find a free PIN; ask again.")
 
