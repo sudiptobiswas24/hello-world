@@ -196,6 +196,7 @@ export default function OrderForm() {
               parent="order"
               parentId={order.id}
               withUom
+              charges
               editable={order.status === "draft" && can("sales.change_salesorder")}
               closable={order.status === "confirmed" && can("sales.change_salesorder")}
               extra={order.status === "confirmed" ? [
@@ -208,7 +209,7 @@ export default function OrderForm() {
         )}
         {isNew && (
           <>
-            <NewLines lines={newLines} onChange={(next) => draft.set("new_lines" as never, next as never)} errors={draft.errors} withUom />
+            <NewLines lines={newLines} onChange={(next) => draft.set("new_lines" as never, next as never)} errors={draft.errors} withUom charges />
             <p className="muted">Add its lines, then create it: the order and its lines are saved together, or not at all.</p>
           </>
         )}

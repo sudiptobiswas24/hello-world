@@ -124,7 +124,7 @@ export default function QuotationForm() {
         {draft.errors.non_field_errors && <p className="form-error" role="alert">{draft.errors.non_field_errors.join(" ")}</p>}
         {quote && (
           <>
-            <Lines lines={quote.lines} endpoint="/api/sales/quotation-lines/" parent="quotation" parentId={quote.id} withUom
+            <Lines lines={quote.lines} endpoint="/api/sales/quotation-lines/" parent="quotation" parentId={quote.id} withUom charges
               editable={quote.status === "draft" && can("sales.change_quotation")} />
             <Totals rows={[["Untaxed", quote.subtotal], ["Tax", quote.tax_total], ["Total", quote.total, true]]} />
           </>

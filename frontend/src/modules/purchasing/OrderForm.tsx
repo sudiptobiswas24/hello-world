@@ -173,7 +173,7 @@ export default function OrderForm() {
 
         {order && (
           <>
-            <Lines lines={order.lines} endpoint="/api/purchasing/purchase-order-lines/" parent="order" parentId={order.id} receiving
+            <Lines lines={order.lines} endpoint="/api/purchasing/purchase-order-lines/" parent="order" parentId={order.id} receiving charges
               withUom side="purchase" editable={order.status === "draft" && can("purchasing.change_purchaseorder")}
               closable={order.status === "confirmed" && can("purchasing.change_purchaseorder")}
               extra={[
@@ -188,7 +188,7 @@ export default function OrderForm() {
         )}
         {isNew && (
           <>
-            <NewLines lines={newLines} onChange={(next) => draft.set("new_lines" as never, next as never)} errors={draft.errors} side="purchase" receiving withUom />
+            <NewLines lines={newLines} onChange={(next) => draft.set("new_lines" as never, next as never)} errors={draft.errors} side="purchase" receiving withUom charges />
             <p className="muted">Add its lines, then create it: the order and its lines are saved together. Prices come from the vendor's price list where one is agreed.</p>
           </>
         )}
