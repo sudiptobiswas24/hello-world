@@ -89,6 +89,17 @@ class VisitTests(GateTestCase):
         self.assertEqual(refused.status_code, 400)
         self.assertEqual(self.guard.post(f"/api/inventory/gate-visits/{visit['id']}/leave/").status_code, 400)
 
+    def test_the_register_says_how_long_a_vehicle_was_on_site(self):
+        """O475: gate to gate once out (2 h 15 min is 2.25 hours); so far while still in."""
+        visit = self.visit()
+        GateVisit.objects.filter(pk=visit["id"]).update(in_at=timezone.now() - datetime.timedelta(hours=3))
+        so_far = Decimal(self.ok(self.guard.get(f"/api/inventory/gate-visits/{visit['id']}/"))["hours_in"])
+        self.assertTrue(Decimal("3") <= so_far < Decimal("4"), so_far)
+        left = self.ok(self.guard.post(f"/api/inventory/gate-visits/{visit['id']}/leave/"))
+        made = GateVisit.objects.get(pk=left["id"])
+        GateVisit.objects.filter(pk=made.pk).update(in_at=made.out_at - datetime.timedelta(hours=2, minutes=15))
+        self.assertEqual(self.guard.get(f"/api/inventory/gate-visits/{visit['id']}/").json()["hours_in"], "2.25")
+
     def test_a_visit_left_open_past_the_set_hours_shows_on_the_health_check(self):
         from apps.web.health import integrity
 
