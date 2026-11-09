@@ -126,7 +126,17 @@ class SalesOrderViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.Mod
         "confirm": "sales.change_salesorder",
         "cancel": "sales.change_salesorder",
         "send": "sales.change_salesorder",
+        "shortfalls": "sales.view_salesorder",
     }
+
+    @action(detail=True, methods=["get"])
+    def shortfalls(self, request, pk=None):
+        """What this order has promised and the shelf cannot cover now, line by line, in the stocking unit (O491)."""
+        order = self.get_object()
+        return Response([{"line": line.pk, "item": line.item.sku, "description": line.label(),
+                          "warehouse": line.warehouse.code, "short": short.quantize(Decimal("0.0001")),
+                          "uom": line.item.uom.code}
+                         for line, short in order.reservation_shortfalls().items()])
 
     @staticmethod
     def _proforma(data):

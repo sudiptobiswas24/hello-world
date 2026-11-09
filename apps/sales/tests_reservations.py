@@ -95,6 +95,27 @@ class HoldingStockTests(ReservationTestCase):
         order, line = self.order_for("25")
         self.assertEqual(order.reservation_shortfalls(), {line: Decimal("20")})
 
+    def test_the_rep_reads_what_the_order_cannot_cover(self):
+        """O491: 30 on the shelf, 25 promised to the first order; the second, for 25, is 20 short."""
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        from .tests_base import carries_every_customer
+
+        call_command("setup_roles", verbosity=0)
+        rep = User.objects.create_user("rep")
+        rep.groups.add(Group.objects.get(name="Sales Rep"))
+        carries_every_customer(rep)
+        client = APIClient()
+        client.force_authenticate(rep)
+        first, _ = self.order_for("25")
+        order, line = self.order_for("25")
+        read = client.get(f"/api/sales/sales-orders/{order.pk}/shortfalls/")
+        self.assertEqual(read.status_code, 200, read.content)
+        self.assertEqual([(row["line"], row["short"]) for row in read.json()], [(line.pk, "20.0000")])
+        self.assertEqual(client.get(f"/api/sales/sales-orders/{first.pk}/shortfalls/").json(), [])
+
     def test_an_order_is_still_taken_when_the_shelf_is_empty(self):
         # Orders are taken precisely so the stock can be bought. Refusing
         # one because the shelf is bare makes the system useless at the
