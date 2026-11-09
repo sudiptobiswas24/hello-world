@@ -297,7 +297,6 @@ class Command(BaseCommand):
     UNCALLED_REPORTED = {
         "hr.Timesheet.billable_hours": "O474",
         "manufacturing.Machine.rate_per_hour": "O481",
-        "purchasing.Bill.act_pay_by": "O483",
         "purchasing.PurchaseOrder.issue_components": "O487",
         "sales.DeliveryLine.lots_shipped": "O490",
         "sales.SalesOrder.reservation_shortfalls": "O491",

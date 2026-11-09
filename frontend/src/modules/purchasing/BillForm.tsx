@@ -50,6 +50,8 @@ interface Bill {
   vendor_name: string;
   bill_date: string;
   due_date: string | null;
+  // The MSME Act's day for a micro or small vendor's posted bill; due_date is the terms'.
+  act_pay_by: string | null;
   reference: string;
   purchase_order: number | null;
   debits: number | null;
@@ -188,6 +190,11 @@ export default function BillForm() {
           <Field label="Due" errors={[]}>
             {(fid) => <output id={fid}>{bill?.due_date ? date(bill.due_date) : "Set when posted"}</output>}
           </Field>
+          {bill?.act_pay_by && (
+            <Field label="Due under the MSME Act" hint="45 days from acceptance at most, whatever the terms" errors={[]}>
+              {(fid, described) => <output id={fid} aria-describedby={described}>{date(bill.act_pay_by)}</output>}
+            </Field>
+          )}
           <Field label="Their invoice number" hint="As printed on the vendor's invoice" errors={draft.errors.reference}>
             {(fid, described) => editable
               ? <input id={fid} aria-describedby={described} value={String(value.reference ?? "")} onChange={(e) => draft.set("reference", e.target.value as never)} />
