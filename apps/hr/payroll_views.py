@@ -113,12 +113,14 @@ class PayRunSerializer(serializers.ModelSerializer):
     gross = serializers.SerializerMethodField()
     net = serializers.SerializerMethodField()
     employer_cost = serializers.SerializerMethodField()
+    # What the run costs the company: gross and the employer's own contributions.
+    total_cost = serializers.SerializerMethodField()
     unpaid_net = serializers.SerializerMethodField()
 
     class Meta:
         model = PayRun
         fields = ["id", "number", "name", "period_start", "period_end", "pay_date", "status",
-                  "posted_at", "voided_at", "gross", "net", "employer_cost", "unpaid_net"]
+                  "posted_at", "voided_at", "gross", "net", "employer_cost", "total_cost", "unpaid_net"]
         read_only_fields = ["number", "status", "posted_at", "voided_at"]
 
     def get_gross(self, obj):
@@ -129,6 +131,9 @@ class PayRunSerializer(serializers.ModelSerializer):
 
     def get_employer_cost(self, obj):
         return str(obj.employer_cost())
+
+    def get_total_cost(self, obj):
+        return str(obj.total_cost())
 
     def get_unpaid_net(self, obj):
         return str(obj.unpaid_net())
