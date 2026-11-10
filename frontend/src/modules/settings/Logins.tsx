@@ -27,7 +27,12 @@ export default function Logins() {
       searchHint="Login, name or email"
       noun={["login", "logins"]}
       create={{ href: "/settings/logins/new", permission: "auth.add_user" }}
-      facets={[{ label: "Active", params: { is_active: "true" } }, { label: "Deactivated", params: { is_active: "false" } }]}
+      // One rule with the Ended mark: the server files each login by the standing it marks (O469).
+      facets={[
+        { label: "Active", params: { standing: "active" } },
+        { label: "Ended", params: { standing: "ended" } },
+        { label: "Deactivated", params: { standing: "deactivated" } },
+      ]}
     />
   );
 }

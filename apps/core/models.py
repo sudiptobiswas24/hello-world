@@ -670,16 +670,32 @@ WORKING_WEEKDAYS = frozenset({1, 2, 3, 4, 5})  # ISO weekdays: hr's DEFAULT_WORK
 
 
 _LOGIN_ENDED = []
+_LOGINS_ENDED = []
 
 
-def register_login_end(ask):
+def register_login_end(ask, ended):
     """
     ask(user, day) -> why that login no longer acts for anybody on `day`, or None. hr registers a
     leaver's: the login of someone whose leaving date has passed (O300). core imports no module, so
     whoever knows when a login's person has gone says so here.
+
+    ended(day) -> a Q over auth.User: the same rule as a query, for a list that asks "which logins
+    have ended" (logins_ended). Both are registered together, and hr builds both from one Q, so the
+    mark a login carries and the list it is filed under cannot drift (O469).
     """
     if ask not in _LOGIN_ENDED:
         _LOGIN_ENDED.append(ask)
+    if ended not in _LOGINS_ENDED:
+        _LOGINS_ENDED.append(ended)
+
+
+def logins_ended(day=None):
+    """A Q over auth.User: the logins login_ended answers for on `day` (the plant's today when not given)."""
+    day = to_date(day) if day is not None else timezone.localdate()
+    query = Q(pk__in=[])
+    for ended in _LOGINS_ENDED:
+        query |= ended(day)
+    return query
 
 
 def login_ended(user, day=None, cached=False):
