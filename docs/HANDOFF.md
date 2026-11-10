@@ -50,6 +50,27 @@ pg_isready -q || service postgresql start                              # role er
 
 ## 2. Next steps, in order
 
+**g32 is pushed (10e6990, 10 November 2026), all seven lanes green on one tip (gated as e0ef3f7).** Holds thirteen
+rows: O362 (a contractor's licence cut below the workers on it from today on is refused; most_at_once() is the one
+count a worker joining and a licence shrinking are held to), O263 (the employees file says roles are given on the
+Logins screen), O264/O267 (a dead cost method and a doubled lock), O268 (a count that finds something never stocked
+says to count it in on an adjustment), O364 (a carry entered under a since-lowered limit is kept and its row still
+edits), O333 (a login whose person has left reads Ended, derived from the sign-in rule), O345/O493 (a shift code is
+letters, digits and hyphens, unique whatever its case; migration 0089 stops in words on an installed N and n),
+O265/O492 (tape-load checks and creel promises count only the station's own warehouse, and a roll draws only doffs
+loaded off its own shelf), O320 (two fence methods print in run_mrp; audit_invariants now reports model methods
+nothing calls, which found O470-O491), O372 (a shortfall write-off is held to what the documents carry, not stray
+debits on the receivable). New rows: O469, O470-O491, O493 closed in the same gate.
+- Gate lessons from g32: the two-slot order (mig from minute zero) brought the gate to seven hours on a loaded
+  machine, against eight and a half. Agents running whole apps beside the gate pushed the load to 14 and sqlite to
+  6,870 of its 9,000 seconds; `/home/user/work/runtime_guard.sh` (wakes on a step past 80% of its own timeout, or a
+  5-minute load over 10) caught both. **Agents beside a gate: targeted modules, --parallel 1, nice -n 19, at most two
+  runs each, every run under timeout.** A pre-gate race run of all sixteen race files on one worker needs more than
+  3,500 seconds; run only the files a change's locks touch (g34's 129 receipt races took 1,347). Merging register
+  edits from parallel worktrees with a script that keeps only lines both sides keep dropped 24 new rows: resolve a
+  RISKS conflict by taking ours and applying that commit's own deletions by hand, then compare the row ids with the
+  expected set before going on.
+
 **g31 is pushed (7a27e21, 9 November 2026), all seven lanes green on one tip (gated as 5474b24).** Holds O405's
 remainder (the demo now shows tape, fabric, film and atta-sack specifications with spec-built BOMs, two tape lots
 inspected and released, energy meters with a week of readings, a sales commission plan, earned/sick/unpaid leave with
