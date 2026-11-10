@@ -398,6 +398,35 @@ class ABankOfLoomsSchedulesAsOneTests(PlanningTestCase):
             for index in range(1, count + 1)
         ]
 
+    def test_a_run_put_on_a_slow_loom_holds_it_at_its_speed(self):
+        """
+        O481: a run put on L-02, rated 45 kg an hour in a bank of 60,
+        holds the loom a third as long again for its weaving, setup
+        apart. Worked from the operation's frozen figures, as the load is.
+        """
+        from apps.manufacturing.machines import Machine
+
+        _, slow = self.looms(2)
+        Machine.objects.filter(pk=slow.pk).update(capacity_per_hour=Decimal("45"),
+                                                  capacity_uom=self.kg)
+        self.stock(self.tape, "50000")
+        order = WorkOrder.objects.create(
+            item=self.fabric, bom=self.fabric_bom, quantity_ordered=Decimal("1000"),
+            uom=self.kg, warehouse=self.plant, scheduled_start=self.day(1),
+            scheduled_end=self.day(1),
+        )
+        order.release(TODAY)
+        operation = order.operations.get(work_centre=self.loom)
+        at_the_bank = LoadBook(self.plant, TODAY, self.day(30)).booked(self.loom, self.day(1))
+        self.assertEqual(at_the_bank, operation.planned_minutes)
+        operation.machine = slow
+        operation.save()
+        setup = operation.setup_minutes
+        expected = setup + (operation.planned_minutes - setup) * Decimal("60") / Decimal("45")
+        self.assertGreater(expected, operation.planned_minutes)
+        book = LoadBook(self.plant, TODAY, self.day(30))
+        self.assertEqual(book.booked(self.loom, self.day(1)), expected)
+
     def test_two_looms_halve_the_days_one_loom_needed(self):
         """
         2,120 minutes of weaving. On one eight-hour loom that is four

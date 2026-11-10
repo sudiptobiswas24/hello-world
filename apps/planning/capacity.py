@@ -224,7 +224,8 @@ class LoadBook:
             .select_related("work_centre", "work_order__bom", "machine")
         )
         for operation in operations:
-            minutes = operation.planned_minutes or ZERO
+            # Put on one machine, it holds it at that machine's speed (O481).
+            minutes = operation.load_minutes()
             if minutes <= 0:
                 continue
             order = operation.work_order

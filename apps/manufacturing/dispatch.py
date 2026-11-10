@@ -110,12 +110,30 @@ class Resource:
         return self.machine.code if self.machine else self.centre.code
 
 
-def _remaining(operation, started_quantity):
-    """Minutes an inside operation still needs, and whether it has begun."""
+def _remaining(operation, started_quantity, machine=None):
+    """
+    Minutes an inside operation still needs on `machine`, and whether it has begun.
+
+    On the machine's own speed where it states one (O481): the operation was timed at its
+    bank's, and a loom at three quarters of the bank's rate takes a third as long again.
+    """
     booked = operation.minutes_booked()
     if operation.quantity_completed() >= started_quantity:
         return ZERO, True
-    return max((operation.planned_minutes or ZERO) - booked, ZERO), booked > 0
+    return max(operation.minutes_on(machine) - booked, ZERO), booked > 0
+
+
+def _speed_refused(machine, operation):
+    """Why `machine` cannot be timed on `operation`, or None where it can."""
+    from django.core.exceptions import ValidationError
+
+    if machine is None:
+        return None
+    try:
+        operation.minutes_on(machine)
+    except ValidationError as error:
+        return " ".join(error.messages).rstrip(".")
+    return None
 
 
 def _crewed_machines(centre, day):
@@ -219,10 +237,11 @@ def build(start_at=None):
                      else f"Every machine at {code} is out of service.")
                 waiting_on = operation.sequence
                 continue
-            reasons = [resource.machine.refuses(needs) for resource in candidates
-                       if resource.machine is not None]
-            able = [resource for resource in candidates
-                    if resource.machine is None or not resource.machine.refuses(needs)]
+            refused = {resource.code: (resource.machine.refuses(needs)
+                                       or _speed_refused(resource.machine, operation))
+                       for resource in candidates if resource.machine is not None}
+            reasons = [why for why in refused.values() if why]
+            able = [resource for resource in candidates if not refused.get(resource.code)]
             if not able:
                 held(operation, order, f"No machine at {operation.work_centre.code} can take "
                                        f"it: {'; '.join(reasons)}.")
@@ -246,6 +265,7 @@ def build(start_at=None):
                 candidates = pinned or candidates
             best = None
             for resource in candidates:
+                minutes, _ = _remaining(operation, started, resource.machine)
                 change, purge = (ZERO, ZERO) if begun else changeover(
                     operation.work_centre, resource.last_item, order.item,
                     operation.setup_minutes,
