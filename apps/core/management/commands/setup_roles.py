@@ -682,6 +682,9 @@ ROLES = {
         "hr.decide_expenseclaim", "hr.decide_any_expenseclaim", "hr.view_every_expenseclaim",
         *crud("hr", "appraisal"), "hr.view_every_appraisal",
         *crud("hr", "jobopening"), *crud("hr", "applicant"),
+        # Hours worked: anyone's recorded, decided and sent back, as HR.
+        *crud("hr", "timesheet"), *crud("hr", "timesheetentry"),
+        "hr.decide_timesheet", "hr.view_every_timesheet",
     ],
     "Payroll Officer": [
         *view("hr", "expenseclaim", "expenseline"),
@@ -690,8 +693,9 @@ ROLES = {
         *full("hr", "attendanceday"),
         *view("hr", "department", "employee", "leaverequest", "leavepolicy", "payslip", "payslipline",
               "statutoryremittance"),
-        # Unpaid leave is pay: payroll reads everyone's.
+        # Unpaid leave is pay: payroll reads everyone's. So are approved hours.
         "hr.view_every_leaverequest",
+        *view("hr", "timesheet", "timesheetentry"), "hr.view_every_timesheet",
         *full("hr", "paycomponent", "paycomponentslab", "employeecompensation"),
         *crud("hr", "payrun", actions=("add", "change", "view")),
         # The bank and the returns' master data, the law's dated figures, advances and the bank file.
@@ -711,6 +715,9 @@ ROLES = {
         *view("accounting", "account"),
         *view("hr", "expenseclaim", "expenseline"),
         "hr.decide_expenseclaim",
+        # Their reports' hours to approve, reject or send back; never their own (the model refuses).
+        *view("hr", "timesheet", "timesheetentry"),
+        "hr.decide_timesheet",
         *crud("hr", "appraisal", actions=("add", "change", "view")),
         *view("hr", "jobopening", "applicant"),
     ],
@@ -729,6 +736,8 @@ ROLES = {
         *view("accounting", "account"),
         *crud("hr", "expenseclaim", actions=("add", "change", "view")),
         *crud("hr", "expenseline"),
+        # One's own hours, written while a draft and submitted to one's manager.
+        *crud("hr", "timesheet"), *crud("hr", "timesheetentry"),
         *view("hr", "appraisal"),
         "hr.acknowledge_appraisal",
     ],

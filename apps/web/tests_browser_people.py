@@ -68,6 +68,46 @@ class PeopleInTheBrowserTests(BrowserTestCase):
         self.assertEqual((claim.status, claim.paid_from, claim.journal_entry.posted), ("paid", self.cash, True))
         self.assertEqual(self.problems, [])
 
+    def test_hours_from_riley_approved_by_jordan_and_sent_back(self):
+        """O474: Riley keeps a week's hours on screen and submits; Jordan approves, then sends them back."""
+        from apps.hr.timesheets import Timesheet
+
+        page = self.sign_in(self.riley.user, "/app/payroll/timesheets/new")
+        page.get_by_label("From").fill("2026-06-01")
+        page.get_by_label("To").fill("2026-06-05")
+        page.get_by_role("button", name="Create", exact=True).click()
+        page.wait_for_url(re.compile(r"/payroll/timesheets/\d+$"))
+        for day, billable in (("2026-06-01", True), ("2026-06-02", False)):
+            page.get_by_role("button", name="Add hours").click()
+            form = page.get_by_role("form", name="Add hours")
+            form.get_by_label("Day").fill(day)
+            form.get_by_label("Hours").fill("8")
+            if billable:
+                form.get_by_label("Billable").check()
+            form.get_by_role("button", name="Add hours").click()
+            self.toast(page, "Added")
+        expect(page.get_by_role("status", name="Hours", exact=True)).to_have_text("16")
+        expect(page.get_by_role("status", name="Billable hours", exact=True)).to_have_text("8")
+        page.get_by_role("button", name="Submit", exact=True).click()
+        self.toast(page, "Submitted")
+        sheet = Timesheet.objects.get()
+        self.assertEqual((sheet.employee, sheet.status, sheet.hours(), sheet.billable_hours()),
+                         (self.riley, "submitted", 16, 8))
+        # Riley is offered no decision on Riley's own hours.
+        expect(page.get_by_role("button", name="Approve", exact=True)).to_have_count(0)
+
+        jordan = self.sign_in(self.jordan.user, f"/app/payroll/timesheets/{sheet.pk}", page=self.new_page())
+        jordan.get_by_role("button", name="Approve", exact=True).click()
+        self.toast(jordan, "Approved")
+        jordan.get_by_role("button", name="Send back", exact=True).click()
+        form = jordan.get_by_role("form", name="Send back")
+        form.get_by_label("Why").fill("Add the Saturday")
+        form.get_by_role("button", name="Send back", exact=True).click()
+        self.toast(jordan, "Sent back")
+        sheet.refresh_from_db()
+        self.assertEqual((sheet.status, sheet.note, sheet.decided_by), ("draft", "Add the Saturday", None))
+        self.assertEqual(self.problems, [])
+
     def test_an_opening_and_a_hire(self):
         opening = JobOpening.objects.create(title="Loom operator", openings=1, opened_on=datetime.date(2026, 6, 1))
         asha = Applicant.objects.create(opening=opening, name="Asha Devi", applied_on=datetime.date(2026, 6, 2), stage="offered")

@@ -63,7 +63,7 @@ export const GROUPS: Record<string, [string, string[]][]> = {
       "bank-stock-statement", "msme-payments"]],
   ],
   payroll: [
-    ["Employees", ["employees", "attendance", "attendance-gaps", "punch-file", "leave", "claims", "appraisals",
+    ["Employees", ["employees", "attendance", "attendance-gaps", "punch-file", "leave", "timesheets", "claims", "appraisals",
       "departments"]],
     ["Pay", ["runs", "my-payslips", "pay-details", "salary-files", "advances", "owed-back", "gratuity"]],
     ["Statutory", ["dues", "remittances", "registers", "statutory-figures", "minimum-wages", "labour-contractors"]],
