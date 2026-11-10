@@ -112,6 +112,19 @@ class BillPaymentSerializer(serializers.ModelSerializer):
         fields = ["id", "bill", "bill_number", "payment", "payment_number", "amount", "date", "discount_earned"]
 
 
+class BillListSerializer(serializers.ListSerializer):
+    """A page of bills, with what each MSME bill's Act day reads of its order lines asked once (O501)."""
+
+    def to_representation(self, data):
+        from django.db.models.manager import BaseManager
+
+        from .msme import know_the_page
+
+        bills = list(data.all() if isinstance(data, BaseManager) else data)
+        know_the_page(bills)
+        return super().to_representation(bills)
+
+
 class BillSerializer(TakesItsLinesMixin, ExtensibleSerializerMixin, serializers.ModelSerializer):
     line_serializer = BillLineSerializer
     line_parent = "bill"
@@ -139,6 +152,7 @@ class BillSerializer(TakesItsLinesMixin, ExtensibleSerializerMixin, serializers.
 
     class Meta:
         model = Bill
+        list_serializer_class = BillListSerializer
         fields = [
             "id",
             "number",
