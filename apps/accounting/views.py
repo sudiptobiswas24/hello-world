@@ -1,5 +1,5 @@
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.db.models import Prefetch
+from django.db.models import Exists, OuterRef, Prefetch
 from django.http import HttpResponse
 from rest_framework import viewsets
 from rest_framework.decorators import action
@@ -24,6 +24,7 @@ from .reports import balance_sheet, profit_and_loss, trial_balance
 from .models import (
     Account,
     AccountingPeriod,
+    BankStatementLine,
     FiscalPosition,
     FiscalPositionTaxMapping,
     JournalEntry,
@@ -391,7 +392,9 @@ class PaymentViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     queryset = Payment.objects.select_related(
         "party", "bank_account", "counterpart_account", "journal_entry"
-    ).prefetch_related("journal_entry__reversed_by", "invoice_allocations", "bill_allocations")
+    ).prefetch_related("journal_entry__reversed_by", "invoice_allocations", "bill_allocations").annotate(
+        # Payment.is_reconciled for the page in one subquery: asked a row at a time, a query a payment (O497).
+        statement_matched=Exists(BankStatementLine.objects.filter(payment=OuterRef("pk"))))
     serializer_class = PaymentSerializer
     action_permission_map = {
         "post_payment": "accounting.post_payment",

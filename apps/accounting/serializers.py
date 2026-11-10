@@ -196,8 +196,13 @@ class PaymentSerializer(serializers.ModelSerializer):
     # up the allocations it happened to load (200 at most). Read through
     # the reverse relations, so accounting imports neither trading module.
     unallocated = serializers.SerializerMethodField()
-    # Matched to a line of the bank's statement: the bank has seen it.
-    reconciled = serializers.BooleanField(source="is_reconciled", read_only=True)
+    # Matched to a line of the bank's statement: the bank has seen it. A list reads it from the
+    # viewset's annotation, one subquery for the page rather than one query a payment (O497).
+    reconciled = serializers.SerializerMethodField()
+
+    def get_reconciled(self, obj):
+        known = getattr(obj, "statement_matched", None)
+        return obj.is_reconciled() if known is None else bool(known)
 
     def get_unallocated(self, obj):
         applied = sum((row.amount for row in obj.invoice_allocations.all()), Decimal("0")) + sum(
