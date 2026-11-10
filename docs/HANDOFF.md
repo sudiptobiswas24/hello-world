@@ -50,6 +50,20 @@ pg_isready -q || service postgresql start                              # role er
 
 ## 2. Next steps, in order
 
+**g34 is pushed (6f6a58e, 10 November 2026), all seven lanes green on one tip (gated as 4cbc191).** Twelve
+commits from /home/user/work/g34_o498: ten inert-method rows removed (O472, O476-O480, O482, O484-O486, O489), seven
+wired to the API or a screen (O470 reconciled flags, O473 pay-run employer cost, O475 vehicle time on site, O483
+MSME pay-by day, O487 stores issue subcontract components, O490 batches a delivery line shipped, O491 what an order
+promised and cannot cover), O498 (an MSME bill falls due on the Act's day, not the terms'; purchasing migration 0090
+keeps the terms' date), and new rows O497, O499 and O500 (two MSMED Act readings for the adviser). Next: the open
+code rows (O457, O259, O346, O474, O481, O497, O499), and the decision rows waiting on people (O448 owner, O449
+and O500 tax adviser, O494 owner, O469).
+- Gate lessons from g34: mig started first and ran alone in slot 1 (about 4 hours 10 minutes); pg-c, the last
+  lane, was started in slot 1 the moment mig ended rather than queued behind ist, which kept two lanes running
+  and ended the gate about an hour sooner. The migration-tagged count went 49 to 50: purchasing's new 0090 test.
+  A session restart at about 14:20 stopped the watcher and the runtime guard but not the machine (uptime
+  unbroken) or the detached pg-c lane; restarting the two jobs was enough.
+
 **g33 is pushed (3063006, 10 November 2026), all seven lanes green on one tip (gated as 98dcc74).** Holds O471
 (HR revokes and issues a station PIN from the employee screen; the PIN is shown once), O488 (a charge line takes
 its charge's taxes on every path; add_charge gone), O266 (a hand-typed asset's go-live figures are corrected on the
