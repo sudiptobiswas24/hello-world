@@ -185,6 +185,24 @@ def held_by_the_act(order_lines=()):
     ).distinct().order_by("pk"))
 
 
+def billed_alongside(bill):
+    """
+    The other bills for goods on the order lines `bill` bills, in key order: the bills whose split
+    across deliveries it can move as it posts (O499). lots() gives an order line's deliveries to its
+    bills oldest bill first, by bill date, so a bill dated before one already posted takes the
+    deliveries that one was read against, and that one's due day moves to the later deliveries.
+    Drafts too: one posting while this waits for the order would otherwise be named only after
+    this bill is held. A debit note or a prepayment moves no split: lots() passes over neither.
+    """
+    from .models import Bill
+
+    if not bill.pk or bill.debits_id or bill.is_prepayment:
+        return []
+    lines = bill.lines.exclude(order_line=None).values("order_line")
+    return list(Bill.objects.filter(debits__isnull=True, is_prepayment=False, lines__order_line__in=lines)
+                .exclude(pk=bill.pk).distinct().order_by("pk"))
+
+
 def keep_due_dates(bills):
     """
     Write each posted bill's due_date as pay_by() reads it (O498): the

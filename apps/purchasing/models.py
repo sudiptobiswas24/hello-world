@@ -4244,6 +4244,19 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxesTakenUnder, TaxedDocumentMix
             self.pk and self.purchase_order_id and not self.is_prepayment and not self.debits_id) else []
         return orders + ([Bill(pk=self.debits_id)] if self.debits_id else []) + drawn
 
+    def locked_before_posting(self):
+        """
+        What locked_before_it names, and the other bills on its order lines made before it (O499):
+        posting may move their split across deliveries, and with it their due day, which is written
+        again under their lock. Bills are taken in key order; those made after it, once it is held.
+        """
+        from .msme import billed_alongside
+
+        named = self.locked_before_it()
+        bills = {row.pk: row for row in named if isinstance(row, Bill)}
+        bills.update({row.pk: row for row in billed_alongside(self) if row.pk < self.pk})
+        return [row for row in named if not isinstance(row, Bill)] + [bills[pk] for pk in sorted(bills)]
+
     def save(self, *args, **kwargs):
         updating = set(kwargs.get("update_fields") or ())
         if self._was_posted_in_db() and not (updating and updating <= self.SUPPLIER_NOTE_FIELDS):
@@ -4534,7 +4547,7 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxesTakenUnder, TaxedDocumentMix
             )
         return entry
 
-    @serialised("posted", held_first=True)
+    @serialised("posted", held_first="locked_before_posting")
     @takes_back(when=lambda self: self.is_debit_note())
     def post(self, memo=None, apply_prepayments=True):
         if self.posted:
@@ -4618,6 +4631,13 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxesTakenUnder, TaxedDocumentMix
         # Its lines, and the lines a note gives back, in one call in key order, before the shelves a
         # charge lands on: each line is written again as the entry is built, and a document's lines
         # are taken before the stock (O182).
+        # The bills on its order lines made after it, after it and before the lines, by the lock order:
+        # their due day may move once this one takes its deliveries (O499). Those made before it are held
+        # already (locked_before_posting); no other bill posts on these lines while the orders are held.
+        from .msme import billed_alongside
+
+        alongside = billed_alongside(self)
+        lock_rows(*(row for row in alongside if row.pk > self.pk))
         held = list(self.lines.select_related("debits_line"))
         lock_rows(*held, *(line.debits_line for line in held if line.debits_line_id), refresh=False)
         if self.is_debit_note():
@@ -4669,6 +4689,12 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxesTakenUnder, TaxedDocumentMix
         from .msme import keep_due_dates
 
         keep_due_dates([self])
+        # Dated before a bill already posted on the same order line, it takes the deliveries that bill was
+        # read against, and that bill falls due by the later ones (O499): each written again, held above.
+        from .msme import COVERED
+
+        keep_due_dates(list(Bill.objects.filter(pk__in=[row.pk for row in alongside], posted=True,
+                                                msme_category__in=COVERED).order_by("pk")))
 
         self._record_landed_cost()
         if self.is_debit_note():

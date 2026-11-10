@@ -658,6 +658,92 @@ class DueOnTheDayItMustBePaidTests(MsmeTestCase):
         self.assertEqual(due(), Bill.objects.get(pk=bill.pk).pay_by())
 
 
+class PostedOutOfDateOrderTests(MsmeTestCase):
+    """
+    O499: an order line's deliveries go to its bills oldest bill first, by
+    bill date (msme.lots), so a bill dated before one already posted takes
+    the deliveries that one was read against, and that one's stored due day
+    is written again (calc_g35_a/o499_split.py). Net 60, micro vendor, 6
+    received 1 June and 4 on 20 June; the bill of 25 June for 4 posted first
+    is due 16 July (from 1 June); then the bill of 5 June posts:
+      for 6: it is due 16 July, the 25 June bill 4 August (from 20 June);
+      for 3: the 25 June bill takes 3 of 1 June and 1 of 20 June: 4 August;
+      for 2: the 25 June bill still takes 4 of 1 June: 16 July.
+    The reverse, a debit note on the 5 June bill for all of it, moves no
+    split (lots() nets neither notes nor returns): 4 August stands.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.order_, self.line = AcceptedOnDeliveryTests.order(self)
+        AcceptedOnDeliveryTests.receive(self, self.order_, self.line, JUNE, "6")
+        AcceptedOnDeliveryTests.receive(self, self.order_, self.line, datetime.date(2026, 6, 20), "4")
+        self.late = AcceptedOnDeliveryTests.bill_for(self, self.order_, self.line, datetime.date(2026, 6, 25), "4")
+        self.assertEqual(self.late.due_date, datetime.date(2026, 7, 16))
+
+    def early(self, quantity):
+        return AcceptedOnDeliveryTests.bill_for(self, self.order_, self.line, datetime.date(2026, 6, 5), quantity)
+
+    def due(self, bill):
+        bill = Bill.objects.get(pk=bill.pk)
+        self.assertEqual(bill.due_date, bill.pay_by())
+        return bill.due_date
+
+    def test_a_bill_dated_before_one_posted_moves_that_ones_day(self):
+        early = self.early("6")
+        self.assertEqual((self.due(early), self.due(self.late)),
+                         (datetime.date(2026, 7, 16), datetime.date(2026, 8, 4)))
+
+    def test_drafted_before_the_bill_it_moves(self):
+        """The bill it moves made after it: held once it is, by the lock order, and written again alike."""
+        early = Bill.objects.create(vendor=self.vendor, bill_date=datetime.date(2026, 6, 5), payable_account=self.payable,
+                                    payment_terms=self.net60, purchase_order=self.order_)
+        BillLine.objects.create(bill=early, order_line=self.line, item=self.item, quantity=Decimal("4"),
+                                unit_price=Decimal("100"), expense_account=self.expense)
+        later = AcceptedOnDeliveryTests.bill_for(self, self.order_, self.line, datetime.date(2026, 6, 26), "2")
+        self.assertGreater(later.pk, early.pk)
+        self.assertEqual(later.due_date, datetime.date(2026, 7, 16))  # 4 + 2 of the 6 of 1 June
+        early.post()
+        # The 5 June bill takes 4 of 1 June; 25 June the last 2 of 1 June and 2 of 20 June; 26 June 2 of 20 June.
+        self.assertEqual((self.due(early), self.due(self.late), self.due(later)),
+                         (datetime.date(2026, 7, 16), datetime.date(2026, 8, 4), datetime.date(2026, 8, 4)))
+
+    def test_only_as_far_as_its_split_moves(self):
+        for quantity, due in (("3", datetime.date(2026, 8, 4)), ("2", datetime.date(2026, 7, 16))):
+            with self.subTest(quantity=quantity):
+                from django.db import transaction
+
+                with transaction.atomic():
+                    self.early(quantity)
+                    self.assertEqual(self.due(self.late), due)
+                    transaction.set_rollback(True)
+
+    def test_read_through_the_api_as_the_ap_manager(self):
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        call_command("setup_roles", verbosity=0)
+        user = User.objects.create_user("ap-manager")
+        user.groups.add(Group.objects.get(name="AP Manager"))
+        client = APIClient()
+        client.force_authenticate(user)
+        early = Bill.objects.create(vendor=self.vendor, bill_date=datetime.date(2026, 6, 5), payable_account=self.payable,
+                                    payment_terms=self.net60, purchase_order=self.order_)
+        BillLine.objects.create(bill=early, order_line=self.line, item=self.item, quantity=Decimal("6"),
+                                unit_price=Decimal("100"), expense_account=self.expense)
+        response = client.post(f"/api/purchasing/bills/{early.pk}/post_bill/", {}, format="json")
+        self.assertEqual(response.status_code, 200, response.content)
+        read = client.get(f"/api/purchasing/bills/{self.late.pk}/").json()
+        self.assertEqual((read["due_date"], read["terms_due_date"]), ("2026-08-04", "2026-08-24"))
+
+    def test_a_debit_note_on_the_earlier_bill_moves_nothing(self):
+        early = self.early("6")
+        early.create_debit_note(quantities={early.lines.get(): Decimal("6")})
+        self.assertEqual((self.due(early), self.due(self.late)),
+                         (datetime.date(2026, 7, 16), datetime.date(2026, 8, 4)))
+
+
 @tag("migration")
 class TermsDayKeptMigrationTests(TransactionTestCase):
     """
