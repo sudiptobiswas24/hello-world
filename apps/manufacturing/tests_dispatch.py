@@ -500,3 +500,63 @@ class ALoomSlowerThanItsBankTests(DispatchTestCase):
         self.l2.refresh_from_db()
         self.assertEqual(book.free(self.bank, D1, pool=(self.l2,)), Decimal("1080"))
 
+
+class ARunEarnsItsMachinesMinutesTests(DispatchTestCase):
+    """
+    O522: B, 600 kg, put on L-2 at 45 kg an hour in a bank of 60, takes 30 + 800 = 830
+    minutes there, recorded as it is put there. Its time variance earns those, not the
+    bank's 630, and its traveller prints them; a re-rating afterwards changes neither.
+    """
+
+    def setUp(self):
+        super().setUp()
+        Machine.objects.filter(pk=self.l2.pk).update(capacity_per_hour=Decimal("45"),
+                                                     capacity_uom=self.kg)
+        self.l2.refresh_from_db()
+        self.b = self.run_of("600", D2)
+        self.operation = self.b.operations.get()
+
+    def test_put_on_the_slow_loom_it_records_its_minutes_there(self):
+        self.assertIsNone(self.operation.machine_minutes)
+        self.operation.machine = self.l2
+        self.operation.save()
+        self.operation.refresh_from_db()
+        self.assertEqual(self.operation.machine_minutes, Decimal("830.00"))
+        # Re-rated afterwards: what was recorded stands.
+        Machine.objects.filter(pk=self.l2.pk).update(capacity_per_hour=Decimal("30"))
+        self.operation.name = self.operation.name
+        self.operation.save()
+        self.operation.refresh_from_db()
+        self.assertEqual(self.operation.machine_minutes, Decimal("830.00"))
+        # Moved to L-1, the bank's speed: the planned minutes stand again.
+        self.operation.machine = self.l1
+        self.operation.save()
+        self.operation.refresh_from_db()
+        self.assertIsNone(self.operation.machine_minutes)
+        self.assertEqual(self.operation.minutes_as_assigned(), Decimal("630.00"))
+
+    def test_the_dispatchers_commit_records_them(self):
+        Machine.objects.filter(pk=self.l1.pk).update(is_active=False)
+        commit(self.schedule())
+        self.operation.refresh_from_db()
+        self.assertEqual((self.operation.machine, self.operation.machine_minutes),
+                         (self.l2, Decimal("830.00")))
+
+    def test_made_to_its_machines_speed_it_took_no_longer_than_it_earned(self):
+        """830 minutes booked for the whole run on L-2: no variance, where it read 200 adverse."""
+        self.operation.machine = self.l2
+        self.operation.save()
+        TimeBooking.objects.create(work_order=self.b, operation=self.operation, booking_date=TODAY,
+                                   minutes=Decimal("830")).post()
+        self.full_issue(self.b)
+        self.produce(self.b, str(self.b.started_quantity())).post()
+        self.assertEqual(self.b.time_variance_minutes(), Decimal("0"))
+
+    def test_the_traveller_prints_the_minutes_on_its_machine(self):
+        from .traveller import traveller
+
+        self.operation.machine = self.l2
+        self.operation.save()
+        step = traveller(self.b)["steps"][0]
+        self.assertEqual((step["machine"], step["planned_minutes"]), ("L-2", "830"))
+

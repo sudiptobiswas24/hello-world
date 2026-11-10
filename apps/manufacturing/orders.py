@@ -1005,7 +1005,11 @@ class WorkOrder(AuditModel):
         made = self.item.to_stock_quantity(
             self.quantity_produced() + self.quantity_scrapped(), self.uom
         )
-        earned = self.planned_minutes() / ordered * made
+        # On the machines it was given, at their rates as recorded then (O522): a
+        # run on a loom at three quarters of its bank's speed earns a third more.
+        assigned = sum((operation.minutes_as_assigned() for operation in self.operations.all()),
+                       Decimal("0"))
+        earned = assigned * made / ordered  # total first, divide last
         return self.minutes_booked() - earned
 
     def material_variance(self):
@@ -1814,6 +1818,14 @@ class WorkOrderOperation(AuditModel):
         max_digits=14, decimal_places=2,
         help_text="Setup plus run time for the whole order, frozen.",
     )
+    machine_minutes = models.DecimalField(
+        max_digits=14, decimal_places=2, null=True, blank=True, editable=False,
+        help_text="Setup plus run time on the machine it was put on, at that machine's "
+                  "rate when it was put there (O522). Blank on no machine, or on one "
+                  "that runs at its bank's speed: the planned minutes stand. Recorded "
+                  "rather than read from the machine later, so a loom re-rated next "
+                  "month does not re-earn a run it has already made.",
+    )
 
     class Meta:
         ordering = ["work_order", "sequence", "id"]
@@ -2076,7 +2088,42 @@ class WorkOrderOperation(AuditModel):
         if self._stored_run_status() not in (None, WorkOrderStatus.DRAFT):
             self._check_only_the_assignment_moved()
         self._check_machine()
+        update_fields = kwargs.get("update_fields")
+        if update_fields is None or "machine" in update_fields:
+            self._record_machine_minutes()
+            if update_fields is not None and "machine_minutes" not in update_fields:
+                kwargs["update_fields"] = [*update_fields, "machine_minutes"]
         super().save(*args, **kwargs)
+
+    def _record_machine_minutes(self):
+        """
+        The minutes this operation takes on its machine, recorded when the
+        machine is given (O522): by the dispatcher's commit or by hand.
+        Kept while the machine stays the same, so a re-rating afterwards
+        changes nothing already decided; worked again when it moves.
+        """
+        stored = (WorkOrderOperation.objects.filter(pk=self.pk)
+                  .values_list("machine_id", "machine_minutes").first() if self.pk else None)
+        if stored is not None and stored[0] == self.machine_id and self.machine_id is not None:
+            self.machine_minutes = stored[1]
+            return
+        self.machine_minutes = None
+        if self.machine_id is None or self.is_outside:
+            return
+        try:
+            minutes = self.minutes_on(self.machine)
+        except ValidationError:
+            # The dispatcher refuses that machine with the reason; one put
+            # there by hand earns the plan, as a machine with no rate does.
+            return
+        if minutes != (self.planned_minutes or Decimal("0")):
+            self.machine_minutes = minutes.quantize(Decimal("0.01"))
+
+    def minutes_as_assigned(self):
+        """Minutes on the machine it was given, as recorded then; the planned ones otherwise."""
+        if self.machine_minutes is not None:
+            return self.machine_minutes
+        return self.planned_minutes or Decimal("0")
 
     def _check_only_the_assignment_moved(self):
         """

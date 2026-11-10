@@ -292,7 +292,6 @@ missing), **minor**.
 | O494 | accounting, sales, purchasing | A charge line that names no taxes (taxes: []) confirms and posts untaxed even when its charge declares GST; refuse_untaxed_lines (accounting/gst.py) asks item lines only. That keeps a deliberate "no tax" working; whether a charge is refused as an item is, is the owner's (seen 2026-11-09, g33 O488) | decide | charge lines entered with no tax |
 | O500 | purchasing | MSMED Act readings the code cannot settle (g34 O498): a bill with no terms is read as nothing agreed, so the Act's 15 days apply (an unwritten agreement would put it under the 45-day cap); and while an objection stands on a no-terms bill the bill's own date is used, as the Act gives no day. The tax adviser confirms both (seen 2026-11-09, g34) | decide | MSME bills with no terms |
 | O524 | manufacturing | A crewed bank's capacity is capped in clock minutes while its machines now count in minutes of the bank's work (O521): WorkCentre.minutes_on (orders.py, `min(minutes, crewed)`) takes manned_minutes (manning.py:98), machines crewed x shift hours x 60, unscaled. Take a bank rated 60 kg/h with two looms at 45, 24 h each, and a crew for one of them. It can do 1,080 minutes of the bank's work a day, but the cap reads 1,440, so 360 minutes a day are promised that nobody can run (seen 2026-11-10, g35) | rule | minor |
-| O522 | manufacturing | Efficiency variance and the traveller read the bank's planned_minutes for a run made on a slower machine: WorkOrder.time_variance_minutes (orders.py:996, earned = planned_minutes()/ordered x made) earns 630 minutes for 600 kg on a loom at 45 kg/h in a bank of 60, which takes 830, so 200 minutes read as inefficiency that is the loom's rate; traveller.py:110 prints 630 beside the step's machine. Costing: report, not fixed in g35 (seen 2026-11-10, g35) | rule | minor |
 | O523 | manufacturing | OEE performance reads the operation's frozen units_per_hour, the bank's rate (oee.py:183, oee.py:415), whatever machine the booking ran on: a loom rated 45 kg/h in a bank of 60, running flat out, reads 75% performance for ever. Machine.run_minutes (O481) is the ratio to use (seen 2026-11-10, g35) | rule | minor |
 
 Upgrade notes, true of data made before the 8 October fixes:
@@ -301,6 +300,7 @@ Upgrade notes, true of data made before the 8 October fixes:
 - A void made before manufacturing migration 0079 keeps its gap between shelf and ledger, and nothing records it.
 - A material issue line posted before manufacturing migration 0080 has no `posted_value`; its return and void work from its rate times its quantity, as it was booked then.
 - A landed-cost allocation made before purchasing migration 0059 releases through its one `stock_movement`; a clearance out of inspection made before 0059 recorded no movement, so under FIFO freight landed on its goods goes to cost of sales.
+- A run operation given a machine before manufacturing migration 0091 records no minutes on that machine. It earns, and its traveller prints, its planned minutes until it is given a machine again.
 
 ## Decisions taken for the owner, confirmed on 2026-10-05
 
