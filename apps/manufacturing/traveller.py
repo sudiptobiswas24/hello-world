@@ -107,7 +107,8 @@ def traveller(order):
                       else step.work_centre.code if step.work_centre_id else ""),
             "machine": step.machine.code if step.machine_id else "",
             "setup_minutes": plain(step.setup_minutes),
-            "planned_minutes": plain(step.planned_minutes),
+            # On the machine it is given, at that machine's rate as recorded (O522).
+            "planned_minutes": plain(step.minutes_as_assigned()),
             "planned_start": step.planned_start,
         } for step in order.operations.select_related("work_centre", "machine")],
         "materials": [{
