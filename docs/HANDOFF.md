@@ -50,6 +50,23 @@ pg_isready -q || service postgresql start                              # role er
 
 ## 2. Next steps, in order
 
+**g33 is pushed (3063006, 10 November 2026), all seven lanes green on one tip (gated as 98dcc74).** Holds O471
+(HR revokes and issues a station PIN from the employee screen; the PIN is shown once), O488 (a charge line takes
+its charge's taxes on every path; add_charge gone), O266 (a hand-typed asset's go-live figures are corrected on the
+draft until it posts, read under its lock, with race tests), O494 (decision row: may a charge line post untaxed by
+choice, the owner's), O495 (the office screens add a freight or packing charge to a document) and O496 (freight
+typed on a bill books to its charge's expense account; load_demo carries a FREIGHT charge). Next: g34, the twelve
+commits in /home/user/work/g34_o498 (3a28ce9..2ff4468: ten inert-method rows removed, seven wired, O498 MSME due
+date, rows O497/O499/O500), cherry-picked onto 3063006; a trial pick onto 98dcc74 applied clean with no migration
+changes.
+- Gate lessons from g33: the machine restarted at 01:27 mid-gate and killed the two detached lanes (mig, sqlite)
+  and PostgreSQL. Nothing on disk was lost: mig resumed from its per-HEAD .done markers (accounting and assets not
+  re-run), sqlite re-ran from the start. After any restart check `uptime`, start PostgreSQL, re-run the dead lanes,
+  and restart the snapshot loop, the watchers and the runtime guard. mig is the long pole (core 7 tests took 50
+  minutes); with mig alone in slot 1, slot 2 ran ui, pg-a, sqlite, pg-b, ist and pg-c, and the gate ended when
+  pg-c did. pg-c grew to 1,032 tests and 83 minutes with the new race tests. sqlite and ist skips went 241 to 245:
+  the four new race tests, PostgreSQL-only. Read a skip change before calling a lane green.
+
 **g32 is pushed (10e6990, 10 November 2026), all seven lanes green on one tip (gated as e0ef3f7).** Holds thirteen
 rows: O362 (a contractor's licence cut below the workers on it from today on is refused; most_at_once() is the one
 count a worker joining and a licence shrinking are held to), O263 (the employees file says roles are given on the
