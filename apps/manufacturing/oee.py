@@ -78,6 +78,47 @@ def _in_bom_units(booking, quantity):
     return order.uom.convert_to(quantity, order.bom.uom)
 
 
+def _ideal_at_the_operations_rate(booking):
+    """What the quantity counted takes at the operation's frozen rated speed, or None."""
+    rate = booking.operation.units_per_hour
+    if booking.quantity_completed is None or not rate:
+        return None
+    return _in_bom_units(booking, booking.quantity_completed) / rate * MINUTES_PER_HOUR
+
+
+def ideal_minutes_when_posted(booking):
+    """
+    The ideal minutes recorded on a booking as it posts (O523): at the rated
+    speed of the machine it ran on, as that machine is rated then. The
+    operation's rate is its bank's; a loom rated at 45 kg an hour in a bank
+    of 60 that runs flat out made 45 kg in its hour, and measured at 60 it
+    read 75 per cent performance for ever. A rate that cannot be read
+    against the bank's keeps the operation's.
+    """
+    from django.core.exceptions import ValidationError
+
+    at_bank = _ideal_at_the_operations_rate(booking)
+    if at_bank is None:
+        return None
+    if booking.machine_id is not None:
+        try:
+            at_bank = booking.machine.run_minutes(at_bank)
+        except ValidationError:
+            pass
+    return at_bank.quantize(Decimal("0.0001"))
+
+
+def ideal_minutes(booking):
+    """
+    What a booking's counted quantity would have taken at full rated speed:
+    as recorded when it posted, or, for one posted before that was recorded,
+    at the operation's rate, which is what was asked then.
+    """
+    if booking.ideal_minutes is not None:
+        return booking.ideal_minutes
+    return _ideal_at_the_operations_rate(booking)
+
+
 def _bookings(work_centre, start, end, shift=None, machine=None):
     from .orders import TimeBooking
 
@@ -178,13 +219,10 @@ def performance(work_centre, start, end, shift=None, machine=None):
     actual = Decimal("0")
     counted = 0
     for booking in _bookings(work_centre, start, end, shift, machine):
-        if booking.quantity_completed is None:
+        booked_ideal = ideal_minutes(booking)
+        if booked_ideal is None:
             continue
-        rate = booking.operation.units_per_hour
-        if not rate:
-            continue
-        made = _in_bom_units(booking, booking.quantity_completed)
-        ideal += made / rate * MINUTES_PER_HOUR
+        ideal += booked_ideal
         actual += booking.minutes
         counted += 1
     return {
@@ -409,11 +447,9 @@ def by_operator(start, end, work_centre=None):
             })
             row["minutes"] += booking.minutes
             row["bookings"] += 1
-            if booking.quantity_completed is not None and booking.operation.units_per_hour:
-                made = _in_bom_units(booking, booking.quantity_completed)
-                row["ideal_minutes"] += (
-                    made / booking.operation.units_per_hour * MINUTES_PER_HOUR
-                )
+            booked_ideal = ideal_minutes(booking)
+            if booked_ideal is not None:
+                row["ideal_minutes"] += booked_ideal
     for row in people.values():
         row["performance"] = (
             row["ideal_minutes"] / row["minutes"] if row["minutes"] else None
