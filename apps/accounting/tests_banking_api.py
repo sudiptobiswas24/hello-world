@@ -109,6 +109,23 @@ class BankingApiTests(ReconciliationTestCase):
         self.assertEqual((report["difference"], report["reconciled"]), ("0.00", True))
         self.assertEqual(controller.post(f"{STATEMENTS}{pk}/close/", {}, format="json").status_code, 200)
 
+    def test_the_payments_list_says_reconciled_without_a_query_a_payment(self):
+        """O497: the list answers `reconciled` for the page at once; two payments more ask nothing more."""
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        bookkeeper = self.as_("Bookkeeper")
+        pk, _ = self.keyed_in(bookkeeper)
+        bookkeeper.post(f"{STATEMENTS}{pk}/auto_match/", {}, format="json")
+        listed = lambda: {row["id"]: row["reconciled"]  # noqa: E731
+                          for row in bookkeeper.get("/api/accounting/payments/").json()}
+        with CaptureQueriesContext(connection) as two:
+            self.assertEqual(listed(), {self.received.pk: True, self.cheque.pk: False})
+        more = [self.receipt("200", on=datetime.date(2026, 1, 7)), self.disbursement("80", on=datetime.date(2026, 1, 8))]
+        with self.assertNumQueries(len(two.captured_queries)):
+            self.assertEqual(listed(), {self.received.pk: True, self.cheque.pk: False,
+                                        more[0].pk: False, more[1].pk: False})
+
     def test_an_explained_line_is_not_changed_or_dropped(self):
         bookkeeper, controller = self.as_("Bookkeeper"), self.as_("Controller")
         pk, (deposit, charge) = self.keyed_in(bookkeeper)
