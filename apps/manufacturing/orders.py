@@ -3646,6 +3646,13 @@ class TimeBooking(VoidedNotDeleted, AuditModel):
                   "here. A work centre re-rated in April must not re-price a "
                   "shift that ran in March.",
     )
+    ideal_minutes = models.DecimalField(
+        max_digits=14, decimal_places=4, null=True, blank=True, editable=False,
+        help_text="What the quantity counted would have taken at the rated speed of "
+                  "the machine it ran on, when this posted (O523): what overall "
+                  "equipment effectiveness measures this booking's performance "
+                  "against. Blank where nothing was counted or no rate is known.",
+    )
     posted = models.BooleanField(default=False)
     posted_at = models.DateTimeField(null=True, blank=True, editable=False)
     posted_value = models.DecimalField(
@@ -3765,6 +3772,9 @@ class TimeBooking(VoidedNotDeleted, AuditModel):
             f"{self.number}"
         )
         self.hourly_rate = self.operation.work_centre.conversion_rate_per_hour()
+        from .oee import ideal_minutes_when_posted
+
+        self.ideal_minutes = ideal_minutes_when_posted(self)
         value = self.hours() * self.hourly_rate
         if value:
             self.journal_entry, charged = _post_entry(
@@ -3786,7 +3796,7 @@ class TimeBooking(VoidedNotDeleted, AuditModel):
         self.posted = True
         self.posted_at = timezone.now()
         super().save(update_fields=[
-            "number", "booking_date", "shift", "hourly_rate", "posted",
+            "number", "booking_date", "shift", "hourly_rate", "ideal_minutes", "posted",
             "posted_at", "posted_value", "journal_entry", "updated_at",
         ])
         return self.journal_entry

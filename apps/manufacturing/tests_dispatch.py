@@ -560,3 +560,51 @@ class ARunEarnsItsMachinesMinutesTests(DispatchTestCase):
         step = traveller(self.b)["steps"][0]
         self.assertEqual((step["machine"], step["planned_minutes"]), ("L-2", "830"))
 
+
+class PerformanceAgainstTheMachinesOwnRateTests(DispatchTestCase):
+    """
+    O523: a booking on L-2, rated 45 kg an hour in a bank of 60, that made 45 kg in
+    its hour ran flat out. Its ideal minutes, recorded as it posts, are 45 / 45 x 60 =
+    60: performance 1, where at the operation's 60 kg it read 45 / 60 = 0.75.
+    """
+
+    def setUp(self):
+        super().setUp()
+        Machine.objects.filter(pk=self.l2.pk).update(capacity_per_hour=Decimal("45"),
+                                                     capacity_uom=self.kg)
+        self.l2.refresh_from_db()
+        self.b = self.run_of("600", D2)
+        self.operation = self.b.operations.get()
+
+    def book(self, machine, minutes="60", made="45"):
+        booking = TimeBooking.objects.create(work_order=self.b, operation=self.operation,
+                                             booking_date=TODAY, machine=machine,
+                                             minutes=Decimal(minutes),
+                                             quantity_completed=Decimal(made))
+        booking.post()
+        return booking
+
+    def test_flat_out_on_the_slow_loom_is_full_performance(self):
+        from . import oee
+
+        booking = self.book(self.l2)
+        self.assertEqual(booking.ideal_minutes, Decimal("60.0000"))
+        result = oee.performance(self.bank, TODAY, TODAY, machine=self.l2)
+        self.assertEqual(result["ratio"], Decimal("1"))
+
+    def test_recorded_at_the_booking_not_read_again(self):
+        from . import oee
+
+        self.book(self.l2)
+        Machine.objects.filter(pk=self.l2.pk).update(capacity_per_hour=Decimal("60"))
+        self.assertEqual(oee.performance(self.bank, TODAY, TODAY, machine=self.l2)["ratio"],
+                         Decimal("1"))
+
+    def test_on_the_banks_speed_it_is_the_operations_rate(self):
+        """L-1 states no rate: 45 kg in an hour is 45 minutes' work, 0.75."""
+        from . import oee
+
+        booking = self.book(self.l1)
+        self.assertEqual(booking.ideal_minutes, Decimal("45.0000"))
+        self.assertEqual(oee.performance(self.bank, TODAY, TODAY, machine=self.l1)["ratio"],
+                         Decimal("0.75"))
