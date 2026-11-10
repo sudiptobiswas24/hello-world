@@ -296,7 +296,6 @@ class Command(BaseCommand):
     # takes it off here, as DELETABLE_REPORTED does for its shape.
     UNCALLED_REPORTED = {
         "hr.Timesheet.billable_hours": "O474",
-        "manufacturing.Machine.rate_per_hour": "O481",
     }
 
     # Methods Django, DRF or the admin call on a model by their name, never written as a call in our code.

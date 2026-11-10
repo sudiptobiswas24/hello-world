@@ -1886,6 +1886,32 @@ class WorkOrderOperation(AuditModel):
     def posted_bookings(self):
         return self.bookings.filter(posted=True, voided_at__isnull=True)
 
+    def minutes_on(self, machine):
+        """
+        How long this operation takes on `machine`, setup included: its
+        planned minutes where the machine is None (a bank with none
+        listed) or runs at its bank's speed, its run time stretched or
+        shortened by the machine's own rate where it states one (O481).
+        """
+        planned = self.planned_minutes or Decimal("0")
+        if machine is None or self.is_outside:
+            return planned
+        setup = min(self.setup_minutes or Decimal("0"), planned)
+        return setup + machine.run_minutes(planned - setup)
+
+    def load_minutes(self):
+        """
+        What this operation holds its bank for, as a load report counts it:
+        on the machine it was put on, at that machine's speed; on no
+        machine yet, its planned minutes. A rate that cannot be read
+        against the bank's keeps the plan here: dispatch refuses that
+        machine with the reason, and a load report does not stop for it.
+        """
+        try:
+            return self.minutes_on(self.machine if self.machine_id else None)
+        except ValidationError:
+            return self.planned_minutes or Decimal("0")
+
     def minutes_booked(self):
         total = self.posted_bookings().aggregate(
             total=models.Sum("minutes")
