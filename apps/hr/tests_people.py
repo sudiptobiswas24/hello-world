@@ -688,3 +688,120 @@ class AnUndecidedClaimHoldsItsMonthsCloseTests(PeopleTestCase):
         claim.approve(self.manager)
         june.close()
         self.assertTrue(AccountingPeriod.objects.get(pk=june.pk).closed)
+
+
+class TimesheetsOverTheApiTests(PeopleTestCase):
+    """
+    O474: hours were kept and approved only from code. Riley (Self Service) keeps 1-5 June, 8 hours a
+    day, the first two billable: 40.00 hours, 16.00 billable (calc_g35_b/o474.py). Jordan, Riley's
+    manager, approves; a run paying 25 an hour pays 1,000.00 on them, and once posted the hours are
+    not sent back until it is voided.
+    """
+
+    SHEETS = "/api/hr/timesheets/"
+    ENTRIES = "/api/hr/timesheet-entries/"
+
+    def keep(self, client, days=(("2026-06-01", True), ("2026-06-02", True), ("2026-06-03", False),
+                                 ("2026-06-04", False), ("2026-06-05", False)), **extra):
+        made = client.post(self.SHEETS, {"period_start": "2026-06-01", "period_end": "2026-06-05", **extra},
+                           format="json")
+        self.assertEqual(made.status_code, 201, made.content)
+        for day, billable in days:
+            entry = client.post(self.ENTRIES, {"timesheet": made.json()["id"], "date": day, "hours": "8",
+                                               "is_billable": billable, "account": self.travel.pk}, format="json")
+            self.assertEqual(entry.status_code, 201, entry.content)
+        return made.json()["id"]
+
+    def test_riley_keeps_the_hours_and_jordan_approves_them(self):
+        riley, jordan = self.as_(self.riley.user), self.as_(self.manager.user)
+        sheet = self.keep(riley)
+        read = riley.get(f"{self.SHEETS}{sheet}/").json()
+        self.assertEqual((read["employee"], read["status"], read["hours"], read["billable_hours"], len(read["entries"])),
+                         (self.riley.pk, "draft", "40.00", "16.00", 5))
+        # Another's hours are HR's to record.
+        for_other = riley.post(self.SHEETS, {"period_start": "2026-06-08", "period_end": "2026-06-12",
+                                             "employee": self.other.pk}, format="json")
+        self.assertEqual(for_other.status_code, 400, for_other.content)
+        self.assertEqual(riley.post(f"{self.SHEETS}{sheet}/submit/").status_code, 200)
+        # Submitted, its hours are what Jordan is reading: frozen until withdrawn.
+        entry = read["entries"][0]["id"]
+        edited = riley.patch(f"{self.ENTRIES}{entry}/", {"hours": "12"}, format="json")
+        self.assertEqual(edited.status_code, 400, edited.content)
+        self.assertIn("submitted", str(edited.content))
+        self.assertEqual(riley.post(f"{self.SHEETS}{sheet}/approve/").status_code, 403)
+        # Sam reads nothing of Riley's; Jordan reads it, decides it, and does not change its hours.
+        self.assertEqual(self.as_(self.other.user).get(f"{self.SHEETS}{sheet}/").status_code, 404)
+        self.assertEqual([row["id"] for row in jordan.get(self.SHEETS).json()], [sheet])
+        self.assertEqual(jordan.patch(f"{self.ENTRIES}{entry}/", {"hours": "1"}, format="json").status_code, 403)
+        approved = jordan.post(f"{self.SHEETS}{sheet}/approve/")
+        self.assertEqual((approved.status_code, approved.json()["status"], approved.json()["decided_by_name"]),
+                         (200, "approved", "Jordan Park"), approved.content)
+        refused = riley.patch(f"{self.ENTRIES}{entry}/", {"hours": "12"}, format="json")
+        self.assertEqual((refused.status_code, "approved" in str(refused.content)), (400, True), refused.content)
+        self.assertEqual(riley.delete(f"{self.SHEETS}{sheet}/").status_code, 400)
+        moved = riley.patch(f"{self.SHEETS}{sheet}/", {"period_end": "2026-06-12"}, format="json")
+        self.assertEqual(moved.status_code, 400, moved.content)
+        self.assertEqual(self.as_(self.hr).get(self.SHEETS).json()[0]["hours"], "40.00")
+
+    def test_nobody_approves_their_own_hours(self):
+        self.manager.user.groups.add(Group.objects.get(name="Employee Self Service"))
+        jordan = self.as_(self.manager.user)
+        sheet = self.keep(jordan)
+        self.assertEqual(jordan.post(f"{self.SHEETS}{sheet}/submit/").status_code, 200)
+        refused = jordan.post(f"{self.SHEETS}{sheet}/approve/")
+        self.assertEqual(refused.status_code, 400, refused.content)
+        self.assertIn("own hours", str(refused.content))
+
+    def test_a_person_without_the_permission_is_refused(self):
+        for role in ("Bookkeeper", "Sales Rep"):
+            client = self.as_(self.login(role, username=f"t-{role}"))
+            self.assertEqual(client.get(self.SHEETS).status_code, 403, role)
+            self.assertEqual(client.post(self.SHEETS, {"period_start": "2026-06-01", "period_end": "2026-06-05"},
+                                         format="json").status_code, 403, role)
+
+    def test_a_submitted_sheet_is_withdrawn_by_its_person_to_change_it(self):
+        riley = self.as_(self.riley.user)
+        sheet = self.keep(riley)
+        self.assertEqual(riley.post(f"{self.SHEETS}{sheet}/withdraw/").status_code, 400)  # a draft already
+        riley.post(f"{self.SHEETS}{sheet}/submit/")
+        withdrawn = riley.post(f"{self.SHEETS}{sheet}/withdraw/")
+        self.assertEqual((withdrawn.status_code, withdrawn.json()["status"]), (200, "draft"), withdrawn.content)
+        entry = withdrawn.json()["entries"][0]["id"]
+        edited = riley.patch(f"{self.ENTRIES}{entry}/", {"hours": "6"}, format="json")
+        self.assertEqual(edited.status_code, 200, edited.content)
+        self.assertEqual(riley.get(f"{self.SHEETS}{sheet}/").json()["hours"], "38.00")
+        # Riley does not send back what Jordan decided.
+        riley.post(f"{self.SHEETS}{sheet}/submit/")
+        self.as_(self.manager.user).post(f"{self.SHEETS}{sheet}/reject/", {"note": "wrong week"}, format="json")
+        self.assertEqual(riley.post(f"{self.SHEETS}{sheet}/send_back/").status_code, 403)
+        self.assertEqual(riley.post(f"{self.SHEETS}{sheet}/withdraw/").status_code, 400)
+
+    def test_hours_a_posted_run_paid_are_not_sent_back_or_changed(self):
+        from .payroll import ComponentBasis, ComponentKind, EmployeeCompensation, PayComponent, PayRun
+
+        company = Company.get()
+        company.net_pay_account = Account.objects.create(code="2300", name="Net pay", account_type=AccountType.LIABILITY)
+        company.save()
+        wages = Account.objects.create(code="6000", name="Wages", account_type=AccountType.EXPENSE)
+        hourly = PayComponent.objects.create(code="HR", name="Hourly pay", kind=ComponentKind.EARNING,
+                                             basis=ComponentBasis.PER_HOUR, expense_account=wages, sequence=10)
+        EmployeeCompensation.objects.create(employee=self.riley, component=hourly, amount=Decimal("25"),
+                                            effective_from=datetime.date(2020, 1, 1))
+        riley, jordan = self.as_(self.riley.user), self.as_(self.manager.user)
+        sheet = self.keep(riley)
+        riley.post(f"{self.SHEETS}{sheet}/submit/")
+        self.assertEqual(jordan.post(f"{self.SHEETS}{sheet}/approve/").status_code, 200)
+        run = PayRun.objects.create(period_start=datetime.date(2026, 6, 1), period_end=datetime.date(2026, 6, 30),
+                                    pay_date=datetime.date(2026, 6, 30))
+        run.calculate(employees=[self.riley])
+        self.assertEqual(run.payslips.get().gross(), Decimal("1000.00"))
+        run.post()
+        refused = jordan.post(f"{self.SHEETS}{sheet}/send_back/", {"note": "recount"}, format="json")
+        self.assertEqual(refused.status_code, 400, refused.content)
+        self.assertIn("already been paid", str(refused.content))
+        entry = riley.get(f"{self.SHEETS}{sheet}/").json()["entries"][0]["id"]
+        self.assertEqual(riley.patch(f"{self.ENTRIES}{entry}/", {"hours": "1"}, format="json").status_code, 400)
+        run.void()
+        sent = jordan.post(f"{self.SHEETS}{sheet}/send_back/", {"note": "recount"}, format="json")
+        self.assertEqual((sent.status_code, sent.json()["status"], sent.json()["note"]), (200, "draft", "recount"),
+                         sent.content)
