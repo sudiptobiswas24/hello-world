@@ -475,11 +475,28 @@ class ALoomSlowerThanItsBankTests(DispatchTestCase):
                          (self.l2, at(D2, 11, 10)))
 
     def test_the_capacity_report_counts_a_run_on_the_slow_loom_at_its_speed(self):
-        """A on L-2: 30 + 1600 = 1630 minutes, not 1230; B and C on no machine at 630 each."""
+        """
+        In minutes of the bank's work (O521). A on L-2 holds it 30 + 1600 = 1630
+        minutes of its clock, which at 45 of 60 is 1222.5 of the bank's; B and C on
+        no machine, 630 each: 2482.5. The bank offers 1,440 + 1,080 a day, 10,080
+        over four days, not 11,520.
+        """
         from .routing import capacity_report
 
         operation = self.a.operations.get()
         operation.machine = self.l2
         operation.save()
         report = capacity_report(self.bank, D1, D4)
-        self.assertEqual(report["load_minutes"] + report["unscheduled_minutes"], Decimal("2890"))
+        self.assertEqual(report["load_minutes"] + report["unscheduled_minutes"], Decimal("2482.5"))
+        self.assertEqual(report["available_minutes"], Decimal("10080"))
+
+    def test_a_bank_offers_each_machine_at_its_own_speed(self):
+        """O521: L-1 at the bank's 60 and L-2 at 45, 24 hours each: 2,520 minutes a day, not 2,880."""
+        from apps.planning.capacity import LoadBook
+
+        self.assertEqual(self.bank.minutes_on(D1), Decimal("2520"))
+        book = LoadBook(self.order("1").warehouse, D1, D4)
+        self.assertEqual(book.capacity_minutes(self.bank, D1), Decimal("2520"))
+        self.l2.refresh_from_db()
+        self.assertEqual(book.free(self.bank, D1, pool=(self.l2,)), Decimal("1080"))
+
