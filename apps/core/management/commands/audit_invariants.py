@@ -295,7 +295,6 @@ class Command(BaseCommand):
     # Methods nothing calls, each on the register (docs/RISKS.md) until the commit that wires or removes it
     # takes it off here, as DELETABLE_REPORTED does for its shape.
     UNCALLED_REPORTED = {
-        "manufacturing.Machine.rate_per_hour": "O481",
     }
 
     # Methods Django, DRF or the admin call on a model by their name, never written as a call in our code.

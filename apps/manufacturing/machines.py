@@ -275,6 +275,46 @@ class Machine(Extensible, AuditModel):
             self.work_centre.capacity_uom,
         )
 
+    def run_minutes(self, at_bank_rate):
+        """
+        Minutes this machine takes over work its bank's nominal rate does
+        in `at_bank_rate` minutes (O481).
+
+        A run's operation is timed once, at release, at the bank's speed
+        (its `planned_minutes`, setup included, for the whole batch in the
+        bill's unit). A loom rated at 45 kg an hour in a bank rated at 60
+        takes 60/45 of that run time; the setup is the caller's to keep
+        out, because threading a loom does not go faster on a faster one.
+        Worked as minutes x bank / machine, divided last.
+
+        Unchanged where the machine states no rate of its own (it is the
+        bank's speed by definition) or the bank states none (there is
+        nothing to say how much slower it is: the operation's own rate is
+        all there is). Refused where the two rates count things that do
+        not convert, or the bank's is nought: a ratio against either is a
+        plausible number and a wrong date. A machine at nought is refused
+        by the database (`machine_rate_positive`).
+        """
+        at_bank_rate = Decimal(at_bank_rate)
+        rate, uom = self.rate_per_hour()
+        bank, bank_uom = self.work_centre.capacity_per_hour, self.work_centre.capacity_uom
+        if self.capacity_per_hour is None or bank is None or bank_uom is None:
+            return at_bank_rate
+        if bank <= 0:
+            raise ValidationError(
+                f"{self.work_centre.code} is rated at nought an hour, so nothing says how much "
+                f"slower or faster {self.code} is than its bank."
+            )
+        try:
+            rate = uom.convert_to(rate, bank_uom)
+        except ValidationError:
+            raise ValidationError(
+                f"{self.code} is rated in {uom} an hour and {self.work_centre.code} in "
+                f"{bank_uom}, which is not the same kind of thing, so nothing says how long "
+                "work takes on it."
+            )
+        return at_bank_rate * bank / rate
+
     # -- what it can do -------------------------------------------------
 
     def minutes_on(self, day):

@@ -339,3 +339,147 @@ class AnOperationHoldsItsRunTests(DispatchTestCase):
             operation.save()
         operation.refresh_from_db()
         self.assertNotEqual(operation.machine_id, self.l2.pk)
+
+
+class ALoomSlowerThanItsBankTests(DispatchTestCase):
+    """
+    O481: a machine's own rate. The bank runs 60 kg an hour; L-1 states
+    nothing and is the bank's speed, L-2 states 45, three quarters of it.
+    A run of n kg is 30 + n minutes on L-1 and 30 + 4n/3 on L-2: the setup
+    is a setup on either. Worked in calc_g35_c/dispatch_on_the_machine.py:
+
+        B  600 kg, due the 2nd   L-1  08:00 -> 18:30        (L-2: 21:50)
+        A 1200 kg, due the 3rd   L-2  08:00 -> 11:10 on 2nd (L-1: 15:00 on 2nd)
+        C  600 kg, due the 4th   L-1  18:30 -> 05:00 on 2nd
+
+    Before the fix L-2 was planned at the bank's speed and A came off at
+    04:30 on the 2nd, six hours and forty minutes before it could.
+    """
+
+    def setUp(self):
+        super().setUp()
+        Machine.objects.filter(pk=self.l2.pk).update(capacity_per_hour=Decimal("45"),
+                                                     capacity_uom=self.kg)
+        self.a = self.run_of("1200", D3)
+        self.b = self.run_of("600", D2)
+        self.c = self.run_of("600", D4)
+
+    def board(self):
+        rows = self.schedule()
+        return {order.number: (self.row(rows, order)["resource"],
+                               timezone.make_naive(self.row(rows, order)["start"]),
+                               timezone.make_naive(self.row(rows, order)["finish"]))
+                for order in (self.a, self.b, self.c)}
+
+    def expected(self):
+        return {
+            self.b.number: ("L-1", at(D1, 8), at(D1, 18, 30)),
+            self.a.number: ("L-2", at(D1, 8), at(D2, 11, 10)),
+            self.c.number: ("L-1", at(D1, 18, 30), at(D2, 5)),
+        }
+
+    def test_the_slower_loom_takes_longer(self):
+        self.assertEqual(self.board(), self.expected())
+
+    def test_a_rate_in_another_unit_is_read_in_the_banks(self):
+        """45,000 g an hour is 45 kg an hour: the same board."""
+        from apps.core.models import UnitOfMeasure, UnitOfMeasureCategory
+
+        gramme = UnitOfMeasure.objects.create(code="g", name="Gramme",
+                                              category=UnitOfMeasureCategory.WEIGHT,
+                                              base_unit=self.kg, conversion_factor=Decimal("0.001"))
+        Machine.objects.filter(pk=self.l2.pk).update(capacity_per_hour=Decimal("45000"),
+                                                     capacity_uom=gramme)
+        self.assertEqual(self.board(), self.expected())
+
+    def test_a_machine_with_no_rate_runs_at_the_banks(self):
+        """Neither states its own: both at 30 + n, A on L-2 by 04:30 on the 2nd as before."""
+        Machine.objects.filter(pk=self.l2.pk).update(capacity_per_hour=None, capacity_uom=None)
+        self.assertEqual(self.board()[self.a.number], ("L-2", at(D1, 8), at(D2, 4, 30)))
+
+    def test_a_bank_with_no_rate_leaves_the_operations_own(self):
+        """Nothing says how much slower L-2 is than an unrated bank: the routing's 60 kg stands."""
+        WorkCentre.objects.filter(pk=self.bank.pk).update(capacity_per_hour=None, capacity_uom=None)
+        self.assertEqual(self.board()[self.a.number], ("L-2", at(D1, 8), at(D2, 4, 30)))
+
+    def test_a_rate_that_counts_something_else_is_refused_not_guessed(self):
+        """L-2 rated in pieces against a bank in kg: off the board, so everything goes on L-1."""
+        from apps.core.models import UnitOfMeasure, UnitOfMeasureCategory
+
+        piece = UnitOfMeasure.objects.create(code="pc", name="Piece",
+                                             category=UnitOfMeasureCategory.COUNT)
+        Machine.objects.filter(pk=self.l2.pk).update(capacity_per_hour=Decimal("45"),
+                                                     capacity_uom=piece)
+        board = self.board()
+        self.assertEqual({machine for machine, _, _ in board.values()}, {"L-1"})
+        Machine.objects.filter(pk=self.l1.pk).update(is_active=False)
+        row = self.row(self.schedule(), self.b)
+        self.assertIsNone(row["finish"])
+        self.assertIn("L-2 is rated in pc an hour and WEAVE in kg", row["held"])
+
+    def test_begun_on_the_slow_loom_it_finishes_at_its_speed(self):
+        """830 minutes on L-2, 100 booked: 730 more from 08:00 is 20:10, not 16:50."""
+        operation = self.b.operations.get()
+        operation.machine = self.l2
+        operation.save()
+        TimeBooking.objects.create(work_order=self.b, operation=operation, booking_date=TODAY,
+                                   minutes=Decimal("100")).post()
+        row = self.row(self.schedule(), self.b)
+        self.assertEqual((row["machine"], timezone.make_naive(row["finish"])),
+                         (self.l2, at(D1, 20, 10)))
+
+    def test_a_machine_at_nought_is_refused_when_it_is_rated(self):
+        """
+        Refused, not fallen back: a loom that makes nothing an hour never
+        finishes, and reading it as the bank's speed would plan work onto
+        it. The database refuses it, and the API says so beside the field.
+        """
+        from django.db import IntegrityError, transaction
+
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            Machine.objects.filter(pk=self.l2.pk).update(capacity_per_hour=Decimal("0"))
+        from django.core.management import call_command
+
+        call_command("setup_roles", verbosity=0)
+        from django.contrib.auth.models import Group
+
+        engineer = User.objects.create_user("engineer")
+        engineer.groups.add(Group.objects.get(name="Process Engineer"))
+        client = APIClient()
+        client.force_authenticate(engineer)
+        response = client.patch(f"/api/manufacturing/machines/{self.l2.pk}/",
+                                {"capacity_per_hour": "0"}, format="json")
+        self.assertEqual(response.status_code, 400)
+        self.l2.refresh_from_db()
+        self.assertEqual(self.l2.capacity_per_hour, Decimal("45"))
+
+    def test_the_planner_sees_and_commits_it_through_the_api(self):
+        from unittest.mock import patch
+
+        from django.contrib.auth.models import Group
+        from django.core.management import call_command
+
+        call_command("setup_roles", verbosity=0)
+        planner = User.objects.create_user("planner")
+        planner.groups.add(Group.objects.get(name="Production Planner"))
+        client = APIClient()
+        client.force_authenticate(planner)
+        with patch("apps.manufacturing.dispatch.timezone.now", return_value=aware(D1, 8)):
+            board = client.get("/api/manufacturing/dispatch/").json()
+            self.assertEqual([(row["run"], row["finish"][:16]) for row in board["L-2"]],
+                             [(self.a.number, "2026-06-02T11:10")])
+            self.assertEqual(client.post("/api/manufacturing/dispatch/commit/").json(),
+                             {"committed": 3})
+        operation = self.a.operations.get()
+        self.assertEqual((operation.machine, timezone.make_naive(operation.planned_finish)),
+                         (self.l2, at(D2, 11, 10)))
+
+    def test_the_capacity_report_counts_a_run_on_the_slow_loom_at_its_speed(self):
+        """A on L-2: 30 + 1600 = 1630 minutes, not 1230; B and C on no machine at 630 each."""
+        from .routing import capacity_report
+
+        operation = self.a.operations.get()
+        operation.machine = self.l2
+        operation.save()
+        report = capacity_report(self.bank, D1, D4)
+        self.assertEqual(report["load_minutes"] + report["unscheduled_minutes"], Decimal("2890"))

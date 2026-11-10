@@ -395,7 +395,7 @@ def capacity_report(work_centre, start, end):
     booked = WorkOrderOperation.objects.filter(
         work_centre=work_centre,
         work_order__status=WorkOrderStatus.RELEASED,
-    ).select_related("work_order")
+    ).select_related("work_order", "machine__work_centre")
     operations = booked.filter(
         work_order__scheduled_start__isnull=False,
         work_order__scheduled_end__isnull=False,
@@ -412,12 +412,9 @@ def capacity_report(work_centre, start, end):
         Q(work_order__scheduled_start__isnull=True)
         | Q(work_order__scheduled_end__isnull=True)
     )
-    load = sum(
-        (row.planned_minutes or Decimal("0") for row in operations), Decimal("0")
-    )
-    floating = sum(
-        (row.planned_minutes or Decimal("0") for row in unscheduled), Decimal("0")
-    )
+    # A run put on one machine holds it at that machine's speed (O481).
+    load = sum((row.load_minutes() for row in operations), Decimal("0"))
+    floating = sum((row.load_minutes() for row in unscheduled), Decimal("0"))
     days = Decimal(work_centre.calendar().count(start, end))
     # Off the centre, which sums its machines where it has any. Days
     # stay the bank's, because "how many days was the shed open" is a
