@@ -1030,6 +1030,12 @@ export const MODULES: Module[] = [
         detail: () => import("../modules/payroll/ClaimForm"),
       },
       {
+        path: "timesheets", label: "Timesheets", permission: "hr.view_timesheet", create: "hr.add_timesheet",
+        also: ["hr.view_timesheetentry"],
+        keywords: "timesheet hours worked time billable overtime", load: () => import("../modules/payroll/Timesheets"),
+        detail: () => import("../modules/payroll/TimesheetForm"),
+      },
+      {
         path: "appraisals", label: "Appraisals", permission: "hr.view_appraisal", create: "hr.add_appraisal",
         keywords: "appraisal review rating performance", load: () => import("../modules/payroll/Appraisals"),
         detail: () => import("../modules/payroll/AppraisalForm"),

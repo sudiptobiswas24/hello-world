@@ -26,7 +26,8 @@ from django.db import models, transaction
 from django.db.models import Q, Sum
 from django.utils import timezone
 
-from apps.core.models import AuditModel, documents_it_answers_to, lock_rows, serialised, to_date
+from apps.core.models import (AuditModel, answer_to_its_document, documents_it_answers_to, lock_rows, serialised,
+                              to_date)
 
 from .calendars import parse_working_days
 from .models import Employee, LeaveRequest, LeaveStatus, hold_the_employee
@@ -45,6 +46,9 @@ class TimesheetStatus(models.TextChoices):
 
 
 class Timesheet(AuditModel):
+    # Hours change only on a draft: submitted is what the decider reads, approved what payroll pays (O474).
+    CLOSED_STATES = (TimesheetStatus.SUBMITTED, TimesheetStatus.APPROVED, TimesheetStatus.REJECTED)
+
     employee = models.ForeignKey(Employee, on_delete=models.CASCADE, related_name="timesheets")
     period_start = models.DateField()
     period_end = models.DateField()
@@ -61,7 +65,10 @@ class Timesheet(AuditModel):
 
     class Meta:
         ordering = ["-period_start", "employee"]
-        permissions = [("decide_timesheet", "Can approve or reject timesheets")]
+        permissions = [
+            ("decide_timesheet", "Can approve or reject timesheets"),
+            ("view_every_timesheet", "Can read everyone's timesheets"),
+        ]
         constraints = [
             models.CheckConstraint(
                 check=Q(period_end__gte=models.F("period_start")),
@@ -138,14 +145,17 @@ class Timesheet(AuditModel):
         hold_the_employee(*self.locked_before_it())
         if self.pk:
             previous = Timesheet.objects.filter(pk=self.pk).first()
-            if previous is not None and previous.status == TimesheetStatus.APPROVED:
+            if previous is not None and previous.status != TimesheetStatus.DRAFT:
+                # Whose and which days are what the decider read: changed under a submitted
+                # sheet, the approval would be given to hours nobody looked at (O474).
                 if (
-                    previous.period_start != to_date(self.period_start)
+                    previous.employee_id != self.employee_id
+                    or previous.period_start != to_date(self.period_start)
                     or previous.period_end != to_date(self.period_end)
                 ):
                     raise ValidationError(
-                        "This timesheet has been approved; its period can no longer "
-                        "change. Send it back first."
+                        f"This timesheet has been {previous.get_status_display().lower()}; its person "
+                        "and period can no longer change. Send it back first."
                     )
         self.clean()
         super().save(*args, **kwargs)
@@ -158,6 +168,10 @@ class Timesheet(AuditModel):
         stored = Timesheet.objects.filter(pk=self.pk).values_list("status", flat=True).first()
         if stored == TimesheetStatus.APPROVED:
             raise ValidationError("This timesheet has been approved: send it back before deleting it.")
+        if stored not in (None, TimesheetStatus.DRAFT):
+            # Its entries go past refuse_unless_draft the same way (O474).
+            raise ValidationError(
+                f"This timesheet is {TimesheetStatus(stored).label.lower()}: send it back before deleting it.")
         return super().delete(*args, **kwargs)
 
     # -- the decision, and its reverse ----------------------------------
@@ -219,17 +233,25 @@ class Timesheet(AuditModel):
 
     @transaction.atomic
     @serialised("status", held_first=True)
-    def send_back(self, note=""):
+    def send_back(self, note="", by=None):
         """
-        Put an approved or rejected sheet back in the author's hands.
+        Put a submitted, approved or rejected sheet back in the author's hands.
 
         The mirror of approve(), written with it. Without it an approval
         given in error can only be worked around by raising a second
         sheet for the same week, which the overlap check correctly
-        refuses — leaving no way forward at all.
+        refuses — leaving no way forward at all. A submitted sheet's hours
+        are frozen as the decider reads them, so it is also the way back
+        from submit(): withdrawn by its author, or returned undecided.
+        `by`, when given, is who sends a decided sheet back: nobody undoes
+        a decision on their own hours.
         """
-        if self.status not in (TimesheetStatus.APPROVED, TimesheetStatus.REJECTED):
-            raise ValidationError("Only a decided timesheet can be sent back.")
+        if self.status not in (
+            TimesheetStatus.SUBMITTED, TimesheetStatus.APPROVED, TimesheetStatus.REJECTED
+        ):
+            raise ValidationError("Only a submitted or decided timesheet can be sent back.")
+        if by is not None and self.status != TimesheetStatus.SUBMITTED:
+            self.check_approver(by)
         if self.status == TimesheetStatus.APPROVED and self.is_paid():
             raise ValidationError(
                 "These hours have already been paid. Void the pay run before sending "
@@ -346,8 +368,13 @@ class TimesheetEntry(AuditModel):
             )
 
     def locked_before_it(self):
-        """The employee, as save() takes it before the entry: an edit through the API holds it first (O37)."""
-        return [self.timesheet.employee] if self.timesheet_id else []
+        """
+        The employee, as save() takes it before the entry, then the sheets it leaves and joins
+        (answer_to_its_document): an edit through the API holds them first (O37).
+        """
+        if not self.timesheet_id:
+            return []
+        return [self.timesheet.employee, *documents_it_answers_to(self, "timesheet")]
 
     @transaction.atomic
     def save(self, *args, **kwargs):
@@ -355,14 +382,9 @@ class TimesheetEntry(AuditModel):
             # Leave is approved against the hours under the same lock, so
             # the two are not each found clear of the other.
             hold_the_employee(self.timesheet.employee)
-            status = Timesheet.objects.filter(pk=self.timesheet_id).values_list(
-                "status", flat=True
-            ).first()
-            if status == TimesheetStatus.APPROVED:
-                raise ValidationError(
-                    "This timesheet has been approved; its hours can no longer change. "
-                    "Send it back first."
-                )
+            # Shared rule B: the sheet it leaves and the one it joins, held and both drafts
+            # (CLOSED_STATES, O474).
+            answer_to_its_document(self, "timesheet", lambda sheet: hours_fixed(sheet, "change"))
         self.clean()
         super().save(*args, **kwargs)
 
@@ -371,11 +393,19 @@ class TimesheetEntry(AuditModel):
         # The person, then the sheet's status read as held: read unlocked, an hour was removed as
         # its sheet was approved (O20, hold_the_employee).
         hold_the_employee(self.timesheet.employee)
-        if Timesheet.objects.filter(pk=self.timesheet_id, status=TimesheetStatus.APPROVED).exists():
-            raise ValidationError(
-                "This timesheet has been approved; its hours can no longer be removed."
-            )
+        answer_to_its_document(self, "timesheet", lambda sheet: hours_fixed(sheet, "be removed"))
         super().delete(*args, **kwargs)
+
+
+def hours_fixed(sheet, doing):
+    """
+    The refusal for hours on a sheet in its CLOSED_STATES. Approved, they are what payroll pays;
+    submitted, what the decider is reading; rejected, a decision kept until it is sent back (O474).
+    """
+    if sheet.status == TimesheetStatus.APPROVED:
+        return f"This timesheet has been approved; its hours can no longer {doing}. Send it back first."
+    return (f"This timesheet is {sheet.get_status_display().lower()}; its hours can no longer {doing}. "
+            "Send it back first.")
 
 
 def approved_hours(employee, start, end):

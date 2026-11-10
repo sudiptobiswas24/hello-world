@@ -5,7 +5,8 @@ from .attendance_api import AttendanceDayViewSet
 from .pay_api import (AdvanceViewSet, FigureViewSet, MinimumWageViewSet, MyPayslipsView, PayDetailsViewSet, RegisterView,
                       ShortfallSettlementViewSet, TransferFileViewSet)
 from .contract_labour_api import ContractWorkerViewSet, LabourContractorViewSet
-from .people_api import ApplicantViewSet, AppraisalViewSet, ExpenseClaimViewSet, ExpenseLineViewSet, JobOpeningViewSet
+from .people_api import (ApplicantViewSet, AppraisalViewSet, ExpenseClaimViewSet, ExpenseLineViewSet, JobOpeningViewSet,
+                         TimesheetEntryViewSet, TimesheetViewSet)
 
 from .payroll_views import (
     CompensationViewSet,
@@ -45,6 +46,8 @@ router.register("contract-workers", ContractWorkerViewSet)
 router.register("attendance", AttendanceDayViewSet)
 router.register("expense-claims", ExpenseClaimViewSet)
 router.register("expense-lines", ExpenseLineViewSet)
+router.register("timesheets", TimesheetViewSet)
+router.register("timesheet-entries", TimesheetEntryViewSet)
 router.register("appraisals", AppraisalViewSet)
 router.register("job-openings", JobOpeningViewSet)
 router.register("applicants", ApplicantViewSet)

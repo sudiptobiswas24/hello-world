@@ -20,6 +20,7 @@ from .appraisals import Appraisal
 from .expenses import ExpenseClaim, ExpenseLine
 from .models import Employee
 from .recruitment import Applicant, JobOpening
+from .timesheets import Timesheet, TimesheetEntry, TimesheetStatus
 from .views import _employee_of
 
 
@@ -35,6 +36,37 @@ def _me(request, what="Your login"):
     if me is None:
         raise DRFValidationError([f"{what} is not linked to an employee: HR links it on your record."])
     return me
+
+
+def whose(request, serializer, default, refusal):
+    """
+    Whose record it is: one's own, unless HR records it. Asked on an edit as on the create (O303): a PATCH
+    of {"employee": colleague} by the maker's own login handed a draft to the colleague, to be decided by
+    the colleague's manager. An edit that leaves the person alone keeps it. Expense claims and timesheets.
+    """
+    user = request.user
+    employee = serializer.validated_data.get("employee", default)
+    if default is not None and employee == default:
+        return employee
+    if not (user.is_superuser or user.has_perm("hr.change_employee")):
+        me = _me(request)
+        if employee is not None and employee != me:
+            raise DRFValidationError({"employee": [refusal]})
+        employee = me
+    elif employee is None:
+        employee = _me(request)
+    return employee
+
+
+def check_own_parent(request, serializer, field, refusal):
+    """A line is written onto one's own document (`field`, moved from or to); HR records anyone's."""
+    user = request.user
+    if user.is_superuser or user.has_perm("hr.change_employee"):
+        return
+    me = _me(request)
+    for parent in {serializer.validated_data.get(field), getattr(serializer.instance, field, None)} - {None}:
+        if parent.employee_id != me.pk:
+            raise DRFValidationError({field: [refusal]})
 
 
 # --- expense claims
@@ -105,23 +137,7 @@ class ExpenseClaimViewSet(OwnOrReportsMixin, AuditableViewSetMixin, viewsets.Mod
     }
 
     def _claimant(self, serializer, default):
-        """
-        Whose claim it is: one's own, unless HR records it. Asked on an edit as on the create (O303): a PATCH
-        of {"employee": colleague} by the maker's own login handed a draft to the colleague, to be decided by
-        the colleague's manager. An edit that leaves the claimant alone keeps it.
-        """
-        user = self.request.user
-        employee = serializer.validated_data.get("employee", default)
-        if default is not None and employee == default:
-            return employee
-        if not (user.is_superuser or user.has_perm("hr.change_employee")):
-            me = _me(self.request)
-            if employee is not None and employee != me:
-                raise DRFValidationError({"employee": ["You claim your own expenses; HR records anyone else's."]})
-            employee = me
-        elif employee is None:
-            employee = _me(self.request)
-        return employee
+        return whose(self.request, serializer, default, "You claim your own expenses; HR records anyone else's.")
 
     def perform_create(self, serializer):
         super().perform_create(serializer, employee=self._claimant(serializer, None))
@@ -184,13 +200,7 @@ class ExpenseLineViewSet(OwnOrReportsMixin, AuditableViewSetMixin, viewsets.Mode
         colleague's draft, and a manager, reading a report's claim, could
         change its figures.
         """
-        user = self.request.user
-        if user.is_superuser or user.has_perm("hr.change_employee"):
-            return
-        me = _me(self.request)
-        for claim in {serializer.validated_data.get("claim"), getattr(serializer.instance, "claim", None)} - {None}:
-            if claim.employee_id != me.pk:
-                raise DRFValidationError({"claim": ["You write lines on your own claims; HR records anyone else's."]})
+        check_own_parent(self.request, serializer, "claim", "You write lines on your own claims; HR records anyone else's.")
 
     def perform_create(self, serializer):
         self._check_claim(serializer)
@@ -198,6 +208,137 @@ class ExpenseLineViewSet(OwnOrReportsMixin, AuditableViewSetMixin, viewsets.Mode
 
     def perform_update(self, serializer):
         self._check_claim(serializer)
+        super().perform_update(serializer)
+
+
+# --- timesheets
+
+class TimesheetEntrySerializer(serializers.ModelSerializer):
+    account_name = serializers.CharField(source="account.name", read_only=True, default="")
+
+    class Meta:
+        model = TimesheetEntry
+        fields = ["id", "timesheet", "date", "hours", "account", "account_name", "reference", "is_billable", "note"]
+
+
+class TimesheetSerializer(serializers.ModelSerializer):
+    entries = TimesheetEntrySerializer(many=True, read_only=True)
+    employee_name = serializers.CharField(source="employee.party.name", read_only=True)
+    decided_by_name = serializers.CharField(source="decided_by.party.name", read_only=True, default="")
+    # Asked of the sheet, never stored: its hours (what payroll reads once approved) and the billable part.
+    hours = serializers.DecimalField(max_digits=10, decimal_places=2, read_only=True)
+    billable_hours = serializers.DecimalField(max_digits=10, decimal_places=2, read_only=True)
+
+    class Meta:
+        model = Timesheet
+        fields = ["id", "employee", "employee_name", "period_start", "period_end", "status", "note", "hours",
+                  "billable_hours", "submitted_at", "decided_by", "decided_by_name", "decided_at", "entries",
+                  "created_at"]
+        read_only_fields = ["status", "submitted_at", "decided_by", "decided_at"]
+        # Left out, the person is the login (perform_create).
+        extra_kwargs = {"employee": {"required": False, "allow_null": True}}
+
+
+class TimesheetViewSet(OwnOrReportsMixin, AuditableViewSetMixin, viewsets.ModelViewSet):
+    """
+    Hours worked, as the people who keep them: one's own sheet, written while a draft and submitted;
+    one's reports' to approve, reject or send back; everyone's to who keeps the records (HR, payroll).
+    Approved hours are what a pay run reads (timesheets.approved_hours); a sheet a posted run paid is
+    not sent back until the run is voided (Timesheet.send_back).
+    """
+
+    queryset = Timesheet.objects.select_related("employee__party", "decided_by__party").prefetch_related(
+        "entries__account")
+    serializer_class = TimesheetSerializer
+    every = "hr.view_every_timesheet"
+    filter_fields = ["status", "employee"]
+    search_fields = ["employee__party__name", "employee__employee_number", "note"]
+    date_field = "period_start"
+    ordering_fields = ["period_start", "period_end", "status"]
+    action_permission_map = {
+        "submit": "hr.change_timesheet",
+        "withdraw": "hr.change_timesheet",
+        "approve": "hr.decide_timesheet",
+        "reject": "hr.decide_timesheet",
+        "send_back": "hr.decide_timesheet",
+    }
+
+    def _person(self, serializer, default):
+        return whose(self.request, serializer, default, "You keep your own hours; HR records anyone else's.")
+
+    def perform_create(self, serializer):
+        super().perform_create(serializer, employee=self._person(serializer, None))
+
+    def perform_update(self, serializer):
+        super().perform_update(serializer, employee=self._person(serializer, serializer.instance.employee))
+
+    def _own(self, request, sheet, doing):
+        """Submitted and withdrawn by the person whose hours they are, or HR recording them."""
+        user = request.user
+        if user.is_superuser or user.has_perm("hr.change_employee"):
+            return
+        if sheet.employee_id != _me(request).pk:
+            raise DRFValidationError([f"You {doing} your own hours; HR records anyone else's."])
+
+    def _answer(self, sheet):
+        return Response(self.get_serializer(self.get_queryset().get(pk=sheet.pk)).data)
+
+    @action(detail=True, methods=["post"])
+    def submit(self, request, pk=None):
+        sheet = self.get_object()
+        self._own(request, sheet, "submit")
+        _run(sheet.submit)
+        return self._answer(sheet)
+
+    @action(detail=True, methods=["post"])
+    def withdraw(self, request, pk=None):
+        """A submitted sheet taken back undecided, to change its hours."""
+        sheet = self.get_object()
+        self._own(request, sheet, "withdraw")
+        if sheet.status != TimesheetStatus.SUBMITTED:
+            raise DRFValidationError(["Only a submitted timesheet is withdrawn; a decided one is sent back by "
+                                      "whoever decides it."])
+        _run(sheet.send_back)
+        return self._answer(sheet)
+
+    @action(detail=True, methods=["post"])
+    def approve(self, request, pk=None):
+        sheet = self.get_object()
+        _run(sheet.approve, _me(request))
+        return self._answer(sheet)
+
+    @action(detail=True, methods=["post"])
+    def reject(self, request, pk=None):
+        sheet = self.get_object()
+        _run(sheet.reject, _me(request), note=str(request.data.get("note", "")))
+        return self._answer(sheet)
+
+    @action(detail=True, methods=["post"])
+    def send_back(self, request, pk=None):
+        """{note?}: back to a draft in its person's hands; refused once a posted run paid the hours."""
+        sheet = self.get_object()
+        _run(sheet.send_back, note=str(request.data.get("note", "")), by=_me(request))
+        return self._answer(sheet)
+
+
+class TimesheetEntryViewSet(OwnOrReportsMixin, AuditableViewSetMixin, viewsets.ModelViewSet):
+    queryset = TimesheetEntry.objects.select_related("timesheet__employee", "account")
+    serializer_class = TimesheetEntrySerializer
+    every = "hr.view_every_timesheet"
+    employee_path = "timesheet__employee"
+    filter_fields = ["timesheet"]
+
+    def _check_sheet(self, serializer):
+        """Hours are written onto one's own sheet; a manager reading a report's does not change them."""
+        check_own_parent(self.request, serializer, "timesheet", "You write hours on your own timesheet; HR records "
+                                                                "anyone else's.")
+
+    def perform_create(self, serializer):
+        self._check_sheet(serializer)
+        super().perform_create(serializer)
+
+    def perform_update(self, serializer):
+        self._check_sheet(serializer)
         super().perform_update(serializer)
 
 
