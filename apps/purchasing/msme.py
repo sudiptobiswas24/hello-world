@@ -62,16 +62,21 @@ def lots(bill):
         if not line.order_line_id or not line.quantity:
             parts.append((billed, value))
             continue
-        before = BillLine.objects.filter(
-            order_line_id=line.order_line_id, bill__posted=True, bill__debits__isnull=True,
-            bill__is_prepayment=False,
-        ).exclude(bill=bill).filter(
-            models.Q(bill__bill_date__lt=billed) | models.Q(bill__bill_date=billed, bill__pk__lt=bill.pk))
-        passed = sum((quantity for quantity in before.values_list("quantity", flat=True)), Decimal("0"))
+        known = getattr(bill, "_lots_known", None)  # the page's, read once (know_the_page)
+        if known is not None:
+            passed = sum((quantity for day, pk, quantity in known["billed"].get(line.order_line_id, ())
+                          if pk != bill.pk and (day < billed or (day == billed and pk < bill.pk))), Decimal("0"))
+            deliveries = known["received"].get(line.order_line_id, ())
+        else:
+            before = BillLine.objects.filter(
+                order_line_id=line.order_line_id, bill__posted=True, bill__debits__isnull=True,
+                bill__is_prepayment=False,
+            ).exclude(bill=bill).filter(
+                models.Q(bill__bill_date__lt=billed) | models.Q(bill__bill_date=billed, bill__pk__lt=bill.pk))
+            passed = sum((quantity for quantity in before.values_list("quantity", flat=True)), Decimal("0"))
+            deliveries = _deliveries(GoodsReceiptLine.objects.filter(order_line_id=line.order_line_id))
         left = line.quantity
-        for received in GoodsReceiptLine.objects.filter(
-                order_line_id=line.order_line_id, receipt__posted=True, receipt__reverses__isnull=True,
-        ).select_related("receipt").order_by("receipt__receipt_date", "receipt__pk", "pk"):
+        for received in deliveries:
             if left <= 0:
                 break
             here = received.quantity_received
@@ -93,6 +98,35 @@ def lots(bill):
         by_day[day] = by_day.get(day, Decimal("0")) + upto - given
         given = upto
     return sorted(by_day.items(), key=lambda row: (row[0] is None, row[0] or datetime.date.max))
+
+
+def _deliveries(receipt_lines):
+    """An order line's deliveries as lots() gives them to its bills: posted, not returns, oldest first."""
+    return receipt_lines.filter(receipt__posted=True, receipt__reverses__isnull=True).select_related(
+        "receipt").order_by("receipt__receipt_date", "receipt__pk", "pk")
+
+
+def know_the_page(bills):
+    """
+    What lots() asks of each bill's order lines, read once for a page of bills (O501): every posted
+    bill's quantity on them and every delivery of them, kept on each bill. Asked a bill at a time, a
+    list of MSME bills asked two queries a line billing an order. The answer is lots()'s own.
+    """
+    from .models import BillLine, GoodsReceiptLine
+
+    held = [bill for bill in bills if bill.posted and bill.msme_category in COVERED and not bill.debits_id
+            and not bill.is_prepayment]
+    lines = {line.order_line_id for bill in held for line in bill.lines.all() if line.order_line_id}
+    known = {"billed": {}, "received": {}}
+    if lines:
+        for order_line, day, pk, quantity in BillLine.objects.filter(
+                order_line_id__in=lines, bill__posted=True, bill__debits__isnull=True, bill__is_prepayment=False,
+        ).values_list("order_line_id", "bill__bill_date", "bill_id", "quantity"):
+            known["billed"].setdefault(order_line, []).append((to_date(day), pk, quantity))
+        for received in _deliveries(GoodsReceiptLine.objects.filter(order_line_id__in=lines)):
+            known["received"].setdefault(received.order_line_id, []).append(received)
+    for bill in held:
+        bill._lots_known = known
 
 
 def _act_day(bill, accepted):
@@ -118,13 +152,13 @@ def msme_schedule(bill):
     return sorted(rows.items(), key=lambda row: (row[0] is None, row[0] or datetime.date.max))
 
 
-def msme_due(bill):
+def msme_due(bill, schedule=None):
     """
     The day the Act says a bill is paid by in full: its last part's day.
     Net 60 on a bill of 1 June for goods received that day is due on
     16 July, not 31 July. None while an objection to a part stands.
     """
-    days = [day for day, _ in msme_schedule(bill)]
+    days = [day for day, _ in (msme_schedule(bill) if schedule is None else schedule)]
     return None if not days or None in days else max(days)
 
 

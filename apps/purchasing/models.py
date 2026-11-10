@@ -4166,7 +4166,8 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxesTakenUnder, TaxedDocumentMix
         """
         from .msme import msme_due
 
-        return msme_due(self) if self.act_schedule() is not None else None
+        schedule = self.act_schedule()  # once: each reading asks the order line's bills and receipts
+        return msme_due(self, schedule) if schedule is not None else None
 
     def act_schedule(self):
         """[(due or None, amount)]: each delivery's part of a micro or small vendor's posted bill, by the Act's day."""
