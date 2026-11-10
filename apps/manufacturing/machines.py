@@ -295,11 +295,37 @@ class Machine(Extensible, AuditModel):
         plausible number and a wrong date. A machine at nought is refused
         by the database (`machine_rate_positive`).
         """
-        at_bank_rate = Decimal(at_bank_rate)
+        speeds = self.against_bank()
+        if speeds is None:
+            return Decimal(at_bank_rate)
+        bank, rate = speeds
+        return Decimal(at_bank_rate) * bank / rate
+
+    def bank_minutes(self, minutes):
+        """
+        `minutes` of this machine's clock as minutes of work at its bank's
+        nominal rate: the inverse of run_minutes (O521). Twenty-four hours
+        of a loom at 45 kg an hour in a bank of 60 is 1,080 minutes of the
+        bank's work, not 1,440. Unchanged where run_minutes is.
+        """
+        speeds = self.against_bank()
+        if speeds is None:
+            return Decimal(minutes)
+        bank, rate = speeds
+        return Decimal(minutes) * rate / bank
+
+    def against_bank(self):
+        """
+        (bank's rate, this machine's rate), both in the bank's unit, or None
+        where the machine is the bank's speed for every purpose here: it
+        states no rate, or the bank states none. Refused as run_minutes says.
+        The one place the two rates are compared; everything that scales by
+        a machine's speed comes through it.
+        """
         rate, uom = self.rate_per_hour()
         bank, bank_uom = self.work_centre.capacity_per_hour, self.work_centre.capacity_uom
         if self.capacity_per_hour is None or bank is None or bank_uom is None:
-            return at_bank_rate
+            return None
         if bank <= 0:
             raise ValidationError(
                 f"{self.work_centre.code} is rated at nought an hour, so nothing says how much "
@@ -313,7 +339,7 @@ class Machine(Extensible, AuditModel):
                 f"{bank_uom}, which is not the same kind of thing, so nothing says how long "
                 "work takes on it."
             )
-        return at_bank_rate * bank / rate
+        return bank, rate
 
     # -- what it can do -------------------------------------------------
 
@@ -324,6 +350,27 @@ class Machine(Extensible, AuditModel):
         if not self.calendar().is_working(day):
             return ZERO
         return self.hours_per_day() * MINUTES_PER_HOUR
+
+    def capacity_on(self, day):
+        """
+        What this machine can do on one day, in minutes of its bank's work
+        (O521): its clock minutes at its own speed. A rate that cannot be
+        read against the bank's counts its clock, as before: dispatch
+        refuses that machine with the reason, a capacity figure does not
+        stop for it.
+        """
+        try:
+            return self.bank_minutes(self.minutes_on(day))
+        except ValidationError:
+            return self.minutes_on(day)
+
+    def capacity_available(self, start, end):
+        """capacity_on across a window."""
+        minutes = self.minutes_available(start, end)
+        try:
+            return self.bank_minutes(minutes)
+        except ValidationError:
+            return minutes
 
     def minutes_available(self, start, end):
         """Minutes across a window, counting only the days it runs."""

@@ -112,7 +112,7 @@ class LoadBook:
         """
         machines = self._machines(centre)
         if machines or self._on_machines(centre):
-            minutes = sum((m.minutes_on(day) for m in machines), ZERO)
+            minutes = sum((m.capacity_on(day) for m in machines), ZERO)
         elif not self.calendar(centre).is_working(day):
             minutes = ZERO
         else:
@@ -160,7 +160,7 @@ class LoadBook:
         left = max(self.capacity_minutes(centre, day) - taken, ZERO)
         if pool is None:
             return left
-        room = sum((machine.minutes_on(day) for machine in pool), ZERO)
+        room = sum((machine.capacity_on(day) for machine in pool), ZERO)
         return min(left, max(room - self._pooled[(_key(pool), day)], ZERO))
 
     def book(self, centre, day, minutes, pool=None):

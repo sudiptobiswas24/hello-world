@@ -402,7 +402,10 @@ class ABankOfLoomsSchedulesAsOneTests(PlanningTestCase):
         """
         O481: a run put on L-02, rated 45 kg an hour in a bank of 60,
         holds the loom a third as long again for its weaving, setup
-        apart. Worked from the operation's frozen figures, as the load is.
+        apart: 60 + 1000 x 60/45 = 1,393.33 minutes of its clock. Counted
+        in minutes of the bank's work, as capacity is (O521), that is
+        1,393.33 x 45/60 = 1,045, against the 1,080 a day L-02 offers.
+        Worked from the operation's frozen figures, as the load is.
         """
         from apps.manufacturing.machines import Machine
 
@@ -422,10 +425,11 @@ class ABankOfLoomsSchedulesAsOneTests(PlanningTestCase):
         operation.machine = slow
         operation.save()
         setup = operation.setup_minutes
-        expected = setup + (operation.planned_minutes - setup) * Decimal("60") / Decimal("45")
-        self.assertGreater(expected, operation.planned_minutes)
+        clock = setup + (operation.planned_minutes - setup) * Decimal("60") / Decimal("45")
+        self.assertGreater(clock, operation.planned_minutes)
         book = LoadBook(self.plant, TODAY, self.day(30))
-        self.assertEqual(book.booked(self.loom, self.day(1)), expected)
+        self.assertEqual(book.booked(self.loom, self.day(1)), clock * Decimal("45") / Decimal("60"))
+        self.assertEqual(book.capacity_minutes(self.loom, self.day(1)), Decimal("2520"))
 
     def test_two_looms_halve_the_days_one_loom_needed(self):
         """

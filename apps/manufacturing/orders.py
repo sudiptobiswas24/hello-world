@@ -511,7 +511,7 @@ class WorkCentre(AuditModel):
 
         machines = self.machine_list()
         if machines or self.runs_on_machines():
-            minutes = sum((m.minutes_on(day) for m in machines), Decimal("0"))
+            minutes = sum((m.capacity_on(day) for m in machines), Decimal("0"))
         elif not self.calendar().is_working(day):
             minutes = Decimal("0")
         else:
@@ -537,7 +537,7 @@ class WorkCentre(AuditModel):
         machines = self.machine_list()
         if machines or self.runs_on_machines():
             return sum(
-                (m.minutes_available(start, end) for m in machines),
+                (m.capacity_available(start, end) for m in machines),
                 Decimal("0"),
             )
         days = Decimal(self.calendar().count(start, end))
@@ -1913,14 +1913,22 @@ class WorkOrderOperation(AuditModel):
 
     def load_minutes(self):
         """
-        What this operation holds its bank for, as a load report counts it:
-        on the machine it was put on, at that machine's speed; on no
-        machine yet, its planned minutes. A rate that cannot be read
-        against the bank's keeps the plan here: dispatch refuses that
-        machine with the reason, and a load report does not stop for it.
+        What this operation holds its bank for, as a load report counts it,
+        in minutes of the bank's work, the unit capacity is counted in
+        (O521). On no machine yet, its planned minutes. Put on a machine,
+        the minutes it holds that machine (minutes_on) read back at that
+        machine's speed: a loom at three quarters of the bank holds 830
+        minutes of its clock for a 600 kg run, which is 622.5 minutes of
+        the bank's work against the 1,080 a day it offers. A rate that
+        cannot be read against the bank's keeps the plan here: dispatch
+        refuses that machine with the reason, and a load report does not
+        stop for it.
         """
+        machine = self.machine if self.machine_id else None
         try:
-            return self.minutes_on(self.machine if self.machine_id else None)
+            if machine is None:
+                return self.minutes_on(None)
+            return machine.bank_minutes(self.minutes_on(machine))
         except ValidationError:
             return self.planned_minutes or Decimal("0")
 
