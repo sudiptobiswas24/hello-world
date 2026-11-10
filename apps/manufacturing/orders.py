@@ -349,6 +349,13 @@ class WorkCentre(AuditModel):
             models.CheckConstraint(
                 check=~Q(working_days=""), name="work_centre_works_some_day",
             ),
+            # O520: a bank at nought makes nothing an hour; a routing step
+            # that falls back to it divided by it at release, and a
+            # machine's speed against it is a ratio to nothing.
+            models.CheckConstraint(
+                check=Q(capacity_per_hour__isnull=True) | Q(capacity_per_hour__gt=0),
+                name="work_centre_rate_positive",
+            ),
         ]
 
     def __str__(self):
@@ -367,6 +374,11 @@ class WorkCentre(AuditModel):
         # In save(): work centres come through the API's serializer too,
         # and a speed basis without its settings divides by nothing.
         self._check_working_days()
+        if self.capacity_per_hour is not None and self.capacity_per_hour <= 0:
+            raise ValidationError({"capacity_per_hour": (
+                f"{self.code} would make {self.capacity_per_hour} an hour, and a line "
+                "that makes nothing never finishes a run. Leave the rate blank where "
+                "the operations state their own.")})
         needs = {
             SpeedBasis.TAPE_LINE: (("tape_ends", "tapes wound at once"),
                                    ("line_speed_m_per_min", "a line speed")),

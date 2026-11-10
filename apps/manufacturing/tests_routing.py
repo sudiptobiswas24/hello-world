@@ -483,3 +483,78 @@ class AWindowThatMeansSomethingTests(RoutingTestCase):
         report = capacity_report(self.extruder, self.START, self.END)
         self.assertEqual(report["load_minutes"], Decimal("0"))
         self.assertGreater(report["unscheduled_minutes"], Decimal("0"))
+
+
+class ABankAtNoughtIsRefusedTests(TestCase):
+    """O520: a work centre may not be rated at nought an hour, in save(), the database and the API."""
+
+    def setUp(self):
+        self.kg = UnitOfMeasure.objects.create(code="kg", name="Kilogram",
+                                               category=UnitOfMeasureCategory.WEIGHT)
+        self.bank = WorkCentre.objects.create(code="LAM", name="Laminator",
+                                              capacity_per_hour=Decimal("20"), capacity_uom=self.kg)
+
+    def test_save_says_so_beside_the_field(self):
+        self.bank.capacity_per_hour = Decimal("0")
+        with self.assertRaises(ValidationError) as caught:
+            self.bank.save()
+        self.assertIn("never finishes a run", caught.exception.message_dict["capacity_per_hour"][0])
+
+    def test_the_database_refuses_what_gets_past_save(self):
+        from django.db import IntegrityError, transaction
+
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            WorkCentre.objects.filter(pk=self.bank.pk).update(capacity_per_hour=Decimal("0"))
+
+    def test_the_process_engineer_is_told_in_words(self):
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        call_command("setup_roles", verbosity=0)
+        engineer = User.objects.create_user("engineer")
+        engineer.groups.add(Group.objects.get(name="Process Engineer"))
+        client = APIClient()
+        client.force_authenticate(engineer)
+        response = client.patch(f"/api/manufacturing/work-centres/{self.bank.pk}/",
+                                {"capacity_per_hour": "0"}, format="json")
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("never finishes a run", str(response.json()["capacity_per_hour"]))
+        self.bank.refresh_from_db()
+        self.assertEqual(self.bank.capacity_per_hour, Decimal("20"))
+        blank = client.patch(f"/api/manufacturing/work-centres/{self.bank.pk}/",
+                             {"capacity_per_hour": None}, format="json")
+        self.assertEqual(blank.status_code, 200, blank.content)
+
+
+from django.test import TransactionTestCase, tag  # noqa: E402
+
+
+@tag("migration")
+class ABankAtNoughtStopsTheMigrationTests(TransactionTestCase):
+    """O520: a plant already keeping a bank at nought is told which, in words, before the constraint."""
+
+    before = [("manufacturing", "0089_shift_code_unique_whatever_the_case")]
+    after = [("manufacturing", "0090_work_centre_rate_positive")]
+
+    def test_the_bank_is_named_and_the_migration_runs_once_it_is_rated(self):
+        from django.db import connection
+        from django.db.migrations.executor import MigrationExecutor
+
+        executor = MigrationExecutor(connection)
+        executor.migrate(self.before)
+        apps = executor.loader.project_state(self.before).apps
+        Old = apps.get_model("manufacturing", "WorkCentre")
+        Old.objects.create(code="LAM", name="Laminator", capacity_per_hour=Decimal("0"))
+        Old.objects.create(code="LOOM", name="Looms", capacity_per_hour=Decimal("60"))
+        Old.objects.create(code="HAND", name="By hand", capacity_per_hour=None)
+        executor = MigrationExecutor(connection)
+        with self.assertRaisesMessage(RuntimeError, "rated at nought or less an hour, which a work "
+                                                    "centre may no longer be: LAM. Give each"):
+            executor.migrate(self.after)
+        Old.objects.filter(code="LAM").update(capacity_per_hour=None)
+        executor = MigrationExecutor(connection)
+        executor.migrate(self.after)
+        executor.loader.build_graph()
+        executor.migrate(executor.loader.graph.leaf_nodes())
+        self.assertEqual(WorkCentre.objects.get(code="LAM").capacity_per_hour, None)
