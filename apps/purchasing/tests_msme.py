@@ -737,11 +737,80 @@ class PostedOutOfDateOrderTests(MsmeTestCase):
         read = client.get(f"/api/purchasing/bills/{self.late.pk}/").json()
         self.assertEqual((read["due_date"], read["terms_due_date"]), ("2026-08-04", "2026-08-24"))
 
+    def test_the_list_says_what_each_bill_alone_says(self):
+        """O501: the page's Act days, read in one pass, are the bill's own, out of date order and noted."""
+        early = self.early("3")
+        early.create_debit_note(quantities={early.lines.get(): Decimal("1")})
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        call_command("setup_roles", verbosity=0)
+        user = User.objects.create_user("ap-manager")
+        user.groups.add(Group.objects.get(name="AP Manager"))
+        client = APIClient()
+        client.force_authenticate(user)
+        listed = {row["id"]: row["act_pay_by"] for row in client.get("/api/purchasing/bills/").json()}
+        alone = {pk: client.get(f"/api/purchasing/bills/{pk}/").json()["act_pay_by"] for pk in listed}
+        model = {pk: (lambda day: day and day.isoformat())(Bill.objects.get(pk=pk).act_pay_by()) for pk in listed}
+        self.assertEqual(listed, alone)
+        self.assertEqual(listed, model)
+        self.assertEqual((listed[early.pk], listed[self.late.pk]), ("2026-07-16", "2026-08-04"))
+
     def test_a_debit_note_on_the_earlier_bill_moves_nothing(self):
         early = self.early("6")
         early.create_debit_note(quantities={early.lines.get(): Decimal("6")})
         self.assertEqual((self.due(early), self.due(self.late)),
                          (datetime.date(2026, 7, 16), datetime.date(2026, 8, 4)))
+
+
+class ActsDayListedTests(MsmeTestCase):
+    """
+    O501: the bills list reads each MSME bill's Act day (act_pay_by) for the
+    whole page in one pass, not by msme.lots() asking a bill's order line
+    for its earlier bills and receipts a bill at a time; and the list says
+    what the bill alone says. Net 60, micro vendor, one order line of 20:
+    10 received 1 June, 10 on 20 June; bills of 5 on 2, 3, 22 and 23 June
+    take 1 June, 1 June, 20 June, 20 June: due 16, 16 July, 4, 4 August.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        call_command("setup_roles", verbosity=0)
+        user = User.objects.create_user("ap-manager")
+        user.groups.add(Group.objects.get(name="AP Manager"))
+        self.client_ = APIClient()
+        self.client_.force_authenticate(user)
+        self.order_ = PurchaseOrder.objects.create(vendor=self.vendor, order_date=JUNE)
+        self.line = PurchaseOrderLine.objects.create(order=self.order_, item=self.item, uom=self.uom,
+                                                     quantity=Decimal("20"), unit_price=Decimal("100"))
+        self.order_.confirm()
+        AcceptedOnDeliveryTests.receive(self, self.order_, self.line, JUNE, "10")
+        AcceptedOnDeliveryTests.receive(self, self.order_, self.line, datetime.date(2026, 6, 20), "10")
+
+    def listed(self):
+        response = self.client_.get("/api/purchasing/bills/")
+        self.assertEqual(response.status_code, 200, response.content)
+        return {row["id"]: row["act_pay_by"] for row in response.json()}
+
+    def test_the_list_asks_no_more_for_more_bills(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        bills = [AcceptedOnDeliveryTests.bill_for(self, self.order_, self.line, datetime.date(2026, 6, day), "5")
+                 for day in (2, 3)]
+        self.listed()  # the first request of a test fills the caches every later one reads
+        with CaptureQueriesContext(connection) as two:
+            self.assertEqual(self.listed(), {bills[0].pk: "2026-07-16", bills[1].pk: "2026-07-16"})
+        bills += [AcceptedOnDeliveryTests.bill_for(self, self.order_, self.line, datetime.date(2026, 6, day), "5")
+                  for day in (22, 23)]
+        with self.assertNumQueries(len(two.captured_queries)):
+            self.assertEqual(self.listed(), dict(zip([bill.pk for bill in bills],
+                                                     ["2026-07-16", "2026-07-16", "2026-08-04", "2026-08-04"])))
 
 
 @tag("migration")
