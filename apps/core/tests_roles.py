@@ -321,3 +321,69 @@ class ALoginReadsEndedOnceItsPersonHasLeftTests(RolesTestCase):
         # The same login, one by one, reads the same.
         one = User.objects.get(username="yesterday")
         self.assertIn("has left", client.get(f"/api/core/users/{one.pk}/").json()["ended"])
+
+
+class TheLoginsListFilesALoginWhereItsMarkSaysTests(RolesTestCase):
+    """
+    O469: the Logins list's Active facet read is_active, so a login whose person had left listed
+    under Active while marked Ended (O333). The list now files by standing, from the rule the mark
+    is read from (core.models.logins_ended beside login_ended, hr's left_by under both).
+    """
+
+    def staff(self, today, leaving):
+        import datetime
+
+        from apps.hr.models import Employee, EmploymentStatus
+        from apps.hr.tests_people import make_employee_party
+
+        # Each leaving date set ten days before, while still to come: nothing switched the login off.
+        with patch("django.utils.timezone.localdate", return_value=today - datetime.timedelta(days=10)):
+            for code, day in leaving.items():
+                login = User.objects.create_user(code.lower())
+                Employee.objects.create(party=make_employee_party(code, code), employee_number=code, user=login,
+                                        hire_date=datetime.date(2020, 1, 1), termination_date=day,
+                                        employment_status=EmploymentStatus.TERMINATED)
+
+    def filed(self, client):
+        listed = {}
+        for standing in ("active", "ended", "deactivated"):
+            response = client.get(f"/api/core/users/?standing={standing}")
+            self.assertEqual(response.status_code, 200, response.content)
+            for row in response.json():
+                listed.setdefault(row["username"], []).append((standing, bool(row["ended"])))
+        return listed
+
+    def test_a_login_whose_person_left_yesterday_is_under_ended_and_not_active(self):
+        import datetime
+
+        from django.utils import timezone
+
+        today = timezone.localdate()
+        self.staff(today, {"YESTERDAY": today - datetime.timedelta(days=1),
+                           "TOMORROW": today + datetime.timedelta(days=1)})
+        User.objects.create_user("switched_off", is_active=False)
+        hr = self.as_("HR Admin")
+        listed = self.filed(hr)
+        # Each under one standing, and that standing the one its mark says.
+        self.assertEqual(listed["yesterday"], [("ended", True)])
+        self.assertEqual(listed["tomorrow"], [("active", False)])
+        self.assertEqual(listed["switched_off"], [("deactivated", False)])
+        refused = hr.get("/api/core/users/?standing=gone")
+        self.assertEqual(refused.status_code, 400, refused.content)
+
+    def test_in_kolkata_the_day_turns_at_midnight_there_not_at_utc(self):
+        import datetime
+
+        from django.test import override_settings
+        from django.utils import timezone
+
+        # 00:30 on 10 November in Kolkata is still 9 November in UTC.
+        moment = datetime.datetime(2026, 11, 9, 19, 0, tzinfo=datetime.timezone.utc)
+        with override_settings(TIME_ZONE="Asia/Kolkata"):
+            with patch("django.utils.timezone.now", return_value=moment):
+                self.assertEqual(timezone.localdate(), datetime.date(2026, 11, 10))
+                self.staff(datetime.date(2026, 11, 10), {"NINTH": datetime.date(2026, 11, 9),
+                                                         "TENTH": datetime.date(2026, 11, 10)})
+                listed = self.filed(self.as_("HR Admin"))
+        self.assertEqual(listed["ninth"], [("ended", True)])
+        self.assertEqual(listed["tenth"], [("active", False)])

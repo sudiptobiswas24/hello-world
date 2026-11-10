@@ -43,6 +43,7 @@ from django.contrib.auth.forms import PasswordResetForm, SetPasswordForm
 from django.contrib.auth.models import Group, User
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
+from django.db.models import Q
 from rest_framework import serializers, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied
@@ -52,7 +53,7 @@ from rest_framework.response import Response
 from . import second_factor
 from .api import required
 from .audit import AuditableViewSetMixin
-from .models import login_ended
+from .models import login_ended, logins_ended
 from .roles import (KeptCredential, ProposalStatus, give_or_propose, held_beyond, lapse_what_died, may_give,
                     may_propose, password_reset_through_email, record_credential, trusted_for_reset)
 
@@ -300,7 +301,10 @@ class UserViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = User.objects.filter(is_superuser=False).prefetch_related("groups").select_related("employee__party")
     serializer_class = UserSerializer
     search_fields = ["username", "first_name", "last_name", "email"]
-    filter_fields = ["is_active"]
+    # ?standing=active|ended|deactivated, the three the list marks (O469). Not ?is_active: a login
+    # whose person has left is still switched on, and filed under Active it was marked Ended.
+    extra_params = ("standing",)
+    STANDINGS = ("active", "ended", "deactivated")
     ordering_fields = ["username", "last_login", "date_joined"]
     action_permission_map = {
         "set_password": "auth.change_user",
@@ -309,6 +313,19 @@ class UserViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         "deactivate": "auth.change_user",
         "reactivate": "auth.change_user",
     }
+
+    def filter_queryset(self, queryset):
+        """By standing, from the rule the Ended mark is read from (core.models.logins_ended), never again."""
+        queryset = super().filter_queryset(queryset)
+        standing = self.request.query_params.get("standing")
+        if standing in (None, ""):
+            return queryset
+        if standing not in self.STANDINGS:
+            raise DRFValidationError({"standing": [f"One of {', '.join(self.STANDINGS)}."]})
+        if standing == "deactivated":
+            return queryset.filter(is_active=False)
+        ended = logins_ended()
+        return queryset.filter(Q(is_active=True) & (ended if standing == "ended" else ~ended))
 
     # The mixin's writes, and so its transaction (O197): a create refused while giving its roles
     # answered 400 and left the login made with none. A login has no created_by of its own; the

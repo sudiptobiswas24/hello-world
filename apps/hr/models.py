@@ -499,13 +499,27 @@ class LeaverLoginSwitch(models.Model):
         return f"{self.user} switched off for {self.employee} on {self.switched_off_at:%d-%m-%Y}"
 
 
+def left_by(day, path=""):
+    """
+    Employee.has_left_by as a query: a leaving date before `day`. `path` reaches the employee from
+    another model ("employee__" from a login). The one rule both a login's Ended mark (leaver_login)
+    and the Logins list's filter (leavers_logins) are built from (O469).
+    """
+    return Q(**{f"{path}termination_date__lt": to_date(day)})
+
+
 def leaver_login(user, day):
     """core.models.login_ended's question for hr: the login of somebody who has left by `day`."""
-    person = Employee.objects.filter(user=user).select_related("party").first()
-    if person is not None and person.has_left_by(day):
+    person = Employee.objects.filter(left_by(day), user=user).select_related("party").first()
+    if person is not None:
         return (f"{person} has left (leaving date {to_date(person.termination_date):%d-%m-%Y}); their login "
                 "no longer signs in or decides for the plant.")
     return None
+
+
+def leavers_logins(day):
+    """core.models.logins_ended's query for hr: leaver_login's rule over the logins."""
+    return left_by(day, "employee__")
 
 
 def check_still_working(by, on_date=None):
