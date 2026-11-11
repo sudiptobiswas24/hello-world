@@ -214,6 +214,28 @@ class GoingBackTests(JobWorkOrderTestCase):
         with self.assertRaisesMessage(ValidationError, "is 18000.00; they cannot be worth 15000"):
             self.prepare(declared_value="15000")
 
+    def test_their_own_address_with_no_state_reads_the_state_on_their_record(self):
+        """
+        O533, the return's half. Sunrise is unregistered, on record in Maharashtra, billed and
+        shipped to at one address that gives no state: the bill reads the record, by the rule a
+        sale reads (accounting.gst.state_delivered_in). A second site with no state is refused.
+        """
+        from apps.accounting.models import PartyTaxProfile
+
+        PartyTaxProfile.objects.create(party=self.sunrise, gst_state="27")
+        Address.objects.filter(party=self.sunrise).delete()
+        Address.objects.create(party=self.sunrise, address_type=AddressType.BILLING,
+                               line1="Cement Works Road", city="Solapur", state="",
+                               postal_code="413001", is_primary=True)
+        payload = self.prepare(declared_value="128000").payload
+        self.assertEqual((payload["toGstin"], payload["actToStateCode"], payload["toPincode"],
+                          payload["totInvValue"]), ("URP", 27, 413001, 128000.0))
+        Address.objects.create(party=self.sunrise, address_type=AddressType.SHIPPING,
+                               line1="Quarry Gate", city="Kalaburagi", state="",
+                               postal_code="585101", is_primary=True)
+        with self.assertRaisesMessage(ValidationError, "says its state is nothing"):
+            self.prepare(declared_value="128000")
+
     def test_goods_coming_back_are_the_senders_to_cover(self):
         back = self.delivery.create_return()
         with self.assertRaisesMessage(ValidationError, "goods coming back"):
