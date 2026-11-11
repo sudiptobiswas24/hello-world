@@ -1049,7 +1049,11 @@ class Command(BaseCommand):
     SHELF_READS = {"on_hand_at", "available_at", "reserved_at", "check_available", "cost_of_removing"}
     SHELF_LOCKS = {"lock_position", "lock_positions"}
     # Reads made before the lock on purpose, with the reason.
-    READ_BEFORE_LOCK_ON_PURPOSE = {}
+    READ_BEFORE_LOCK_ON_PURPOSE = {
+        "manufacturing/process_rolls.py:_issue_roll":
+            "not on purpose: it reads the roll's on hand, then issue.post() holds the shelf. Seen when the check "
+            "followed a once-bound object's call (O259); reported as O525, manufacturing's to fix",
+    }
 
     def shelf_read_before_lock(self, labels, sources):
         """
@@ -1065,45 +1069,36 @@ class Command(BaseCommand):
         that reads or locks the shelf counts as a read or a lock where it is
         called, however deep (O40): split in two, a function that read the
         shelf and then called its own helper to hold it went unreported.
+        A call into another module counts too where the text says which
+        function it means (O259; _call_graph): `from x import f`, `x.f()`,
+        `Cls.m()` on an imported class. `self.m()` and `obj.m()` are not
+        resolved, and are followed by name inside their own module only, as
+        before: which `post` an `adjustment.post()` means is not guessed.
         """
+        functions, calls = self._call_graph(labels, sources)
+        reading = self._followed(functions, calls, self.SHELF_READS)
+        locking = self._followed(functions, calls, self.SHELF_LOCKS)
+        local_reading, local_locking = {}, {}
+        for marked, local in ((reading, local_reading), (locking, local_locking)):
+            for module, qualified in marked:
+                local.setdefault(module, set()).add(qualified.rsplit(".", 1)[-1])
         findings = []
-        for label in labels:
-            for path, text in sorted(sources[label].items()):
-                if "test" in path.name or "migrations" in path.parts or "management" in path.parts:
-                    continue
-                tree = ast.parse(text)
-                qualified = self._qualified(tree)
-                functions = [fn for fn in ast.walk(tree) if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))]
-                calls = {fn: [(getattr(node.func, "attr", getattr(node.func, "id", "")), node.lineno)
-                              for node in ast.walk(fn) if isinstance(node, ast.Call)] for fn in functions}
-                # Which names of this module read, and which lock, the shelf: directly, or through another.
-                reading, locking = set(self.SHELF_READS), set(self.SHELF_LOCKS)
-                grew = True
-                while grew:
-                    grew = False
-                    for fn in functions:
-                        named = {name for name, _line in calls[fn]}
-                        if fn.name not in reading and named & reading:
-                            reading.add(fn.name)
-                            grew = True
-                        if fn.name not in locking and named & locking:
-                            locking.add(fn.name)
-                            grew = True
-                for fn in functions:
-                    reads, locks = [], []
-                    for name, line in calls[fn]:
-                        # Its own lock first where a callee does both: the callee is asked on its own.
-                        if name in locking:
-                            locks.append(line)
-                        elif name in reading:
-                            reads.append(line)
-                    key = f"{label}/{path.name}:{qualified[fn]}"
-                    if reads and locks and min(reads) < min(locks) and key not in self.READ_BEFORE_LOCK_ON_PURPOSE:
-                        findings.append((
-                            "shelf read before its lock",
-                            f"{key} reads the shelf at line {min(reads)} and holds it only at line "
-                            f"{min(locks)}; two at once both decide on what they read. Lock first.",
-                        ))
+        for key, (label, path, _module, _fn, qualified) in sorted(functions.items(), key=lambda item: (
+                item[1][0], str(item[1][1]), item[1][3].lineno)):
+            reads, locks = [], []
+            for call in calls[key]:
+                # Its own lock first where a callee does both: the callee is asked on its own.
+                if self._means(key, call, self.SHELF_LOCKS, locking, local_locking):
+                    locks.append(call[1])
+                elif self._means(key, call, self.SHELF_READS, reading, local_reading):
+                    reads.append(call[1])
+            where = f"{label}/{path.name}:{qualified}"
+            if reads and locks and min(reads) < min(locks) and where not in self.READ_BEFORE_LOCK_ON_PURPOSE:
+                findings.append((
+                    "shelf read before its lock",
+                    f"{where} reads the shelf at line {min(reads)} and holds it only at line "
+                    f"{min(locks)}; two at once both decide on what they read. Lock first.",
+                ))
         return findings
 
     # Where the release question is answered: apps/quality/release.py.
@@ -1309,33 +1304,55 @@ class Command(BaseCommand):
         stock into 840; a write-down at a four-place rate booked 3,333.30
         where the shelf gave up 3,333.33. A move between shelves is
         move_stock(); a posting books the total.
+
+        A function that returns what a rate gives hands the rate on, and a
+        call to it asks the rate as surely (O259): one module's helper
+        returning average_cost_at() went unseen where another module
+        multiplied it up. A call is followed where _call_graph resolves it,
+        into any module; unresolved (`obj.m()`), by name inside its own
+        module only. An allowed function is followed into all the same: its
+        reason says why it may ask, not that each caller books nothing.
         """
+        functions, calls = self._call_graph(labels, sources)
+
+        def allowed(label, path, qualified):
+            return f"{label}/{path.name}" in self.PER_UNIT_RATE_ALLOWED or \
+                f"{label}/{path.name}:{qualified}" in self.PER_UNIT_RATE_ALLOWED
+
+        # Only what a function returns hands a rate on; a rate it asks and books is reported where it asks.
+        returned = {}
+        for key, (_label, _path, _module, fn, _qualified) in functions.items():
+            lines = {node.lineno for statement in ast.walk(fn) if isinstance(statement, ast.Return)
+                     and statement.value is not None
+                     for node in ast.walk(statement.value) if isinstance(node, ast.Call)}
+            returned[key] = [call for call in calls[key] if call[1] in lines]
+        handing_on = self._followed(functions, returned, set(self.PER_UNIT_RATES))
+        local = {}
+        for module, qualified in handing_on:
+            local.setdefault(module, set()).add(qualified.rsplit(".", 1)[-1])
         findings = []
-        for label in labels:
-            for path, text in sorted(sources[label].items()):
-                if "test" in path.name or "migrations" in path.parts or "management" in path.parts:
+        for key, (label, path, _module, fn, qualified) in sorted(functions.items(), key=lambda item: (
+                item[1][0], str(item[1][1]), item[1][3].lineno)):
+            if allowed(label, path, qualified):
+                continue
+            for call in calls[key]:
+                name, line, target = call
+                if name in self.PER_UNIT_RATES:
+                    said = f"asks {name}()"
+                elif self._means(key, call, (), handing_on, local):
+                    said = f"asks {name}(), which hands on a rate per unit"
+                else:
                     continue
-                key = f"{label}/{path.name}"
-                if key in self.PER_UNIT_RATE_ALLOWED:
+                # A call inside a nested function is the nested function's to answer.
+                inner = max((other for other in ast.walk(fn) if isinstance(other, (ast.FunctionDef, ast.AsyncFunctionDef))
+                             and other.lineno <= line <= other.end_lineno), key=lambda other: other.lineno)
+                if inner is not fn:
                     continue
-                tree = ast.parse(text)
-                qualified = self._qualified(tree)
-                functions = [fn for fn in ast.walk(tree) if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))]
-                for node in ast.walk(tree):
-                    if not isinstance(node, ast.Call):
-                        continue
-                    name = getattr(node.func, "attr", getattr(node.func, "id", ""))
-                    if name not in self.PER_UNIT_RATES:
-                        continue
-                    inner = max((fn for fn in functions if fn.lineno <= node.lineno <= fn.end_lineno),
-                                key=lambda fn: fn.lineno, default=None)
-                    if inner is not None and f"{key}:{qualified[inner]}" in self.PER_UNIT_RATE_ALLOWED:
-                        continue
-                    findings.append((
-                        "per-unit withdrawal rate",
-                        f"{key}:{node.lineno} asks {name}(); book what cost_of_removing() "
-                        "says leaving takes, the total, or move it with move_stock().",
-                    ))
+                findings.append((
+                    "per-unit withdrawal rate",
+                    f"{label}/{path.name}:{line} {said}; book what cost_of_removing() "
+                    "says leaving takes, the total, or move it with move_stock().",
+                ))
         return findings
 
     def movements_written_around_save(self, labels, sources):
@@ -2542,6 +2559,230 @@ class Command(BaseCommand):
     # Or posts one afresh: a write-off, a claim credited, a discount taken, money held drawn
     # down. Nothing is taken back, and it is dated anywhere all the same.
     POSTS = re.compile(r"\bJournalEntry\.objects\.create\(|\bpost_drawdown\(|\bpost_settlement_fx\(|\.post\(")
+
+    # -- calls followed across modules (O259) --------------------------------
+    @staticmethod
+    def _module_of(path):
+        parts = list(Path(path).with_suffix("").parts)
+        if parts and parts[-1] == "__init__":
+            parts = parts[:-1]
+        return ".".join(parts)
+
+    def _call_graph(self, labels, sources):
+        """
+        Every function of `labels`, with each call it makes and, where it can
+        be told from the text, the function that call means.
+
+        A call is resolved when it names a function of these sources by
+        something imported or defined at module level: `f()` for a function
+        defined or imported (`from x import f`, relative or through a
+        module that re-exports it), `mod.f()` for an imported module,
+        `Cls.m()` for a class defined or imported, and `obj.m()` where
+        `obj` is a name the function assigns once, from `Cls(...)` or
+        `Cls.objects.create(...)`, and `m` is defined on `Cls` itself.
+        Anything else, `self.m()`, an inherited method and an object handed
+        in included, is left unresolved (None): which `post` it means
+        depends on the object, and nothing here guesses. A resolved
+        call that leaves these sources (Django's, the standard library's)
+        resolves to "outside".
+
+        Returns ({key: (label, path, module, function, qualified)}, {key: [(name, line, target)]}),
+        a key being (module, qualified name). Kept for the next check asked of the same sources.
+        """
+        kept = getattr(self, "_graph_kept", None)
+        if kept is not None and kept[0] == tuple(labels) and kept[1] is sources:
+            return kept[2]
+        graph = self._build_call_graph(labels, sources)
+        self._graph_kept = (tuple(labels), sources, graph)
+        return graph
+
+    def _build_call_graph(self, labels, sources):
+        trees, defined, imports = {}, {}, {}
+        for label in labels:
+            for path, text in sorted(sources[label].items()):
+                if "test" in path.name or "migrations" in path.parts or "management" in path.parts:
+                    continue
+                module = self._module_of(path)
+                tree = ast.parse(text)
+                trees[module] = (label, path, tree)
+                qualified = self._qualified(tree)
+                defined[module] = {
+                    "functions": {node.name for node in tree.body
+                                  if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))},
+                    "classes": {node.name: {qualified[member].split(".", 1)[1] for member in node.body
+                                            if member in qualified}
+                                for node in tree.body if isinstance(node, ast.ClassDef)},
+                }
+                imports[module] = self._imports_in(module, tree.body, path)
+        known = set(trees)
+
+        def definition(module, name, depth=0):
+            """('function'|'class'|'module', module, name) for `name` as `module` sees it, or None."""
+            if f"{module}.{name}" in known:
+                return ("module", f"{module}.{name}", None)
+            if module not in known or depth > 5:
+                return None
+            if name in defined[module]["functions"]:
+                return ("function", module, name)
+            if name in defined[module]["classes"]:
+                return ("class", module, name)
+            seen = imports[module].get(name)
+            if seen is None:
+                return None
+            return target_of(seen, depth + 1)
+
+        def target_of(seen, depth=0):
+            kind, where, name = seen
+            if kind == "module":
+                return ("module", where, None) if where in known else None
+            if f"{where}.{name}" in known:
+                return ("module", f"{where}.{name}", None)
+            if where not in known:
+                return None
+            return definition(where, name, depth)
+
+        def made_from(module, value, visible):
+            """(module, Class) of our sources that `value` builds, or None."""
+            if not isinstance(value, ast.Call):
+                return None
+            func = value.func
+            if isinstance(func, ast.Attribute) and func.attr == "create" and isinstance(func.value, ast.Attribute) \
+                    and func.value.attr == "objects":
+                func = func.value.value
+            if not isinstance(func, ast.Name):
+                return None
+            found = target_of(visible[func.id]) if func.id in visible else (
+                ("class", module, func.id) if func.id in defined[module]["classes"] else None)
+            return (found[1], found[2]) if found and found[0] == "class" else None
+
+        def built(module, fn, visible):
+            """{name: (module, Class)} for each name `fn` binds once, to a new object of a class of ours."""
+            bound, made = {}, {}
+            for node in ast.walk(fn):
+                targets = []
+                if isinstance(node, ast.Assign):
+                    targets = node.targets
+                elif isinstance(node, (ast.AnnAssign, ast.AugAssign, ast.For, ast.AsyncFor, ast.NamedExpr)):
+                    targets = [node.target]
+                elif isinstance(node, (ast.With, ast.AsyncWith)):
+                    targets = [item.optional_vars for item in node.items if item.optional_vars is not None]
+                for target in targets:
+                    for name in ast.walk(target):
+                        if isinstance(name, ast.Name):
+                            bound[name.id] = bound.get(name.id, 0) + 1
+                            if isinstance(node, ast.Assign) and target is name:
+                                made[name.id] = made_from(module, node.value, visible)
+            for argument in ast.walk(fn.args):
+                if isinstance(argument, ast.arg):
+                    bound[argument.arg] = bound.get(argument.arg, 0) + 1
+            return {name: cls for name, cls in made.items() if cls is not None and bound[name] == 1}
+
+        def resolve(module, call, visible, objects=None):
+            """The key a call means, "outside" for one that leaves these sources, or None."""
+            func = call.func
+            if isinstance(func, ast.Name):
+                if func.id in visible:
+                    found = target_of(visible[func.id])
+                    if found is None:
+                        return "outside" if visible[func.id][1] not in known else None
+                elif func.id in defined[module]["functions"]:
+                    found = ("function", module, func.id)
+                else:
+                    return None
+                return (found[1], found[2]) if found[0] == "function" else None
+            if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+                owner = func.value.id
+                if owner in ("self", "cls"):
+                    return None
+                if objects and owner in objects:
+                    cls_module, cls = objects[owner]
+                    method = func.attr in defined[cls_module]["classes"][cls]
+                    return (cls_module, f"{cls}.{func.attr}") if method else None
+                if owner in visible:
+                    found = target_of(visible[owner])
+                    if found is None:
+                        return "outside" if visible[owner][1] not in known else None
+                elif owner in defined[module]["classes"]:
+                    found = ("class", module, owner)
+                else:
+                    return None
+                if found[0] == "module":
+                    inner = definition(found[1], func.attr)
+                    return (inner[1], inner[2]) if inner and inner[0] == "function" else None
+                if found[0] == "class" and func.attr in defined[found[1]]["classes"][found[2]]:
+                    return (found[1], f"{found[2]}.{func.attr}")
+            return None
+
+        functions, calls = {}, {}
+        for module, (label, path, tree) in trees.items():
+            qualified = self._qualified(tree)
+
+            def visit(scope, visible):
+                for node in ast.iter_child_nodes(scope):
+                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        inner = dict(visible)
+                        inner.update(self._imports_in(module, ast.walk(node), path))
+                        key = (module, qualified[node])
+                        functions[key] = (label, path, module, node, qualified[node])
+                        objects = built(module, node, inner)
+                        calls[key] = [(self._called(call), call.lineno, resolve(module, call, inner, objects))
+                                      for call in ast.walk(node) if isinstance(call, ast.Call)]
+                        visit(node, inner)
+                    elif isinstance(node, ast.ClassDef):
+                        visit(node, visible)
+            visit(tree, imports[module])
+        return functions, calls
+
+    def _imports_in(self, module, statements, path):
+        """{alias: ('module', dotted, None) | ('name', dotted module, name)} for the imports among `statements`."""
+        package = module.split(".") if Path(path).name == "__init__.py" else module.split(".")[:-1]
+        found = {}
+        for node in statements:
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.asname:
+                        found[alias.asname] = ("module", alias.name, None)
+            elif isinstance(node, ast.ImportFrom):
+                base = node.module or ""
+                if node.level:
+                    stem = package[:len(package) - (node.level - 1)] if node.level > 1 else package
+                    base = ".".join(stem + ([node.module] if node.module else []))
+                for alias in node.names:
+                    if alias.name != "*":
+                        found[alias.asname or alias.name] = ("name", base, alias.name)
+        return found
+
+    def _followed(self, functions, calls, direct):
+        """
+        The keys of `functions` that make one of the `direct` calls, or a call
+        that means one that does: a resolved call by its target, however far,
+        an unresolved one by its bare name among the functions of its own
+        module (which `post` an `obj.post()` means is not told, so any `post`
+        of that module counts, as before O259).
+        """
+        marked = set()
+        grew = True
+        while grew:
+            grew = False
+            local = {}
+            for module, qualified in marked:
+                local.setdefault(module, set()).add(qualified.rsplit(".", 1)[-1])
+            for key, made in calls.items():
+                if key in marked:
+                    continue
+                if any(self._means(key, call, direct, marked, local) for call in made):
+                    marked.add(key)
+                    grew = True
+        return marked
+
+    @staticmethod
+    def _means(key, call, direct, marked, local):
+        name, _line, target = call
+        if name in direct:
+            return True
+        if target is None:
+            return name in local.get(key[0], ())
+        return target != "outside" and target in marked
 
     @staticmethod
     def _qualified(tree):
