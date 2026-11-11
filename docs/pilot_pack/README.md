@@ -34,10 +34,15 @@ heading reads as an empty column.
 
 Before the first file: `setup_indian_books` and `setup_stores` have
 been run (RUNBOOK.md, "First installation"), and the day the books
-opened is set (Settings, Books opening). The opening balances and the
-asset register are dated that day and are refused without it.
-`<day>` below is that day as `YYYY-MM-DD`; `3900` is the
-opening-balance account those two commands make.
+opened is set (Settings, Books opening). `opening_balances` and
+`fixed_assets` are dated that day whatever the command says, and are
+refused until it is set: `Set the day the books opened (Settings, Books
+opening) first`. `<day>` below is that day as `YYYY-MM-DD`. For
+`opening_balances` the command asks for `--date` and it must be that
+day; for `fixed_assets` `--date` may be left out, and if given must be
+that day. Any other day is refused: `... is not the day the books
+opened (...); the books setting says when, and the import follows it.`
+`3900` is the opening-balance account those two commands make.
 
 ## The files, in order
 
@@ -155,6 +160,9 @@ The words in quotes are what the import answers.
 3. Both a debit and a credit on a row, or neither: `give one of debit
    or credit, above nothing.`
 
+Before any row is read: the books' opening day not set, or a `--date`
+that is not it (above).
+
 **open_sales_orders, open_purchase_orders**
 1. The ordered quantity and not what is left: `quantity` is `what is
    still to come`, above nothing. Lines fully delivered are left out.
@@ -170,6 +178,10 @@ The words in quotes are what the import answers.
 2. An asset put into service after the go-live day: `is after the
    go-live date; register it as new instead.`
 3. The same name twice in one category: `already has an asset ...`.
+
+On every row, if the books' opening day is not set or `--date` is not
+it: the refusals above. The asset is in service on or before that day,
+not the day the file is run.
 
 **compensation**
 1. A `component` code that does not exist here.
