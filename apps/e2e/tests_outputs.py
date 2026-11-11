@@ -52,10 +52,14 @@ class WhatThePlantPrintsAndFiles(TestCase):
         self.assertNotIn("₹", pdf.decode("latin-1"))
 
     def test_the_ecr_names_who_has_no_uan_rather_than_filing_nobody(self):
+        # The demo's people carry a UAN each since O537; one without is still named, not left out of the file.
+        from apps.hr.models import Employee
+
+        Employee.objects.filter(employee_number="302").update(uan="")
         run = PayRun.objects.filter(status="posted").order_by("pk").first()
         answer = self.as_("anita").get(f"/api/hr/pay-runs/{run.pk}/ecr/")
         self.assertEqual(answer.status_code, 400, answer.content[:200])
-        self.assertIn("No UAN on", str(answer.json()))
+        self.assertIn("No UAN on 302", str(answer.json()))
 
     def test_the_posted_run_files_esi_for_the_guard_under_the_ceiling(self):
         """
