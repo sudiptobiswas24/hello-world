@@ -197,6 +197,13 @@ So are the cost and accumulated-depreciation accounts of every asset
 category: the asset register (`fixed_assets`) posts them, each asset
 its own.
 
+The entry is dated the day the books opened, as Settings, Books opening
+keeps it, and until that is set the file is refused: `Set the day the
+books opened (Settings, Books opening) first: opening balances are dated
+it.` The command still asks for `--date`, and it must be that same day;
+any other is refused: `2026-04-02 is not the day the books opened
+(2026-04-01); the books setting says when, and the import follows it.`
+
 ### tape_specs, fabric_specs, bag_specs, film_specs, liner_specs
 
 The columns are the specification's own fields, in the template's order;
@@ -223,7 +230,7 @@ policy would ask for is reported as a problem, not skipped. Deliveries
 already made in the old system are not brought in: the quantity is what
 is left.
 
-### fixed_assets — needs `--date`
+### fixed_assets — dated the day the books opened; `--date` is optional
 
 `name*`, `category*` (code), `vendor` (code), `acquisition_date*`,
 `in_service_date` (default the acquisition date; on or before the
@@ -237,6 +244,15 @@ opening-balance account. Leave those two accounts out of
 `opening_balances`, which refuses them. This system charges only the
 months after the go-live date. Cut over at a month end, so no month is split between the
 two systems.
+
+The go-live date here is the day the books opened (Settings, Books
+opening), not a date given with the file. The command does not ask for
+`--date` for this kind and reads the setting; until it is set every row
+is refused: `set the day the books opened (Settings, Books opening)
+first: the register stands at it, and each asset posts its opening
+balance on it.` A `--date` given all the same must be that day, or every
+row is refused: `2026-04-02 is not the day the books opened
+(2026-04-01); the books setting says when, and the import follows it.`
 
 ### compensation
 
