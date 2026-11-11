@@ -50,6 +50,21 @@ pg_isready -q || service postgresql start                              # role er
 
 ## 2. Next steps, in order
 
+**g35 is pushed (e28637b, 11 November 2026), all seven lanes green on one tip (gated as 7f57f16).** Ten
+commits closing eight open code rows: O497 (the payments list reads reconciled in one query), O499 (posting a bill
+writes again the MSME due day of other posted micro or small bills whose deliveries it takes), O501 (a page of bills
+reads its Act days in one pass), O469 (Logins filed Active, Ended or Deactivated by the shared left_by rule), O474
+(timesheets over the API and on People > Timesheets; view_every_timesheet; hours fixed once submitted; send back
+refused once a posted pay run paid them; hr migration 0039), O481 (dispatch times an operation at the machine's own
+rate), O520 (a work centre may not be rated at nought; manufacturing 0090 stops on an existing zero), O521 (capacity
+counts each machine at its own speed), O522 and O523 (the machine's minutes recorded at the event, 0091 and 0092).
+New row O524: a crewed bank's crew limit is still in clock minutes. Counts: SQLite 8,626 (245 skipped), PostgreSQL
+3,946 + 3,647 + 1,033 = 8,626, Asia/Kolkata 8,626, migration-tagged 51, vitest 70. Next: the open code rows (O524,
+O457, O346, O259), and the decision rows waiting on people (O448 and O494 owner, O449 and O500 tax adviser).
+- Gate lessons from g35: two machine restarts, about 18:50 and 01:31. Each took PostgreSQL down; the second
+  killed pg-c eight minutes in, and it re-ran from the start (1,033 tests, 79 minutes). The six finished lanes
+  needed nothing. The migration-tagged count went 50 to 51: the new manufacturing migration test.
+
 **g34 is pushed (6f6a58e, 10 November 2026), all seven lanes green on one tip (gated as 4cbc191).** Twelve
 commits from /home/user/work/g34_o498: ten inert-method rows removed (O472, O476-O480, O482, O484-O486, O489), seven
 wired to the API or a screen (O470 reconciled flags, O473 pay-run employer cost, O475 vehicle time on site, O483
