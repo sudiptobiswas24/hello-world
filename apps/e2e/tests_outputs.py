@@ -64,8 +64,8 @@ class WhatThePlantPrintsAndFiles(TestCase):
         """
         run = PayRun.objects.filter(status="posted").order_by("pk").first()
         slip = run.payslips.get(employee__employee_number="203")
-        self.assertEqual({line.component.code: line.amount for line in slip.lines.filter(component__code__in=["ESI", "EESI"])},
-                         {"ESI": D("154.00"), "EESI": D("667.00")})
+        self.assertEqual({line.component.code: line.amount for line in slip.lines.filter(component__code__in=["ESI", "ESI-ER"])},
+                         {"ESI": D("154.00"), "ESI-ER": D("667.00")})
         self.assertFalse(PayslipLine.objects.filter(payslip__run=run, component__code="ESI").exclude(
             payslip=slip).exclude(amount=0).exists())
         answer = self.as_("kiran").get(f"/api/hr/pay-runs/{run.pk}/esi/")

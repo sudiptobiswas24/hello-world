@@ -179,10 +179,9 @@ class Command(BaseCommand):
             cgst_out, sgst_out, igst_out = (acc("2201", "CGST output", "liability"), acc("2202", "SGST output", "liability"),
                                             acc("2203", "IGST output", "liability"))
             igst0_out = acc("2204", "IGST output, zero-rated", "liability")
-            pf_payable = acc("2420", "PF payable", "liability")
-            pt_payable = acc("2430", "Professional tax payable", "liability")
-            esi_payable = acc("2450", "ESI payable", "liability")
-            net_pay = acc("2440", "Salaries payable", "liability")
+            # The payroll accounts (2410 to 2440, 6000, 6100) are setup_payroll's, seeded in the next step; what
+            # the run owes its people is the company's own default, under the code setup_indian_books gives it.
+            net_pay = acc("2400", "Salaries payable", "liability")
             acc("3000", "Share capital", "equity")
             opening_eq = acc("3900", "Opening balances", "equity")
             sales_sacks = acc("4000", "Sales: woven sacks", "income")
@@ -195,9 +194,6 @@ class Command(BaseCommand):
             scrap_acc = acc("5200", "Production scrap", "expense")
             power = acc("5300", "Power and fuel", "expense")
             repairs = acc("5400", "Repairs and maintenance", "expense")
-            wages = acc("5500", "Salaries and wages", "expense")
-            employer_pf = acc("5510", "Employer PF", "expense")
-            employer_esi = acc("5520", "Employer ESI", "expense")
             freight = acc("5600", "Freight outward", "expense")
             travel = acc("5700", "Travel and conveyance", "expense")
             rent = acc("5750", "Rent", "expense")
@@ -222,6 +218,20 @@ class Command(BaseCommand):
             )
             M("manufacturing.ManufacturingSettings").objects.create(wip_account=wip, variance_account=variance,
                                                                     scrap_account=scrap_acc)
+
+        with step("Payroll accounts and pay components, as setup_payroll seeds them"):
+            # O532: the plant's own setup, called, not a second definition beside it. The demo's own components
+            # took PF on basic and HRA with no ceiling, which no plant set up by setup_payroll does: PF and PF-ER
+            # are a per cent of BASIC and DA up to the dated EPF wage ceiling.
+            from apps.accounting.management.commands.setup_indian_books import Command as Books
+            from apps.hr.management.commands.setup_payroll import seed_payroll
+
+            books = Books(stdout=self.stdout, stderr=self.stderr)
+            books.made, books.kept, books.collisions = [], [], []
+            pay_components = seed_payroll(books)
+            if books.collisions:
+                raise CommandError("; ".join(books.collisions))
+            wages = pay_components["BASIC"].expense_account
 
         with step("GST: rates, the inter-state and export positions, the registration"):
             Tax, Position, Mapping = M("accounting.Tax"), M("accounting.FiscalPosition"), M("accounting.FiscalPositionTaxMapping")
@@ -1103,36 +1113,28 @@ class Command(BaseCommand):
             M("accounting.RecurringJournalLine").objects.create(schedule=rent_due, account=bank, credit=D("85000"))
 
         with step("Payroll: pay components, salaries, one month posted and one calculated"):
-            Component, Pay, PayRun = M("hr.PayComponent"), M("hr.EmployeeCompensation"), M("hr.PayRun")
-            basic = Component.objects.create(code="BASIC", name="Basic salary", kind="earning", basis="fixed",
-                                             expense_account=wages, sequence=10, reduces_for_unpaid_leave=True)
-            hra = Component.objects.create(code="HRA", name="House rent allowance", kind="earning", basis="fixed",
-                                           expense_account=wages, sequence=20)
-            # Marked, so the monthly ECR finds its members (O411): unmarked, it came back an empty file.
-            pf = Component.objects.create(code="PF", name="Provident fund (employee)", kind="deduction", basis="percent",
-                                          liability_account=pf_payable, sequence=50, statutory="pf")
-            # Professional tax by Maharashtra's schedule (O405, O461), not a flat 200: the bands of a month's gross
-            # from statutory/professional_tax.csv, a woman's salary up to 25,000 exempt, 300 in February.
-            pt = Component.objects.create(code="PT", name="Professional tax", kind="deduction", basis="slab",
-                                          liability_account=pt_payable, sequence=60, statutory="pt")
-            epf = Component.objects.create(code="EPF", name="Provident fund (employer)", kind="employer_cost", basis="percent",
-                                           expense_account=employer_pf, liability_account=pf_payable, sequence=70,
-                                           statutory="pf_employer")
-            # ESI (O452): the law's dated rates and ceiling from statutory/esi.csv (0.75% and 3.25% of a month's
-            # wages, covered up to 21,000), confirmed by the Controller, and both shares marked, so the monthly
-            # contribution file finds its members. Each share is rounded up to the rupee, as ESIC collects it, and
-            # coverage holds for the contribution period of six months from April or October.
+            Pay, PayRun = M("hr.EmployeeCompensation"), M("hr.PayRun")
+            basic, hra, pf, epf, pt, esi, eesi = (pay_components[code] for code in (
+                "BASIC", "HRA", "PF", "PF-ER", "PT", "ESI", "ESI-ER"))
+            # The dated figures the levies read, from statutory/ as setup_statutory loads them and confirmed by
+            # the Controller, as the plant's would after checking each against the Gazette: the EPF and EPS wage
+            # ceilings (O532: PF is taken on basic up to the ceiling standing on the run's last day), and ESI's
+            # rates and ceiling (O452: 0.75% and 3.25% of a month's wages, covered up to 21,000; each share
+            # rounded up to the rupee, as ESIC collects it, coverage held for the contribution period of six
+            # months from April or October).
             from apps.hr.management.commands.setup_statutory import load_figures
             from apps.accounting.statutory_load import Loader
 
-            load_figures(Loader(), "esi")
+            for name in ("provident_fund", "esi"):
+                load_figures(Loader(), name)
             # Every pay input holds its person (hold_the_employee): held here in key order first, as the people
             # step does, since the insured are given their ESI before the rest their pay.
             lock_rows(*M("hr.Employee").objects.order_by("pk"), refresh=False)
             controller = anita.user
-            for figure in M("hr.StatutoryFigure").objects.filter(kind__startswith="esi_").order_by("pk"):
+            for figure in M("hr.StatutoryFigure").objects.filter(confirmed_on=None).order_by("pk"):
                 figure.confirm(controller)
-            pt.base_components.set([basic, hra])
+            # Professional tax by Maharashtra's schedule (O405, O461), not a flat 200: the bands of a month's gross
+            # from statutory/professional_tax.csv, a woman's salary up to 25,000 exempt, 300 in February.
             from apps.hr.management.commands.setup_statutory import load_professional_tax
 
             load_professional_tax(Loader())
@@ -1146,13 +1148,6 @@ class Command(BaseCommand):
                 employee.work_state = "MH"
                 employee.gender = "female" if key in women else "male"
                 employee.save()
-            esi = Component.objects.create(code="ESI", name="ESI (employee)", kind="deduction", basis="percent",
-                                           liability_account=esi_payable, sequence=55, statutory="esi",
-                                           rounding="rupee_up", coverage_period_months=6, remit_by_day=15)
-            eesi = Component.objects.create(code="EESI", name="ESI (employer)", kind="employer_cost", basis="percent",
-                                            expense_account=employer_esi, liability_account=esi_payable, sequence=75,
-                                            statutory="esi_employer", rounding="rupee_up", coverage_period_months=6,
-                                            remit_by_day=15)
             # Where each person is paid (O405), so the run's salary file has a row for everyone: the plant banks
             # with HDFC Chakan, and so, in the demo, does everyone it pays.
             for key, employee in sorted(people.items(), key=lambda pair: pair[1].pk):
