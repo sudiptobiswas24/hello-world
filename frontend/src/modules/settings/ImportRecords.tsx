@@ -79,12 +79,12 @@ export default function ImportRecords() {
             </Field>
           )}
           {chosen?.needs.includes("date") && (
-            <Field label="As at" hint="The day the opening position stands at: go-live">
+            <Field label="As at" hint="Leave empty: the day the books opened (Settings, Books opening). Any other day is refused">
               {(id) => <input id={id} type="date" value={options.date ?? ""} onChange={(event) => set("date", event.target.value)} />}
             </Field>
           )}
           {chosen?.needs.includes("against") && (
-            <Field label="Opening-balance account" hint="Its code, an equity account: 3900">
+            <Field label="Opening-balance account" hint="Leave empty: the account the books opened against. Any other is refused">
               {(id) => <input id={id} value={options.against ?? ""} onChange={(event) => set("against", event.target.value)} />}
             </Field>
           )}

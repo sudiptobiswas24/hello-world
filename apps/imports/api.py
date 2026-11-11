@@ -49,7 +49,7 @@ class ImportViewSet(viewsets.ViewSet):
     required_permission = "core.import_records"
 
     def list(self, request):
-        """The kinds, in the order they are brought in, with their columns and what each needs beside its file."""
+        """The kinds, in the order they are brought in, with their columns and what each takes beside its file."""
         return Response([{"kind": kind, "what": WHAT.get(kind, ""), "columns": columns_of(kind),
                           "needs": list(NEEDS.get(kind, ()))} for kind in KINDS])
 
@@ -72,20 +72,17 @@ class ImportViewSet(viewsets.ViewSet):
         """
         One file ({"kind", "text"}), checked whole; kept only with
         commit=true and no problems. {"date", "against", "reason",
-        "memo"} as the command's flags. Passwords an employees file made
+        "memo"} as the command's flags, none of them required. Passwords an employees file made
         come back once, here, and nowhere else.
         """
         kind = self._kind(request, request.data)
         text = request.data.get("text") or ""
         if not text.strip():
             raise DRFValidationError({"text": ["Paste or upload the file, headings first."]})
-        needs = NEEDS.get(kind, ())
+        # Neither is demanded (O531): the books' setting decides the day and the account, and the
+        # importer's refusal says where to set it. One sent is a second look, refused if it disagrees.
         day = to_date(request.data.get("date") or None)
-        if "date" in needs and day is None:
-            raise DRFValidationError({"date": ["The day the opening position stands at."]})
         against = str(request.data.get("against") or "")
-        if "against" in needs and not against:
-            raise DRFValidationError({"against": ["The opening-balance account's code."]})
         commit = flag(request.data, "commit", False)
         report = run(kind, text, commit=commit, user=request.user, date=day, against=against,
                      reason=str(request.data.get("reason") or "OPENING"), memo=str(request.data.get("memo") or ""))
