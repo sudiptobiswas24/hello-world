@@ -4,6 +4,8 @@ blank file, checks a file and keeps it; a bookkeeper is refused; a kind
 that needs the go-live date says so.
 """
 
+from decimal import Decimal
+
 from django.contrib.auth.models import Group, User
 from django.core.management import call_command
 from rest_framework.test import APIClient
@@ -78,6 +80,30 @@ class ImportApiTests(ImportTestCase):
         kept = controller.post(f"{RECORDS}run/", {**file, "date": "2026-10-01"}, format="json")
         self.assertEqual((kept.json()["committed"], kept.json()["errors"]), (True, []))
         self.assertEqual(str(StockAdjustment.objects.get().adjustment_date), "2026-10-01")
+
+    def test_an_open_bill_from_the_screen_stands_against_the_books_opening_account(self):
+        """O530, as the controller: another account is refused in words; the set one is kept."""
+        from apps.accounting.models import Account, AccountType
+        from apps.core.models import PartyRole, PartyRoleAssignment
+        from apps.purchasing.models import Bill
+
+        Account.objects.create(code="3950", name="Share capital", account_type=AccountType.EQUITY)
+        vendor = Party.objects.create(code="V-9", name="Granules", default_currency=self.usd)
+        PartyRoleAssignment.objects.create(party=vendor, role=PartyRole.VENDOR)
+        self.open_books()
+        controller = self.as_("Controller")
+        file = {"kind": "open_bills", "text": "vendor,reference,date,amount\nV-9,GH-77,2026-09-02,5000\n",
+                "commit": True}
+        other = controller.post(f"{RECORDS}run/", {**file, "against": "3950"}, format="json")
+        self.assertEqual((other.status_code, other.json()["committed"]), (200, False), other.content)
+        self.assertEqual(other.json()["errors"], [[
+            2, "--against", "3950 is not the opening-balance account (3900) the books opened against "
+            "(Settings, Books opening): leave --against out, or give that one."]])
+        self.assertFalse(Bill.objects.exists())
+        kept = controller.post(f"{RECORDS}run/", {**file, "against": "3900"}, format="json")
+        self.assertEqual((kept.json()["committed"], kept.json()["errors"]), (True, []))
+        self.assertEqual((self.balance(self.payable), self.balance(self.opening)),
+                         (Decimal("-5000.00"), Decimal("5000.00")))
 
     def test_who_may(self):
         self.assertEqual(self.as_("Bookkeeper").get(RECORDS).status_code, 403)

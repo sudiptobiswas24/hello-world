@@ -2467,16 +2467,18 @@ class Command(BaseCommand):
 
     # What the books' setting decides for every kind that posts the opening position; the flag of the
     # same name is only a second look, asked by importer.opening_position() and nowhere else.
-    OPENING_FLAGS = ("date",)
+    OPENING_FLAGS = ("date", "against")
 
     def opening_kinds_read_their_own_flags(self, text=None):
         """
-        An import handler that reads the day from its flag, not from the books' setting.
+        An import handler that reads the day or the account from its flag, not from the books' setting.
 
         Opening balances and the asset register were held to the day the books opened;
         opening stock read `options["date"]` and came in on the 10th into books that opened on
-        the 1st (O529). `importer.run()` asks `opening_position()` once for every kind that
-        posts the opening position and hands the handler `options["opened_on"]`; a handler in
+        the 1st (O529); open invoices read `options["against"]` and stood against share capital
+        (O530). `importer.run()` asks `opening_position()` once for every kind that
+        posts the opening position and hands the handler `options["opened_on"]` and
+        `options["opening_account"]`; a handler in
         apps/imports that reads the flag itself is the next kind written without the check.
         """
         import inspect
