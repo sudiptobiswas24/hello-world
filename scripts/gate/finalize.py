@@ -42,6 +42,16 @@ if git("status", "--short"):
 # Full ids: the tip is matched against `git log`'s full ids below, and a
 # short one never matched, so the gated tip was told it was not run (g17).
 base, tip = git("rev-parse", base), git("rev-parse", tip)
+# A mig lane run with GATE_BASE skipped apps on the strength of a range. It must be this gate's range:
+# ending at the gated tip, and starting at the pushed base or before it, so no commit pushed is left out.
+needed = os.path.join(os.environ.get("GATE_LOGS", "/tmp/gate-logs"), f"{prefix}_mig", "needed.txt")
+if os.path.exists(needed):
+    mig_base, _, mig_tip = open(needed).readline().split()[1].partition("..")
+    if mig_tip != tip:
+        raise SystemExit(f"the migration lane ran on {mig_tip[:7]}, not the gated tip {tip[:7]}")
+    if subprocess.run(["git", "-C", TREE, "merge-base", "--is-ancestor", mig_base, base]).returncode:
+        raise SystemExit(f"the migration lane skipped apps unchanged since {mig_base[:7]}, which is not the pushed "
+                         f"base {base[:7]} nor before it: run it again with GATE_BASE={base[:7]}")
 commits = git("log", "--reverse", "--format=%H", f"{base}..{tip}").split()
 subject = git("log", "-1", "--format=%s", tip)
 git("checkout", "-q", base)

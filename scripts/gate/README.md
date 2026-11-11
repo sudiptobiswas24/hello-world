@@ -30,10 +30,53 @@ Commit as `git -c user.name=Claude -c user.email=noreply@anthropic.com commit -F
    It runs one app at a time and records each app that passes on this HEAD,
    so after a restart run the same line again and it carries on. It ends
    with "mig finished".
+   Put `GATE_BASE=<pushed base>` in front of it and it runs only the apps
+   the range needs: see "A mig lane in proportion" below.
 5. `python3 scripts/gate/gateline.py <prefix>` prints the Gate line, or
    what is not green.
 6. Write the Gate lines with `python3 scripts/gate/finalize.py <pushed base> <gated tip> <prefix>`.
    Then fast-forward the branch to the new tip and push.
+
+## A mig lane in proportion
+
+The 51 migration-tagged tests take over four hours, and most pushes change
+no migration. `python3 scripts/gate/migneeded.py <base> <tip>` prints, for
+each app, `need <app>: <why>` or `skip <app>: no migration change since
+<base>`. Its docstring holds the rule. In short: a file under an app's
+`migrations/`, or a module its migrations import, runs that app and every
+app whose migrations depend on it; a changed file of migration-tagged
+tests, or a change that reaches what such a file imports from another test
+module, runs that app alone; the lock sentinel, `config/`,
+`requirements.txt`, `manage.py` or `scripts/gate` (bar this file) runs
+them all, and so does a base that cannot be read.
+
+    GATE_BASE=<pushed base> setsid nohup scripts/gate/lane.sh <prefix> mig > <logs>/mig_driver.txt 2>&1 < /dev/null &
+
+- `<pushed base>` is the commit the branch stands at: the last one a whole
+  gate passed on. The skip rests on that gate. `finalize.py` refuses a
+  lane whose base is after the base it is given, or whose tip is not the
+  gated one.
+- The driver log says `<app> skipped: no migration change since <base>`
+  for each app left out, and `<prefix>_mig/needed.txt` keeps the list.
+  `gateline.py` works the list out again from the range, and refuses the
+  gate unless every app it names passed on the gated commit. The Gate line
+  then reads `migration-tagged 0 of 51 needed: no migration changed since
+  <base>`, or `migration-tagged 48 of 51, apps ...; others unchanged since
+  <base>`.
+- Without `GATE_BASE` every app runs and the line reads as it always has.
+  Do that when in doubt: the rule cannot see a migration test broken by
+  application code that no migration imports. That code's own tests run in
+  the other lanes; the tagged tests run nowhere else.
+- The dependencies between the apps' migrations nearly form a ring
+  (purchasing on sales, assets on purchasing, inventory on assets, sales on
+  inventory), so one migration in almost any app runs almost every app:
+  g35's range needs 48 of the 51. The saving is the push with no migration
+  at all, which g36 was.
+- `python3 -m unittest scripts/gate/tests_migneeded.py` tests the rule. It
+  needs git, not Django.
+- `.github/workflows/gate.yml` runs the same lanes on GitHub for a push to
+  `claude/**`, the mig job one app at a time for the apps `migneeded.py`
+  names against the commit the branch stood at.
 
 ## Lessons that each cost a gate run
 
