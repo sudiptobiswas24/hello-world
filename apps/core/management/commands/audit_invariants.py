@@ -1049,11 +1049,7 @@ class Command(BaseCommand):
     SHELF_READS = {"on_hand_at", "available_at", "reserved_at", "check_available", "cost_of_removing"}
     SHELF_LOCKS = {"lock_position", "lock_positions"}
     # Reads made before the lock on purpose, with the reason.
-    READ_BEFORE_LOCK_ON_PURPOSE = {
-        "manufacturing/process_rolls.py:_issue_roll":
-            "not on purpose: it reads the roll's on hand, then issue.post() holds the shelf. Seen when the check "
-            "followed a once-bound object's call (O259); reported as O525, manufacturing's to fix",
-    }
+    READ_BEFORE_LOCK_ON_PURPOSE = {}
 
     def shelf_read_before_lock(self, labels, sources):
         """
