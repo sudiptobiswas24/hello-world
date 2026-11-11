@@ -15,9 +15,9 @@
 # base named in the plan job, or start a run by hand, which skips nothing.
 name: gate
 
+# Started by hand only (Actions, gate, Run workflow) until its first run has been read and the minutes it
+# takes are known; add `push: branches: ["claude/**"]` here to run it on every push.
 on:
-  push:
-    branches: ["claude/**"]
   workflow_dispatch:
     inputs:
       base:
