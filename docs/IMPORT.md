@@ -181,7 +181,7 @@ setting says when, and the import follows it.` A count taken on a later
 day is worked back to the opening day before the file is filled; what
 moved since is entered as it happened.
 
-### open_invoices and open_bills — need `--against <account code>`
+### open_invoices and open_bills — against the opening-balance account
 
 `customer*` or `vendor*` (code, of a party with that role),
 `reference*` (the old document's number: refused if that party already
@@ -192,7 +192,14 @@ invoice's number exactly as it was filed: a credit note with GST raised
 on it later is reported against that number.
 
 Both wait for the books' opening day (Settings, Books opening): until
-it is set every row is refused, as the stock and the balances are.
+it is set every row is refused, as the stock and the balances are. Each
+document stands against the opening-balance account set there, so that
+account is nothing again once the stock, the documents and the opening
+balances are all in. An `--against` given must be that account; any
+other is refused: `3000 is not the opening-balance account (3900) the
+books opened against (Settings, Books opening): leave --against out, or
+give that one.` Opening stock is held to it too: a `--reason` that
+posts to another account is refused.
 
 The due date follows from the date and the terms, as it would for a new
 invoice, so aging is right from the first day. Only what is still owed

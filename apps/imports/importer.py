@@ -315,6 +315,13 @@ def _opening_stock(rows, report, options):
         report.refuse(0, "--reason", f"no adjustment reason {options['reason']!r}: make one, "
                       "posting to the opening-balance account, first.")
         return
+    # The other side is the account the books opened against, or it never clears (O530).
+    opening = options["opening_account"]
+    if reason.account_id != opening.pk:
+        report.refuse(0, "--reason", f"adjustment reason {reason.code} posts to {reason.account.code}, not to the "
+                      f"opening-balance account ({opening.code}) the books opened against: point the reason at "
+                      "that account, or name a reason that posts to it.")
+        return
     on = options["opened_on"]
     by_warehouse = {}
     for number, row in rows:
@@ -364,13 +371,10 @@ def _opening_stock(rows, report, options):
 
 def _open_document(row, options, side):
     """An invoice still owed, or a bill still owing, against the opening-balance account."""
-    from apps.accounting.models import Account
     from apps.core.models import Company, Currency, Party, PaymentTerms
 
     company = Company.get()
-    against = Account.objects.filter(code=options["against"]).first()
-    if against is None:
-        raise RowError("--against", f"no account {options['against']!r}.")
+    against = options["opening_account"]  # the books' setting, never the flag (O530)
     role = "customer" if side == "sales" else "vendor"
     party = by_code(Party, row, role, role_assignments__role=role)
     amount = decimal(row, "amount", places=2, required_=True)
@@ -417,7 +421,7 @@ def _open_document(row, options, side):
 # The kinds that post the opening position, with what each says while the books have no opening day.
 # run() asks opening_position() for every one before its handler is called, and hands the handler the
 # day and the account the setting gives, never the flags: opening stock took its own --date, and came
-# in on the 10th into books that opened on the 1st (O529).
+# in on the 10th into books that opened on the 1st (O529), and open invoices any --against (O530).
 POSTS_THE_OPENING_POSITION = {
     "opening_stock": "Set the day the books opened (Settings, Books opening) first: opening stock is what "
                      "was counted on it.",
@@ -437,7 +441,9 @@ def opening_position(kind, options):
     The day the books opened and the account they opened against, from accounting's books setting:
     {"opened_on", "opening_account"}. The setting is the one place either is kept, so the opening
     position is one day's, whichever file brings a part of it in. A date given with the import is
-    only a second look, refused if it disagrees.
+    only a second look, refused if it disagrees, and so is an account: open invoices took any
+    --against, and receivables set against share capital left the opening-balance account
+    holding what it was never credited with (O530).
     """
     from apps.accounting.models import BooksOpening
     from apps.core.models import to_date
@@ -449,6 +455,10 @@ def opening_position(kind, options):
     if given is not None and given != books.opened_on:
         raise RowError("--date", f"{given} is not the day the books opened ({books.opened_on}); the books "
                        "setting says when, and the import follows it.")
+    against = str(options.get("against") or "").strip()
+    if against and against != books.opening_account.code:
+        raise RowError("--against", f"{against} is not the opening-balance account ({books.opening_account.code}) "
+                       "the books opened against (Settings, Books opening): leave --against out, or give that one.")
     return {"opened_on": books.opened_on, "opening_account": books.opening_account}
 
 
@@ -591,7 +601,8 @@ def run(kind, text, *, commit=False, user=None, **options):
                 refused = error
             else:
                 # The flags are not handed on: a handler has only what the setting says.
-                options = {key: value for key, value in options.items() if key != "date"} | position
+                options = {key: value for key, value in options.items()
+                           if key not in ("date", "against")} | position
         if refused is not None:
             # Said where the kind says everything else: by row where each row is its own record.
             for number in ([number for number, _row in rows] if kind in PER_ROW and rows else [0]):
