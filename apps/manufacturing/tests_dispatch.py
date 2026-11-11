@@ -714,3 +714,91 @@ class ACrewedBankAtItsMachinesSpeedTests(DispatchTestCase):
         self.assertEqual(self.placed(a, b), {a.number: ("L-1", at(D1, 8), at(D2, 4, 30)),
                                              b.number: ("L-2", at(D1, 8), at(D2, 16, 30))})
         self.assertEqual(self.capacity()[0], Decimal("2160"))
+
+
+class ThreeShiftsRoundTheClockTests(DispatchTestCase):
+    """
+    O528, worked in calc_g38_floor/o528.py: whether a shift running past the
+    start of the next day's first shift loses the overlap on the board. Three
+    eight-hour shifts, D 06:00, B 14:00, N 22:00 to 06:00; one operator a loom;
+    a run of n kg is 30 + n minutes, from 06:00 on the 1st.
+
+        refused   N stretched to 07:00 against D at 06:00: Shift.save, they
+                  claim 06:00 to 07:00 twice
+        refused   three ten-hour shifts at 06:00, 14:00 and 22:00: the second
+        one on each shift       1,830 on L-1: 06:00 -> 12:30 on the 2nd, through
+                                the night and the day's seam at 06:00
+        one on D, two on N      A 1,830 on L-1 (D and N, 960 a day): 04:30 on
+                                the 3rd; B 630 on L-2 (N only): 22:00 on the 1st,
+                                480 to 06:00, 150 from 22:00 on the 2nd: 00:30
+
+    No shift that can be saved passes the next day's first: one that did would
+    claim the first shift's opening hour, and Shift.save refuses that. So the
+    board loses nothing, and what the crew is counted for (manned_minutes) is
+    what the board runs: 1,440 either way.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from .tests_station import StationTestCase
+
+        Shift.objects.filter(code="D").update(starts_at=datetime.time(6), hours=Decimal("8"))
+        for code, hour in (("B", 14), ("N", 22)):
+            Shift.objects.create(code=code, name=code, starts_at=datetime.time(hour),
+                                 hours=Decimal("8"))
+        WorkCentre.objects.filter(pk=self.bank.pk).update(operators_per_machine=1)
+        self.bank.refresh_from_db()
+        self.people = iter(StationTestCase.employee(self, f"W-{n}", f"Weaver {n}")
+                           for n in range(4))
+
+    def crew(self, *codes):
+        from .manning import CrewAssignment
+
+        for code in codes:
+            CrewAssignment.objects.create(employee=next(self.people), work_centre=self.bank,
+                                          shift=Shift.objects.get(code=code), valid_from=TODAY)
+
+    def placed(self, *runs):
+        rows = build(start_at=aware(D1, 6))
+        return {run.number: (self.row(rows, run)["resource"],
+                             timezone.make_naive(self.row(rows, run)["start"]),
+                             timezone.make_naive(self.row(rows, run)["finish"]))
+                for run in runs}
+
+    def manned(self):
+        from .manning import manned_minutes
+
+        return manned_minutes(WorkCentre.objects.get(pk=self.bank.pk), D1)
+
+    def test_a_night_stretched_past_the_first_shift_is_refused(self):
+        from django.core.exceptions import ValidationError
+
+        night = Shift.objects.get(code="N")
+        night.hours = Decimal("9")
+        with self.assertRaisesMessage(ValidationError, "they claim the same hours"):
+            night.save()
+        self.assertEqual(Shift.objects.get(code="N").hours, Decimal("8.00"))
+
+    def test_three_shifts_that_overlap_are_refused_at_the_second(self):
+        from django.core.exceptions import ValidationError
+
+        Shift.objects.exclude(code="D").delete()
+        first = Shift.objects.get(code="D")
+        first.hours = Decimal("10")
+        first.save()
+        with self.assertRaisesMessage(ValidationError, "they claim the same hours"):
+            Shift.objects.create(code="B", name="B", starts_at=datetime.time(14),
+                                 hours=Decimal("10"))
+
+    def test_round_the_clock_runs_through_the_night_and_the_days_seam(self):
+        self.crew("D", "B", "N")
+        run = self.run_of("1800", D3)
+        self.assertEqual(self.placed(run), {run.number: ("L-1", at(D1, 6), at(D2, 12, 30))})
+        self.assertEqual(self.manned(), Decimal("1440"))
+
+    def test_a_loom_crewed_by_night_only_runs_the_whole_night(self):
+        self.crew("D", "N", "N")
+        a, b = self.run_of("1800", D3), self.run_of("600", D4)
+        self.assertEqual(self.placed(a, b), {a.number: ("L-1", at(D1, 6), at(D3, 4, 30)),
+                                             b.number: ("L-2", at(D1, 22), at(D3, 0, 30))})
+        self.assertEqual(self.manned(), Decimal("1440"))
