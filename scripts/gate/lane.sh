@@ -6,6 +6,9 @@
 # GATE_TREE  the worktree to gate (default: this repository's root). Keep it
 #            clean and do not edit it while a lane runs.
 # GATE_LOGS  where logs go (default: /tmp/gate-logs).
+# GATE_BASE  mig lane only, optional: the pushed commit a whole gate last passed on. With it the lane runs
+#            only the apps migneeded.py says <GATE_BASE>..HEAD needs, and says which it skipped and why.
+#            Without it every app runs, as before.
 #
 # A background job may run two hours at most, and a lane killed at the limit
 # has no verdict. Each lane runs two workers on a four-core machine, so run
@@ -116,7 +119,29 @@ mig)
     M="$LOGS/${P}_mig"; mkdir -p "$M"; HEAD=$(git rev-parse HEAD)
     .venv/bin/python scripts/gate/migcount.py > "$M/count.txt" || { echo "mig: counting failed"; exit 1; }
     .venv/bin/python scripts/gate/migcount.py --skips > "$M/skips.txt" || { echo "mig: listing skips failed"; exit 1; }
+    # With GATE_BASE, only what the range needs (migneeded.py says why). needed.txt is the record gateline.py
+    # reads and works out again: a skip is written down, never just absent. PGDONE is a marker of its own, so
+    # a part-run of the PostgreSQL-only tests is never taken for the whole of them on the same HEAD.
+    PGDONE="$M/pg.done"; PGMARK="$HEAD"
+    if [ -n "${GATE_BASE:-}" ]; then
+        GATE_TREE="$TREE" python3 "$HERE/migneeded.py" "$GATE_BASE" "$HEAD" > "$M/needed.txt.new" \
+            || { echo "mig: migneeded failed, nothing run"; exit 1; }
+        mv -f "$M/needed.txt.new" "$M/needed.txt"
+        SINCE=$(sed -n 's/^range \(.......\).*/\1/p' "$M/needed.txt")
+        grep '^need ' "$M/needed.txt"
+        cp "$M/skips.txt" "$M/skips.all.txt"
+        while read -r id; do
+            if grep -q "^need $(echo "$id" | cut -d. -f2):" "$M/needed.txt"; then echo "$id"; fi
+        done < "$M/skips.all.txt" > "$M/skips.txt"
+        echo "PostgreSQL-only: $(wc -l < "$M/skips.txt") of $(wc -l < "$M/skips.all.txt") needed"
+        PGDONE="$M/pg.base.done"; PGMARK="$HEAD $(sed -n 's/^range \([0-9a-f]*\)\.\..*/\1/p' "$M/needed.txt")"
+    else
+        rm -f "$M/needed.txt" "$M/skips.all.txt"
+    fi
     for app in $(grep -v '^total ' "$M/count.txt" | cut -d' ' -f1); do
+        if [ -f "$M/needed.txt" ] && ! grep -q "^need $app:" "$M/needed.txt"; then
+            echo "$app skipped: no migration change since $SINCE"; continue
+        fi
         if [ "$(cat "$M/$app.done" 2>/dev/null)" = "$HEAD" ]; then echo "$app passed already on this HEAD"; continue; fi
         timeout 7000 env $PW .venv/bin/python manage.py test "apps.$app" --tag migration --parallel 2 \
             > "$M/$app.log" 2>&1
@@ -125,12 +150,12 @@ mig)
     done
     rm -f "$M/pg.log"
     if [ -s "$M/skips.txt" ]; then
-        if [ "$(cat "$M/pg.done" 2>/dev/null)" != "$HEAD" ]; then
+        if [ "$(cat "$PGDONE" 2>/dev/null)" != "$PGMARK" ]; then
             pg_isready -q || service postgresql start > /dev/null
             su postgres -c "psql -q -c 'DROP DATABASE IF EXISTS test_erp9 WITH (FORCE)'" 2>&1 | grep -v NOTICE
             timeout 3000 env DATABASE_URL="postgres://erp:erp@localhost:5432/erp9" .venv/bin/python manage.py test \
                 $(cat "$M/skips.txt") --tag migration --noinput > "$M/pg.run.log" 2>&1
-            rc=$?; [ $rc = 0 ] && echo "$HEAD" > "$M/pg.done"
+            rc=$?; [ $rc = 0 ] && echo "$PGMARK" > "$PGDONE"
             echo "PostgreSQL-only exit=$rc $(grep -E '^Ran|^OK|^FAILED' "$M/pg.run.log" | tr '\n' ' ')"
         fi
     fi
