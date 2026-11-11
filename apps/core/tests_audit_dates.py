@@ -88,6 +88,80 @@ class TheAuditFollowsTheShelfAndTheRateTests(SimpleTestCase):
                          + Command().shelf_read_before_lock(list(OUR_APPS), sources), [])
 
 
+class TheAuditFollowsACallIntoAnotherModuleTests(SimpleTestCase):
+    """O259: shelf_read_before_lock and per_unit_withdrawal_rates follow a call into another module where the
+    text says which function it means; an object's method it cannot tell is not guessed at."""
+
+    HOLDING = ("def hold(item):\n    lock_positions([(item, 1)])\n\n"
+               "class Shelf:\n    @staticmethod\n    def hold(item):\n        lock_position(item, 1)\n\n"
+               "class Issue:\n    def post(self):\n        lock_positions([])\n")
+    RATES = "def shelf_rate(item, warehouse):\n    return item.average_cost_at(warehouse)\n"
+
+    @staticmethod
+    def sources(other, text):
+        from pathlib import Path
+
+        inventory = {Path("apps/inventory/__init__.py"): "", Path("apps/inventory/holding.py"): other}
+        return {"inventory": inventory, "sales": {Path("apps/sales/__init__.py"): "",
+                                                  Path("apps/sales/deliveries.py"): text}}
+
+    def shelf(self, text):
+        from apps.core.management.commands.audit_invariants import Command
+
+        return [detail.split(" ")[0] for _shape, detail in Command().shelf_read_before_lock(
+            ["inventory", "sales"], self.sources(self.HOLDING, text))]
+
+    def rates(self, text):
+        from apps.core.management.commands.audit_invariants import Command
+
+        return [detail.split(" ")[0] for _shape, detail in Command().per_unit_withdrawal_rates(
+            ["inventory", "sales"], self.sources(self.RATES, text))]
+
+    def test_a_read_then_a_lock_in_another_module_is_reported_however_the_lock_is_named(self):
+        read = "        if item.on_hand_at(1) < 10:\n            raise ValueError\n"
+        for imported, held in (
+                ("from apps.inventory.holding import hold", "hold(item)"),
+                ("from apps.inventory.holding import hold as keep", "keep(item)"),
+                ("from apps.inventory import holding", "holding.hold(item)"),
+                ("import apps.inventory.holding as holding", "holding.hold(item)"),
+                ("from apps.inventory.holding import Shelf", "Shelf.hold(item)"),
+                ("from apps.inventory.holding import Issue",
+                 "issue = Issue.objects.create(item=item)\n        issue.post()"),
+                ("from apps.inventory.holding import Issue", "issue = Issue()\n        issue.post()")):
+            text = f"class Delivery:\n    def post(self, item):\n        {imported}\n{read}        {held}\n"
+            self.assertEqual(self.shelf(text), ["sales/deliveries.py:Delivery.post"], text)
+            locked_first = f"class Delivery:\n    def post(self, item):\n        {imported}\n        {held}\n{read}"
+            self.assertEqual(self.shelf(locked_first), [], locked_first)
+
+    def test_a_call_it_cannot_tell_is_not_guessed_at(self):
+        for held in ("thing.hold(item)",  # an object handed in: which hold is not told
+                     "issue = Issue()\n        issue = other\n        issue.post()",  # bound twice
+                     "self.hold(item)"):
+            text = ("from apps.inventory.holding import Issue\n\nclass Delivery:\n    def post(self, item, thing, other):\n"
+                    f"        if item.on_hand_at(1) < 10:\n            raise ValueError\n        {held}\n")
+            self.assertEqual(self.shelf(text), [], held)
+
+    def test_a_helper_of_another_module_that_hands_a_rate_on_is_reported_where_it_is_multiplied_up(self):
+        for imported, asked in (("from apps.inventory.holding import shelf_rate", "shelf_rate(item, 1)"),
+                                ("from apps.inventory import holding", "holding.shelf_rate(item, 1)")):
+            text = f"{imported}\n\ndef write_off(item, quantity):\n    return quantity * {asked}\n"
+            self.assertEqual(self.rates(text), ["inventory/holding.py:2", "sales/deliveries.py:4"], text)
+        # Asked of an object, the name alone does not say it is the helper in inventory.
+        self.assertEqual(self.rates("def write_off(item, q, x):\n    return q * x.shelf_rate(item, 1)\n"),
+                         ["inventory/holding.py:2"])
+        # A helper that asks a rate and does not return it hands nothing on.
+        from pathlib import Path
+
+        from apps.core.management.commands.audit_invariants import Command
+
+        kept = "def note(item):\n    item.seen = item.average_cost_at(1)\n    return item\n"
+        found = Command().per_unit_withdrawal_rates(["inventory", "sales"], {
+            "inventory": {Path("apps/inventory/holding.py"): kept},
+            "sales": {Path("apps/sales/deliveries.py"): "from apps.inventory.holding import note\n\n"
+                                                       "def f(item):\n    return note(item)\n"}})
+        self.assertEqual([detail.split(" ")[0] for _shape, detail in found], ["inventory/holding.py:2"])
+
+
 class TheAuditSeesAReleasedRunAskedUnheldTests(SimpleTestCase):
     """O46: unlocked_open_runs reports a run's status compared to RELEASED, not only is_open()."""
 
