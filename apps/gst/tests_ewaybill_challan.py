@@ -82,3 +82,35 @@ class ChallanVoidTests(ChallanEwayBillTestCase):
         self.second.refresh_from_db()
         self.assertIsNotNone(self.second.voided_at)
         self.assertEqual(Decimal(str(bill.payload["totalValue"])), Decimal("38000"))
+
+
+class AnUnregisteredWorkersOwnAddressTests(ChallanEwayBillTestCase):
+    """
+    O533, the challan's half. An unregistered worker in Karnataka, billed and
+    shipped to at its one address, which gives no state: the challan recorded
+    29 at issue, and the bill reads it (accounting.gst.state_delivered_in).
+    50 kg at 95 = 4,750.00, across a state line.
+    """
+
+    def setUp(self):
+        super().setUp()
+        PartyTaxProfile.objects.filter(party=self.laminator).update(gstin="", gst_state="29")
+        Address.objects.filter(party=self.laminator).delete()
+        self.own = Address.objects.create(party=self.laminator, address_type=AddressType.BILLING,
+                                          line1="KIADB Plot 7", city="Dharwad", state="",
+                                          postal_code="580011", is_primary=True)
+
+    def test_with_no_state_it_reads_the_state_the_challan_recorded(self):
+        challan = self.challan("50")
+        self.assertEqual((challan.job_worker_gstin, challan.job_worker_state), ("", "29"))
+        payload = prepare(challan, vehicle_number="MH12AB1234").payload
+        self.assertEqual((payload["toGstin"], payload["toStateCode"], payload["actToStateCode"],
+                          payload["toPincode"], payload["totInvValue"]), ("URP", 29, 29, 580011, 4750.0))
+
+    def test_another_site_with_no_state_is_still_refused(self):
+        """A site that is not the address billed to is nobody's to guess."""
+        Address.objects.create(party=self.laminator, address_type=AddressType.SHIPPING,
+                               line1="Shed 9", city="Gadag", state="", postal_code="582101",
+                               is_primary=True)
+        with self.assertRaisesMessage(ValidationError, "says its state is nothing"):
+            prepare(self.challan("50"), vehicle_number="MH12AB1234")
