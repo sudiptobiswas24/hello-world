@@ -335,7 +335,7 @@ def _item(number, recorded, rate):
     what = f"Line {number} ({line.label()})"
     if not recorded.hsn:
         raise ValidationError(f"{what} has no HSN code.")
-    if len(recorded.hsn) < 6:
+    if p.hsn_is_short(recorded.hsn):
         raise ValidationError(
             f"{what} has HSN {recorded.hsn}. A company that e-invoices reports six digits "
             "or more."
