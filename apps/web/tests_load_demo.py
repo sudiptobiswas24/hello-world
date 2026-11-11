@@ -5,6 +5,7 @@ see what their roles allow, and a second load is refused, so it can
 never mix invented records into real books.
 """
 
+import datetime
 from decimal import Decimal
 from io import StringIO
 from unittest import mock
@@ -118,6 +119,43 @@ class WhatTheDemoShowsTests(TestCase):
         # A man over 10,000 pays it; the security guard's 20,500 is over it.
         self.assertEqual(posted["203"], due)
 
+    def test_provident_fund_is_taken_on_basic_up_to_the_ceiling_as_the_plants_own_setup_takes_it(self):
+        """
+        O532, worked in /home/user/work/calc_g37_demo/o532.py. The demo took 12% of basic and HRA with no ceiling:
+        Rohit's 62,000 basic and 18,000 HRA paid 9,600 a side, and the plant 69,060. As setup_payroll seeds it, PF is
+        12% of basic up to the EPF wage ceiling standing on the run's last day: 25,000 from 17 September 2026
+        (statutory/provident_fund.csv), which every run the demo can now post ends after. Nine people are over
+        the ceiling at 3,000 each and five under it on their basic (2,520, 1,920, 2,220, 2,136, 2,064): 37,860.
+        """
+        from django.db.models import Sum
+
+        from apps.hr.models import PayRun
+        from apps.hr.payroll import PayComponent, PayslipLine
+
+        self.assertEqual(sorted(PayComponent.objects.filter(statutory__in=["pf", "pf_employer"]).values_list(
+            "code", "ceiling_figure", "base_components__code")),
+            [("PF", "epf_ceiling", "BASIC"), ("PF", "epf_ceiling", "DA"),
+             ("PF-ER", "epf_ceiling", "BASIC"), ("PF-ER", "epf_ceiling", "DA")])
+        run = PayRun.objects.get(status="posted")
+        self.assertGreaterEqual(run.period_end, datetime.date(2026, 9, 30))
+        share = {line.payslip.employee.employee_number: line.amount
+                 for line in PayslipLine.objects.filter(payslip__run=run, component__code="PF")}
+        self.assertEqual(share, {
+            "101": Decimal("3000.00"), "102": Decimal("3000.00"), "103": Decimal("3000.00"), "201": Decimal("3000.00"),
+            "202": Decimal("2520.00"), "203": Decimal("1920.00"), "301": Decimal("3000.00"), "302": Decimal("2220.00"),
+            "303": Decimal("2136.00"), "304": Decimal("2064.00"), "401": Decimal("3000.00"), "501": Decimal("3000.00"),
+            "601": Decimal("3000.00"), "602": Decimal("3000.00")})
+        totals = dict(PayslipLine.objects.filter(payslip__run=run).values_list("component__code").annotate(Sum("amount")))
+        self.assertEqual((totals["PF"], totals["PF-ER"]), (Decimal("37860.00"), Decimal("37860.00")))
+        self.assertEqual(run.payslips.get(employee__employee_number="101").net(), Decimal("76800.00"))
+        # The run's journal: wages 575,500 and the employer's 37,860 of PF with 667 of ESI, against what is owed.
+        # Professional tax is 13 at 200, and February's band is 300 (the story's months move with today).
+        tax = Decimal("3900") if run.period_start.month == 2 else Decimal("2600")
+        booked = {row["account__code"]: row["debit"] - row["credit"] for row in run.journal_entry.lines.values(
+            "account__code").annotate(debit=Sum("debit"), credit=Sum("credit"))}
+        self.assertEqual(booked, {"6000": Decimal("575500"), "6100": Decimal("38527"), "2410": Decimal("-75720"),
+                                  "2420": Decimal("-821"), "2430": -tax, "2400": tax - Decimal("537486")})
+
     def test_the_specifications_build_the_recipes_and_the_tapes_lots_are_inspected_and_released(self):
         from apps.manufacturing.models import BillOfMaterials
         from apps.quality.models import Disposition, Inspection
@@ -137,8 +175,6 @@ class WhatTheDemoShowsTests(TestCase):
                          [("TP-1000-01", Disposition.ACCEPT, "released"), ("TP-1000-02", Disposition.ACCEPT, "released")])
 
     def test_the_executives_earn_commission_the_meters_are_read_and_leave_carries(self):
-        import datetime
-
         from django.utils import timezone
 
         from apps.hr.models import Employee, LeavePolicy
