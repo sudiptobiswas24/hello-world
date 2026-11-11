@@ -262,7 +262,9 @@ class PayRunViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         skipped = [{"id": person.pk, "employee_number": person.employee_number, "name": person.party.name}
                    for person in run.skipped()]
         return Response({**self.get_serializer(run).data,
-                         "payslips": [_slip(slip) for slip in run.payslips.all()], "skipped": skipped})
+                         "payslips": [_slip(slip) for slip in run.payslips.all()], "skipped": skipped,
+                         # A state levy on someone's pay with no schedule for their state: not taken, in words.
+                         "not_taken": run.levies_not_taken()})
 
     def _fresh(self, run):
         """The run read again: what was prefetched for it predates the action."""

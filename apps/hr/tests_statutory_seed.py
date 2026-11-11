@@ -87,7 +87,11 @@ class SetupStatutoryTests(LoadedTestCase):
         self.assertEqual(TdsRate.objects.count(), len(rows("tds_rates")))
         self.assertEqual(TcsRate.objects.count(), len(rows("tcs_rates")))
         self.assertEqual(self.wb.slabs.count(), len(rows("professional_tax")))
-        self.assertEqual([component.slabs.count() for component in self.lwf], [2, 2])
+        # Each share's rows in the file, West Bengal's and Maharashtra's (O547), not a count typed here.
+        self.assertEqual([component.slabs.count() for component in self.lwf],
+                         [sum(row["share"] == share for row in rows("labour_welfare_fund"))
+                          for share in ("employee", "employer")])
+        self.assertEqual(sorted(set(self.lwf[0].slabs.values_list("state", flat=True))), ["MH", "WB"])
         for model in (StatutoryFigure, MinimumWage, TdsRate, TcsRate, PayComponentSlab):
             self.assertFalse(model.objects.filter(confirmed_on__isnull=False).exclude(
                 pk__in=PayComponentSlab.objects.filter(component=self.pt).values("pk")
@@ -471,3 +475,87 @@ class EveryEngineAsksWhatItReadsTests(LoadedTestCase):
             self.assertIn(FigureKind[kind], ENGINE_FIGURES[engine], (engine, kind))
         with self.assertRaisesMessage(AssertionError, "which ENGINE_FIGURES does not list for it"):
             read_figure("ESI", FigureKind.BONUS_FLOOR, D(2026, 10, 31))
+
+
+class TheWelfareFundIsItsStatesTests(LoadedTestCase):
+    """
+    O547: the welfare fund file held West Bengal only, so a Maharashtra plant failed go_live_check with
+    nothing to confirm, worded as 'LWF MH (not confirmed)' over West Bengal's slabs. Maharashtra's figures
+    (statutory/labour_welfare_fund.csv, not confirmed): 25 from the employee and 75 from the employer in
+    June and December; West Bengal's 3 and 30. A state with no slabs has none, and is told so.
+    """
+
+    go_live = GoLiveStatutoryTests.go_live
+
+    def gaps(self, day=D(2026, 11, 11)):
+        return {engine: missing for engine, used, missing in statutory_gaps(day)}
+
+    def welfare(self, code, state):
+        from .models import Employee
+
+        Employee.objects.update(employment_status="terminated")
+        person = self.worker(code, work_state=state)
+        self.paid(person, self.basic, "9000")
+        for component in self.lwf:
+            self.paid(person, component, "1")
+        return person
+
+    def test_a_maharashtra_run_with_the_fund_on_it_is_refused_until_its_schedule_is_confirmed_and_then_takes_it(self):
+        person = self.welfare("MH1", "MH")
+        self.load()
+        with self.assertRaisesMessage(ValidationError, "the schedule of MH from 18 Mar 2024 is not confirmed"):
+            self.month_run(2026, 6, post=False, employees=[person])
+        self.assertEqual(self.gaps()["LWF"], ["LWF MH (not confirmed)", "LWF-ER MH (not confirmed)"])
+        self.confirm_everything()
+        self.assertEqual(self.gaps()["LWF"], [])
+        june = self.month_run(2026, 6, employees=[person])
+        self.assertEqual([self.line(june, person, c).amount for c in self.lwf], [Decimal("25.00"), Decimal("75.00")])
+        self.assertEqual(june.levies_not_taken(), [])
+        november = self.month_run(2026, 11, post=False, employees=[person])
+        self.assertFalse(november.payslips.get(employee=person).lines.filter(component__in=self.lwf).exists())
+
+    def test_west_bengals_unconfirmed_slabs_are_named_as_west_bengals(self):
+        self.welfare("WB1", "WB")
+        self.load()
+        self.assertEqual(self.gaps()["LWF"], ["LWF WB (not confirmed)", "LWF-ER WB (not confirmed)"])
+
+    def test_a_state_with_no_slabs_has_none_and_the_fund_is_not_taken_in_words(self):
+        person = self.welfare("KA1", "KA")
+        self.load()
+        self.confirm_everything()
+        none = ("LWF KA (none: its schedule is only for MH, WB, so nothing is taken from people who work in KA; "
+                "add KA's slabs, or a slab of nothing for KA if it levies none)")
+        self.assertEqual(self.gaps()["LWF"], [none, none.replace("LWF KA", "LWF-ER KA")])
+        self.assertIn("FAIL  Statutory: LWF: No confirmed figure covers today for LWF KA (none: its schedule is "
+                      "only for MH, WB", self.go_live())
+        # The run is not refused: nothing is taken, and it says so, to the payroll officer who works it out.
+        start, end = D(2026, 6, 1), D(2026, 6, 30)
+        officer = self.in_role("Payroll Officer")
+        made = officer.post("/api/hr/pay-runs/", {"period_start": start, "period_end": end, "pay_date": end},
+                            format="json")
+        self.assertEqual(made.status_code, 201, made.content)
+        said = officer.post(f"/api/hr/pay-runs/{made.json()['id']}/calculate/", {"employees": [person.pk]},
+                            format="json")
+        self.assertEqual(said.status_code, 200, said.content)
+        self.assertEqual(said.json()["not_taken"], [
+            f"{code} is not taken from KA1 KA1: it has a schedule only for MH, WB, and they work in KA. If KA "
+            "levies it, add KA's slabs under People > Pay components; if it does not, a slab of nothing for KA, "
+            "confirmed by the Controller, says so." for code in ("LWF", "LWF-ER")])
+        from .payroll import PayslipLine
+
+        self.assertEqual(list(PayslipLine.objects.filter(payslip__run=made.json()["id"]).values_list(
+            "component__code", flat=True)), ["BASIC"])
+        # Karnataka said to levy none (a slab of nothing, confirmed): the check clears and the words go.
+        for component in self.lwf:
+            PayComponentSlab.objects.create(component=component, state="KA", effective_from=D(2026, 1, 1),
+                                            above=Decimal("0"), amount=Decimal("0"))
+        self.assertEqual(self.gaps()["LWF"], ["LWF KA (not confirmed)", "LWF-ER KA (not confirmed)"])
+        for band in PayComponentSlab.objects.filter(confirmed_on__isnull=True):
+            band.confirm(User.objects.get(username="controller-all"))
+        self.assertEqual(self.gaps()["LWF"], [])
+        from .payroll import PayRun
+
+        run = PayRun.objects.get(pk=made.json()["id"])
+        self.assertEqual(run.levies_not_taken(), [])
+        run.calculate(employees=[person])
+        self.assertFalse(run.payslips.get(employee=person).lines.filter(component__in=self.lwf).exists())

@@ -3,3 +3,7 @@ WB,2024-01-01,employee,6,3,"West Bengal Labour Welfare Fund Act 1974 s.9; Notifi
 WB,2024-01-01,employee,12,3,"As above",
 WB,2024-01-01,employer,6,30,"As above: the employer's 30 rupees a half-year (raised from 15; Deloitte alert, Indian Tea Association circular, AscentHR). Some compliance sites still show 15",
 WB,2024-01-01,employer,12,30,"As above",
+MH,2024-03-18,employee,6,25,"Maharashtra Labour Welfare Fund Act 1953 (Bombay Act XL of 1953) s.6BB, contributions for the half-years ending 30 June and 31 December, as amended by the Maharashtra Labour Welfare Fund (Amendment) Act 2024: 25 rupees from the employee and 75 from the employer a half-year (before it 6 or 12, and 18 or 36, by wages). NOT CONFIRMED: recalled from compliance summaries, the Gazette not seen; the amending Act's number and the day it came into force (taken here as 18 March 2024) are for the plant to confirm",
+MH,2024-03-18,employee,12,25,"As above",
+MH,2024-03-18,employer,6,75,"As above: the employer's share, three times the employee's",
+MH,2024-03-18,employer,12,75,"As above",

@@ -13,7 +13,7 @@ from django.core.exceptions import ValidationError
 
 from apps.core.models import to_date
 
-from .payroll import PF_KINDS, ComponentBasis, PayComponent, Statutory
+from .payroll import PF_KINDS, WELFARE_FUND, ComponentBasis, PayComponent, Statutory
 from .statutory import BONUS_CEILING, ENGINE_FIGURES, FigureKind, figure_standing, minimum_wage_on  # noqa: F401
 
 ENGINES = ("TDS", "TCS", "PF", "ESI", "PT", "LWF", "Bonus", "Overtime", "Minimum wage")
@@ -43,14 +43,35 @@ def _rates(model, day):
 
 
 def _schedules(components, day, states):
+    """
+    What is missing of each component's schedule in each state, named truly (O547): a state the component
+    holds no slabs for has none (West Bengal's unconfirmed slabs were worded 'LWF MH (not confirmed)');
+    a schedule that stands and waits for the Controller is not confirmed.
+    """
     missing = []
     for component in components:
         for state in states:
+            where = f" {state}" if state else ""
+            held = component.has_no_schedule_for(state)
+            if held and state:
+                # What a run does meanwhile, said as it is: the welfare fund is not taken there (O547);
+                # professional tax on the pay of someone there refuses the run (review L4).
+                meanwhile = (f"so nothing is taken from people who work in {state}"
+                             if component.statutory in WELFARE_FUND
+                             else f"and a pay run with it on the pay of someone who works in {state} is refused")
+                missing.append(
+                    f"{component.code}{where} (none: its schedule is {held}, {meanwhile}; add {state}'s slabs, "
+                    f"or a slab of nothing for {state} if it levies none)")
+                continue
+            if held:
+                missing.append(f"{component.code} (none: its schedule is {held}, and an active employee's "
+                               "state is not said)")
+                continue
             try:
                 if not component.schedule_on(day, state):
-                    missing.append(f"{component.code}{' ' + state if state else ''} (none)")
+                    missing.append(f"{component.code}{where} (none)")
             except ValidationError:
-                missing.append(f"{component.code}{' ' + state if state else ''} (not confirmed)")
+                missing.append(f"{component.code}{where} (not confirmed)")
     return missing
 
 
@@ -59,7 +80,9 @@ def _levy(engine, kinds, levied_in, marked, day, states):
     A state levy is used where the plant's active employees work in a state
     its file (statutory/<levied_in>.csv) names, whatever the components say:
     a component unmarked is not a levy gone (review p03). Each such state needs
-    a component marked as each share with a confirmed schedule standing today.
+    a component marked as each share with a confirmed schedule standing today;
+    and a marked component answers for every state the plant works in, the
+    ones its file does not name too (O547).
     """
     from apps.accounting.statutory_load import rows
 
@@ -70,7 +93,7 @@ def _levy(engine, kinds, levied_in, marked, day, states):
         components = marked(kind)
         if not components and where:
             missing.append(f"no active pay component marked '{Statutory(kind).label}' for {', '.join(where)}")
-        missing += _schedules(components, day, where or states)
+        missing += _schedules(components, day, states)
     return engine, bool(where or marked(*kinds)), missing
 
 

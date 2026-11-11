@@ -60,6 +60,7 @@ from .statutory import (
     BONUS_CEILING,
     BONUS_CEILING_LABEL,
     CEILINGS,
+    CONFIRMER,
     Confirmed,
     FigureKind,
     bonus_ceiling,
@@ -112,6 +113,9 @@ class Statutory(models.TextChoices):
 PF_KINDS = (Statutory.PF, Statutory.PF_EMPLOYER, Statutory.EPS)
 # The levies whose schedules are the law's slabs: read only once the Controller confirms them.
 SLAB_LEVIES = (Statutory.PT, Statutory.LWF, Statutory.LWF_EMPLOYER)
+# The welfare fund's two shares. A state whose schedule the fund does not hold is not charged it, in words
+# (O547); professional tax for such a state stays refused (review L4), as it was.
+WELFARE_FUND = (Statutory.LWF, Statutory.LWF_EMPLOYER)
 # ESI's shares are the law's dated rates, not a rate typed per person, and its coverage ceiling the dated
 # figure (statutory.FigureKind): one source, read by the slip's period and kept on its line.
 ESI_RATES = {Statutory.ESI: FigureKind.ESI_EMPLOYEE_RATE, Statutory.ESI_EMPLOYER: FigureKind.ESI_EMPLOYER_RATE}
@@ -354,6 +358,13 @@ class PayComponent(AuditModel):
         mine = [slab for slab in slabs if state and slab.state == state] or [
             slab for slab in slabs if not slab.state]
         if not mine and states:
+            if state and self.statutory in WELFARE_FUND:
+                # The welfare fund with no schedule for this state (O547): nothing stands there, so nothing is
+                # taken, and the run and go_live_check say so in words (PayRun.levies_not_taken,
+                # statutory_check._schedules). West Bengal's fund is not Maharashtra's, and not every state
+                # has one. Professional tax for a state it has no slabs for is refused below, as it was
+                # (review L4): this is the fund's rule alone.
+                return []
             if state or len(states) > 1:
                 raise ValidationError(
                     f"{self.code} has slabs for {', '.join(states)} and {who or 'this person'} works in "
@@ -373,6 +384,18 @@ class PayComponent(AuditModel):
                                + (f" of {first.state}" if first.state else ""),
                                first.effective_from, "People > Pay components")
         return schedule
+
+    def has_no_schedule_for(self, state):
+        """
+        In words, the states this component's slabs are for when none of them
+        could serve a person working in `state` (schedule_on's rule: that
+        state's, or every state's, or a single state's for a person whose
+        state is not said); "" when it serves `state`.
+        """
+        held = {slab.state for slab in self.slabs.all()}
+        if "" in held or state in held or (not state and len(held) == 1):
+            return ""
+        return ("only for " + ", ".join(sorted(held))) if held else "for no state at all"
 
     def slab_for(self, base, month):
         """The slab amount for `base` in `month` of every state's undated schedule (the slabs as they were)."""
@@ -813,6 +836,33 @@ class PayRun(AuditModel):
         return list(Employee.objects.filter(hire_date__lte=self.period_end).filter(
             Q(termination_date__isnull=True) | Q(termination_date__gte=self.period_start),
         ).exclude(payslips__run=self).select_related("party").order_by("employee_number"))
+
+    def levies_not_taken(self):
+        """
+        The welfare fund on a person's pay that this run takes nothing for, because the fund has no
+        schedule for the state they work in, in words (O547): a Karnataka
+        employee of a plant whose welfare fund holds West Bengal's and Maharashtra's slabs pays neither, and
+        the run says so rather than passing in silence. Derived from the slabs as they stand.
+        """
+        rows = EmployeeCompensation.objects.filter(
+            employee__payslips__run=self, component__statutory__in=WELFARE_FUND, component__is_active=True,
+            effective_from__lte=self.period_end,
+        ).filter(Q(effective_to__isnull=True) | Q(effective_to__gte=self.period_start)).select_related(
+            "employee__party", "component").prefetch_related("component__slabs").order_by(
+            "employee__employee_number", "component__sequence", "component__code")
+        found = []
+        for row in rows:
+            state = row.employee.work_state
+            held = row.component.has_no_schedule_for(state) if state else ""
+            if held:
+                sentence = (
+                    f"{row.component.code} is not taken from {row.employee.employee_number} "
+                    f"{row.employee.party.name}: it has a schedule {held}, and they work in {state}. If {state} "
+                    f"levies it, add {state}'s slabs under People > Pay components; if it does not, a slab of "
+                    f"nothing for {state}, confirmed by {CONFIRMER}, says so.")
+                if sentence not in found:
+                    found.append(sentence)
+        return found
 
     def _eligible_employees(self):
         """Everyone with pay in force at any point in the period."""
