@@ -47,6 +47,23 @@ def three(value):
     return float(value.quantize(Decimal("0.001"), ROUND_HALF_UP))
 
 
+# The digits of HSN a company whose aggregate turnover has passed 5 crore reports (Notification
+# 78/2020-Central Tax); up to it, four, which accounting.gst.validate_hsn asks of every code. Whether
+# it has passed is the company's own declaration, `GstSettings.einvoicing_from`: the same date,
+# because the same turnover, so no second threshold is kept here.
+HSN_DIGITS_ONCE_DECLARED = 6
+
+
+def hsn_is_short(code):
+    """A code there, with fewer digits than a company past the declared turnover reports."""
+    return bool(code) and len(code) < HSN_DIGITS_ONCE_DECLARED
+
+
+def reports_six_digits(registration, day):
+    """Whether a document of this day falls after the company declared its turnover past 5 crore."""
+    return registration.einvoicing_from is not None and day >= registration.einvoicing_from
+
+
 def settings():
     found = GstSettings.active()
     if found is None:
