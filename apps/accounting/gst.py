@@ -471,6 +471,25 @@ def document_number_key(number):
     return "".join(part.lstrip("0") or "0" if part.isdigit() else part for part in parts)
 
 
+def state_delivered_in(ship_to, bill_to, principal):
+    """
+    The GST state of the address goods are delivered at, or None where nothing says it (O533).
+
+    The one answer the place of supply, the e-way bill and the posting check all read. The address's
+    own state where it gives one. An address that gives none and is the one billed to is the
+    party's own, and the party's principal state (`principal`: its registration's, or the state on
+    its record) stands for it, as the place of supply has always read it. Any other address with no
+    state is nobody's to guess: a registration says where its holder is registered, not where a
+    lorry is unloaded, so a ship-to that differs from the bill-to never takes the GSTIN's state.
+    """
+    found = state_code(ship_to)
+    if found or ship_to is None:
+        return found
+    if bill_to is not None and ship_to.pk == bill_to.pk:
+        return principal or None
+    return None
+
+
 def place_of_supply(profile, delivery=None):
     """
     Where a supply to the party of `profile` is, as the IGST Act places it.
@@ -517,18 +536,25 @@ def _placed(profile, delivery):
     principal = profile.gst_state if profile.gstin else (state_code(bill_to) or on_record)
     if ship_to is None:
         return principal, None
-    found = state_code(ship_to)
     billed_there = bill_to is not None and ship_to.pk == bill_to.pk
+    # The buyer's billing address with no state of its own reads the buyer's state on record, as it
+    # always has; the e-way bill reads the same function, so it names the same state (O533).
+    found = state_delivered_in(ship_to, bill_to, principal)
     if billed_there and found is None:
-        # The buyer's billing address, with no state of its own: the
-        # buyer's state on record stands for it, as it always has.
         return principal, None
+    if found is None:
+        # Whoever's address it is. A third party's site with no state used to pass here, since the
+        # place of supply does not turn on it; but the e-way bill and the e-invoice both name the
+        # state the goods are delivered in, an address a posted invoice prints cannot be edited,
+        # and so the invoice posted into a dead end (O533). This is the first point the answer can
+        # be known, and the last it can be given.
+        own = ship_to.party_id == buyer_id
+        return principal, (
+            f"The goods go to {ship_to.one_line()}, whose state, {ship_to.state or 'nothing'}, is "
+            "no GST state; " + ("where they go is the place of supply."
+                                if own else "the e-way bill and the e-invoice name the state they are delivered in.")
+            + " Give the state's name or its two-digit code.")
     if billed_there or ship_to.party_id == buyer_id:
-        if found is None:
-            return principal, (
-                f"The goods go to {ship_to.one_line()}, whose state, {ship_to.state or 'nothing'}, is "
-                "no GST state; where they go is the place of supply. Give the state's name or its "
-                "two-digit code.")
         return found, None
     if ship_to.party_id is None and (found or principal) != principal:
         return principal, (

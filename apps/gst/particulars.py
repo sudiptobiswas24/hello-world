@@ -54,11 +54,13 @@ def settings():
     return found
 
 
-def place(address, what, registered_state=None, domestic=True):
+def place(address, what, registered_state=None, domestic=True, standing=None):
     """
     An address as the portal wants it. Where the party is registered, the
-    address must not contradict the registration; where it is not, the
-    address is the only thing that says the state, so it must say one.
+    address must not contradict the registration. Where it is not, the
+    address says the state, or `standing` does: the state the caller's rule
+    (accounting.gst.state_delivered_in) lets stand for an address that gives
+    none. With neither, it is refused.
     """
     if address is None:
         raise ValidationError(f"{what} has no address on file.")
@@ -76,7 +78,7 @@ def place(address, what, registered_state=None, domestic=True):
         row["addr2"] = text(address.line2, f"{what}'s second line", 3, 100)
     if domestic:
         row["pin"] = int(validate_pincode(address.postal_code, what))
-        state = registered_state or found
+        state = registered_state or found or standing
         if state is None:
             raise ValidationError(
                 f"{what} says its state is {address.state or 'nothing'}, which is no GST "
