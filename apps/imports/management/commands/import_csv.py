@@ -31,11 +31,13 @@ class Command(BaseCommand):
         parser.add_argument("kind", choices=KINDS)
         parser.add_argument("path")
         parser.add_argument("--commit", action="store_true", help="Keep it, if every row is clean.")
-        parser.add_argument("--date", type=_date, help="The go-live date the opening position is at.")
+        parser.add_argument("--date", type=_date, help="The opening position: the day the books opened. Not needed: Settings, Books opening "
+                                 "decides it, and any other day is refused.")
         parser.add_argument("--reason", default="OPENING",
                             help="Opening stock: the adjustment reason (its account is the other side).")
         parser.add_argument("--against", default="",
-                            help="Open invoices and bills: the opening-balance account code.")
+                            help="Open invoices and bills: the opening-balance account code. Not needed: "
+                                 "Settings, Books opening decides it, and any other account is refused.")
         parser.add_argument("--memo", default="")
         parser.add_argument("--template", action="store_true",
                             help="Write a blank file of this kind to the path instead.")
@@ -54,10 +56,9 @@ class Command(BaseCommand):
         if kind == "employees" and commit and not passwords_out:
             raise CommandError("employees needs --passwords-out: the file each new login's first "
                                "password is written to, to hand out and then destroy.")
-        if kind in ("opening_stock", "opening_balances") and date is None:
-            raise CommandError(f"{kind} needs --date: the day the opening position stands at.")
-        if kind in ("open_invoices", "open_bills") and not against:
-            raise CommandError(f"{kind} needs --against: the opening-balance account code.")
+        # No --date and no --against is demanded here (O531): the books' setting decides both
+        # (importer.opening_position), and its refusals say where to set it. One given is a second
+        # look, refused if it disagrees.
         try:
             with open(path, encoding="utf-8") as handle:
                 text = handle.read()

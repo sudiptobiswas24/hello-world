@@ -207,7 +207,7 @@ comes in: an old invoice paid in part comes in at its unpaid part. A
 credit owed back to a customer is not an open invoice; record it as a
 credit note after go-live.
 
-### opening_balances — needs `--date`
+### opening_balances — dated the day the books opened
 
 `account*` (code), `debit` or `credit` (one, above nothing),
 `description`. Every other balance on the old trial balance: bank,
@@ -217,6 +217,11 @@ goods-received accounts are refused here: they come in as documents.
 So are the cost and accumulated-depreciation accounts of every asset
 category: the asset register (`fixed_assets`) posts them, each asset
 its own.
+
+Neither the command nor the screen asks for `--date` or `--against` for
+any opening kind: Settings, Books opening holds the day and the account,
+and a file run before it is set is refused in words that say so. One
+given all the same must agree with the setting.
 
 ### tape_specs, fabric_specs, bag_specs, film_specs, liner_specs
 
@@ -244,7 +249,7 @@ policy would ask for is reported as a problem, not skipped. Deliveries
 already made in the old system are not brought in: the quantity is what
 is left.
 
-### fixed_assets — needs `--date`
+### fixed_assets — dated the day the books opened
 
 `name*`, `category*` (code), `vendor` (code), `acquisition_date*`,
 `in_service_date` (default the acquisition date; on or before the

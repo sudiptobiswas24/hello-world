@@ -1,7 +1,7 @@
 """
 The import tool from the office: the controller lists the kinds, takes a
-blank file, checks a file and keeps it; a bookkeeper is refused; a kind
-that needs the go-live date says so.
+blank file, checks a file and keeps it; a bookkeeper is refused; the
+opening position follows the books' setting and says so.
 """
 
 from decimal import Decimal
@@ -50,12 +50,26 @@ class ImportApiTests(ImportTestCase):
         bad = controller.post(f"{RECORDS}run/", {"kind": "parties", "text": text, "commit": True}, format="json")
         self.assertEqual(bad.json()["errors"], [[2, "code", "'C-500' already exists."]])
 
-    def test_what_a_kind_needs_is_asked_for(self):
+    def test_the_day_and_the_account_are_the_books_setting_not_asked_of_the_person(self):
+        """O531, as the controller: no date and no account typed; the setting decides, and says so when unset."""
         controller = self.as_("Controller")
-        stock = controller.post(f"{RECORDS}run/", {"kind": "opening_stock", "text": "sku\n"}, format="json")
-        self.assertEqual((stock.status_code, list(stock.json())), (400, ["date"]))
-        bills = controller.post(f"{RECORDS}run/", {"kind": "open_bills", "text": "vendor\n"}, format="json")
-        self.assertEqual((bills.status_code, list(bills.json())), (400, ["against"]))
+        files = (("opening_balances", "account,debit,credit\n1010,5,\n3900,,5\n", 0),
+                 ("fixed_assets", "category,name,cost,acquisition_date\nNONE,Loom,100,2020-04-01\n", 2),
+                 ("open_invoices", "customer,reference,date,amount\nC-1,OLD/0412,2026-08-20,11800\n", 2))
+        for kind, text, row in files:
+            with self.subTest(kind=kind, books="unset"):
+                unset = controller.post(f"{RECORDS}run/", {"kind": kind, "text": text}, format="json")
+                self.assertEqual(unset.status_code, 200, unset.content)
+                self.assertEqual([error[:2] for error in unset.json()["errors"]], [[row, "--date"]])
+                self.assertIn("et the day the books opened (Settings, Books opening) first", unset.json()["errors"][0][2])
+        self.open_books()
+        for kind, text, _row in (files[0], files[2]):
+            with self.subTest(kind=kind, books="open"):
+                checked = controller.post(f"{RECORDS}run/", {"kind": kind, "text": text}, format="json")
+                self.assertEqual((checked.status_code, checked.json()["errors"], checked.json()["committed"]),
+                                 (200, [], False), checked.content)
+        bad = controller.post(f"{RECORDS}run/", {"kind": "opening_stock", "text": "sku\n", "date": "10 Oct"}, format="json")
+        self.assertEqual((bad.status_code, bad.json()), (400, ["'10 Oct' is not a date. Write it as 2026-03-31."]))
         self.assertEqual(controller.post(f"{RECORDS}run/", {"kind": "nothing", "text": "x\n"}, format="json").status_code, 400)
         self.assertEqual(controller.post(f"{RECORDS}run/", {"kind": "parties", "text": " "}, format="json").status_code, 400)
 
