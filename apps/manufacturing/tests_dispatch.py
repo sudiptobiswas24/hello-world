@@ -608,3 +608,68 @@ class PerformanceAgainstTheMachinesOwnRateTests(DispatchTestCase):
         self.assertEqual(booking.ideal_minutes, Decimal("45.0000"))
         self.assertEqual(oee.performance(self.bank, TODAY, TODAY, machine=self.l1)["ratio"],
                          Decimal("0.75"))
+
+
+class ACrewedBankAtItsMachinesSpeedTests(DispatchTestCase):
+    """
+    O524: the crew's cap on a bank is in minutes of the bank's work, as its
+    machines' capacity is (O521). The bank runs 60 kg an hour, one operator
+    a machine, a 12-hour day and a 12-hour night, one person on each.
+    Worked in calc_g36_a/o524.py:
+
+        L-1 45, L-2 45   capacity 1,080 + 1,080 = 2,160; one crewed each
+                         shift: 720 x 45/60 x 2 = 1,080, not 1,440 of clock
+        L-1 30, L-2 45   capacity 720 + 1,080 = 1,800; the crew runs either,
+                         so the fastest: 1,080 (L-1 would give 720)
+        the same, two on each shift: both run, 1,800
+    """
+
+    def setUp(self):
+        super().setUp()
+        from .tests_station import StationTestCase
+
+        Shift.objects.create(code="N", name="Night", starts_at=datetime.time(20),
+                             hours=Decimal("12"))
+        WorkCentre.objects.filter(pk=self.bank.pk).update(operators_per_machine=1)
+        self.bank.refresh_from_db()
+        self.people = iter(StationTestCase.employee(self, f"W-{n}", f"Weaver {n}")
+                           for n in range(4))
+        for shift in Shift.objects.all():
+            self.crew(shift)
+
+    def crew(self, shift):
+        from .manning import CrewAssignment
+
+        CrewAssignment.objects.create(employee=next(self.people), work_centre=self.bank,
+                                      shift=shift, valid_from=TODAY)
+
+    def rates(self, l1, l2):
+        for machine, rate in ((self.l1, l1), (self.l2, l2)):
+            Machine.objects.filter(pk=machine.pk).update(capacity_per_hour=Decimal(rate),
+                                                         capacity_uom=self.kg)
+
+    def capacity(self):
+        from apps.planning.capacity import LoadBook
+
+        from .manning import manned_minutes
+
+        bank = WorkCentre.objects.get(pk=self.bank.pk)
+        book = LoadBook(self.order("1").warehouse, D1, D4)
+        return (manned_minutes(bank, D1), bank.minutes_on(D1),
+                book.capacity_minutes(bank, D1))
+
+    def test_one_crewed_of_two_slow_looms_is_one_slow_looms_work(self):
+        self.rates("45", "45")
+        self.assertEqual(self.capacity(), (Decimal("1080"),) * 3)
+
+    def test_a_crew_that_can_run_either_runs_the_faster(self):
+        self.rates("30", "45")
+        self.assertEqual(self.capacity(), (Decimal("1080"),) * 3)
+        run = self.run_of("600", D2)
+        self.assertEqual(self.row(self.schedule(), run)["resource"], "L-2")
+
+    def test_a_crew_for_both_runs_both(self):
+        self.rates("30", "45")
+        for shift in Shift.objects.all():
+            self.crew(shift)
+        self.assertEqual(self.capacity(), (Decimal("1800"),) * 3)

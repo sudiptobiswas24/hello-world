@@ -28,6 +28,8 @@ from django.db.models import Q
 
 from apps.core.models import AuditModel
 
+from .machines import MINUTES_PER_HOUR
+
 ZERO = Decimal("0")
 HALF = Decimal("0.5")
 
@@ -95,23 +97,42 @@ def manned_machines(centre, shift, day):
     return int((heads(centre, shift, day) / per).to_integral_value(rounding=ROUND_FLOOR))
 
 
+def crewed_machines(machines, crewed):
+    """
+    The machines a crew able to run `crewed` of them runs: the fastest
+    (O524). A crew is assigned to the bank, not to a loom, so whoever is
+    on shift can be put on any machine in it, and the bank's best is its
+    fastest machines manned. Machines of one speed keep their order.
+    """
+    ranked = sorted(machines, key=lambda m: m.as_capacity(MINUTES_PER_HOUR), reverse=True)
+    return ranked[:max(crewed, 0)]
+
+
 def manned_minutes(centre, day):
     """
-    Minutes this bank's crews can run its machines on a day, or None
+    Minutes of the bank's work its crews can run on a day, or None
     where the bank is not crewed: each active shift, the machines the
-    crew can run (never more than are in service that day) times the
-    shift's hours.
+    crew can run, chosen from those in service that day by
+    crewed_machines, each for the shift's hours at its own speed
+    (Machine.as_capacity), the unit the bank's capacity is counted in
+    (O521, O524). A bank listing no machines is its own one machine at
+    its own rate.
     """
     from .shifts import Shift
 
     if centre.operators_per_machine is None:
         return None
     machines = centre.machine_list()
-    in_service = (sum(1 for m in machines if m.calendar().is_working(day)) if machines
-                  else (0 if centre.runs_on_machines()
-                        else int(centre.calendar().is_working(day))))
+    in_service = [m for m in machines if m.calendar().is_working(day)]
+    alone = (0 if machines or centre.runs_on_machines()
+             else int(centre.calendar().is_working(day)))
     total = ZERO
     for shift in Shift.objects.filter(is_active=True):
         crewed = manned_machines(centre, shift, day)
-        total += min(crewed, in_service) * shift.hours * 60
+        clock = shift.hours * MINUTES_PER_HOUR
+        if machines:
+            total += sum((m.as_capacity(clock) for m in crewed_machines(in_service, crewed)),
+                         ZERO)
+        else:
+            total += min(crewed, alone) * clock
     return total
