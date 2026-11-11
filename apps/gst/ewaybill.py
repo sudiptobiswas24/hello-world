@@ -47,7 +47,7 @@ from django.db import models, transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from apps.accounting.gst import STATES
+from apps.accounting.gst import STATES, state_delivered_in
 from apps.core.models import numbering_first, AuditModel, moment_that_has_come, serialised, to_date
 
 from . import particulars as p
@@ -329,8 +329,13 @@ def _invoice_payload(invoice):
     buyer = invoice.customer
     # Where the goods go, as the invoice's place of supply read it.
     going_to = invoice.delivered_to()
-    # For an export, where the goods go in India is the port.
-    place = p.place(going_to, f"{buyer}'s delivery address" + (" (the port)" if overseas else ""))
+    billed_at = invoice.billed_to()
+    # For an export, where the goods go in India is the port. Otherwise an address with no state of
+    # its own that is the one billed to reads the place of supply the invoice posted at, which is
+    # how posting placed it (accounting.gst.state_delivered_in, O533): the e-invoice built at the
+    # registration's state while this refused, and a posted invoice's address cannot be edited.
+    place = p.place(going_to, f"{buyer}'s delivery address" + (" (the port)" if overseas else ""),
+                    standing=None if overseas else state_delivered_in(going_to, billed_at, document.place))
     if overseas:
         billed_state = p.OTHER_COUNTRY
     else:
@@ -342,7 +347,6 @@ def _invoice_payload(invoice):
         billed_state = document.place
         if not billed_state:
             raise ValidationError(f"{invoice.number} records no place of supply.")
-    billed_at = invoice.billed_to()
     two_places = billed_at is not None and going_to is not None and going_to.pk != billed_at.pk
     items = []
     for number, line in enumerate(goods, start=1):
@@ -404,9 +408,13 @@ def _challan_payload(challan):
         raise ValidationError(
             f"{worker} had no state on its tax profile when {challan.number} was issued."
         )
-    place = p.place(worker.shipping_address(), f"{worker}",
+    going_to = worker.shipping_address()
+    # An unregistered worker's own billing address with no state reads the state the challan
+    # recorded at issue, by the rule a sale reads (O533).
+    place = p.place(going_to, f"{worker}",
                     registered_state=challan.job_worker_state if challan.job_worker_gstin
-                    else None)
+                    else None,
+                    standing=state_delivered_in(going_to, worker.billing_address(), challan.job_worker_state))
     items, total = [], ZERO
     for number, line in enumerate(challan.lines.select_related(
             "operation__work_order__uom__gst_uqc"), start=1):
@@ -489,8 +497,11 @@ def _delivery_payload(delivery, declared_value):
     profile = PartyTaxProfile.objects.filter(party=customer).first()
     gstin = profile.gstin if profile else ""
     going_to = delivery.shipping_address or order.shipping_address or customer.shipping_address()
+    # Its own billing address with no state reads the state on its record, as a sale's does (O533).
     place = p.place(going_to, f"{customer}'s delivery address",
-                    registered_state=gstin[:2] if gstin else None)
+                    registered_state=gstin[:2] if gstin else None,
+                    standing=state_delivered_in(going_to, order.billing_address or customer.billing_address(),
+                                                profile.place_of_supply() if profile else None))
     items, spread, total = [], ZERO, sum(conversion, ZERO)
     for number, (line, share) in enumerate(zip(lines, conversion), start=1):
         item = line.order_line.item
