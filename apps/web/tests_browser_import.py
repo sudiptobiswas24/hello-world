@@ -37,3 +37,25 @@ class ImportInTheBrowserTests(BrowserTestCase):
         page.get_by_role("button", name="Check").click()
         expect(page.locator("main")).to_contain_text("Row 2, code: 'C-700' already exists.")
         self.assertEqual(self.problems, [])
+
+    def test_the_opening_kinds_ask_for_no_day_or_account_and_say_where_the_books_are_opened(self):
+        """O529-O531: nothing typed beside the file; before the books open the screen says where to open them."""
+        from apps.accounting.models import BooksOpening
+
+        self.assertIsNone(BooksOpening.get())
+        page = self.sign_in(self.person("Controller"), "/app/settings/import")
+        page.get_by_label("Kind").select_option("opening_stock")
+        expect(page.get_by_label("As at")).to_have_value("")
+        page.get_by_label("Rows").fill("sku,warehouse,quantity,unit_cost\nWDG-1,WH1,250,4.2\n")
+        page.get_by_role("button", name="Check").click()
+        expect(page.locator("main")).to_contain_text(
+            "File, --date: Set the day the books opened (Settings, Books opening) first: opening stock is what "
+            "was counted on it.")
+        page.get_by_label("Kind").select_option("open_invoices")
+        expect(page.get_by_label("Opening-balance account")).to_have_value("")
+        page.get_by_label("Rows").fill("customer,reference,date,amount\nC-1,OLD/0412,2026-08-20,11800\n")
+        page.get_by_role("button", name="Check").click()
+        expect(page.locator("main")).to_contain_text(
+            "Row 2, --date: set the day the books opened (Settings, Books opening) first: what is still owed "
+            "stands against the account set there.")
+        self.assertEqual(self.problems, [])

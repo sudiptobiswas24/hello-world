@@ -340,11 +340,37 @@ class TheCommandTests(ImportTestCase):
         self.assertIn("brought in", self.call("parties", PARTIES, "--commit"))
         self.assertTrue(Party.objects.filter(code="C-100").exists())
 
-    def test_the_opening_position_needs_its_date_and_account(self):
-        with self.assertRaisesMessage(CommandError, "needs --date"):
-            self.call("opening_balances", "account,debit,credit\n")
-        with self.assertRaisesMessage(CommandError, "needs --against"):
-            self.call("open_invoices", "customer,reference,date,amount\n")
+    FILES = (("opening_balances", "account,debit,credit\n1010,5,\n3900,,5\n"),
+             ("opening_stock", "sku,warehouse,quantity,unit_cost\nWDG-1,WH1,250,4.2\n"),
+             ("open_invoices", "customer,reference,date,amount\nC-1,OLD/0412,2026-08-20,11800\n"))
+
+    def test_the_opening_position_takes_its_day_and_account_from_the_books_setting(self):
+        """O531: the command demanded --date and --against, which the setting alone decides."""
+        AdjustmentReason.objects.create(code="OPENING", name="Opening stock", account=self.opening)
+        self.open_books()
+        for kind, text in self.FILES:
+            with self.subTest(kind=kind):
+                self.assertIn(f"{text.count(chr(10)) - 1} row(s) are clean", self.call(kind, text))
+
+    def test_before_the_books_open_the_command_says_where_to_set_the_day(self):
+        AdjustmentReason.objects.create(code="OPENING", name="Opening stock", account=self.opening)
+        for kind, text in self.FILES:
+            with self.subTest(kind=kind):
+                out = StringIO()
+                with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False) as handle:
+                    handle.write(text)
+                with self.assertRaisesMessage(CommandError, "1 problem(s) in "):
+                    call_command("import_csv", kind, handle.name, stdout=out)
+                self.assertIn("et the day the books opened (Settings, Books opening) first", out.getvalue())
+
+    def test_a_date_or_account_given_all_the_same_must_agree(self):
+        self.open_books()
+        out = StringIO()
+        with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False) as handle:
+            handle.write(self.FILES[0][1])
+        with self.assertRaises(CommandError):
+            call_command("import_csv", "opening_balances", handle.name, "--date", "2026-10-02", stdout=out)
+        self.assertIn("file, --date: 2026-10-02 is not the day the books opened (2026-10-01)", out.getvalue())
 
 
 EMPLOYEES = """employee_number,name,hire_date,department,manager,job_title,username
