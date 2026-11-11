@@ -50,6 +50,25 @@ pg_isready -q || service postgresql start                              # role er
 
 ## 2. Next steps, in order
 
+**g36 is pushed (5a4cf66, 11 November 2026), all seven lanes green on one tip (gated as e98dc64).** Five commits:
+O524 (a crewed bank's cap counts the crewed machines at their own speed; a crew of N runs the fastest N), O526 and
+O527 (the dispatch board runs each machine on the shifts its crew runs it, day by day: `manning.crewed_on`), O259
+(`shelf_read_before_lock` and `per_unit_withdrawal_rates` follow a call into another module where the text says
+which function it means), O525 (`_issue_roll` holds its shelf before it reads; not a reachable race, since
+mount_roll's numbering hold already closed it, and the race test passes with and without the hold) and new row O528
+(a shift running past the next day's first shift loses the overlap on the board). Counts: SQLite 8,637 (246
+skipped), PostgreSQL 3,950 + 3,653 + 1,034 = 8,637, Asia/Kolkata 8,637, migration-tagged 51, vitest 70.
+Next: g37, in /home/user/work/g37tree (reports in /home/user/work/reports/g37_*.md). It came out of an audit of
+the project itself on 11 November, which said the evidence so far is all the author's own and the path to go-live
+is the plant's files, a narrower pilot and outside eyes on the statutory outputs, not more internal rounds. g37
+holds: the import's opening kinds held to the books' opening day and account (O529-O531), the e-way bill's state
+and GSTR-1's short-HSN warning (O533, O539), a demo plant that produces every statutory output (O532, O537), a mig
+lane that runs only what a range needs (GATE_BASE) with a GitHub Actions workflow not yet run, docs/PILOT.md in
+four stages with docs/pilot_pack/, and docs/STATUTORY_REVIEW.md for the accountant with rows O532-O540.
+- Gate lessons from g36: no restart in eight hours. Fix agents running their own tests beside the gate slowed pg-c
+  from 79 to 92 minutes; keep to one agent's tests beside two lanes. The runtime guard tripped twice on agents'
+  own short polling waits; it now takes MIN (seconds) and skips limits below it.
+
 **g35 is pushed (e28637b, 11 November 2026), all seven lanes green on one tip (gated as 7f57f16).** Ten
 commits closing eight open code rows: O497 (the payments list reads reconciled in one query), O499 (posting a bill
 writes again the MSME due day of other posted micro or small bills whose deliveries it takes), O501 (a page of bills
