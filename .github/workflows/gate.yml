@@ -1,0 +1,276 @@
+# The release gate's lanes (scripts/gate/lane.sh) on GitHub's machines.
+#
+# Each job copies its command, environment, labels and --parallel from lane.sh; when a lane changes
+# there, change it here. The local gate (scripts/gate/README.md) is still what a Gate line records:
+# this workflow writes none.
+#
+# The mig jobs run one app each, and only the apps scripts/gate/migneeded.py names for the range
+# from the commit the branch stood at before the push. The plan job's summary lists every app as
+# needed or skipped, with the reason. A new branch, a forced push, and a run started by hand all
+# have no base that can be read, and run every app.
+#
+# Known weakness: "the commit the branch stood at" is not "a commit this workflow passed on". If the
+# push before this one added a migration and its run failed or never finished, this push's range no
+# longer holds that migration and its apps are skipped. Before trusting a skip, look at the run of the
+# base named in the plan job, or start a run by hand, which skips nothing.
+name: gate
+
+on:
+  push:
+    branches: ["claude/**"]
+  workflow_dispatch:
+    inputs:
+      base:
+        description: "Commit the migration jobs may skip from (a commit a whole gate passed on). Empty: every app runs."
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+# No concurrency group: a newer push must not cancel an older one's run, whose commit it may skip
+# migration apps on the strength of.
+
+env:
+  PYTHON_VERSION: "3.11"
+  NODE_VERSION: "22"
+  # The base of this push's range: what the register check and the migration plan read from.
+  GATE_BASE: ${{ github.event_name == 'push' && github.event.before || inputs.base }}
+
+jobs:
+  ui:
+    name: ui
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: pip install -r requirements.txt
+      - name: Office application (tsc, build, vitest)
+        working-directory: frontend
+        run: |
+          npm ci
+          npx tsc -b
+          npx vite build
+          npx vitest run
+      - name: Names
+        run: |
+          python3 scripts/gate/names.py apps/core/tests_roles.py apps/core/tests_settings.py | tee names.out
+          grep -q "names: clean" names.out
+      - name: Register (no commit in the push names a row still open)
+        run: |
+          if git cat-file -e "${GATE_BASE:-none}^{commit}" 2>/dev/null; then
+            python3 scripts/gate/registercheck.py "$GATE_BASE" HEAD
+          else
+            echo "::notice::register check not run: no base commit to read the push from (${GATE_BASE:-none})"
+          fi
+      - name: The gate's own tests
+        run: python3 -m unittest scripts/gate/tests_migneeded.py
+      - name: audit_invariants
+        run: |
+          set -o pipefail
+          python manage.py audit_invariants 2>&1 | tee audit.out
+          grep -q "No invariant findings" audit.out
+      - name: makemigrations --check
+        run: python manage.py makemigrations --check --dry-run
+
+  tests:
+    # lane.sh: sqlite and ist. Both open the built office application in Chromium.
+    name: ${{ matrix.lane }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        lane: [sqlite, ist]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: pip install -r requirements.txt
+      - name: Build the office application
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+      - name: Chromium, and proof the browser tests will not skip
+        # Without the build or a browser they skip and the lane still says OK (lane.sh, g27).
+        run: |
+          python -m playwright install --with-deps chromium
+          test -f apps/web/static/web/index.html
+          python -c "from playwright.sync_api import sync_playwright as s; p = s().start(); p.chromium.launch().close(); p.stop()"
+      - name: SQLite
+        if: matrix.lane == 'sqlite'
+        run: python manage.py test apps --exclude-tag migration --parallel 2
+      - name: Asia/Kolkata
+        if: matrix.lane == 'ist'
+        env:
+          DJANGO_TIME_ZONE: Asia/Kolkata
+          PYTHONPATH: scripts/gate
+          DJANGO_SETTINGS_MODULE: fastsettings
+        run: python manage.py test apps --parallel 2 --exclude-tag migration --settings=fastsettings
+
+  pg:
+    # lane.sh: pg-a, pg-b, pg-c. The three parts together are every app; gateline.py checks that
+    # locally by adding the counts up against SQLite's, and nothing here does.
+    name: pg-${{ matrix.part }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 200
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - part: a
+            labels: apps.sales apps.purchasing apps.accounting apps.gst apps.core
+          - part: b
+            labels: apps.manufacturing apps.inventory apps.hr apps.planning
+          - part: c
+            labels: apps.quality apps.assets apps.imports apps.e2e apps.web
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          # A throwaway server inside the job, the same role lane.sh uses locally. Not a secret.
+          POSTGRES_USER: erp
+          POSTGRES_PASSWORD: erp
+          POSTGRES_DB: erp
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U erp"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: pip install -r requirements.txt
+      - name: Build the office application
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+      - name: Chromium, and proof the browser tests will not skip
+        run: |
+          python -m playwright install --with-deps chromium
+          test -f apps/web/static/web/index.html
+          python -c "from playwright.sync_api import sync_playwright as s; p = s().start(); p.chromium.launch().close(); p.stop()"
+      - name: PostgreSQL
+        env:
+          DATABASE_URL: postgres://erp:erp@localhost:5432/erp
+        run: python manage.py test ${{ matrix.labels }} --parallel 2 --keepdb --noinput --exclude-tag migration
+
+  plan:
+    # Which apps' migration-tagged tests this push needs. Needs git only.
+    name: mig plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      apps: ${{ steps.needed.outputs.apps }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - id: needed
+        run: |
+          python3 - "${GATE_BASE:-0000000}" "$GITHUB_SHA" <<'PY'
+          import json
+          import os
+          import sys
+
+          sys.path.insert(0, "scripts/gate")
+          import migneeded
+
+          need, apps, base, tip = migneeded.needed(sys.argv[1], sys.argv[2])
+          # An app with no migration-tagged test has nothing to run: the matrix holds the rest.
+          tested = {migneeded.app_of(path) for path in migneeded.facts(".", tip)[1]}
+          report = migneeded.report(need, apps, base, tip)
+          print(report)
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
+              summary.write("Migration-tagged tests, by app (apps with none of their own run nothing):\n\n```\n"
+                            + report + "\n```\n")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write("apps=" + json.dumps(sorted(set(need) & tested)) + "\n")
+          PY
+
+  mig:
+    # lane.sh: mig, one app a job. SQLite first, then on PostgreSQL the tests SQLite skips.
+    name: mig ${{ matrix.app }}
+    needs: plan
+    if: needs.plan.outputs.apps != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        app: ${{ fromJSON(needs.plan.outputs.apps) }}
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: erp
+          POSTGRES_PASSWORD: erp
+          POSTGRES_DB: erp9
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U erp"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Migration-tagged tests on SQLite
+        run: python manage.py test "apps.${{ matrix.app }}" --tag migration --parallel 2
+      - name: The ones SQLite skips, on PostgreSQL
+        run: |
+          python scripts/gate/migcount.py --skips > all_skips.txt
+          grep "^apps\.${{ matrix.app }}\." all_skips.txt > skips.txt || true
+          if [ -s skips.txt ]; then
+            DATABASE_URL=postgres://erp:erp@localhost:5432/erp9 python manage.py test $(cat skips.txt) --tag migration --noinput
+          else
+            echo "none in apps.${{ matrix.app }}"
+          fi
+
+  mig-none:
+    # Says so in words when no migration job ran, so an absent job is not read as a passed one.
+    name: mig (none needed)
+    needs: plan
+    if: needs.plan.outputs.apps == '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: echo "::notice::No migration-tagged test was run - nothing in this push needs one. The plan job's summary gives the base and the reason for each app."
