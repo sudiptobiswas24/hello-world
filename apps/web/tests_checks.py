@@ -39,6 +39,10 @@ class ChecksTestCase(ImportTestCase):
         JournalLine.objects.bulk_create([JournalLine(entry=opening_stock, account=self.inventory, debit=Decimal("2000")),
                                          JournalLine(entry=opening_stock, account=self.opening, credit=Decimal("2000"))])
         ago = lambda days: self.today - datetime.timedelta(days=days)  # noqa: E731
+        # The books opened on 1 January: an open invoice waits for the setting (O529).
+        from apps.accounting.models import BooksOpening
+
+        BooksOpening.objects.create(opened_on=datetime.date(2026, 1, 1), opening_account=self.opening)
         report = run("open_invoices", f"customer,reference,date,amount\nC-1,OLD/1,{ago(92)},20000\n",
                      commit=True, against="3900")
         self.assertTrue(report.committed, report.errors)
@@ -218,11 +222,7 @@ class IncompleteTests(ChecksTestCase):
                                                 disposal_account=plant, default_life_months=120)
         lathe = FixedAsset.objects.create(name="Lathe", category=category, acquisition_date=datetime.date(2026, 1, 1),
                                           cost=Decimal("120000"), salvage_value=Decimal("0"), life_months=120)
-        # Typed in, it is an opening balance: the books opened on 1 January.
-        from apps.accounting.models import BooksOpening
-
-        BooksOpening.objects.create(opened_on=datetime.date(2026, 1, 1), opening_account=Account.objects.get_or_create(
-            code="3900", defaults={"name": "Opening balances", "account_type": AccountType.EQUITY})[0])
+        # Typed in, it is an opening balance: the books opened on 1 January (setUp).
         self.assertNotIn("depreciation_not_run", self.keys(self.person("Controller")))
         lathe.place_in_service(on_date=datetime.date(2026, 1, 1))
         controller = User.objects.get(username="controller")
