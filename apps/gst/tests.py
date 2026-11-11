@@ -999,3 +999,48 @@ class TaxesTakenUnderAnotherPositionTests(GstReturnTestCase):
         client = APIClient()
         client.force_authenticate(user)
         self.assertIn(client.post(f"/api/sales/invoices/{invoice.pk}/retake_taxes/").status_code, (403, 404))
+
+
+class ShortHsnOnceTurnoverIsDeclaredTests(GstReturnTestCase):
+    """
+    An item may hold four digits (validate_hsn). Past the declared turnover the company reports six,
+    which only the e-invoice asked, so a B2C invoice's four digits reached the HSN summary without a
+    word (O539). The return warns by the rule the e-invoice refuses by.
+    """
+
+    def sold_under(self, code, day=DAY):
+        Item.objects.filter(pk=self.sack.pk).update(hsn_code=code)
+        self.sack.refresh_from_db()
+        return self.sell(self.party(f"B2C-{code}-{day:%d}", gst_state="27"), "1000", day=day)
+
+    def short(self):
+        return [warning for warning in gstr1(*SEPTEMBER)["warnings"] if "digits" in warning]
+
+    def declared(self, day):
+        GstSettings.objects.filter(pk=self.settings.pk).update(einvoicing_from=day)
+
+    def test_four_digits_after_the_declaration_are_warned_of(self):
+        self.declared(datetime.date(2026, 9, 10))
+        invoice = self.sold_under("6305")
+        self.assertEqual(self.short(), [f"{invoice.number}: HSN 6305 has 4 digits. From 10 Sep 2026 the "
+                                        "company reports six or more."])
+        self.assertEqual([row["hsn"] for row in gstr1(*SEPTEMBER)["hsn_b2c"]], ["6305"])
+
+    def test_not_before_it_and_not_with_none(self):
+        self.sold_under("6305")
+        self.assertEqual(self.short(), [])
+        self.declared(datetime.date(2026, 9, 11))
+        self.assertEqual(self.short(), [])
+
+    def test_six_digits_are_enough(self):
+        self.declared(datetime.date(2026, 4, 1))
+        self.sold_under("630533")
+        self.assertEqual(self.short(), [])
+
+    def test_the_e_invoice_and_the_return_read_one_rule(self):
+        from . import einvoice, particulars, returns
+
+        self.assertIs(returns.hsn_is_short, particulars.hsn_is_short)
+        self.assertEqual([particulars.hsn_is_short(code) for code in ("", "6305", "630533", "63053300")],
+                         [False, True, False, False])
+        self.assertIn("p.hsn_is_short(recorded.hsn)", open(einvoice.__file__).read())

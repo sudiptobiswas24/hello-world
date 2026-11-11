@@ -48,6 +48,8 @@ from apps.accounting.models import round_money
 from apps.purchasing.models import Bill
 from apps.sales.models import Invoice
 
+from .particulars import hsn_is_short, reports_six_digits
+
 ZERO = Decimal("0")
 HEADS = ("igst", "cgst", "sgst", "cess")
 ZERO_RATED = ("sez", "overseas")
@@ -390,6 +392,14 @@ def gstr1(start, end):
             elif line.uqc == "OTH":
                 result["warnings"].append(
                     f"{document.number}: HSN {line.hsn} is in a unit with no GST unit code."
+                )
+            # The rule the e-invoice refuses by (particulars.hsn_is_short), from the day the company
+            # declared its turnover past 5 crore. An item may hold four digits, so a four-digit code
+            # went into the summary without a word, on a B2C invoice no IRN ever looked at (O539).
+            if hsn_is_short(line.hsn) and reports_six_digits(settings, document.date):
+                result["warnings"].append(
+                    f"{document.number}: HSN {line.hsn} has {len(line.hsn)} digits. From "
+                    f"{settings.einvoicing_from:%d %b %Y} the company reports six or more."
                 )
         if len(document.number) > NUMBER_LIMIT:
             result["warnings"].append(
