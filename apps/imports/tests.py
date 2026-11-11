@@ -831,5 +831,65 @@ class TheOpeningPositionStandsOnOneDayTests(ImportTestCase):
         planted = 'def _opening_loans(rows, report, options):\n    on = options["date"]\n'
         found = Command().opening_kinds_read_their_own_flags(planted)
         self.assertEqual([shape for shape, _ in found], ["opening kind reading its own flag"])
+        also = 'def _open_loans(row, options):\n    against = options.get("against")\n'
+        self.assertEqual(len(Command().opening_kinds_read_their_own_flags(also)), 1)
         self.assertEqual(Command().opening_kinds_read_their_own_flags(), [])
 
+
+class TheOpeningAccountClearsTests(ImportTestCase):
+    """
+    O530: --against took any account. The old trial balance below (worked in
+    calc_g37_imports/opening_account.py): bank 2,50,000.00, receivables 11,800.00, stock 250 at 4.20 =
+    1,050.00; payables 5,000.00, capital 2,57,850.00. Everything in, the opening-balance account is nothing.
+    """
+
+    STOCK = "sku,warehouse,quantity,unit_cost\nWDG-1,WH1,250,4.2\n"
+    INVOICES = "customer,reference,date,amount\nC-1,OLD/0412,2026-08-20,11800\n"
+    BILLS = "vendor,reference,date,amount\nV-9,GH-77,2026-09-02,5000\n"
+    BALANCES = "account,debit,credit\n1010,250000,\n3950,,257850\n3900,7850,\n"
+
+    def setUp(self):
+        from apps.accounting.models import BooksOpening
+        from apps.core.models import PartyRole, PartyRoleAssignment
+
+        super().setUp()
+        self.capital = Account.objects.create(code="3950", name="Share capital", account_type=AccountType.EQUITY)
+        vendor = Party.objects.create(code="V-9", name="Granules", default_currency=self.usd)
+        PartyRoleAssignment.objects.create(party=vendor, role=PartyRole.VENDOR)
+        BooksOpening.objects.create(opened_on=GO_LIVE, opening_account=self.opening)
+
+    def test_an_invoice_or_bill_against_any_other_account_is_refused(self):
+        for kind, text in (("open_invoices", self.INVOICES), ("open_bills", self.BILLS)):
+            with self.subTest(kind=kind):
+                report = run(kind, text, commit=True, against="3950")
+                self.assertEqual((report.committed, self.errors(report)), (False, [(2, "--against")]))
+                self.assertIn("3950 is not the opening-balance account (3900)", report.errors[0][2])
+        self.assertEqual((self.balance(self.capital), self.balance(self.ar), self.balance(self.payable)),
+                         (Decimal("0"), Decimal("0"), Decimal("0")))
+
+    def test_stock_through_a_reason_that_posts_elsewhere_is_refused(self):
+        AdjustmentReason.objects.create(code="OPENCAP", name="Opening stock", account=self.capital)
+        on_hand = self.item.on_hand_at(self.warehouse)
+        report = run("opening_stock", self.STOCK, commit=True, reason="OPENCAP")
+        self.assertEqual((report.committed, self.errors(report)), (False, [(0, "--reason")]))
+        self.assertIn("posts to 3950, not to the opening-balance account (3900)", report.errors[0][2])
+        self.assertEqual((self.item.on_hand_at(self.warehouse), self.balance(self.capital)), (on_hand, Decimal("0")))
+
+    def test_with_everything_in_the_opening_account_is_nothing(self):
+        AdjustmentReason.objects.create(code="OPENING", name="Opening stock", account=self.opening)
+        # No --against at all: the books' setting says which account.
+        for kind, text, options in (("opening_stock", self.STOCK, {"reason": "OPENING"}),
+                                    ("open_invoices", self.INVOICES, {}),
+                                    ("open_bills", self.BILLS, {"against": "3900"})):
+            report = run(kind, text, commit=True, **options)
+            self.assertTrue(report.committed, (kind, report.errors))
+        # Stock 1,050.00 and the invoice 11,800.00 credited, the bill 5,000.00 debited.
+        self.assertEqual(self.balance(self.opening), Decimal("-7850.00"))
+        report = run("opening_balances", self.BALANCES, commit=True)
+        self.assertTrue(report.committed, report.errors)
+        self.assertEqual(self.balance(self.opening), Decimal("0.00"))
+        self.assertEqual(
+            (self.balance(self.bank), self.balance(self.ar), self.balance(self.inventory),
+             self.balance(self.payable), self.balance(self.capital)),
+            (Decimal("250000.00"), Decimal("11800.00"), Decimal("1050.00"), Decimal("-5000.00"),
+             Decimal("-257850.00")))
