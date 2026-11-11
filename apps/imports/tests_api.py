@@ -57,6 +57,28 @@ class ImportApiTests(ImportTestCase):
         self.assertEqual(controller.post(f"{RECORDS}run/", {"kind": "nothing", "text": "x\n"}, format="json").status_code, 400)
         self.assertEqual(controller.post(f"{RECORDS}run/", {"kind": "parties", "text": " "}, format="json").status_code, 400)
 
+    def test_stock_from_the_screen_keeps_to_the_day_the_books_opened(self):
+        """O529, as the controller: the 10th is refused in words, the day the books opened is kept."""
+        from apps.inventory.adjustments import AdjustmentReason, StockAdjustment
+
+        AdjustmentReason.objects.create(code="OPENING", name="Opening stock", account=self.opening)
+        controller = self.as_("Controller")
+        file = {"kind": "opening_stock", "text": "sku,warehouse,quantity,unit_cost\nWDG-1,WH1,250,4.2\n",
+                "commit": True, "reason": "OPENING"}
+        unset = controller.post(f"{RECORDS}run/", {**file, "date": "2026-10-01"}, format="json")
+        self.assertEqual((unset.status_code, unset.json()["committed"]), (200, False), unset.content)
+        self.assertEqual(unset.json()["errors"], [[0, "--date", "Set the day the books opened (Settings, Books "
+                                                   "opening) first: opening stock is what was counted on it."]])
+        self.open_books()
+        late = controller.post(f"{RECORDS}run/", {**file, "date": "2026-10-10"}, format="json")
+        self.assertEqual((late.status_code, late.json()["committed"]), (200, False), late.content)
+        self.assertEqual(late.json()["errors"], [[0, "--date", "2026-10-10 is not the day the books opened "
+                                                  "(2026-10-01); the books setting says when, and the import follows it."]])
+        self.assertFalse(StockAdjustment.objects.exists())
+        kept = controller.post(f"{RECORDS}run/", {**file, "date": "2026-10-01"}, format="json")
+        self.assertEqual((kept.json()["committed"], kept.json()["errors"]), (True, []))
+        self.assertEqual(str(StockAdjustment.objects.get().adjustment_date), "2026-10-01")
+
     def test_who_may(self):
         self.assertEqual(self.as_("Bookkeeper").get(RECORDS).status_code, 403)
         self.assertEqual(self.as_("HR Admin").post(f"{RECORDS}run/", {"kind": "parties", "text": "code\n"},

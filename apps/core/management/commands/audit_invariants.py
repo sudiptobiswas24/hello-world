@@ -130,6 +130,7 @@ class Command(BaseCommand):
         findings += self.allocations_counted_past_a_void(labels, sources)
         findings += self.drawdowns_from_todays_setting(labels, sources)
         findings += self.opening_kinds_brought_in_twice()
+        findings += self.opening_kinds_read_their_own_flags()
         findings += self.writes_without_an_event()
         findings += self.imports_against_the_module_graph(sources)
         # Every app answers requests, not only those the other checks read: the office's own reports (apps/web)
@@ -2463,6 +2464,35 @@ class Command(BaseCommand):
                     "run twice counts the opening position twice.",
                 ))
         return findings
+
+    # What the books' setting decides for every kind that posts the opening position; the flag of the
+    # same name is only a second look, asked by importer.opening_position() and nowhere else.
+    OPENING_FLAGS = ("date",)
+
+    def opening_kinds_read_their_own_flags(self, text=None):
+        """
+        An import handler that reads the day from its flag, not from the books' setting.
+
+        Opening balances and the asset register were held to the day the books opened;
+        opening stock read `options["date"]` and came in on the 10th into books that opened on
+        the 1st (O529). `importer.run()` asks `opening_position()` once for every kind that
+        posts the opening position and hands the handler `options["opened_on"]`; a handler in
+        apps/imports that reads the flag itself is the next kind written without the check.
+        """
+        import inspect
+        import re
+
+        from apps.imports import cutover, importer
+
+        if text is None:
+            text = "".join(inspect.getsource(module) for module in (importer, cutover))
+            text = text.replace(inspect.getsource(importer.opening_position), "")
+        flags = "|".join(self.OPENING_FLAGS)
+        return [
+            ("opening kind reading its own flag",
+             f"apps/imports reads options[{found.group(2)!r}] ({found.group(0)}): the books' setting decides "
+             "it (importer.opening_position), and the handler reads what run() hands it.")
+            for found in re.finditer(rf"""options(?:\[|\.get\()\s*(["'])({flags})\1""", text)]
 
     def kept_settings_read_live(self, labels, sources):
         """

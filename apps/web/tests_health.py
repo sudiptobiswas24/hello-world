@@ -57,6 +57,7 @@ class HealthTestCase(ImportTestCase):
         # open invoice of 20,000 from the old system: receivables ledger
         # 20,000 = documents 20,000.
         self.hand_journal(self.inventory, self.opening, "2000")
+        self.open_books()
         report = run("open_invoices", f"customer,reference,date,amount\nC-1,OLD/1,{self.today - datetime.timedelta(days=40)},20000\n",
                      commit=True, against="3900")
         self.assertTrue(report.committed, report.errors)

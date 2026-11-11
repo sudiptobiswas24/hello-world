@@ -210,13 +210,8 @@ def _fixed_asset(row, options):
     from apps.assets.models import AssetCategory, FixedAsset
     from apps.core.models import Party
 
-    from .importer import opening_day
-
-    # The day the books opened, as accounting keeps it; a --date given is an override it must agree with.
-    on = opening_day(options)
-    if on is None:
-        raise RowError("--date", "set the day the books opened (Settings, Books opening) first: the "
-                       "register stands at it, and each asset posts its opening balance on it.")
+    # The day the books opened, as accounting keeps it (importer.opening_position, asked by run()).
+    on = options["opened_on"]
     category = by_code(AssetCategory, row, "category")
     name = required(row, "name")
     if FixedAsset.objects.filter(name=name, category=category).exists():
