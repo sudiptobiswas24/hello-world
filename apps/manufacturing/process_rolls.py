@@ -198,9 +198,23 @@ def _check_kind(station, kinds, what):
         raise ValidationError(f"{station} is not a station that {what} ({allowed}).")
 
 
+@transaction.atomic
 def _issue_roll(run, lot, warehouse, on_date, label):
+    """
+    Issue the whole roll to the run, at what its shelf holds.
+
+    The shelf is held before it is read, in the order the issue's post takes it (the run, then the
+    shelf), so the figure read is the figure posted (O525). Its one caller, mount_roll, holds the
+    company's numbering row first, which already kept every other shelf lock out; held here, the
+    read is safe without depending on that.
+    """
+    from apps.core.models import lock_rows
+    from apps.inventory.locking import lock_positions
+
     from .orders import IssueDirection, MaterialIssue, MaterialIssueLine
 
+    lock_rows(run)
+    lock_positions([(lot.item, warehouse)])
     on_hand = lot.on_hand_at(warehouse)
     if on_hand <= 0:
         raise ValidationError(f"{lot} is not in {warehouse}: it has gone into a run already, "
