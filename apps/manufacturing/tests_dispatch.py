@@ -673,3 +673,44 @@ class ACrewedBankAtItsMachinesSpeedTests(DispatchTestCase):
         for shift in Shift.objects.all():
             self.crew(shift)
         self.assertEqual(self.capacity(), (Decimal("1800"),) * 3)
+
+    def placed(self, *runs):
+        rows = self.schedule()
+        return {run.number: (self.row(rows, run)["resource"],
+                             timezone.make_naive(self.row(rows, run)["start"]),
+                             timezone.make_naive(self.row(rows, run)["finish"]))
+                for run in runs}
+
+    def test_a_crew_due_in_a_month_is_nobody_now(self):
+        """Refused first: the crew from the 40th day is not a crew the board waits for."""
+        from .manning import CrewAssignment
+
+        CrewAssignment.objects.update(valid_from=TODAY + datetime.timedelta(days=40))
+        run = self.run_of("600", D2)
+        self.assertEqual(self.row(self.schedule(), run)["held"], "Nobody is crewed to run WEAVE.")
+
+    def test_the_board_moves_the_crew_when_a_loom_stops(self):
+        """
+        O526: L-1 at 30, L-2 at 45 and working only the 1st's weekday. The crew
+        runs L-2 on the 1st and L-1 from the 2nd, as capacity counts it. 1,200 kg:
+        L-2 would need 1,630 minutes, 1,440 on the 1st and the rest a week later
+        (11:10 on the 8th); L-1 needs 2,430 from 08:00 on the 2nd: 00:30 on the 4th.
+        The board read the 1st's crew for every day and offered L-2 alone.
+        """
+        self.rates("30", "45")
+        Machine.objects.filter(pk=self.l2.pk).update(working_days=str(D1.isoweekday()))
+        run = self.run_of("1200", D3)
+        self.assertEqual(self.placed(run), {run.number: ("L-1", at(D2, 8), at(D4, 0, 30))})
+
+    def test_the_night_runs_only_what_the_night_crew_can(self):
+        """
+        O527: both looms at the bank's 60, two on days and one on nights. 1,230
+        minutes each: A on L-1, crewed day and night, 08:00 to 04:30 on the 2nd;
+        B on L-2, crewed by day only, 720 on the 1st and 510 from 08:00 on the 2nd:
+        16:30. The board ran two looms all night on the day crew's count.
+        """
+        self.crew(Shift.objects.get(code="D"))
+        a, b = self.run_of("1200", D3), self.run_of("1200", D4)
+        self.assertEqual(self.placed(a, b), {a.number: ("L-1", at(D1, 8), at(D2, 4, 30)),
+                                             b.number: ("L-2", at(D1, 8), at(D2, 16, 30))})
+        self.assertEqual(self.capacity()[0], Decimal("2160"))

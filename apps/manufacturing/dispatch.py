@@ -25,7 +25,9 @@ rebuild does not quietly overrule them.
 **A machine's day** starts when the plant's first shift starts and runs
 for the machine's hours, on the days its calendar works. A 24-hour loom
 therefore runs continuously; an eight-hour stitching line runs from the
-morning shift's start for eight hours.
+morning shift's start for eight hours. At a crewed bank a machine runs
+only on the shifts whose crew runs it that day, by manning.crewed_on,
+the rule capacity's cap counts with (O526, O527).
 
 **Proposed until committed.** `build()` returns a schedule and changes
 nothing; `commit()` writes each operation's machine and planned times,
@@ -44,6 +46,15 @@ ZERO = Decimal("0")
 MINUTE = datetime.timedelta(minutes=1)
 FAR = datetime.date(9999, 12, 31)
 LOOKAHEAD_DAYS = 3 * 366
+# How long a crewed machine may go with nobody on it before the board stops
+# looking for a shift that runs it: a month, not the three years a
+# machine's own calendar is searched over, since every day searched asks
+# who is on leave.
+CREW_LOOKAHEAD_DAYS = 31
+
+
+class NotCrewed(Exception):
+    """Nobody is crewed to run this machine within CREW_LOOKAHEAD_DAYS."""
 
 
 def _day_start():
@@ -56,10 +67,20 @@ def _day_start():
 class Clock:
     """A machine's working time: which minutes it runs on."""
 
-    def __init__(self, calendar, hours, day_start):
+    def __init__(self, calendar, hours, day_start, crew=None):
         self.calendar = calendar
         self.minutes = int(Decimal(hours) * 60)
         self.day_start = day_start
+        # day -> the (start, end) of each shift whose crew runs this
+        # machine that day, or None where the bank is not crewed.
+        self.crew = crew
+
+    def _spans(self, day):
+        start, end = self._window(day)
+        if self.crew is None:
+            return [(start, end)]
+        return [(max(start, a), min(end, b)) for a, b in self.crew(day)
+                if min(end, b) > max(start, a)]
 
     def _window(self, day):
         start = datetime.datetime.combine(day, self.day_start)
@@ -68,11 +89,17 @@ class Clock:
     def windows(self, moment):
         """Working windows from the one `moment` falls in, onwards."""
         day = moment.date() - datetime.timedelta(days=1)
+        idle = 0
         for _ in range(LOOKAHEAD_DAYS):
+            found = False
             if self.minutes and self.calendar.is_working(day):
-                start, end = self._window(day)
-                if end > moment:
-                    yield max(start, moment), end
+                for start, end in self._spans(day):
+                    if end > moment:
+                        found = True
+                        yield max(start, moment), end
+            idle = 0 if found else idle + 1
+            if self.crew is not None and idle > CREW_LOOKAHEAD_DAYS:
+                raise NotCrewed
             day += datetime.timedelta(days=1)
         raise ValueError("No working time within three years.")
 
@@ -95,13 +122,13 @@ class Clock:
 class Resource:
     """One machine, or a bank with none listed standing in for one."""
 
-    def __init__(self, centre, machine, day_start, start_at):
+    def __init__(self, centre, machine, day_start, start_at, crew=None):
         from .changeover import on_the_machine
 
         self.centre, self.machine = centre, machine
         owner = machine or centre
         hours = machine.hours_per_day() if machine else centre.available_hours_per_day
-        self.clock = Clock(owner.calendar(), hours, day_start)
+        self.clock = Clock(owner.calendar(), hours, day_start, crew)
         self.free_at = start_at
         self.last_item = on_the_machine(centre, machine)
 
@@ -136,15 +163,41 @@ def _speed_refused(machine, operation):
     return None
 
 
-def _crewed_machines(centre, day):
-    """The most machines any one shift's crew can run at this bank that day, or None."""
-    from .manning import manned_machines
-    from .shifts import Shift
+class CrewBook:
+    """
+    The shifts each machine is crewed on, day by day, from crewed_on: the
+    rule capacity's cap (manned_minutes) takes, so the board runs a
+    machine on exactly the shifts the plan counts it for (O526, O527).
+    Asked once per bank, shift and day.
+    """
 
-    if centre.operators_per_machine is None:
-        return None
-    return max((manned_machines(centre, shift, day)
-                for shift in Shift.objects.filter(is_active=True)), default=0)
+    def __init__(self):
+        from .shifts import Shift
+
+        self.shifts = list(Shift.objects.filter(is_active=True).order_by("starts_at"))
+        self.seen = {}
+
+    def for_resource(self, centre, machine, machines):
+        """day -> crewed shift spans for one machine, or None where the bank is not crewed."""
+        if centre.operators_per_machine is None:
+            return None
+        pk = machine.pk if machine else None
+        return lambda day: [span for run, span in self._crewed(centre, day, machines)
+                            if pk in run]
+
+    def _crewed(self, centre, day, machines):
+        from .manning import crewed_on
+
+        key = (centre.pk, day)
+        if key not in self.seen:
+            rows = []
+            for shift in self.shifts:
+                start = datetime.datetime.combine(day, shift.starts_at)
+                end = start + datetime.timedelta(minutes=int(shift.hours * 60))
+                run = {m.pk if m else None for m in crewed_on(centre, shift, day, machines)}
+                rows.append((run, (start, end)))
+            self.seen[key] = rows
+        return self.seen[key]
 
 
 def build(start_at=None):
@@ -154,7 +207,6 @@ def build(start_at=None):
     """
     from .changeover import changeover
     from .machines import requirements
-    from .manning import crewed_machines
     from .tooling import tooling_ready
     from .orders import WorkOrder, WorkOrderStatus
 
@@ -163,22 +215,19 @@ def build(start_at=None):
     day_start = _day_start()
     resources = {}
 
-    crew_short = {}
+
+    crew = CrewBook()
 
     def pool(centre):
         if centre.pk not in resources:
             machines = centre.machine_list()
-            crewed = _crewed_machines(centre, start_at.date())
-            if crewed is not None and crewed < len(machines):
-                # No more machines on the board than the crew can run, and
-                # the ones the crew's cap on capacity counts (O524).
-                machines = crewed_machines(machines, crewed)
-                if not crewed:
-                    crew_short[centre.pk] = True
             resources[centre.pk] = [
-                Resource(centre, machine, day_start, start_at) for machine in machines
-            ] or ([] if centre.runs_on_machines() or crew_short.get(centre.pk)
-                  else [Resource(centre, None, day_start, start_at)])
+                Resource(centre, machine, day_start, start_at,
+                         crew.for_resource(centre, machine, machines))
+                for machine in machines
+            ] or ([] if centre.runs_on_machines()
+                  else [Resource(centre, None, day_start, start_at,
+                                 crew.for_resource(centre, None, machines))])
         return resources[centre.pk]
 
     orders = sorted(
@@ -232,11 +281,8 @@ def build(start_at=None):
                 continue
             candidates = pool(operation.work_centre)
             if not candidates:
-                code = operation.work_centre.code
                 held(operation, order,
-                     f"Nobody is crewed to run {code}." if crew_short.get(
-                         operation.work_centre_id)
-                     else f"Every machine at {code} is out of service.")
+                     f"Every machine at {operation.work_centre.code} is out of service.")
                 waiting_on = operation.sequence
                 continue
             refused = {resource.code: (resource.machine.refuses(needs)
@@ -274,10 +320,17 @@ def build(start_at=None):
                 )
                 work = minutes if begun else minutes - operation.setup_minutes + change
                 earliest = max(resource.free_at, ready)
-                began, finish = resource.clock.advance(earliest, max(work, ZERO))
+                try:
+                    began, finish = resource.clock.advance(earliest, max(work, ZERO))
+                except NotCrewed:
+                    continue
                 key = (finish, resource.code)
                 if best is None or key < best[0]:
                     best = (key, resource, began, finish, change, purge)
+            if best is None:
+                held(operation, order, f"Nobody is crewed to run {operation.work_centre.code}.")
+                waiting_on = operation.sequence
+                continue
             _, resource, began, finish, change, purge = best
             resource.free_at = finish
             resource.last_item = order.item
