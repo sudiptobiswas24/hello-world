@@ -315,7 +315,7 @@ def _opening_stock(rows, report, options):
         report.refuse(0, "--reason", f"no adjustment reason {options['reason']!r}: make one, "
                       "posting to the opening-balance account, first.")
         return
-    on = options["date"]
+    on = options["opened_on"]
     by_warehouse = {}
     for number, row in rows:
         try:
@@ -414,22 +414,42 @@ def _open_document(row, options, side):
     document.post(memo=memo) if side == "sales" else document.post(memo=memo, apply_prepayments=False)
 
 
-def opening_day(options):
+# The kinds that post the opening position, with what each says while the books have no opening day.
+# run() asks opening_position() for every one before its handler is called, and hands the handler the
+# day and the account the setting gives, never the flags: opening stock took its own --date, and came
+# in on the 10th into books that opened on the 1st (O529).
+POSTS_THE_OPENING_POSITION = {
+    "opening_stock": "Set the day the books opened (Settings, Books opening) first: opening stock is what "
+                     "was counted on it.",
+    "open_invoices": "set the day the books opened (Settings, Books opening) first: what is still owed "
+                     "stands against the account set there.",
+    "open_bills": "set the day the books opened (Settings, Books opening) first: what is still owing "
+                  "stands against the account set there.",
+    "opening_balances": "Set the day the books opened (Settings, Books opening) first: "
+                        "opening balances are dated it.",
+    "fixed_assets": "set the day the books opened (Settings, Books opening) first: the "
+                    "register stands at it, and each asset posts its opening balance on it.",
+}
+
+
+def opening_position(kind, options):
     """
-    The day the books opened, from accounting's books setting. A date given with the import is
-    only an override, and refused if it disagrees: the setting is the one place it is kept.
+    The day the books opened and the account they opened against, from accounting's books setting:
+    {"opened_on", "opening_account"}. The setting is the one place either is kept, so the opening
+    position is one day's, whichever file brings a part of it in. A date given with the import is
+    only a second look, refused if it disagrees.
     """
     from apps.accounting.models import BooksOpening
     from apps.core.models import to_date
 
     books = BooksOpening.get()
-    given = to_date(options.get("date")) if options.get("date") else None
     if books is None:
-        return None
+        raise RowError("--date", POSTS_THE_OPENING_POSITION[kind])
+    given = to_date(options.get("date")) if options.get("date") else None
     if given is not None and given != books.opened_on:
         raise RowError("--date", f"{given} is not the day the books opened ({books.opened_on}); the books "
                        "setting says when, and the import follows it.")
-    return books.opened_on
+    return {"opened_on": books.opened_on, "opening_account": books.opening_account}
 
 
 def _opening_balances(rows, report, options):
@@ -437,7 +457,6 @@ def _opening_balances(rows, report, options):
     from apps.accounting.models import Account, JournalEntry, JournalLine
     from apps.core.models import Company
 
-    from apps.accounting.models import BooksOpening
     from apps.assets.models import AssetCategory
 
     company = Company.get()
@@ -452,15 +471,7 @@ def _opening_balances(rows, report, options):
     # The fixed assets come in as the register (each posts its own opening balance), not as a balance.
     for pair in AssetCategory.objects.values_list("asset_account_id", "accumulated_account_id"):
         documented.update({pk: "the fixed-asset register" for pk in pair if pk})
-    try:
-        on = opening_day(options)
-    except RowError as error:
-        report.refuse(0, error.column, error.message)
-        return
-    if on is None:
-        report.refuse(0, "--date", "Set the day the books opened (Settings, Books opening) first: "
-                      "opening balances are dated it.")
-        return
+    on = options["opened_on"]
     try:
         once_only("The opening balances",
                   JournalEntry.objects.filter(reference=OPENING_BALANCES, posted=True, reverses__isnull=True,
@@ -563,6 +574,7 @@ def run(kind, text, *, commit=False, user=None, **options):
     rows = list(enumerate(read(text), start=2))  # row 1 is the header
     report.rows = len(rows)
     options = {**options, "by": user}  # who brings it in: links a login only as they may (employees)
+    refused = None
     with transaction.atomic(), stamped_by(user):
         if kind in OPENING:
             # One opening import at a time, held from before once_only() asks to the commit: two at
@@ -572,7 +584,19 @@ def run(kind, text, *, commit=False, user=None, **options):
             from apps.core.models import Company, lock_rows
 
             lock_rows(Company.get())
-        if kind in PER_ROW:
+        if kind in POSTS_THE_OPENING_POSITION:
+            try:
+                position = opening_position(kind, options)
+            except RowError as error:
+                refused = error
+            else:
+                # The flags are not handed on: a handler has only what the setting says.
+                options = {key: value for key, value in options.items() if key != "date"} | position
+        if refused is not None:
+            # Said where the kind says everything else: by row where each row is its own record.
+            for number in ([number for number, _row in rows] if kind in PER_ROW and rows else [0]):
+                report.refuse(number, refused.column, refused.message)
+        elif kind in PER_ROW:
             for number, row in rows:
                 try:
                     with transaction.atomic():

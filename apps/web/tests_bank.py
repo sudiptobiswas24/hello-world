@@ -36,6 +36,7 @@ class BankStatementTestCase(ImportTestCase):
         vendor = Party.objects.create(code="V-9", name="Granules", default_currency=self.usd)
         PartyRoleAssignment.objects.create(party=vendor, role=PartyRole.VENDOR)
         self.today = timezone.localdate()
+        self.open_books()
         ago = lambda days: self.today - datetime.timedelta(days=days)  # noqa: E731
         for kind, text in (
             ("opening_stock", "sku,warehouse,quantity,unit_cost\nWDG-1,WH1,250,4.2\n"),

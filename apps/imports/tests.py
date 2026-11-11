@@ -36,6 +36,12 @@ class ImportTestCase(SalesTestCase):
         company.default_payable_account = self.payable
         company.save()
 
+    def open_books(self):
+        """The books' setting every kind that posts the opening position waits for (O529)."""
+        from apps.accounting.models import BooksOpening
+
+        return BooksOpening.get() or BooksOpening.objects.create(opened_on=GO_LIVE, opening_account=self.opening)
+
     def balance(self, account):
         rows = JournalLine.objects.filter(account=account, entry__posted=True).aggregate(
             debit=Sum("debit"), credit=Sum("credit"))
@@ -210,6 +216,10 @@ class ItemTaxesTests(ImportTestCase):
 
 
 class OpeningStockTests(ImportTestCase):
+    def setUp(self):
+        super().setUp()
+        self.open_books()
+
     def test_a_cost_with_more_places_than_the_line_keeps_is_refused(self):
         # O4: read at eight places into a four-place field. Refused already by the
         # line's own field (clean()); kept so a reader that stops asking it is seen.
@@ -245,6 +255,10 @@ class OpeningStockTests(ImportTestCase):
 
 
 class OpenDocumentsTests(ImportTestCase):
+    def setUp(self):
+        super().setUp()
+        self.open_books()
+
     def test_an_open_invoice_is_owed_ages_and_is_refused_twice(self):
         text = "customer,reference,date,amount\nC-1,OLD/0412,2026-08-20,11800\n"
         report = run("open_invoices", text, commit=True, against="3900")
@@ -715,6 +729,7 @@ class TheOpeningPositionComesInOnceTests(ImportTestCase):
         from apps.inventory.adjustments import StockAdjustment
 
         AdjustmentReason.objects.create(code="OPENING", name="Opening stock", account=self.opening)
+        self.open_books()
         first = run("opening_stock", self.STOCK, commit=True, date=GO_LIVE, reason="OPENING")
         self.assertEqual(first.errors, [])
         self.assertEqual((self.on_hand(), self.balance(self.opening)), (1500, Decimal("-3500.00")))
@@ -752,3 +767,69 @@ class WhatEachFileSaysItTakesTests(SimpleTestCase):
             with self.subTest(kind=kind):
                 if "roles" in words.lower() and "logins screen" not in words.lower():
                     self.assertIn("roles", columns_of(kind), words)
+
+
+class TheOpeningPositionStandsOnOneDayTests(ImportTestCase):
+    """
+    O529: opening stock took any --date. Books opened on 1 October; stock dated the 10th came in, so the
+    trial balance at the opening day lacked it. And with no books setting at all it came in on a day the
+    books could then never be opened on.
+    """
+
+    STOCK = "sku,warehouse,quantity,unit_cost\nWDG-1,WH1,250,4.2\n"
+
+    def setUp(self):
+        super().setUp()
+        AdjustmentReason.objects.create(code="OPENING", name="Opening stock", account=self.opening)
+        self.on_hand = self.item.on_hand_at(self.warehouse)
+
+    def test_stock_dated_any_other_day_than_the_books_opened_is_refused(self):
+        self.open_books()
+        for day in (GO_LIVE + datetime.timedelta(days=9), GO_LIVE - datetime.timedelta(days=1)):
+            with self.subTest(day=day):
+                report = run("opening_stock", self.STOCK, commit=True, date=day, reason="OPENING")
+                self.assertEqual((report.committed, self.errors(report)), (False, [(0, "--date")]))
+                self.assertIn(f"{day} is not the day the books opened (2026-10-01)", report.errors[0][2])
+        self.assertEqual((self.item.on_hand_at(self.warehouse), self.balance(self.opening)),
+                         (self.on_hand, Decimal("0")))
+
+    def test_stock_with_no_date_is_dated_the_day_the_books_opened(self):
+        from apps.inventory.adjustments import StockAdjustment
+
+        self.open_books()
+        report = run("opening_stock", self.STOCK, commit=True, reason="OPENING")
+        self.assertTrue(report.committed, report.errors)
+        self.assertEqual(StockAdjustment.objects.get(reason__code="OPENING").adjustment_date, GO_LIVE)
+
+    def test_every_kind_that_posts_the_opening_position_waits_for_the_books_to_open(self):
+        from apps.core.models import PartyRole, PartyRoleAssignment
+
+        from .importer import POSTS_THE_OPENING_POSITION
+
+        vendor = Party.objects.create(code="V-9", name="Granules", default_currency=self.usd)
+        PartyRoleAssignment.objects.create(party=vendor, role=PartyRole.VENDOR)
+        files = {
+            "opening_stock": (self.STOCK, 0),
+            "open_invoices": ("customer,reference,date,amount\nC-1,OLD/0412,2026-08-20,11800\n", 2),
+            "open_bills": ("vendor,reference,date,amount\nV-9,GH-77,2026-09-02,5000\n", 2),
+            "opening_balances": ("account,debit,credit\n1010,5,\n3900,,5\n", 0),
+            "fixed_assets": ("category,name,cost,acquisition_date\nNONE,Loom,100,2020-04-01\n", 2),
+        }
+        self.assertEqual(set(files), set(POSTS_THE_OPENING_POSITION))
+        for kind, (text, row) in files.items():
+            with self.subTest(kind=kind):
+                report = run(kind, text, commit=True, date=GO_LIVE, reason="OPENING", against="3900")
+                self.assertEqual((report.committed, self.errors(report)), (False, [(row, "--date")]))
+                self.assertIn("et the day the books opened (Settings, Books opening) first", report.errors[0][2])
+        # What letting it through cost: the stock posted on 1 October, and the books could not open on it.
+        self.assertEqual(self.balance(self.opening), Decimal("0"))
+        self.open_books()
+
+    def test_a_handler_reading_the_date_or_the_account_from_its_flag_is_reported(self):
+        from apps.core.management.commands.audit_invariants import Command
+
+        planted = 'def _opening_loans(rows, report, options):\n    on = options["date"]\n'
+        found = Command().opening_kinds_read_their_own_flags(planted)
+        self.assertEqual([shape for shape, _ in found], ["opening kind reading its own flag"])
+        self.assertEqual(Command().opening_kinds_read_their_own_flags(), [])
+

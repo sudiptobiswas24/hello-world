@@ -2510,6 +2510,10 @@ class OpeningImportRaceTests(RaceCase):
         from apps.inventory.adjustments import AdjustmentReason, StockAdjustment
         from apps.inventory.models import StockMovement
 
+        from apps.accounting.models import BooksOpening
+        from apps.imports.tests import GO_LIVE
+
+        BooksOpening.objects.create(opened_on=GO_LIVE, opening_account=self.opening)
         AdjustmentReason.objects.create(code="OPENING", name="Opening stock", account=self.opening)
         self.once(race(StockAdjustment, *[self.bring("opening_stock", self.STOCK, reason="OPENING")] * 2))
         on_hand = StockMovement.objects.filter(item__sku="WDG-1").aggregate(t=Sum("quantity"))["t"]

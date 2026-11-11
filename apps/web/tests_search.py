@@ -20,6 +20,7 @@ class SearchTests(ImportTestCase):
     def setUp(self):
         super().setUp()
         call_command("setup_roles", verbosity=0)
+        self.open_books()
         for kind, text in (("parties", PARTIES),
                            ("open_invoices", "customer,reference,date,amount\nC-1,OLD/0412,2026-08-20,11800\n")):
             report = run(kind, text, commit=True, against="3900")

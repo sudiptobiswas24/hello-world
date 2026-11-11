@@ -165,10 +165,21 @@ into IGST across a state line. **An item left without them is read as
 bearing no tax**, and its orders, invoices and bills go out with no GST;
 `go_live_check` lists goods that declare none.
 
-### opening_stock — needs `--date`
+### opening_stock — dated the day the books opened
 
 `sku*`, `warehouse*` (code), `quantity*` (above nothing), `unit_cost*`
 (what one stocking unit is worth), `lot` (batch code; made if new).
+
+The stock is what was counted on the day the books opened (Settings,
+Books opening), and the adjustment is dated that day, so the trial
+balance at the opening day holds it beside the balances and the
+register. Until the day is set the file is refused: `Set the day the
+books opened (Settings, Books opening) first: opening stock is what was
+counted on it.` A `--date` given must be that day; any other is refused:
+`2026-04-10 is not the day the books opened (2026-04-01); the books
+setting says when, and the import follows it.` A count taken on a later
+day is worked back to the opening day before the file is filled; what
+moved since is entered as it happened.
 
 ### open_invoices and open_bills — need `--against <account code>`
 
@@ -179,6 +190,9 @@ still owed, tax included), `payment_terms` (code; default the party's),
 `currency` (code; default the party's). The reference must be the old
 invoice's number exactly as it was filed: a credit note with GST raised
 on it later is reported against that number.
+
+Both wait for the books' opening day (Settings, Books opening): until
+it is set every row is refused, as the stock and the balances are.
 
 The due date follows from the date and the terms, as it would for a new
 invoice, so aging is right from the first day. Only what is still owed
