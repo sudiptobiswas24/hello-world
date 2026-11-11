@@ -359,18 +359,23 @@ class Machine(Extensible, AuditModel):
         refuses that machine with the reason, a capacity figure does not
         stop for it.
         """
-        try:
-            return self.bank_minutes(self.minutes_on(day))
-        except ValidationError:
-            return self.minutes_on(day)
+        return self.as_capacity(self.minutes_on(day))
 
     def capacity_available(self, start, end):
         """capacity_on across a window."""
-        minutes = self.minutes_available(start, end)
+        return self.as_capacity(self.minutes_available(start, end))
+
+    def as_capacity(self, minutes):
+        """
+        `minutes` of this machine's clock as capacity: bank_minutes, or the
+        clock where the rate cannot be read against the bank's (see
+        capacity_on). What a machine's hours count for wherever capacity
+        is added up, the crew's cap included (O524).
+        """
         try:
             return self.bank_minutes(minutes)
         except ValidationError:
-            return minutes
+            return Decimal(minutes)
 
     def minutes_available(self, start, end):
         """Minutes across a window, counting only the days it runs."""
