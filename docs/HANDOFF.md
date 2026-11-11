@@ -50,6 +50,30 @@ pg_isready -q || service postgresql start                              # role er
 
 ## 2. Next steps, in order
 
+**g37 is pushed (9386a9d, 11 November 2026), all seven lanes green on one tip (gated as 46d5aca).** Sixteen
+commits, the work an audit of the project itself asked for: the evidence so far is all the author's own, and the
+path to go-live is the plant's files, a narrower pilot and outside eyes on the statutory outputs, not more internal
+rounds. Fixed: O529 to O531 (opening stock, open invoices and open bills are held to the books' opening day and
+opening account by one `opening_position()` check, and neither the command nor the screen asks for `--date` or
+`--against`), O533 (the e-way bill, the place of supply and posting read one rule, `gst.state_delivered_in`; a
+ship-to with no state is refused when goods move), O539 (GSTR-1 warns of a short HSN), O532 and O537 (the demo
+plant's pay components are setup_payroll's own, and every statutory output comes out of it as loaded). Added:
+`scripts/gate/migneeded.py` (the mig lane runs only the apps a range needs when given `GATE_BASE`; it saves time
+only on a push with no migration), docs/STATUTORY_REVIEW.md for the accountant, docs/PILOT.md in four stages with
+docs/pilot_pack/ (21 templates). `.github/workflows/gate.yml` holds the lanes for GitHub Actions: it starts by hand
+only and **has never been run**; read its first run before trusting it. Counts: SQLite 8,668 (246 skipped),
+PostgreSQL 3,961 + 3,654 + 1,053 = 8,668, Asia/Kolkata 8,668, migration-tagged 51, vitest 70.
+- Open code rows, none being worked: O346, O457, O528, O540 to O547 (see docs/RISKS.md).
+- Waiting on people, and these now decide the pace: the owner (O448, O494; the plant's real export files for the
+  import; a GSTR-1 file put through the GST offline tool, O535; the first run of the Actions workflow; the pilot
+  plan's choices in docs/PILOT.md), the tax adviser (O449, O500, O534), the accountant (O536, O538, with
+  docs/STATUTORY_REVIEW.md).
+- Not answered by the owner: whether new fix rounds stop here in favour of the import and the pilot. The audit says
+  they should.
+- Gate lessons from g37: about seven hours end to end, the mig lane five and a half of it alone. A "container
+  restarted" notice can mean only the watchers died: check `uptime` and `pgrep` before re-running a lane. The
+  watchers and the guard each end at their own two-hour limit and are started again.
+
 **g36 is pushed (5a4cf66, 11 November 2026), all seven lanes green on one tip (gated as e98dc64).** Five commits:
 O524 (a crewed bank's cap counts the crewed machines at their own speed; a crew of N runs the fastest N), O526 and
 O527 (the dispatch board runs each machine on the shifts its crew runs it, day by day: `manning.crewed_on`), O259
