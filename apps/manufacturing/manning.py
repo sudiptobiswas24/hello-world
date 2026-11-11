@@ -108,12 +108,32 @@ def crewed_machines(machines, crewed):
     return ranked[:max(crewed, 0)]
 
 
+def crewed_on(centre, shift, day, machines=None):
+    """
+    What this bank's crew runs on one shift of one day, or None where the
+    bank is not crewed: the machines in service that day, as many as the
+    crew present can run, chosen by crewed_machines; for a bank listing no
+    machines, [None] (the bank itself) when anybody is crewed and it works
+    that day. The one answer capacity (manned_minutes) and the board
+    (dispatch) both take, shift by shift and day by day (O524, O526, O527).
+    """
+    if centre.operators_per_machine is None:
+        return None
+    if machines is None:
+        machines = centre.machine_list()
+    crewed = manned_machines(centre, shift, day)
+    if machines:
+        return crewed_machines([m for m in machines if m.calendar().is_working(day)], crewed)
+    if centre.runs_on_machines() or not centre.calendar().is_working(day) or crewed < 1:
+        return []
+    return [None]
+
+
 def manned_minutes(centre, day):
     """
     Minutes of the bank's work its crews can run on a day, or None
-    where the bank is not crewed: each active shift, the machines the
-    crew can run, chosen from those in service that day by
-    crewed_machines, each for the shift's hours at its own speed
+    where the bank is not crewed: each active shift, what crewed_on says
+    the crew runs, each machine for the shift's hours at its own speed
     (Machine.as_capacity), the unit the bank's capacity is counted in
     (O521, O524). A bank listing no machines is its own one machine at
     its own rate.
@@ -123,16 +143,9 @@ def manned_minutes(centre, day):
     if centre.operators_per_machine is None:
         return None
     machines = centre.machine_list()
-    in_service = [m for m in machines if m.calendar().is_working(day)]
-    alone = (0 if machines or centre.runs_on_machines()
-             else int(centre.calendar().is_working(day)))
     total = ZERO
     for shift in Shift.objects.filter(is_active=True):
-        crewed = manned_machines(centre, shift, day)
         clock = shift.hours * MINUTES_PER_HOUR
-        if machines:
-            total += sum((m.as_capacity(clock) for m in crewed_machines(in_service, crewed)),
-                         ZERO)
-        else:
-            total += min(crewed, alone) * clock
+        total += sum((clock if m is None else m.as_capacity(clock)
+                      for m in crewed_on(centre, shift, day, machines)), ZERO)
     return total
