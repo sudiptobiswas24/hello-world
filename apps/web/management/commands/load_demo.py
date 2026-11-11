@@ -128,7 +128,7 @@ class Command(BaseCommand):
 
     def load(self, s, password, failed):
         """The plant, told in order: each section uses what the ones before it made."""
-        from apps.accounting.gst import gstin_check_character
+        from apps.accounting.gst import STATES, gstin_check_character
         from apps.manufacturing.changes import raise_change
 
         def step(name):
@@ -232,6 +232,25 @@ class Command(BaseCommand):
             if books.collisions:
                 raise CommandError("; ".join(books.collisions))
             wages = pay_components["BASIC"].expense_account
+            # O537: where tax deducted and collected at source is owed, under the codes and names the Indian books
+            # setup gives them (its own rows, through its own loader), and its countries: without the first no
+            # section could deduct, and without the second no address could say India or an export where it went.
+            from apps.accounting.management.commands.setup_indian_books import ACCOUNTS as BOOK_ACCOUNTS
+            from apps.core.countries import seed_countries
+
+            for code, name, kind, money in BOOK_ACCOUNTS:
+                if code in ("2250", "2260"):
+                    books.account(code, name, kind, money)
+            if books.collisions:
+                raise CommandError("; ".join(books.collisions))
+            seed_countries()
+            countries = {code: M("core.Country").objects.get(code=code) for code in ("IN", "AE")}
+            # The plant's own address, which an e-invoice and an e-way bill print as the seller's and the consignor's.
+            company = M("core.Company").get()
+            company.address = M("core.Address").objects.create(
+                address_type="office", line1="Gat 212, Chakan MIDC Phase II", city="Pune", state=STATES["27"],
+                postal_code="410501", country=countries["IN"])
+            company.save()
 
         with step("GST: rates, the inter-state and export positions, the registration"):
             Tax, Position, Mapping = M("accounting.Tax"), M("accounting.FiscalPosition"), M("accounting.FiscalPositionTaxMapping")
@@ -254,7 +273,9 @@ class Command(BaseCommand):
             inter = position("INTER", "Inter-state supply", igst)
             lut = position("LUT", "Export under LUT", igst0)
             registration = M("accounting.GstSettings").objects.create(
-                gstin=gstin("27AAECD4821K1Z"), interstate_position=inter)
+                gstin=gstin("27AAECD4821K1Z"), interstate_position=inter,
+                # Declared over five crore of turnover: every invoice of the story carries an IRN (O537).
+                einvoicing_from=on(2026, 4, 1))
             # Freight as a line on a document (O495, O496): recharged to a customer or charged by a carrier, GST 18%
             # either way, booked to its own accounts so recharged freight does not flatter the sacks' margin.
             charge = M("accounting.ChargeType").objects.create(
@@ -335,12 +356,16 @@ class Command(BaseCommand):
         with step("Customers and vendors, with GST registrations and agreed prices"):
             Party, Role = M("core.Party"), M("core.PartyRoleAssignment")
 
-            def party(code, name, role, city, pin, gst, terms, contact, email, currency=None, **tax):
+            def party(code, name, role, city, pin, gst, terms, contact, email, currency=None, state=None,
+                      country="IN", **tax):
+                # O537: the state is the one the party's GSTIN is registered in (its first two digits), spelt as
+                # the GST network spells it; a party with no GSTIN is told its state or, overseas, its country.
                 p = Party.objects.create(code=code, name=name, legal_name=name, email=email,
                                          default_currency=currency or inr, payment_terms=terms)
                 Role.objects.create(party=p, role=role)
                 M("core.Address").objects.create(party=p, line1="Plot 14, MIDC industrial area", city=city,
-                                                 postal_code=pin, is_primary=True)
+                                                 state=state or (STATES[gst[:2]] if gst else ""), postal_code=pin,
+                                                 country=countries[country], is_primary=True)
                 first, last, title = contact
                 M("core.Contact").objects.create(party=p, first_name=first, last_name=last, job_title=title,
                                                  email=email, is_primary=True)
@@ -360,7 +385,7 @@ class Command(BaseCommand):
             kaveri = party("C-KAVR", "Kaveri Feeds", "customer", "Mysuru", "570016", "29AAFCK6627T1Z", net30,
                            ("Deepa", "Gowda", "Accounts"), "accounts@kaverifeeds.example")
             gulf = party("C-GULF", "Gulf Bulk Packaging Trading LLC", "customer", "Dubai", "", None, net45,
-                         ("Omar", "Haddad", "Buyer"), "omar@gulfbulk.example", currency=usd,
+                         ("Omar", "Haddad", "Buyer"), "omar@gulfbulk.example", currency=usd, country="AE",
                          gst_registration="overseas", fiscal_position=lut)
             granule = party("V-GRAN", "Granule House Polymers", "vendor", "Vadodara", "390010", "24AACCG1180A1Z", net30,
                             ("Nilesh", "Shah", "Sales"), "sales@granulehouse.example")
@@ -404,8 +429,10 @@ class Command(BaseCommand):
                     user = User.objects.create_user(login, password=password, email=p.email,
                                                     first_name=name.split()[0], last_name=name.split()[-1])
                     user.groups.add(*[groups[role] for role in roles if role in groups])
+                # A UAN for the ECR to name each member by (O537): twelve digits, and plainly invented.
                 employee = M("hr.Employee").objects.create(party=p, employee_number=number, hire_date=hired,
-                                                           department=depts[dept], job_title=title, user=user)
+                                                           department=depts[dept], job_title=title, user=user,
+                                                           uan=f"1009{int(number):08d}")
                 people[login or number] = employee
                 return employee
 
@@ -439,6 +466,24 @@ class Command(BaseCommand):
                 employee.save()
             admin = User.objects.filter(username="admin").first() or User.objects.create_superuser(
                 "admin", "admin@deccanpolysacks.example", password, first_name="Plant", last_name="Administrator")
+
+        with step("The statutory figures, as setup_statutory loads them, and what the Controller confirms"):
+            # O537: every dated file of statutory/, through the command's own loader, each row unconfirmed until
+            # the Controller confirms it. Anita confirms what applies to a plant at Chakan, as the plant's
+            # Controller would after reading each against its source: the TDS and TCS rates, the EPF and EPS wage
+            # ceilings (O532), ESI's rates and ceiling (O452), the bonus and overtime figures, and Maharashtra's
+            # professional tax (O405, O461) and welfare fund. Other states' schedules and the minimum wages wait
+            # on Settings for her, as they would at a plant, and go_live_check says so.
+            from apps.accounting.statutory_load import Loader
+            from apps.hr.management.commands.setup_statutory import load_all
+
+            load_all(Loader())
+            controller = anita.user
+            for model, here in (("hr.StatutoryFigure", {"state__in": ("", "MH")}),
+                                ("hr.PayComponentSlab", {"state": "MH"}),
+                                ("accounting.TdsRate", {}), ("accounting.TcsRate", {})):
+                for row in M(model).objects.filter(confirmed_on=None, **here).order_by("pk"):
+                    row.confirm(controller)
 
         with step("Sales reps, teams, targets and what each customer is allowed"):
             Rep, Team = M("sales.SalesRep"), M("sales.SalesTeam")
@@ -609,6 +654,8 @@ class Command(BaseCommand):
         with step("Purchase orders, goods in, bills and money paid"):
             PO, POLine = M("purchasing.PurchaseOrder"), M("purchasing.PurchaseOrderLine")
 
+            billed = []
+
             def buy(vendor, when, lines, receive=True, bill=True, pay=False, part=None):
                 po = PO.objects.create(vendor=vendor, order_date=when, currency=inr)
                 for it, qty, price in lines:
@@ -628,6 +675,7 @@ class Command(BaseCommand):
                 b = po.create_bill(ap, bill_date=min(when + datetime.timedelta(days=6), TODAY),
                                    reference=f"{vendor.code[-4:]}/{when:%y%m}/{po.pk:03d}")
                 b.post()
+                billed.append(b)
                 paid_on = b.bill_date + datetime.timedelta(days=25)
                 if pay and paid_on < TODAY:
                     payment = Payment.objects.create(party=vendor, direction="disbursement", amount=b.total(),
@@ -657,9 +705,9 @@ class Command(BaseCommand):
             acc("5160", "Customs duty", "expense")
             gulf_polymers = party("V-GULFP", "Gulf Polymers FZE", "vendor", "Jebel Ali", "", None, net30,
                                   ("Imran", "Sheikh", "Sales"), "sales@gulfpolymers.example", currency=usd,
-                                  gst_registration="overseas")
+                                  country="AE", gst_registration="overseas")
             party("V-CUSTOMS", "Commissioner of Customs (Port), Kolkata", "vendor", "Kolkata", "700001", None,
-                  net15, ("Duty", "Desk", "ICEGATE"), "icegate@customs.example")
+                  net15, ("Duty", "Desk", "ICEGATE"), "icegate@customs.example", state=STATES["19"])
             imported = PO.objects.create(vendor=gulf_polymers, order_date=day(-30), currency=usd)
             for it, qty, price in ((virgin, "25000", "1.10"), (filler, "18000", "1.25")):
                 POLine.objects.create(order=imported, item=it, uom=it.uom, quantity=D(qty), unit_price=D(price),
@@ -1067,6 +1115,65 @@ class Command(BaseCommand):
                 # a month left uncharged under a close holds up every asset's month-end run.
                 asset.depreciate(through=s.month_span(2026, 7, -1)[1])
 
+        with step("Job work on a challan, a contractor's bill with tax deducted under 194C, and a month's GSTR-2B"):
+            # O537: the papers the statutory outputs are made from, each through the application's own path.
+            # A laminator in Pune, a firm (the fourth letter of its PAN), so a contractor other than an individual:
+            # section 194C at the rate statutory/tds_rates.csv carries and the Controller confirmed.
+            contractors = M("accounting.TdsSection").objects.get(code="194C")
+            laminator = party("V-LAM", "Shree Lamination Works", "vendor", "Pune", "411026", "27AAQFS6141H1Z", net30,
+                              ("Prakash", "Shinde", "Proprietor's office"), "accounts@shreelamination.example",
+                              pan="AAQFS6141H", tds_section=contractors)
+            job_charges = acc("5450", "Job work charges", "expense")
+            # Its bill for September's lot: 60,000 and GST. Tax is deducted on the 60,000 as the bill is booked,
+            # and paid over on a challan by the 7th of the month after.
+            Bill, BillLine = M("purchasing.Bill"), M("purchasing.BillLine")
+            work_bill = Bill.objects.create(vendor=laminator, bill_date=on(2026, 9, 18), currency=inr,
+                                            payable_account=ap, reference="SLW/26-27/0412")
+            BillLine.objects.create(bill=work_bill, description="Lamination charges, 6,000 kg of fabric",
+                                    expense_account=job_charges, quantity=D("1"), unit_price=D("60000"),
+                                    cost_centre=centres["CONV"]).taxes.set(gst18)
+            work_bill.post()
+            work_bill.deduct_tds()
+            M("purchasing.TdsChallan").pay(contractors, work_bill.bill_date, max(on(2026, 10, 7), work_bill.bill_date),
+                                           bank, challan_number="00417", bsr_code="0510308")
+            # A run of fabric woven here and laminated outside, released; 600 kg of it has gone out on a challan,
+            # at the fabric's cost of 139 a kg, so ITC-04 has goods at a job worker to list.
+            outside = M("manufacturing.Routing").objects.create(code="R-FAB-LAM", name="Weave, then laminate outside")
+            M("manufacturing.RoutingOperation").objects.create(routing=outside, sequence=10, name="Weave",
+                                                               work_centre=looms, setup_minutes=D("30"))
+            M("manufacturing.RoutingOperation").objects.create(
+                routing=outside, sequence=20, name="Laminate at Shree Lamination", is_outside=True,
+                outside_lead_days=4, outside_cost_per_unit=D("10"), rate_uom=kg)
+            # An alternate way of making the fabric, which a run is put on when the customer asks for it laminated.
+            M("manufacturing.AlternateRouting").objects.create(bom=fabric_bom, routing=outside, priority=1)
+            laminated = WorkOrder.objects.create(
+                item=fabric, bom=fabric_bom, quantity_ordered=D("1000"), uom=kg, warehouse=plant, work_centre=looms,
+                routing=outside, scheduled_start=stamp(day(-3), 6),
+                scheduled_end=stamp(day(-3), 6) + datetime.timedelta(hours=6))
+            laminated.release(on_date=day(-3))
+            challan = M("manufacturing.JobWorkChallan").objects.create(job_worker=laminator, challan_date=day(-2),
+                                                                       vehicle="MH14GT4821")
+            M("manufacturing.JobWorkLine").objects.create(
+                challan=challan, operation=laminated.operations.get(is_outside=True),
+                description="Circular woven fabric, 60 cm, for lamination", hsn_code=fabric.hsn_code,
+                quantity=D("600"), value=D("83400.00"), tax_rate=D("18"))
+            challan.post()
+            # The GSTR-2B of the month the posted pay run is for, as the portal's B2B sheet saved as CSV: two of
+            # that month's three bills are in it (the polymer and the inks), and the liner film's is not, so the
+            # match shows both a bill matched and a bill its supplier has not filed.
+            first, last = s.month_span(2026, 8)
+            month_bills = [b for b in billed if first <= b.bill_date <= last]
+            heading = ("GSTIN of supplier,Trade/Legal name,Invoice number,Invoice Date,Invoice Value,Taxable Value,"
+                       "Integrated Tax,Central Tax,State/UT Tax,Cess")
+            filed = {"V-GRAN": ("2142880.00", "1816000.00", "326880.00", "0.00", "0.00"),
+                     "V-INK": ("99120.00", "84000.00", "0.00", "7560.00", "7560.00")}
+            rows = [",".join((b.vendor.tax_profile.gstin, b.vendor.name, b.reference, f"{b.bill_date:%d-%m-%Y}",
+                              *filed[b.vendor.code], "0.00"))
+                    for b in month_bills if b.vendor.code in filed]
+            from apps.gst import gstr2b
+
+            gstr2b.keep(f"{first:%Y-%m}", "\n".join([heading, *rows]), user=controller)
+
         # ----------------------------------------------------------- books
         with step("Journals, cost centres, a budget, the accounting periods and a recurring rent"):
             Entry, Line = M("accounting.JournalEntry"), M("accounting.JournalLine")
@@ -1116,32 +1223,9 @@ class Command(BaseCommand):
             Pay, PayRun = M("hr.EmployeeCompensation"), M("hr.PayRun")
             basic, hra, pf, epf, pt, esi, eesi = (pay_components[code] for code in (
                 "BASIC", "HRA", "PF", "PF-ER", "PT", "ESI", "ESI-ER"))
-            # The dated figures the levies read, from statutory/ as setup_statutory loads them and confirmed by
-            # the Controller, as the plant's would after checking each against the Gazette: the EPF and EPS wage
-            # ceilings (O532: PF is taken on basic up to the ceiling standing on the run's last day), and ESI's
-            # rates and ceiling (O452: 0.75% and 3.25% of a month's wages, covered up to 21,000; each share
-            # rounded up to the rupee, as ESIC collects it, coverage held for the contribution period of six
-            # months from April or October).
-            from apps.hr.management.commands.setup_statutory import load_figures
-            from apps.accounting.statutory_load import Loader
-
-            for name in ("provident_fund", "esi"):
-                load_figures(Loader(), name)
             # Every pay input holds its person (hold_the_employee): held here in key order first, as the people
             # step does, since the insured are given their ESI before the rest their pay.
             lock_rows(*M("hr.Employee").objects.order_by("pk"), refresh=False)
-            controller = anita.user
-            for figure in M("hr.StatutoryFigure").objects.filter(confirmed_on=None).order_by("pk"):
-                figure.confirm(controller)
-            # Professional tax by Maharashtra's schedule (O405, O461), not a flat 200: the bands of a month's gross
-            # from statutory/professional_tax.csv, a woman's salary up to 25,000 exempt, 300 in February.
-            from apps.hr.management.commands.setup_statutory import load_professional_tax
-
-            load_professional_tax(Loader())
-            # The Controller confirms the bands, as the plant's would after checking them against the Gazette
-            # (PILOT.md): loaded from recall, a run refuses to work out a levy on an unconfirmed band.
-            for band in pt.slabs.filter(state="MH").order_by("pk"):
-                band.confirm(controller)
             # Everyone works at Chakan; who is a woman decides the exemption.
             women = {"sunita", "303", "meena", "anita", "priya"}
             for key, employee in sorted(people.items(), key=lambda pair: pair[1].pk):
@@ -1151,8 +1235,11 @@ class Command(BaseCommand):
             # Where each person is paid (O405), so the run's salary file has a row for everyone: the plant banks
             # with HDFC Chakan, and so, in the demo, does everyone it pays.
             for key, employee in sorted(people.items(), key=lambda pair: pair[1].pk):
+                # Born 25 years before joining, on the 15th (invented): the ECR asks, since the pension share
+                # stops the month after a member turns 58 (O537).
                 M("hr.EmployeePayDetails").objects.create(
                     employee=employee, account_holder=employee.party.name,
+                    date_of_birth=datetime.date(employee.hire_date.year - 25, employee.hire_date.month, 15),
                     account_number=f"5010020{int(employee.employee_number):04d}88", ifsc="HDFC0001234")
             # Under the ceiling, so insured: the security guard, 20,500 a month (16,000 basic and 4,500 HRA).
             insured = {"raju": "3110045672"}

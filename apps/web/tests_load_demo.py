@@ -5,7 +5,9 @@ see what their roles allow, and a second load is refused, so it can
 never mix invented records into real books.
 """
 
+import calendar
 import datetime
+import json
 from decimal import Decimal
 from io import StringIO
 from unittest import mock
@@ -189,3 +191,141 @@ class WhatTheDemoShowsTests(TestCase):
         lakshmi = Employee.objects.get(employee_number="303")
         self.assertEqual(LeavePolicy.objects.get(code="EL").entitlement_for(lakshmi, year, as_of=datetime.date(year, 7, 1)),
                          Decimal("15.00"))
+
+
+class TheStatutoryOutputsComeOutTests(TestCase):
+    """
+    O537: every statutory output comes out of the demo as loaded, by its API route, for the person whose work it
+    is. Until g37 six of them could not: no UAN or date of birth for the ECR; no e-invoicing date, company address,
+    state or country for an e-invoice or e-way bill; no section, rate or payable account for TDS; no challan for
+    ITC-04 and no statement for the 2B match. Each figure is worked in /home/user/work/calc_g37_demo/o537.py
+    (and o532.py for the ECR), from the story's own quantities and prices.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        load(password="Trial-2026", stdout=StringIO(), stderr=StringIO())
+
+    def as_(self, username):
+        """The demo person, signed in by the demo password, with the second factor their role is asked for."""
+        from django.contrib.auth import get_user_model
+        from rest_framework.test import APIClient
+
+        from apps.core.tests_second_factor import for_tests
+
+        client = APIClient()
+        self.assertTrue(client.login(username=username, password="Trial-2026"), username)
+        for_tests(client, get_user_model().objects.get(username=username))
+        return client
+
+    def invoice_of(self, customer, taxable):
+        from apps.sales.models import Invoice
+
+        found = [invoice for invoice in Invoice.objects.filter(customer__code=customer, posted=True, credits=None)
+                 if invoice.subtotal() == Decimal(taxable)]
+        self.assertEqual(len(found), 1, (customer, taxable))
+        return found[0]
+
+    def test_the_pf_ecr_names_all_fourteen_members_at_the_ceiling(self):
+        from apps.hr.models import PayRun
+
+        run = PayRun.objects.get(status="posted")
+        self.assertGreaterEqual(run.period_end, datetime.date(2026, 9, 30))  # the 25,000 ceiling, as o532.py
+        answer = self.as_("kiran").get(f"/api/hr/pay-runs/{run.pk}/ecr/")
+        self.assertEqual(answer.status_code, 200, answer.content[:300])
+        rows = [row.split("#~#") for row in answer.content.decode().splitlines() if row]
+        self.assertEqual(len(rows), 14)
+        # Rohit: 80,000 gross; EPF, EPS and EDLI wages 25,000; 3,000; 8.33% is 2,082.50, 2,083; the rest 917.
+        self.assertEqual(rows[0], ["100900000101", "Rohit Bhosale", "80000", "25000", "25000", "25000", "3000",
+                                   "2083", "917", "0", "0"])
+        self.assertEqual([sum(int(row[column]) for row in rows) for column in (2, 3, 4, 6, 7, 8)],
+                         [575500, 315500, 315500, 37860, 26286, 11574])
+
+    def test_an_e_invoice_is_built_for_a_sale_in_another_state_and_for_an_export(self):
+        accountant = self.as_("anita")
+        # Kaveri Feeds at Mysuru: 30,000 at 14.20 and 18,000 at 11.20, integrated tax at 18%.
+        answer = accountant.post("/api/gst/e-invoices/", {"invoice": self.invoice_of("C-KAVR", "627600").pk}, format="json")
+        self.assertEqual(answer.status_code, 201, answer.content[:300])
+        payload = json.loads(answer.content, parse_float=Decimal)["payload"]
+        self.assertEqual((payload["SellerDtls"]["Stcd"], payload["SellerDtls"]["Pin"], payload["BuyerDtls"]["Stcd"],
+                          payload["BuyerDtls"]["Pin"]), ("27", 410501, "29", 570016))
+        self.assertEqual([payload["ValDtls"][key] for key in ("AssVal", "IgstVal", "CgstVal", "TotInvVal")],
+                         [Decimal("627600"), Decimal("112968"), Decimal("0"), Decimal("740568")])
+        # Gulf Bulk at Dubai, under LUT: USD 17,100 at 83.45, no tax, and the country the goods leave for.
+        answer = accountant.post("/api/gst/e-invoices/", {"invoice": self.invoice_of("C-GULF", "17100").pk}, format="json")
+        self.assertEqual(answer.status_code, 201, answer.content[:300])
+        payload = json.loads(answer.content, parse_float=Decimal)["payload"]
+        self.assertEqual((payload["TranDtls"]["SupTyp"], payload["ExpDtls"]), ("EXPWOP", {"ForCur": "USD", "CntCode": "AE"}))
+        self.assertEqual([payload["ValDtls"][key] for key in ("AssVal", "IgstVal", "TotInvVal")],
+                         [Decimal("1426995"), Decimal("0"), Decimal("1426995")])
+
+    def test_an_e_way_bill_is_built_within_the_state_and_across_a_state_line(self):
+        accountant = self.as_("anita")
+        moving = {"mode": "1", "distance_km": 840, "vehicle_number": "MH12AB1234"}
+        # Sahyadri Cement at Pune: 165,000 sacks at 9.80; central and state tax at 9% each.
+        answer = accountant.post("/api/gst/eway-bills/", {"invoice": self.invoice_of("C-SAHY", "1617000").pk, **moving},
+                                 format="json")
+        self.assertEqual(answer.status_code, 201, answer.content[:300])
+        payload = json.loads(answer.content, parse_float=Decimal)["payload"]
+        self.assertEqual([payload[key] for key in ("fromStateCode", "fromPincode", "toStateCode", "toPincode", "totalValue",
+                                                   "cgstValue", "sgstValue", "igstValue", "totInvValue")],
+                         [27, 410501, 27, 411019, Decimal("1617000"), Decimal("145530"), Decimal("145530"), Decimal("0"),
+                          Decimal("1908060")])
+        answer = accountant.post("/api/gst/eway-bills/", {"invoice": self.invoice_of("C-KAVR", "627600").pk, **moving},
+                                 format="json")
+        self.assertEqual(answer.status_code, 201, answer.content[:300])
+        payload = json.loads(answer.content, parse_float=Decimal)["payload"]
+        self.assertEqual([payload[key] for key in ("toStateCode", "totalValue", "igstValue", "totInvValue")],
+                         [29, Decimal("627600"), Decimal("112968"), Decimal("740568")])
+
+    def test_tax_deducted_from_the_contractor_is_on_the_quarters_list_with_its_challan(self):
+        from apps.purchasing.tds import TdsDeduction
+
+        deduction = TdsDeduction.objects.get()
+        # 60,000 of lamination and 10,800 of GST; 2% of the 60,000 is 1,200, and 69,600 is left to pay.
+        self.assertEqual((deduction.bill.total(), deduction.bill.amount_due()), (Decimal("70800.00"), Decimal("69600.00")))
+        start = deduction.date.replace(month=(deduction.date.month - 1) // 3 * 3 + 1, day=1)
+        end = start.replace(month=start.month + 2, day=calendar.monthrange(start.year, start.month + 2)[1])
+        buyer = self.as_("ravi")
+        answer = buyer.get("/api/purchasing/tds-deductions/quarter/", {"from": start.isoformat(), "to": end.isoformat()})
+        self.assertEqual(answer.status_code, 200, answer.content[:300])
+        self.assertEqual([(row["vendor"], row["pan"], row["base"], row["rate_percent"], row["amount"], row["challan"])
+                          for row in answer.json()["rows"]],
+                         [("Shree Lamination Works", "AAQFS6141H", "60000.00", "2.0000", "1200.00", "0510308/00417")])
+        answer = buyer.get("/api/purchasing/tds-challans/")
+        self.assertEqual(answer.status_code, 200, answer.content[:300])
+        self.assertEqual([(row["amount"], row["challan_number"], row["voided"]) for row in answer.json()],
+                         [("1200.00", "00417", None)])
+
+    def test_itc_04_lists_the_fabric_out_at_the_job_worker(self):
+        from apps.manufacturing.jobwork import JobWorkChallan
+
+        day = JobWorkChallan.objects.get().challan_date
+        year = day.year if day.month >= 4 else day.year - 1
+        start, end = ((datetime.date(year, 4, 1), datetime.date(year, 9, 30)) if 4 <= day.month <= 9
+                      else (datetime.date(year, 10, 1), datetime.date(year + 1, 3, 31)))
+        answer = self.as_("anita").get("/api/gst/itc04/", {"start": start.isoformat(), "end": end.isoformat()})
+        self.assertEqual(answer.status_code, 200, answer.content[:300])
+        # 600 kg at the fabric's cost of 139 a kg, to a job worker in Maharashtra: 9% and 9% had it been a supply.
+        self.assertEqual([(row["name"], row["state"], row["hsn"], row["uqc"], row["quantity"], row["taxable_value"],
+                           row["rates"]["central"], row["rates"]["state"]) for row in answer.json()["sent"]],
+                         [("Shree Lamination Works", "27", "54074200", "KGS", "600.0000", "83400.00", "9.00", "9.00")])
+
+    def test_the_2b_match_shows_two_bills_matched_and_the_rest_not_filed(self):
+        from apps.gst.gstr2b import Gstr2bStatement
+
+        period = Gstr2bStatement.objects.get().period
+        answer = self.as_("anita").get("/api/gst/gstr2b/match/", {"period": period})
+        self.assertEqual(answer.status_code, 200, answer.content[:300])
+        found = answer.json()
+        # In the statement and matched to the paisa: the polymer (1,816,000) and the inks (84,000).
+        self.assertEqual([(row["bill"]["vendor"], row["bill"]["taxable"], row["difference"]["value"])
+                          for row in found["matched"]],
+                         [("V-GRAN - Granule House Polymers", "1816000.00", "0.00"),
+                          ("V-INK - Bharat Printing Inks", "84000.00", "0.00")])
+        self.assertEqual(found["differs"], [])
+        # Not filed by the supplier: the month's liner film (312,500) and the three bills of the month before.
+        self.assertEqual(sorted(Decimal(row["bill"]["taxable"]) for row in found["not_in_2b"]),
+                         [Decimal("65000"), Decimal("198500"), Decimal("312500"), Decimal("1680000")])
+        self.assertEqual((found["totals"]["filed"], found["totals"]["matched"], found["totals"]["waiting"]),
+                         ("342000.00", "342000.00", "406080.00"))
