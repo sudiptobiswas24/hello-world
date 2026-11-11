@@ -154,6 +154,7 @@ def build(start_at=None):
     """
     from .changeover import changeover
     from .machines import requirements
+    from .manning import crewed_machines
     from .tooling import tooling_ready
     from .orders import WorkOrder, WorkOrderStatus
 
@@ -169,8 +170,9 @@ def build(start_at=None):
             machines = centre.machine_list()
             crewed = _crewed_machines(centre, start_at.date())
             if crewed is not None and crewed < len(machines):
-                # No more machines on the board than the crew can run.
-                machines = machines[:crewed]
+                # No more machines on the board than the crew can run, and
+                # the ones the crew's cap on capacity counts (O524).
+                machines = crewed_machines(machines, crewed)
                 if not crewed:
                     crew_short[centre.pk] = True
             resources[centre.pk] = [
