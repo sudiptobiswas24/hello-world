@@ -85,9 +85,11 @@ export default function PayRunForm() {
   // Who is employed in the period and has no slip (O305): named, never left off in silence.
   const workedOut = (result: Run) => {
     const skipped = (result as Run & { skipped?: { employee_number: string; name: string }[] }).skipped ?? [];
-    return skipped.length
+    // A state levy with no schedule for the state someone works in is not taken, and the run says so (O547).
+    const notTaken = ((result as Run & { not_taken?: string[] }).not_taken ?? []).map((line) => ` ${line}`).join("");
+    return (skipped.length
       ? `Worked out. No slip for ${skipped.map((p) => `${p.employee_number} ${p.name}`).join(", ")}: no pay set up for the period.`
-      : "Worked out";
+      : "Worked out") + (notTaken && `.${notTaken}`.replace("..", "."));
   };
 
   const field = (key: "name" | "period_start" | "period_end" | "pay_date", label: string, type = "date") => (
