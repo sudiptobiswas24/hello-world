@@ -3105,3 +3105,37 @@ class AGoLiveCorrectionBesideTheFirstPostingRaceTests(RaceCase):
         outcomes, books = self.cost_raced(correction_first=True)
         self.assertEqual(outcomes, ["done", "done"])
         self.assertEqual(books, ("in_service", Decimal("16000.00"), Decimal("16000.00")))
+
+
+@tag("race")
+@unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
+class ARollMountedBesideADrawOfItsLotRaceTests(RaceCase):
+    """
+    O525: a roll mounted at the laminator is issued whole, at what its shelf holds. A draft issue of 30 kg
+    of the same 104.4 kg roll posted at the same moment: the mount must issue what is left (74.4) or the
+    draw be refused, never both take what the one read saw.
+    """
+
+    def test_the_mount_and_the_draw_take_the_roll_once(self):
+        from apps.manufacturing import tests_process_rolls as rolls_fixture
+        from apps.manufacturing.orders import IssueDirection, MaterialIssueLine
+        from apps.manufacturing.process_rolls import RollMount
+
+        made = fixture(self, rolls_fixture.RollsTestCase)
+        lot, shelf = made.fabric_lot, made.kx.warehouse
+        self.assertEqual(lot.on_hand_at(shelf), Decimal("104.4000"))
+        draw = MaterialIssue.objects.create(work_order=made.lam_run, direction=IssueDirection.ISSUE,
+                                            issue_date=rolls_fixture.TODAY, warehouse=shelf)
+        MaterialIssueLine.objects.create(issue=draw, item=lot.item, quantity=Decimal("30"), uom=lot.item.uom,
+                                         lot=lot, line_number=1)
+        from apps.inventory.models import StockMovement
+
+        # Each held after its read and before its first write: the mount at its issue, the draw at its movement.
+        outcomes = race((MaterialIssue, StockMovement),
+                        lambda: made.mount(), lambda: MaterialIssue.objects.get(pk=draw.pk).post())
+        mounted = RollMount.objects.filter(lot=lot, issue__isnull=False).first()
+        taken = mounted.issue.lines.get().quantity if mounted else None
+        books = (outcomes[0], outcomes[1] == "done", taken, lot.on_hand_at(shelf))
+        # Mounted first, the draw finds nothing; drawn first, the mount takes the 74.4 left.
+        self.assertIn(books, [("done", False, Decimal("104.4000"), Decimal("0")),
+                              ("done", True, Decimal("74.4000"), Decimal("0"))], outcomes)

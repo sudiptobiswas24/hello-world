@@ -162,6 +162,24 @@ class TheAuditFollowsACallIntoAnotherModuleTests(SimpleTestCase):
         self.assertEqual([detail.split(" ")[0] for _shape, detail in found], ["inventory/holding.py:2"])
 
 
+    def test_a_roll_issued_at_a_figure_read_before_its_shelf_is_held_is_reported(self):
+        """O525: _issue_roll read the roll's on hand, and issue.post() held the shelf only after."""
+        from pathlib import Path
+
+        from apps.core.management.commands.audit_invariants import Command, app_sources
+
+        labels = ["core", "inventory", "manufacturing"]
+        sources = {label: dict(texts) for label, texts in app_sources().items() if label in labels}
+        path = Path("apps/manufacturing/process_rolls.py")
+        held = "    lock_rows(run)\n    lock_positions([(lot.item, warehouse)])\n    on_hand = lot.on_hand_at(warehouse)\n"
+        self.assertEqual(sources["manufacturing"][path].count(held), 1)
+        self.assertEqual(Command().shelf_read_before_lock(labels, sources), [])
+        sources["manufacturing"][path] = sources["manufacturing"][path].replace(
+            held, "    on_hand = lot.on_hand_at(warehouse)\n")
+        self.assertEqual([detail.split(" ")[0] for _shape, detail in Command().shelf_read_before_lock(labels, sources)],
+                         ["manufacturing/process_rolls.py:_issue_roll"])
+
+
 class TheAuditSeesAReleasedRunAskedUnheldTests(SimpleTestCase):
     """O46: unlocked_open_runs reports a run's status compared to RELEASED, not only is_open()."""
 
