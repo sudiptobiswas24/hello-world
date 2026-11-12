@@ -65,6 +65,38 @@ class StoresRoles(StoresFixture):
                                       format="json").status_code, 400)
         self.assertEqual(AdjustmentReason.objects.get().account, self.cogs)
 
+    def test_the_controller_s_opening_reason_follows_the_books_and_a_stores_manager_cannot_tick_it(self):
+        """O542 through the API: the reason follows the account the Controller opens the books against."""
+        seeded = Account.objects.create(code="3900", name="Opening balances", account_type=AccountType.EQUITY)
+        capital = Account.objects.create(code="3100", name="Capital", account_type=AccountType.EQUITY)
+        controller = self.as_("Controller")
+        made = controller.post("/api/inventory/adjustment-reasons/", {
+            "code": "OPENING", "name": "Opening stock", "account": seeded.pk, "direction": "increase",
+            "follows_books_opening": True}, format="json")
+        self.assertEqual(made.status_code, 201, made.content)
+        reason = made.json()["id"]
+        opened = controller.post("/api/accounting/books-opening/", {
+            "opened_on": "2026-10-01", "opening_account": capital.pk}, format="json")
+        self.assertEqual(opened.status_code, 201, opened.content)
+        self.assertEqual(controller.get(f"/api/inventory/adjustment-reasons/{reason}/").json()["account"], capital.pk)
+        changed = controller.patch(f"/api/accounting/books-opening/{opened.json()['id']}/",
+                                   {"opening_account": seeded.pk}, format="json")
+        self.assertEqual(changed.status_code, 200, changed.content)
+        self.assertEqual(AdjustmentReason.objects.get(pk=reason).account, seeded)
+        # Another account on a reason that follows is refused beside the account, naming the books'.
+        other = controller.patch(f"/api/inventory/adjustment-reasons/{reason}/", {"account": capital.pk}, format="json")
+        self.assertEqual(other.status_code, 400, other.content)
+        self.assertIn("which is 3900 Opening balances", other.json()["account"][0])
+        # Ticking moves where a reason books, so it is not the Stores Manager's.
+        shrink = AdjustmentReason.objects.create(code="SH", name="Shrink", account=self.cogs)
+        stores = self.as_("Stores Manager")
+        ticked = stores.patch(f"/api/inventory/adjustment-reasons/{shrink.pk}/", {"follows_books_opening": True},
+                              format="json")
+        self.assertEqual((ticked.status_code, list(ticked.json())), (400, ["follows_books_opening"]))
+        self.assertEqual(AdjustmentReason.objects.get(pk=shrink.pk).account, self.cogs)
+        self.assertEqual(stores.patch(f"/api/inventory/adjustment-reasons/{reason}/", {"name": "Opening"},
+                                      format="json").status_code, 200)
+
     def test_a_stores_manager_cannot_credit_the_payables_control_through_a_stock_adjustment(self):
         # A reason left on the payables from before the rule is refused when it would book.
         with self.assertRaises(ValidationError):
