@@ -165,6 +165,7 @@ class Command(BaseCommand):
         "core.yes_no": "a CSV cell reader (csvrows.py) the importer in apps/imports uses; the punch file does not",
         "assets.register_against_ledger": "the daily health check's footing (apps/web/health.py), which is not audited",
         "hr.statutory_gaps": "go_live_check's line per statutory engine (apps/imports/management), which is not audited",
+        "core.todos_from_before_the_rule": "go_live_check's line on to-dos from before core 0047 (O457; apps/imports/management), which is not audited",
 
 
         "core.tables_without_their_trigger": "the daily health check's (apps/web/health.py), which is not audited",

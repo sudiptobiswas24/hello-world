@@ -133,3 +133,39 @@ class FollowUp(AuditModel):
                             body=f"{said}. {self.outcome}" if self.outcome else said,
                             created_by=user, updated_by=user)
         return self
+
+
+RULE_MIGRATION = ("core", "0047_followup_raised_by_a_rule")
+
+
+def rule_arrived():
+    """When core 0047 was applied to this database, or None where no migration is recorded."""
+    from django.db import connection
+    from django.db.migrations.recorder import MigrationRecorder
+
+    app, name = RULE_MIGRATION
+    recorder = MigrationRecorder(connection)
+    if not recorder.has_table():
+        return None
+    return recorder.migration_qs.filter(app=app, name=name).values_list("applied", flat=True).first()
+
+
+def todos_from_before_the_rule():
+    """
+    (when raised_by_a_rule reached this database, the open to-dos made before
+    then for somebody other than whoever made them), or (None, none) where the
+    migration is not recorded.
+
+    Until core 0047 a to-do the application raised (quality.decisions.tell)
+    was kept like one a person planned, and nothing kept tells the two apart
+    (O457). So no old row is changed and none is guessed at: these are every
+    open one the old rule still governs, where whoever made it may mark it
+    done over its addressee's head (O454). One a person made for themselves is
+    left out: its maker is its addressee under either rule.
+    """
+    arrived = rule_arrived()
+    if arrived is None:
+        return None, FollowUp.objects.none()
+    rows = FollowUp.objects.filter(kind=FollowUpKind.TODO, done_on__isnull=True, raised_by_a_rule=False,
+                                   created_at__lt=arrived).exclude(created_by=models.F("assigned_to"))
+    return arrived, rows.select_related("assigned_to", "created_by").order_by("due_on", "pk")

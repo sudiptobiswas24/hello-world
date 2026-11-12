@@ -738,6 +738,91 @@ class GoLiveCheckTests(ImportTestCase):
         self.assertIn("SACK-50", said)
         self.assertNotIn("FAB-90", said)
 
+    NOON = datetime.datetime(2026, 11, 5, 12, 0, tzinfo=datetime.timezone.utc)
+
+    def old_todo_rows(self):
+        """
+        O457. The rule reached this database at noon (UTC) on 5 Nov 2026. Six to-dos about one party:
+
+            made 4 Nov by ravi for asha, open                    counted: the old rule governs it
+            made 4 Nov by asha for herself, open                 not: its maker is its addressee
+            made 4 Nov by ravi for asha, done                    not: nothing is left to decide
+            made 4 Nov by ravi for asha, a call                  not: tell() raises to-dos only
+            made 6 Nov by ravi for asha, open                    not: made under the rule
+            made 6 Nov by the application for asha (ravi's act)  not: marked as raised by a rule
+        """
+        from django.contrib.auth.models import User
+        from django.contrib.contenttypes.models import ContentType
+
+        from apps.core.chatter import FollowUp, FollowUpKind
+
+        ravi, asha = (User.objects.create_superuser(name) for name in ("ravi", "asha"))
+        party = Party.objects.create(code="C-OLD", name="Old Cement")
+        day = datetime.timedelta(days=1)
+
+        def todo(summary, by, made, **more):
+            row = FollowUp.objects.create(
+                content_type=ContentType.objects.get_for_model(Party), object_id=party.pk, summary=summary,
+                due_on=datetime.date(2026, 11, 12), assigned_to=asha, created_by=by, updated_by=by, **more)
+            FollowUp.objects.filter(pk=row.pk).update(created_at=made)
+
+        todo("Decide on the failed lot", ravi, self.NOON - day)
+        todo("Ring the transporter", asha, self.NOON - day)
+        todo("Old and finished", ravi, self.NOON - day, done_on=datetime.date(2026, 11, 4), done_by=asha)
+        todo("Call about the claim", ravi, self.NOON - day, kind=FollowUpKind.CALL)
+        todo("Planned after the rule", ravi, self.NOON + day)
+        todo("Raised after the rule", ravi, self.NOON + day, raised_by_a_rule=True)
+
+    def test_with_no_to_do_from_before_the_rule_nothing_is_said(self):
+        from unittest import mock
+
+        with mock.patch("apps.core.chatter.rule_arrived", return_value=self.NOON):
+            _ready, said = self.check()
+        self.assertNotIn("To-dos from before", said)
+
+    def test_open_to_dos_from_before_the_rule_are_counted_and_named_and_none_is_changed(self):
+        from unittest import mock
+
+        from apps.core.chatter import FollowUp
+
+        self.old_todo_rows()
+        before = list(FollowUp.objects.order_by("pk").values_list("pk", "raised_by_a_rule", "done_on", "updated_at"))
+        with mock.patch("apps.core.chatter.rule_arrived", return_value=self.NOON):
+            _ready, said = self.check()
+        self.assertIn("WARN  To-dos from before the application marked its own: 1 open, made before 05 Nov 2026",
+                      said)
+        self.assertIn("'Decide on the failed lot' for asha, made by ravi, due 12 Nov 2026.", said)
+        for other in ("Ring the transporter", "Old and finished", "Call about the claim", "Planned after the rule",
+                      "Raised after the rule"):
+            self.assertNotIn(other, said)
+        self.assertEqual(list(FollowUp.objects.order_by("pk").values_list(
+            "pk", "raised_by_a_rule", "done_on", "updated_at")), before)
+
+    def test_a_database_that_never_recorded_the_migration_is_not_guessed_at(self):
+        from unittest import mock
+
+        self.old_todo_rows()
+        with mock.patch("apps.core.chatter.rule_arrived", return_value=None):
+            _ready, said = self.check()
+        self.assertNotIn("To-dos from before", said)
+
+    def test_when_the_rule_arrived_is_read_off_the_migrations_this_database_recorded(self):
+        from django.db import connection
+        from django.db.migrations.recorder import MigrationRecorder
+
+        from apps.core.chatter import rule_arrived, todos_from_before_the_rule
+
+        self.old_todo_rows()
+        if not MigrationRecorder(connection).has_table():  # a run without migrations
+            self.assertIsNone(rule_arrived())
+            return
+        self.assertEqual(rule_arrived(), MigrationRecorder.Migration.objects.get(
+            app="core", name="0047_followup_raised_by_a_rule").applied)
+        # This database was built after 4 Nov 2026, so the one row the old rule governs is before it;
+        # the two "after the rule" are dated 6 Nov and count as before it too, being open and unmarked.
+        self.assertEqual(sorted(todos_from_before_the_rule()[1].values_list("summary", flat=True)),
+                         ["Decide on the failed lot", "Planned after the rule"])
+
 
 class GoLiveCheckBeforeTheCompanyTests(TestCase):
     """
