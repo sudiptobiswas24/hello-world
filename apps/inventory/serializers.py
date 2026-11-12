@@ -278,7 +278,8 @@ class AdjustmentReasonSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = AdjustmentReason
-        fields = ["id", "code", "name", "account", "account_label", "direction", "is_active"]
+        fields = ["id", "code", "name", "account", "account_label", "direction", "is_active",
+                  "follows_books_opening"]
 
     def validate_account(self, account):
         """
@@ -296,6 +297,17 @@ class AdjustmentReasonSerializer(serializers.ModelSerializer):
                 "Which account a stock adjustment reason books to is set by someone who may post journal "
                 "entries, not by whoever keeps the stock.")
         return account
+
+    def validate_follows_books_opening(self, follows):
+        """Ticking it moves the reason to the books' opening account, so it takes the right the account takes (O542)."""
+        if follows == bool(getattr(self.instance, "follows_books_opening", False)):
+            return follows
+        request = self.context.get("request")
+        if request is None or not request.user.has_perm("accounting.post_journalentry"):
+            raise serializers.ValidationError(
+                "Whether a reason books to the books' opening account is set by someone who may post journal "
+                "entries, not by whoever keeps the stock.")
+        return follows
 
     def get_account_label(self, reason):
         return f"{reason.account.code} · {reason.account.name}" if reason.account_id else ""

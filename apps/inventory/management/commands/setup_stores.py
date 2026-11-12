@@ -57,7 +57,14 @@ class Command(BaseCommand):
     help = "Seed the standard stock adjustment reasons for review."
 
     def handle(self, *args, **options):
+        from apps.accounting.models import BooksOpening
+
         accounts = {code: stock_account(code) for code in (WRITTEN_OFF, FOUND, OPENING)}
+        # Opening stock stands against the account the books opened against, whichever it is (O542): the
+        # seeded 3900 only until the books have an opening, and the reason follows the setting after.
+        books = BooksOpening.get()
+        if books is not None:
+            accounts[OPENING] = books.opening_account
         missing = [code for code, account in accounts.items() if account is None]
         if missing:
             raise CommandError(f"No account {', '.join(missing)}: run setup_indian_books first, which seeds "
@@ -69,12 +76,15 @@ class Command(BaseCommand):
                 if AdjustmentReason.objects.filter(code=code).exists():
                     kept.append(f"adjustment reason {code}")
                     continue
-                reason = AdjustmentReason(code=code, name=name, account=accounts[account], direction=direction)
+                reason = AdjustmentReason(code=code, name=name, account=accounts[account], direction=direction,
+                                          follows_books_opening=account == OPENING)
                 reason.check_account()
                 reason.save()
-                SeededDefault.objects.create(model=reason._meta.label_lower, object_id=reason.pk,
-                                             label=f"adjustment reason {code} {name} -> {account}")
-                made.append(f"adjustment reason {code} {name} -> {account}")
+                posts_to = accounts[account].code
+                label = f"adjustment reason {code} {name} -> {posts_to}" + (
+                    ", following the books' opening account" if account == OPENING else "")
+                SeededDefault.objects.create(model=reason._meta.label_lower, object_id=reason.pk, label=label)
+                made.append(label)
         for line in made:
             self.stdout.write(f"seeded, to review: {line}")
         for line in kept:

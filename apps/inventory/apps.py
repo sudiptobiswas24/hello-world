@@ -15,6 +15,15 @@ class InventoryConfig(AppConfig):
         register_dated_draft(StockAdjustment, "adjustment_date", lambda adjustment: "stock adjustment")
         register_dated_draft(StockCount, "count_date", lambda count: "stock count")
 
+        # A reason that follows the books' opening is kept on its account (O542).
+        from django.db.models.signals import post_save
+
+        from apps.accounting.models import BooksOpening
+
+        from .adjustments import books_opening_saved
+
+        post_save.connect(books_opening_saved, sender=BooksOpening, dispatch_uid="inventory.books_opening_saved")
+
         from apps.core.models import register_company_check
 
         from .valuation import (

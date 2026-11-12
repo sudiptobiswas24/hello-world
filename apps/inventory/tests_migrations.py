@@ -257,3 +257,39 @@ class EachMovementGivenWhatItsDocumentBookedTests(MigrationCase):
         _, printed = self.forward()
         self.assertIn("TAPE in warehouse", printed)
         self.assertIn("2 rows, 0.01 rounded away in all, 0 net", printed)
+
+
+@tag("migration")
+class TheOpeningReasonFollowsTheBooksFromHereTests(MigrationCase):
+    """0047 (O542): the seeded OPENING reason follows; one a posted adjustment used is left as it is."""
+
+    before = [("inventory", "0046_scankey_item_gtin")]  # accounting stays where it is: 0046 follows its 0031
+    after = [("inventory", "0047_reason_follows_books_opening")]
+
+    def test_the_seeded_reason_takes_the_books_account_unless_it_was_used(self):
+        Account = self.apps.get_model("accounting", "Account")
+        Reason = self.apps.get_model("inventory", "AdjustmentReason")
+        seeded = Account.objects.create(code="3900", name="Opening balances", account_type="equity")
+        capital = Account.objects.create(code="3100", name="Capital", account_type="equity")
+        self.apps.get_model("accounting", "BooksOpening").objects.create(
+            opened_on=datetime.date(2026, 10, 1), opening_account_id=capital.pk)
+        opening = Reason.objects.create(code="OPENING", name="Opening stock", account_id=seeded.pk, direction="increase")
+        found = Reason.objects.create(code="FOUND", name="Found", account_id=seeded.pk, direction="increase")
+        after = self.migrated().get_model("inventory", "AdjustmentReason")
+        self.assertEqual(list(after.objects.order_by("pk").values_list("code", "account_id", "follows_books_opening")),
+                         [("OPENING", capital.pk, True), ("FOUND", seeded.pk, False)])
+        del opening, found
+
+    def test_a_reason_an_adjustment_used_is_left_exactly_as_it_is(self):
+        Account = self.apps.get_model("accounting", "Account")
+        Reason = self.apps.get_model("inventory", "AdjustmentReason")
+        seeded = Account.objects.create(code="3900", name="Opening balances", account_type="equity")
+        capital = Account.objects.create(code="3100", name="Capital", account_type="equity")
+        self.apps.get_model("accounting", "BooksOpening").objects.create(
+            opened_on=datetime.date(2026, 10, 1), opening_account_id=capital.pk)
+        opening = Reason.objects.create(code="OPENING", name="Opening stock", account_id=seeded.pk, direction="increase")
+        self.apps.get_model("inventory", "StockAdjustment").objects.create(
+            adjustment_date=datetime.date(2026, 10, 5), warehouse_id=self.shelf("S").pk, reason_id=opening.pk)
+        after = self.migrated().get_model("inventory", "AdjustmentReason")
+        self.assertEqual(list(after.objects.values_list("code", "account_id", "follows_books_opening")),
+                         [("OPENING", seeded.pk, False)])

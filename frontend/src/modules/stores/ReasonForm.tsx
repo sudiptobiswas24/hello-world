@@ -16,6 +16,8 @@ export default function ReasonForm() {
         { key: "account", label: "Account", kind: "ref", ref: {
           endpoint: "/api/accounting/accounts/", permission: "accounting.view_account",
           label: (row) => `${String(row.code)} · ${String(row.name)}` } },
+        { key: "follows_books_opening", label: "Posts to the books' opening account", kind: "bool", initial: false,
+          hint: "For opening stock: the account follows Settings, Books opening" },
         { key: "is_active", label: "Active", kind: "bool", initial: true },
       ]}
     />

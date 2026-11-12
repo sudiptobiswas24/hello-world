@@ -140,12 +140,46 @@ class AdjustmentReason(AuditModel):
                   "create stock is not shrinkage.",
     )
     is_active = models.BooleanField(default=True)
+    follows_books_opening = models.BooleanField(
+        "posts to the books' opening account", default=False,
+        help_text="For opening stock: the other side is the account the books opened against (Settings, "
+                  "Books opening), whichever that is, and follows it if it is changed before anything is posted.",
+    )
 
     class Meta:
         ordering = ["code"]
 
     def __str__(self):
         return f"{self.code} - {self.name}"
+
+    def follow_books_opening(self):
+        """
+        A reason that follows the books' opening posts to the account the books opened against (O542).
+
+        setup_stores pointed OPENING at 3900 by code while the books' setting held whichever account
+        the plant opened against, so a plant opened against 3100 was refused its opening stock until
+        someone found the reason and changed it by hand. The setting is the one place the account is
+        kept: ticked, or saved with the account as it stood, the reason takes the setting's; an
+        account chosen here that is another one is refused, naming both. Until the books have an
+        opening the reason keeps the account it was given, and takes the setting's when it is set
+        (`books_opening_saved`, below).
+        """
+        if not self.follows_books_opening:
+            return
+        from apps.accounting.models import BooksOpening
+
+        books = BooksOpening.get()
+        if books is None or books.opening_account_id == self.account_id:
+            return
+        before = type(self).objects.filter(pk=self.pk).values_list("account_id", flat=True).first() \
+            if self.pk else None
+        if before is not None and before == self.account_id:
+            self.account = books.opening_account
+            return
+        raise ValidationError({"account": (
+            f"{self.code} posts to the books' opening account, which is {books.opening_account.code} "
+            f"{books.opening_account.name} (Settings, Books opening), not {self.account.code}. Choose that "
+            "account, or untick \"posts to the books' opening account\" to post this reason elsewhere.")})
 
     def check_account(self):
         refusal = offset_account_refusal(self.account)
@@ -166,9 +200,11 @@ class AdjustmentReason(AuditModel):
     def clean(self):
         # The admin's form asks here, so a control account is a field error there, not a 500 (the review).
         # Nothing above this class defines clean(); Model.clean() is empty.
+        self.follow_books_opening()
         self.check_account_if_chosen()
 
     def save(self, *args, **kwargs):
+        self.follow_books_opening()
         self.check_account_if_chosen()
         super().save(*args, **kwargs)
 
@@ -178,6 +214,21 @@ class AdjustmentReason(AuditModel):
         if quantity < 0:
             return self.direction != AdjustmentDirection.INCREASE
         return True
+
+
+def books_opening_saved(sender, instance, **kwargs):
+    """
+    The books' opening set or changed: every reason that follows it posts to its account (O542).
+
+    Accounting refuses the change once anything is posted on or before the opening day, so no opening
+    stock stands against the account left behind. Accounting knows nothing of stock (it imports no
+    module above it), so this listens for its save rather than being called by it; it runs inside
+    that save's transaction, and a reason the new account refuses refuses the change.
+    """
+    for reason in AdjustmentReason.objects.filter(follows_books_opening=True).exclude(
+            account_id=instance.opening_account_id).order_by("pk"):
+        reason.account = instance.opening_account
+        reason.save()
 
 
 class StockAdjustment(AuditModel):
