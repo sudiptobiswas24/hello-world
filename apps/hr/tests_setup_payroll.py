@@ -37,7 +37,7 @@ class SetupPayrollTests(TestCase):
         self.assertEqual(marked, {
             "BASIC": "", "DA": "", "HRA": "", "PF": Statutory.PF, "PF-ER": Statutory.PF_EMPLOYER,
             "ESI": Statutory.ESI, "ESI-ER": Statutory.ESI_EMPLOYER, "PT": Statutory.PT, "LWF": Statutory.LWF,
-            "LWF-ER": Statutory.LWF_EMPLOYER})
+            "LWF-ER": Statutory.LWF_EMPLOYER, "BONUS": "", "BONUS-PAID": ""})
         pf = PayComponent.objects.get(code="PF-ER")
         self.assertEqual((pf.kind, pf.basis, pf.ceiling_figure, pf.expense_account.code, pf.liability_account.code),
                          (ComponentKind.EMPLOYER_COST, ComponentBasis.PERCENT_OF_GROSS, FigureKind.EPF_WAGE_CEILING,
@@ -46,7 +46,7 @@ class SetupPayrollTests(TestCase):
         self.assertEqual(sorted(PayComponent.objects.get(code="ESI").coverage_components.values_list("code", flat=True)),
                          ["BASIC", "DA", "HRA"])
         # Each for the accountant to review.
-        self.assertEqual(SeededDefault.objects.filter(model="hr.paycomponent").count(), 10)
+        self.assertEqual(SeededDefault.objects.filter(model="hr.paycomponent").count(), 12)
         self.assertIn("seeded, to review: pay component PT Professional tax", seeded)
 
         loaded = said("setup_statutory")
@@ -59,9 +59,10 @@ class SetupPayrollTests(TestCase):
         said("setup_indian_books")
         said("setup_payroll")
         again = said("setup_payroll")
-        self.assertIn("0 seeded for the accountant to review, 16 kept.", again)
-        self.assertEqual(PayComponent.objects.count(), 10)
-        self.assertEqual(SeededDefault.objects.filter(model="hr.paycomponent").count(), 10)
+        # Eight accounts and twelve components, the bonus's two of each among them (known limit 19).
+        self.assertIn("0 seeded for the accountant to review, 20 kept.", again)
+        self.assertEqual(PayComponent.objects.count(), 12)
+        self.assertEqual(SeededDefault.objects.filter(model="hr.paycomponent").count(), 12)
 
     def test_what_is_there_is_never_overwritten(self):
         rent = Account.objects.create(code="2410", name="Rent payable", account_type=AccountType.LIABILITY)

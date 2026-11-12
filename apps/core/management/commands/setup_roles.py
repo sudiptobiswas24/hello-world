@@ -191,6 +191,10 @@ ROLES = {
         # What a leaver was left owing (O215): the money paid back, recorded against its payment as an
         # advance is, and giving up on the rest, an expense decision like any receivable written off.
         *crud("hr", "shortfallsettlement", actions=("add", "view")),
+        # The year's bonus (known limit 19): declared, which books owed less accrued, and voided, by whoever
+        # posts the pay runs it is worked out on.
+        *crud("hr", "bonusdeclaration", actions=("add", "view")), *view("hr", "bonusdeclarationline"),
+        "hr.void_bonusdeclaration",
         "hr.write_off_shortfall",
         "hr.void_shortfallsettlement",
         *crud("assets", "assetcategory"),
@@ -703,6 +707,9 @@ ROLES = {
         # An advance's instalment, not the advance: giving one is picking the payment out, the ledger's side.
         *crud("hr", "salaryadvance", actions=("change", "view")),
         *crud("hr", "salarytransferfile", actions=("add", "view")), *view("hr", "salarytransfer"),
+        # Reads the year's bonus declaration and puts its payout on a month's pay (their compensation rows);
+        # declaring it posts, which is the Controller's.
+        *view("hr", "bonusdeclaration", "bonusdeclarationline"),
         # deliberately NOT hr.post_payrun: whoever works the payroll out
         # does not also put it in the ledger and pay it.
     ],

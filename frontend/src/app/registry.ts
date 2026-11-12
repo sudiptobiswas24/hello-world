@@ -1141,6 +1141,10 @@ export const MODULES: Module[] = [
         detail: () => import("../modules/payroll/LeavePolicyForm"),
       },
       {
+        path: "bonus", label: "Bonus", permission: "hr.view_employeecompensation",
+        keywords: "statutory bonus statement declare accounting year 8.33", load: () => import("../modules/payroll/Bonus"),
+      },
+      {
         path: "gratuity", label: "Gratuity", permission: "hr.view_employeecompensation",
         keywords: "gratuity provision years of service", load: () => import("../modules/payroll/Gratuity"),
       },
