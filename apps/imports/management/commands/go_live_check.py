@@ -93,6 +93,7 @@ def checks():
     _people(add)
     _statutory(add)
     _making(add)
+    _old_todos(add)
     _books(add)
     _settings(add)
     return found
@@ -271,6 +272,30 @@ def _making(add):
             f"{', '.join(without[:12])}{', …' if len(without) > 12 else ''}: nothing can be planned or "
             "costed for them until their specification is in (bag_specs, fabric_specs, tape_specs) or a "
             "bill of materials is typed.")
+
+
+def _old_todos(add):
+    """O457: to-dos from before the application marked the ones it raised. Counted and named, never changed."""
+    from apps.core.chatter import todos_from_before_the_rule
+    from apps.core.models import to_date
+
+    arrived, rows = todos_from_before_the_rule()
+    rows = list(rows)
+    if not rows:
+        return
+    day = to_date(arrived)
+
+    def one(row):
+        maker = row.created_by.get_username() if row.created_by_id else "nobody recorded"
+        return f"{row.summary!r} for {row.assigned_to.get_username()}, made by {maker}, due {row.due_on:%d %b %Y}"
+
+    add(WARN, "To-dos from before the application marked its own",
+        f"{len(rows)} open, made before {day:%d %b %Y} (when core migration 0047 reached this database) for "
+        "somebody other than whoever made them. Which of them the application raised (a quality decision's "
+        "notice) and which a person planned was not kept, so all read as planned by a person: whoever made "
+        "one may still mark it done or remove it, not only the person it is for (O454). Nothing is changed "
+        "here. Have each addressee finish theirs, or raise it again: "
+        f"{'; '.join(one(row) for row in rows[:10])}{f'; and {len(rows) - 10} more' if len(rows) > 10 else ''}.")
 
 
 def _books(add):
