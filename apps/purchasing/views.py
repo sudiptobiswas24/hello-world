@@ -688,7 +688,8 @@ class PurchasingReportViewSet(viewsets.ViewSet):
     required_permission = "purchasing.view_purchaseorder"
 
     action_permission_map = {"draw": "purchasing.post_bill", "raise_reorder": "purchasing.add_purchaserequisition",
-                             "msme": "purchasing.view_bill", "unbilled_freight": "purchasing.view_bill",
+                             "msme": "purchasing.view_bill", "msme_statement": "purchasing.view_bill",
+                             "unbilled_freight": "purchasing.view_bill",
                              "to_quote": "purchasing.view_purchaserequisitionline",
                              "ask_quotes": "purchasing.add_requestforquotation"}
 
@@ -702,6 +703,7 @@ class PurchasingReportViewSet(viewsets.ViewSet):
             "payment-run": "payment-run/",
             "vendor-balance": "vendor-balance/",
             "msme": "msme/",
+            "msme-statement": "msme-statement/",
             "unbilled-freight": "unbilled-freight/",
             "open-requisition-lines": "open-requisition-lines/",
             "request-quotes": "request-quotes/",
@@ -756,6 +758,26 @@ class PurchasingReportViewSet(viewsets.ViewSet):
         if not start or not end:
             raise DRFValidationError({"start": ["Give the first and last bill dates."]})
         return Response(msme_bills(start, end, as_of=request.query_params.get("as_of") or None))
+
+    @action(detail=False, methods=["get"], url_path="msme-statement")
+    def msme_statement(self, request):
+        """
+        The MSME list with its totals and the interest the Act adds (s.16), and, given ?year_start= and
+        ?year_end=, the figures the year's accounts state (s.22). Shown, never posted.
+        """
+        from .msme import msme_note, msme_statement
+
+        start, end = to_date(request.query_params.get("start")), to_date(request.query_params.get("end"))
+        if not start or not end:
+            raise DRFValidationError({"start": ["Give the first and last bill dates."]})
+        found = msme_statement(start, end, as_of=request.query_params.get("as_of") or None)
+        year_start = to_date(request.query_params.get("year_start") or None)
+        year_end = to_date(request.query_params.get("year_end") or None)
+        if year_start and year_end:
+            if year_end < year_start:
+                raise DRFValidationError({"year_end": ["The year ends after it starts."]})
+            found["note"] = msme_note(year_start, year_end)
+        return Response(found)
 
     @action(detail=False, methods=["get"])
     def aging(self, request):

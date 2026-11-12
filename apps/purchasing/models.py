@@ -3440,6 +3440,15 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxesTakenUnder, TaxedDocumentMix
         help_text="The day its payment terms gave as it posted (the bill's own date with none): the period "
                   "agreed, which the Act caps.",
     )
+    # The day of acceptance the MSMED Act counts a micro or small vendor's bill from (s.2(b), s.15): the
+    # delivery's, the later of them where the bill takes several, the bill's own date where it takes none (a
+    # service). A fact as the bill posts, written again by msme.keep_due_dates with due_date whenever what
+    # it counts from moves: a later bill taking the delivery (O499), an objection made or removed.
+    accepted_on = models.DateField(
+        null=True, blank=True, editable=False,
+        help_text="The day the goods or services were accepted, for a micro or small vendor's bill: empty "
+                  "while a written objection to a delivery stands.",
+    )
     reference = models.CharField(
         max_length=64, blank=True,
         help_text="The vendor's own invoice number — what they will quote when chasing payment.",
