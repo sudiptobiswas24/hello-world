@@ -87,22 +87,33 @@ class ItemTemplate(AuditModel):
         self._check_costing_frozen()
         super().save(*args, **kwargs)
 
+    # What a variant must share with its template and cannot change once its stock has moved (Item.COUNTED_AS).
+    FROZEN_UNDER_STOCK = (("costing_method", "costing method"), ("tracking", "tracking"))
+
+    def clean(self):
+        # The admin's form asks here, so the refusal is beside its field there, not a server error (L5).
+        self._check_costing_frozen()
+
     def _check_costing_frozen(self):
         """
-        The template's costing method is its variants', and each variant's is frozen under stock (O330); changed
-        here while one holds stock, the variant could no longer be saved and the product's total mixed methods.
+        The template's costing method and tracking are its variants', and each variant's is frozen under stock
+        (O330, L5); changed here while one holds stock, the variant could no longer be saved and the product's
+        total mixed methods, or its variants were tracked two ways.
         """
         if not self.pk:
             return
-        before = type(self).objects.filter(pk=self.pk).values_list("costing_method", flat=True).first()
-        if before is None or before == self.costing_method:
+        names = [name for name, _words in self.FROZEN_UNDER_STOCK]
+        before = type(self).objects.filter(pk=self.pk).values(*names).first()
+        changed = [(name, words) for name, words in self.FROZEN_UNDER_STOCK
+                   if before is not None and before[name] != getattr(self, name)]
+        if not changed:
             return
         held = list(StockMovementModel().objects.filter(item__template=self).values_list(
             "item__sku", flat=True).distinct().order_by("item__sku")[:3])
         if held:
-            raise ValidationError({"costing_method": (
+            raise ValidationError({name: (
                 f"{', '.join(held)} have stock movements counted and valued as the template stands, so its "
-                "costing method cannot change. Make a new product and move the stock to it.")})
+                f"{words} cannot change. Make a new product and move the stock to it.") for name, words in changed})
 
     name = models.CharField(max_length=255)
     description = models.TextField(blank=True)
