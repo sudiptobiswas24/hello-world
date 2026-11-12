@@ -27,6 +27,13 @@ class GstConfig(AppConfig):
         # Reverse charge: a whole debit note cancels its self-invoice, a void its payment voucher, and the
         # GST challans' money through the bank is matched as a TDS challan's is.
         register_debit_note_follow_up(cancel_with_a_whole_debit_note)
+        # A bill posting with reverse-charge tax from a supplier not registered raises its self-invoice (g38).
+        from apps.purchasing.models import AFTER_BILL_POSTED
+
+        from .reverse_charge import raise_self_invoice
+
+        if raise_self_invoice not in AFTER_BILL_POSTED:
+            AFTER_BILL_POSTED.append(raise_self_invoice)
         register_void_follow_up(cancel_vouchers_of)
         register_bank_movements(challans_paid)
 

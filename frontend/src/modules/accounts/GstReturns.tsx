@@ -18,8 +18,21 @@ interface Gstr3b {
   "3.1a": Heads; "3.1b": Heads; "3.1c": Heads; "3.1d": Heads; "3.1e": Heads;
   "4A3": Heads; "4A5": Heads;
   "5": { inter: string; intra: string };
+  // The working behind table 6.1: what credit may set off, and what must be paid in cash (reverse charge).
+  "6.1_working"?: Record<Working, Heads> & { ledger: { to_pay: string; ledger: string; agrees: boolean } };
   warnings: string[];
 }
+
+type Working = "payable" | "credit_may_set_off" | "credit_of_the_period" | "cash_only" | "paid_in_cash" | "still_to_pay_in_cash";
+
+const ROWS_6: [Working, string][] = [
+  ["payable", "Tax payable"],
+  ["credit_may_set_off", "of it, credit may set off (other than reverse charge)"],
+  ["cash_only", "of it, paid in cash only (reverse charge)"],
+  ["paid_in_cash", "Paid in cash by challan"],
+  ["still_to_pay_in_cash", "Still to pay in cash"],
+  ["credit_of_the_period", "Credit of the month, 4(A)"],
+];
 
 const SECTIONS: [string, string][] = [
   ["b2b", "B2B invoices"], ["b2cl", "B2C large"], ["b2cs", "B2C small"], ["exp", "Exports"],
@@ -90,6 +103,32 @@ export default function GstReturns() {
                 {three.data ? `${money(three.data["5"].inter)} inter-state · ${money(three.data["5"].intra)} within the state` : "…"}</td></tr>
             </tbody>
           </table>
+          {three.data?.["6.1_working"] && (
+            <>
+              <h3>6.1 Payment of tax: the working</h3>
+              <table aria-label="6.1 Payment of tax">
+                <thead><tr><th scope="col" /><th scope="col" className="k-money">IGST</th><th scope="col" className="k-money">CGST</th><th scope="col" className="k-money">SGST</th><th scope="col" className="k-money">Cess</th></tr></thead>
+                <tbody>
+                  {ROWS_6.map(([key, label]) => {
+                    const heads = three.data["6.1_working"]![key];
+                    return (
+                      <tr key={key}>
+                        <td>{label}</td>
+                        <td className="k-money">{money(heads.igst)}</td><td className="k-money">{money(heads.cgst)}</td>
+                        <td className="k-money">{money(heads.sgst)}</td><td className="k-money">{money(heads.cess)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+              <p className={three.data["6.1_working"].ledger.agrees ? "note" : "form-error"} role="note">
+                Reverse charge is paid in cash, never from credit (CGST Act s.49(4), s.2(82)). Still to pay by the bills and
+                challans, all months: {money(three.data["6.1_working"].ledger.to_pay)}; in the ledger accounts it is owed
+                into: {money(three.data["6.1_working"].ledger.ledger)}. How much of the rest the credit ledger pays is
+                worked on the portal, which keeps that ledger.
+              </p>
+            </>
+          )}
         </section>
       )}
     </section>

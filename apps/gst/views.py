@@ -288,6 +288,18 @@ class SelfInvoiceViewSet(viewsets.ReadOnlyModelViewSet):
         record.cancel(str(request.data.get("reason", "")), on_date=request.data.get("date") or None)
         return Response(SelfInvoiceSerializer(record).data)
 
+    @action(detail=True, methods=["get"])
+    def pdf(self, request, pk=None):
+        """The self-invoice as it was issued (Rule 46), for the file and the supplier."""
+        from django.http import HttpResponse
+
+        from .reverse_charge_documents import render_self_invoice_pdf
+
+        record = self.get_object()
+        response = HttpResponse(render_self_invoice_pdf(record), content_type="application/pdf")
+        response["Content-Disposition"] = f'inline; filename="{record.number}.pdf"'
+        return response
+
     @action(detail=False, methods=["get"])
     def awaiting(self, request):
         """The reverse-charge supplies from unregistered suppliers with no self-invoice standing."""
@@ -306,6 +318,18 @@ class PaymentVoucherViewSet(viewsets.ReadOnlyModelViewSet):
     date_field = "date"
 
     action_permission_map = {"awaiting": "gst.view_paymentvoucher"}
+
+    @action(detail=True, methods=["get"])
+    def pdf(self, request, pk=None):
+        """The payment voucher as it was issued (Rule 52)."""
+        from django.http import HttpResponse
+
+        from .reverse_charge_documents import render_payment_voucher_pdf
+
+        record = self.get_object()
+        response = HttpResponse(render_payment_voucher_pdf(record), content_type="application/pdf")
+        response["Content-Disposition"] = f'inline; filename="{record.number}.pdf"'
+        return response
 
     @action(detail=False, methods=["get"])
     def awaiting(self, request):
