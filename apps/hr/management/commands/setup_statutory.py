@@ -116,4 +116,10 @@ class Command(BaseCommand):
     help = "Load the dated statutory figures from statutory/, each unconfirmed until the Controller confirms it."
 
     def handle(self, *args, **options):
+        from apps.hr.bonus import give_statutory_accruals
+
         load_all(Loader()).report(self.stdout.write)
+        # The bonus accrual waits for its least per cent, which this has just loaded (setup_payroll says so).
+        with transaction.atomic():
+            for line in give_statutory_accruals():
+                self.stdout.write(f"given: {line}")
