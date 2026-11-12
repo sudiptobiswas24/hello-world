@@ -142,6 +142,26 @@ class ImportApiTests(ImportTestCase):
         self.assertEqual((self.balance(self.ar), self.balance(self.opening)),
                          (Decimal("2360.00"), Decimal("-2360.00")))
 
+    def test_a_plant_opened_against_another_account_brings_its_opening_stock_in(self):
+        """
+        O542, as the controller: the books opened against 3950, the seeded reason was on 3900 and the
+        stock was refused, naming both. The reason follows the books: 250 at 4.20 is 1,050.00 against 3950.
+        """
+        from apps.accounting.models import Account, AccountType, BooksOpening
+        from apps.inventory.adjustments import AdjustmentReason
+
+        capital = Account.objects.create(code="3950", name="Share capital", account_type=AccountType.EQUITY)
+        AdjustmentReason.objects.create(code="OPENING", name="Opening stock", account=self.opening,
+                                        direction="increase", follows_books_opening=True)
+        BooksOpening.objects.create(opened_on="2026-10-01", opening_account=capital)
+        controller = self.as_("Controller")
+        kept = controller.post(f"{RECORDS}run/", {
+            "kind": "opening_stock", "text": "sku,warehouse,quantity,unit_cost\nWDG-1,WH1,250,4.2\n",
+            "commit": True}, format="json")
+        self.assertEqual((kept.status_code, kept.json()["errors"], kept.json()["committed"]), (200, [], True),
+                         kept.content)
+        self.assertEqual((self.balance(capital), self.balance(self.opening)), (Decimal("-1050.00"), Decimal("0")))
+
     def test_who_may(self):
         self.assertEqual(self.as_("Bookkeeper").get(RECORDS).status_code, 403)
         self.assertEqual(self.as_("HR Admin").post(f"{RECORDS}run/", {"kind": "parties", "text": "code\n"},

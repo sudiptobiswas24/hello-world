@@ -95,7 +95,7 @@ class StorageBinAdmin(AuditableAdminMixin, admin.ModelAdmin):
 
 @admin.register(AdjustmentReason)
 class AdjustmentReasonAdmin(AuditableAdminMixin, admin.ModelAdmin):
-    list_display = ("code", "name", "account", "direction", "is_active")
+    list_display = ("code", "name", "account", "direction", "is_active", "follows_books_opening")
     list_filter = ("direction", "is_active")
 
 
