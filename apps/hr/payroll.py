@@ -904,6 +904,9 @@ class PayRun(AuditModel):
         if self.status == PayRunStatus.VOIDED:
             raise ValidationError("A voided pay run cannot be posted again.")
         self._check_pay_date()
+        from .bonus import refuse_a_run_of_a_declared_year
+
+        refuse_a_run_of_a_declared_year(self, "posted")
         slips = list(self.payslips.prefetch_related("lines"))
         if not slips:
             raise ValidationError("Cannot post a pay run with no payslips.")
@@ -1074,6 +1077,10 @@ class PayRun(AuditModel):
         if self.is_voided():
             raise ValidationError("This pay run has already been voided.")
         on_date = correction_date(on_date, self.pay_date, f"{self} is not voided on", "it was paid")
+        from .bonus import refuse_a_run_of_a_declared_year
+
+        # The same check as post(): the year's bonus was declared on what its runs came to.
+        refuse_a_run_of_a_declared_year(self, "voided")
         paid = next((slip for slip in self.payslips.all() if slip.is_paid()), None)
         if paid is not None:
             raise ValidationError(
@@ -1508,7 +1515,7 @@ class Payslip(AuditModel):
         proportion = self.paid_proportion()
         # The dated figures each component was worked out at, kept on its lines (kept_terms), and the
         # overtime hours each rate row paid for.
-        self._kept, self._hours = {}, {}
+        self._kept, self._hours, self._bonus_wages = {}, {}, {}
         self.kept_coverage = None
         rows = EmployeeCompensation.objects.filter(
             employee=self.employee,
@@ -2137,6 +2144,7 @@ class Payslip(AuditModel):
             base = self._sum_of(component, list(component.base_components.all()),
                                 computed, running_taxable)
             ceiling = self._ceiling(component)
+            earlier_base = Decimal("0")
             if ceiling is not None:
                 if component.basis == ComponentBasis.PERCENT_OF_GROSS:
                     # A wage ceiling is a month's (O301, decided): the month's base is this run's and what other
@@ -2149,6 +2157,15 @@ class Payslip(AuditModel):
                         self._terms(component.pk)["month_before"] = [f"{earlier_base:.2f}", f"{earlier_taken:.2f}"]
                     base += earlier_base
                 base = min(base, ceiling)
+            if component.ceiling_figure == BONUS_CEILING:
+                # The wages this run counted for the bonus, kept on the line (bonus.py): the month's wages up
+                # to the ceiling less what its earlier runs counted, for the days this rate stood. The year's
+                # statement adds these up; worked back from a rounded accrual, 6,543.21 read 6,543.22.
+                here = base - min(earlier_base, ceiling)
+                here = here if whole else self._part(here, start, end)
+                wages = self.__dict__.setdefault("_bonus_wages", {})
+                wages[component.pk] = wages.get(component.pk, Decimal("0")) + here
+                self._terms(component.pk)["bonus_wages"] = f"{round_money(wages[component.pk]):.2f}"
             if component.basis == ComponentBasis.SLAB:
                 # The band of the month's wages: this run's base and what other posted runs of the month paid on.
                 earlier_base, earlier_taken = self._month_before(component)

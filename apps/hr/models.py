@@ -770,6 +770,8 @@ NOT_PAY_INPUTS = {
     "hr.Department": "names its manager; the run reads a department's cost centre as it posts, not a pay figure",
     "hr.Employee": "the person: an edit of the row waits on the lock the run holds on it",
     "hr.LeaverLoginSwitch": "whether the leaving switched a login off; no run reads it",
+    "hr.BonusDeclarationLine": "what the year's bonus declaration posted for the person; a run reads the payout "
+                               "row it puts on their pay (EmployeeCompensation, which holds the person), not this",
 }
 
 
@@ -1317,4 +1319,5 @@ from .statutory import MinimumWage, StatutoryFigure  # noqa: E402,F401
 from .pay_details import EmployeePayDetails  # noqa: E402,F401
 from .advances import SalaryAdvance  # noqa: E402,F401
 from .shortfalls import ShortfallSettlement  # noqa: E402,F401
+from .bonus import BonusDeclaration, BonusDeclarationLine  # noqa: E402,F401
 from .bank_file import SalaryTransfer, SalaryTransferFile  # noqa: E402,F401

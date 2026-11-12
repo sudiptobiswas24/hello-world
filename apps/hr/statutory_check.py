@@ -97,6 +97,19 @@ def _levy(engine, kinds, levied_in, marked, day, states):
     return engine, bool(where or marked(*kinds)), missing
 
 
+def _not_given(components, day):
+    """Who is paid a component's wages and does not have the component: an accrual nobody remembered to give."""
+    from .bonus import people_without
+
+    missing = []
+    for component in components:
+        people = people_without(component, day)
+        if people:
+            missing.append(f"{component.code} on the pay of {', '.join(p.employee_number for p in people)} "
+                           "(not given: python manage.py setup_payroll gives it)")
+    return missing
+
+
 def statutory_gaps(day):
     """[(engine, used, missing)] for every engine, in ENGINES order."""
     from apps.accounting.models import TcsSection, TdsSection
@@ -117,7 +130,7 @@ def statutory_gaps(day):
         ("ESI", bool(marked(Statutory.ESI, Statutory.ESI_EMPLOYER)), _figures(ENGINE_FIGURES["ESI"], day, states)),
         _levy("PT", (Statutory.PT,), "professional_tax", marked, day, states),
         _levy("LWF", (Statutory.LWF, Statutory.LWF_EMPLOYER), "labour_welfare_fund", marked, day, states),
-        ("Bonus", bool(bonus), _figures(ENGINE_FIGURES["Bonus"], day, states)),
+        ("Bonus", bool(bonus), _figures(ENGINE_FIGURES["Bonus"], day, states) + _not_given(bonus, day)),
         ("Overtime", active.filter(basis=ComponentBasis.OVERTIME_ORDINARY).exists(),
          _figures(ENGINE_FIGURES["Overtime"], day, states)),
     ]

@@ -25,6 +25,7 @@ from apps.core.models import to_date
 from apps.core.permissions import RequiredPermission
 
 from .advances import SalaryAdvance
+from .bonus import BonusDeclaration, BonusDeclarationLine, bonus_statement, year_name
 from .shortfalls import SettlementKind, ShortfallSettlement, owed_back
 from .bank_file import SalaryTransfer, SalaryTransferFile
 from .pay_details import EmployeePayDetails
@@ -346,3 +347,103 @@ class MyPayslipsView(viewsets.GenericViewSet):
     @action(detail=True, methods=["get"])
     def pdf(self, request, pk=None):
         return _pdf(get_object_or_404(self._mine(request), pk=pk))
+
+
+class BonusLineSerializer(serializers.ModelSerializer):
+    number = serializers.CharField(source="employee.employee_number", read_only=True)
+    name = serializers.CharField(source="employee.party.name", read_only=True)
+    paid = serializers.SerializerMethodField()
+    on_pay_from = serializers.DateField(source="payout.effective_from", read_only=True, default=None)
+
+    class Meta:
+        model = BonusDeclarationLine
+        fields = ["id", "employee", "number", "name", "days_worked", "wages_counted", "owed", "accrued",
+                  "difference", "expense_account", "payable_account", "payout", "on_pay_from", "paid"]
+
+    def get_paid(self, obj):
+        return obj.paid()
+
+
+class BonusDeclarationSerializer(serializers.ModelSerializer):
+    lines = BonusLineSerializer(many=True, read_only=True)
+    name = serializers.SerializerMethodField()
+    # Declared here so the model answers a second declaration of a year in its own words (save()): the field
+    # DRF builds from the constraint says only that one "already exists", a voided one aside or not.
+    year = serializers.IntegerField(min_value=1966, max_value=9000)
+
+    class Meta:
+        model = BonusDeclaration
+        fields = ["id", "year", "name", "percent", "date", "memo", "kept_terms", "journal_entry", "voided_at",
+                  "voided_entry", "lines"]
+
+    def get_name(self, obj):
+        return year_name(obj.year)
+
+
+class BonusDeclarationViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    """
+    The bonus declared for an accounting year (known limit 19). POST {year, percent, date?} declares it and
+    books owed less accrued; {id}/put_on_pay/ {month} puts what is owed on that month's pay,
+    {id}/take_off_pay/ takes back what no run has paid, {id}/void/ {on_date?}. Posted as made: voided,
+    never changed or deleted.
+    """
+
+    queryset = BonusDeclaration.objects.prefetch_related("lines__employee__party", "lines__payout")
+    serializer_class = BonusDeclarationSerializer
+    filter_fields = ["year"]
+    date_field = "date"
+    http_method_names = ["get", "post", "head", "options"]
+    action_permission_map = {"void": "hr.void_bonusdeclaration", "put_on_pay": "hr.add_employeecompensation",
+                             "take_off_pay": "hr.delete_employeecompensation"}
+
+    def perform_create(self, serializer):
+        _run(super().perform_create, serializer)
+
+    def _answer(self, declaration):
+        return Response(self.get_serializer(self.get_queryset().get(pk=declaration.pk)).data)
+
+    @action(detail=True, methods=["post"])
+    def void(self, request, pk=None):
+        declaration = self.get_object()
+        _run(declaration.void, on_date=to_date(request.data.get("on_date")))
+        return self._answer(declaration)
+
+    @action(detail=True, methods=["post"])
+    def put_on_pay(self, request, pk=None):
+        declaration = self.get_object()
+        _run(declaration.put_on_pay, request.data.get("month"))
+        return self._answer(declaration)
+
+    @action(detail=True, methods=["post"])
+    def take_off_pay(self, request, pk=None):
+        declaration = self.get_object()
+        _run(declaration.take_off_pay)
+        return self._answer(declaration)
+
+
+class BonusStatementView(viewsets.ViewSet):
+    """
+    GET ?year=2025&percent=: the bonus statement of the accounting year that starts on 1 April of `year`: each
+    person paid in it, days worked, wages counted, bonus owed, accrued so far, the difference and what has
+    been paid. At the standing declaration's per cent, or the dated least, unless one is given.
+    """
+
+    permission_classes = [IsAuthenticated, RequiredPermission]
+    required_permission = "hr.view_employeecompensation"
+
+    def list(self, request):
+        from apps.core.api import number
+
+        try:
+            year = int(request.query_params.get("year") or "")
+        except ValueError:
+            raise DRFValidationError({"year": ["Say the accounting year by the year it starts in: 2025 for "
+                                               "1 April 2025 to 31 March 2026."]})
+        if not 1966 <= year <= 9000:
+            raise DRFValidationError({"year": ["That is not an accounting year."]})
+        percent = number(request.query_params, "percent", field=BonusDeclaration._meta.get_field("percent"),
+                         default=None)
+        found = _run(bonus_statement, year, percent)
+        for row in found["rows"]:
+            row.pop("expense"), row.pop("payable")
+        return Response(found)

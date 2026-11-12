@@ -14,6 +14,15 @@ professional tax and the welfare fund into it.
     ESI, ESI-ER                    ESI at the dated rates, covered up to the dated ESI ceiling
     PT                             professional tax, from its slab of the gross (setup_statutory loads it)
     LWF, LWF-ER                    the labour welfare fund, from its slabs (setup_statutory loads them)
+    BONUS                          the statutory bonus accrued each month into 2450 Bonus payable: a per cent of
+                                   BASIC and DA up to the bonus ceiling (the higher of the dated 7,000 and the
+                                   minimum wage), for those within the dated eligibility ceiling (21,000)
+    BONUS-PAID                     the bonus paid out: an earning that debits Bonus payable, put on a month's pay
+                                   by the year's bonus declaration
+
+BONUS is then given to everyone in service who is paid BASIC or DA and does not have it, at the dated least per
+cent (8.33): run again, or setup_statutory run after it, gives it to whoever joined since. go_live_check names
+anyone left without it.
 
 Everything is a default for the accountant to review, listed under Settings >
 Seeded defaults until it is marked reviewed. It never overwrites: an account
@@ -34,7 +43,7 @@ from django.db import transaction
 from apps.accounting.management.commands.setup_indian_books import Command as Books
 from apps.accounting.models import AccountType
 from apps.hr.payroll import ComponentBasis, ComponentKind, PayComponent, Rounding, Statutory
-from apps.hr.statutory import FigureKind
+from apps.hr.statutory import BONUS_CEILING, FigureKind
 
 L, X = AccountType.LIABILITY, AccountType.EXPENSE
 # (code, name, type, words an account already under the code must be named for to be used)
@@ -45,6 +54,8 @@ ACCOUNTS = [
     ("2440", "LWF payable", L, ("lwf", "welfare")),
     ("6000", "Wages", X, ("wage", "salar")),
     ("6100", "Employer contributions", X, ("employer", "contribution")),
+    ("2450", "Bonus payable", L, ("bonus",)),
+    ("6110", "Bonus", X, ("bonus",)),
 ]
 EARNED = dict(kind=ComponentKind.EARNING, basis=ComponentBasis.FIXED, reduces_for_unpaid_leave=True)
 PF_TERMS = dict(basis=ComponentBasis.PERCENT_OF_GROSS, ceiling_figure=FigureKind.EPF_WAGE_CEILING,
@@ -78,6 +89,18 @@ COMPONENTS = [
      dict(kind=ComponentKind.EMPLOYER_COST, basis=ComponentBasis.SLAB, sequence=96,
           statutory=Statutory.LWF_EMPLOYER),
      "6100", "2440", (), ()),
+    # The statutory bonus (Payment of Bonus Act 1965; Code on Wages 2019 s.26): accrued on basic and dearness
+    # allowance, the Act's "salary or wage", which also decides who is within the eligibility ceiling. The rate
+    # is on each person's pay, as every rate is, within the dated least and most.
+    ("BONUS", "Statutory bonus, accrued",
+     dict(kind=ComponentKind.EMPLOYER_COST, basis=ComponentBasis.PERCENT_OF_GROSS, ceiling_figure=BONUS_CEILING,
+          rounding=Rounding.PAISA, sequence=110),
+     "6110", "2450", ("BASIC", "DA"), ("BASIC", "DA")),
+    # Paid out of what was accrued: it debits Bonus payable, and counts towards no levy's base (a yearly bonus
+    # is not the wages PF and ESI are taken of).
+    ("BONUS-PAID", "Statutory bonus, paid",
+     dict(kind=ComponentKind.EARNING, basis=ComponentBasis.FIXED, is_taxable=False, sequence=40),
+     "2450", None, (), ()),
 ]
 
 
@@ -113,14 +136,19 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         books = Books(stdout=self.stdout, stderr=self.stderr)
         books.made, books.kept, books.collisions = [], [], []
+        from apps.hr.bonus import give_statutory_accruals
+
         with transaction.atomic():
             seed_payroll(books)
+            given = give_statutory_accruals()
         for line in books.made:
             self.stdout.write(f"seeded, to review: {line}")
         for line in books.kept:
             self.stdout.write(f"kept as it was: {line}")
         for line in books.collisions:
             self.stdout.write(f"collision, for the accountant: {line}")
+        for line in given:
+            self.stdout.write(f"given: {line}")
         self.stdout.write(f"{len(books.made)} seeded for the accountant to review, {len(books.kept)} kept.")
         self.stdout.write("Then: python manage.py setup_statutory, which loads professional tax and the welfare "
                           "fund into the components marked as them.")
