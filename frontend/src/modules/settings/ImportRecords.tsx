@@ -28,6 +28,7 @@ export default function ImportRecords() {
   const [options, setOptions] = useState<Record<string, string>>({ reason: "OPENING" });
   const [report, setReport] = useState<Report | null>(null);
   const [problems, setProblems] = useState<string[]>([]);
+  const [dateErrors, setDateErrors] = useState<string[]>([]);
   const chosen = (kinds.data ?? []).find((row) => row.kind === kind);
   const may = can("core.import_records");
 
@@ -46,9 +47,13 @@ export default function ImportRecords() {
     if (outcome.ok) {
       setReport(outcome.data);
       setProblems([]);
+      setDateErrors([]);
     } else {
       setReport(null);
-      setProblems(Object.values(outcome.error.fields).flat());
+      // A date that is none is said beside its box (O543); the rest above the file, as before.
+      const { date, ...rest } = outcome.error.fields;
+      setDateErrors(date ?? []);
+      setProblems(Object.values(rest).flat());
     }
   };
   const set = (key: string, value: string) => setOptions((current) => ({ ...current, [key]: value }));
@@ -79,7 +84,7 @@ export default function ImportRecords() {
             </Field>
           )}
           {chosen?.needs.includes("date") && (
-            <Field label="As at" hint="Leave empty: the day the books opened (Settings, Books opening). Any other day is refused">
+            <Field label="As at" errors={dateErrors} hint="Leave empty: the day the books opened (Settings, Books opening). Any other day is refused">
               {(id) => <input id={id} type="date" value={options.date ?? ""} onChange={(event) => set("date", event.target.value)} />}
             </Field>
           )}
