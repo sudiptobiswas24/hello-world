@@ -195,6 +195,8 @@ ROLES = {
         # posts the pay runs it is worked out on.
         *crud("hr", "bonusdeclaration", actions=("add", "view")), *view("hr", "bonusdeclarationline"),
         "hr.void_bonusdeclaration",
+        # Gratuity paid to a leaver: recorded against the payment that paid it, as an advance is.
+        *crud("hr", "gratuitypayout", actions=("add", "view")), "hr.void_gratuitypayout",
         "hr.write_off_shortfall",
         "hr.void_shortfallsettlement",
         *crud("assets", "assetcategory"),
@@ -709,7 +711,7 @@ ROLES = {
         *crud("hr", "salarytransferfile", actions=("add", "view")), *view("hr", "salarytransfer"),
         # Reads the year's bonus declaration and puts its payout on a month's pay (their compensation rows);
         # declaring it posts, which is the Controller's.
-        *view("hr", "bonusdeclaration", "bonusdeclarationline"),
+        *view("hr", "bonusdeclaration", "bonusdeclarationline", "gratuitypayout"),
         # deliberately NOT hr.post_payrun: whoever works the payroll out
         # does not also put it in the ledger and pay it.
     ],

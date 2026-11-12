@@ -1320,4 +1320,5 @@ from .pay_details import EmployeePayDetails  # noqa: E402,F401
 from .advances import SalaryAdvance  # noqa: E402,F401
 from .shortfalls import ShortfallSettlement  # noqa: E402,F401
 from .bonus import BonusDeclaration, BonusDeclarationLine  # noqa: E402,F401
+from .gratuity import GratuityPayout  # noqa: E402,F401
 from .bank_file import SalaryTransfer, SalaryTransferFile  # noqa: E402,F401
