@@ -381,6 +381,8 @@ def _open_document(row, options, side):
     if amount <= 0:
         raise RowError("amount", "must be above nothing; enter a credit as a credit note.")
     on = date(row, "date")
+    # Still owed on the day the books opened, so raised on or before it (O541): the one check, asked of the row.
+    opening_position("open_invoices" if side == "sales" else "open_bills", options, dated=on)
     terms = by_code(PaymentTerms, row, "payment_terms", required_=False) or party.payment_terms
     currency = by_code(Currency, row, "currency", required_=False) or party.default_currency
     reference = required(row, "reference")
@@ -436,7 +438,16 @@ POSTS_THE_OPENING_POSITION = {
 }
 
 
-def opening_position(kind, options):
+# What a row dated after the opening day is, and where it goes instead (opening_position, O541).
+RAISED_SINCE = {
+    "open_invoices": "an invoice raised since is a sale in the new books, not part of the opening position. "
+                     "Enter it as an invoice (Sales, Invoices), or correct the date.",
+    "open_bills": "a bill raised since is a purchase in the new books, not part of the opening position. "
+                  "Enter it as a bill (Purchasing, Bills), or correct the date.",
+}
+
+
+def opening_position(kind, options, dated=None):
     """
     The day the books opened and the account they opened against, from accounting's books setting:
     {"opened_on", "opening_account"}. The setting is the one place either is kept, so the opening
@@ -444,6 +455,10 @@ def opening_position(kind, options):
     only a second look, refused if it disagrees, and so is an account: open invoices took any
     --against, and receivables set against share capital left the opening-balance account
     holding what it was never credited with (O530).
+
+    `dated` is the day a row of the file gives its own document (an open invoice, an open bill): on or
+    before the opening day, or it was not owed on that day and is refused, naming both days (O541). A
+    document raised on the opening day itself under the old system is part of that day's position.
     """
     from apps.accounting.models import BooksOpening
     from apps.core.models import to_date
@@ -459,6 +474,8 @@ def opening_position(kind, options):
     if against and against != books.opening_account.code:
         raise RowError("--against", f"{against} is not the opening-balance account ({books.opening_account.code}) "
                        "the books opened against (Settings, Books opening): leave --against out, or give that one.")
+    if dated is not None and dated > books.opened_on:
+        raise RowError("date", f"{dated} is after the day the books opened ({books.opened_on}): {RAISED_SINCE[kind]}")
     return {"opened_on": books.opened_on, "opening_account": books.opening_account}
 
 

@@ -59,3 +59,42 @@ class ImportInTheBrowserTests(BrowserTestCase):
             "Row 2, --date: set the day the books opened (Settings, Books opening) first: what is still owed "
             "stands against the account set there.")
         self.assertEqual(self.problems, [])
+
+    def test_an_invoice_raised_after_the_books_opened_is_refused_on_the_screen_and_a_bad_day_beside_its_box(self):
+        """O541 and O543, as the controller in the browser."""
+        import datetime
+
+        from apps.accounting.models import Account, AccountType, BooksOpening
+        from apps.core.models import Company
+        from apps.sales.models import Invoice
+
+        opening = Account.objects.create(code="3900", name="Opening balances", account_type=AccountType.EQUITY)
+        BooksOpening.objects.create(opened_on=datetime.date(2026, 10, 1), opening_account=opening)
+        company = Company.get()
+        company.default_receivable_account = self.ar
+        company.save()
+        page = self.sign_in(self.person("Controller"), "/app/settings/import")
+        page.get_by_label("Kind").select_option("open_invoices")
+        page.get_by_label("Rows").fill(f"customer,reference,date,amount\n{self.customer.code},NEW/0001,2026-10-20,590\n")
+        page.get_by_role("button", name="Check").click()
+        expect(page.locator("main")).to_contain_text(
+            "Row 2, date: 2026-10-20 is after the day the books opened (2026-10-01): an invoice raised since is a "
+            "sale in the new books, not part of the opening position.")
+        page.get_by_label("Rows").fill(f"customer,reference,date,amount\n{self.customer.code},OLD/0500,2026-10-01,2360\n")
+        with self.answering(page, "") as asked:
+            page.get_by_role("button", name="Keep").click()
+            expect(page.locator("main")).to_contain_text("1 row(s), 1 would be made and were kept.")
+        self.assertIn("Keep this open_invoices file?", asked[0])
+        self.assertEqual(str(Invoice.objects.get(reference="OLD/0500").invoice_date), "2026-10-01")
+        self.assertEqual(self.problems, [])
+
+        # A day that is none (a date box takes only a date, so the box is made a plain one to type it) is
+        # refused beside the box, not above the file.
+        page.get_by_label("Kind").select_option("opening_stock")
+        page.get_by_label("As at").evaluate("(box) => { box.type = 'text'; }")
+        page.get_by_label("As at").fill("10 Oct")
+        page.get_by_label("Rows").fill("sku,warehouse,quantity,unit_cost\nWIDGET-1,WH1,1,1\n")
+        page.get_by_role("button", name="Check").click()
+        beside = page.locator(".field", has=page.get_by_label("As at")).locator(".field-error")
+        expect(beside).to_have_text("'10 Oct' is not a date. Write it as 2026-03-31.")
+        self.assertEqual([problem for problem in self.problems if "400" not in problem], [])

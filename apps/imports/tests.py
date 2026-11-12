@@ -36,11 +36,11 @@ class ImportTestCase(SalesTestCase):
         company.default_payable_account = self.payable
         company.save()
 
-    def open_books(self):
-        """The books' setting every kind that posts the opening position waits for (O529)."""
+    def open_books(self, on=GO_LIVE):
+        """The books' setting every kind that posts the opening position waits for (O529), opened `on`."""
         from apps.accounting.models import BooksOpening
 
-        return BooksOpening.get() or BooksOpening.objects.create(opened_on=GO_LIVE, opening_account=self.opening)
+        return BooksOpening.get() or BooksOpening.objects.create(opened_on=on, opening_account=self.opening)
 
     def balance(self, account):
         rows = JournalLine.objects.filter(account=account, entry__posted=True).aggregate(
@@ -273,6 +273,46 @@ class OpenDocumentsTests(ImportTestCase):
                          (Decimal("11800.00"), Decimal("-11800.00")))
         again = run("open_invoices", text, commit=True, against="3900")
         self.assertEqual(self.errors(again), [(2, "reference")])
+
+    def test_a_document_raised_after_the_books_opened_is_no_part_of_the_opening_position(self):
+        """
+        O541 (calc_g38_imports/o541.py): books opened 2026-10-01. A row dated the 20th, or the 2nd, is
+        refused naming both days and nothing of the file is kept; the opening day itself and before
+        are that day's position: 11,800 + 2,360 owed, 5,000 + 750 owing, 8,410 net against 3900.
+        """
+        from apps.core.models import PartyRole, PartyRoleAssignment
+        from apps.purchasing.models import Bill
+        from apps.sales.models import Invoice
+
+        vendor = Party.objects.create(code="V-9", name="Granules", default_currency=self.usd)
+        PartyRoleAssignment.objects.create(party=vendor, role=PartyRole.VENDOR)
+        owed = "customer,reference,date,amount\nC-1,OLD/0412,2026-08-20,11800\nC-1,OLD/0500,2026-10-01,2360\n"
+        late = run("open_invoices", owed + "C-1,NEW/0001,2026-10-20,590\nC-1,NEW/0002,2026-10-02,100\n", commit=True)
+        self.assertEqual(late.errors, [
+            (4, "date", "2026-10-20 is after the day the books opened (2026-10-01): an invoice raised since is a "
+             "sale in the new books, not part of the opening position. Enter it as an invoice (Sales, Invoices), "
+             "or correct the date."),
+            (5, "date", "2026-10-02 is after the day the books opened (2026-10-01): an invoice raised since is a "
+             "sale in the new books, not part of the opening position. Enter it as an invoice (Sales, Invoices), "
+             "or correct the date.")])
+        self.assertEqual((late.committed, Invoice.objects.count(), self.balance(self.opening)),
+                         (False, 0, Decimal("0")))
+        kept = run("open_invoices", owed, commit=True)
+        self.assertTrue(kept.committed, kept.errors)
+        self.assertEqual(str(Invoice.objects.get(reference="OLD/0500").invoice_date), "2026-10-01")
+        self.assertEqual((self.balance(self.ar), self.balance(self.opening)),
+                         (Decimal("14160.00"), Decimal("-14160.00")))
+        owing = "vendor,reference,date,amount\nV-9,GH-77,2026-09-02,5000\nV-9,GH-80,2026-10-01,750\n"
+        late = run("open_bills", owing + "V-9,GH-81,2026-10-02,40\n", commit=True)
+        self.assertEqual(late.errors, [
+            (4, "date", "2026-10-02 is after the day the books opened (2026-10-01): a bill raised since is a "
+             "purchase in the new books, not part of the opening position. Enter it as a bill (Purchasing, Bills), "
+             "or correct the date.")])
+        self.assertEqual((late.committed, Bill.objects.count()), (False, 0))
+        kept = run("open_bills", owing, commit=True)
+        self.assertTrue(kept.committed, kept.errors)
+        self.assertEqual((self.balance(self.payable), self.balance(self.opening)),
+                         (Decimal("-5750.00"), Decimal("-8410.00")))
 
     def test_an_open_bill_is_owing_and_only_to_a_vendor(self):
         from apps.core.models import PartyRole, PartyRoleAssignment

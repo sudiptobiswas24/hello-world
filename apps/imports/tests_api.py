@@ -121,6 +121,27 @@ class ImportApiTests(ImportTestCase):
         self.assertEqual((self.balance(self.payable), self.balance(self.opening)),
                          (Decimal("-5000.00"), Decimal("5000.00")))
 
+    def test_an_invoice_raised_after_the_books_opened_is_refused_from_the_screen(self):
+        """O541, as the controller: the 20th is refused naming both days; the opening day itself is kept."""
+        from apps.sales.models import Invoice
+
+        self.open_books()
+        controller = self.as_("Controller")
+        file = {"kind": "open_invoices", "commit": True}
+        late = controller.post(f"{RECORDS}run/", {
+            **file, "text": "customer,reference,date,amount\nC-1,NEW/0001,2026-10-20,590\n"}, format="json")
+        self.assertEqual((late.status_code, late.json()["committed"]), (200, False), late.content)
+        self.assertEqual(late.json()["errors"], [[
+            2, "date", "2026-10-20 is after the day the books opened (2026-10-01): an invoice raised since is a "
+            "sale in the new books, not part of the opening position. Enter it as an invoice (Sales, Invoices), "
+            "or correct the date."]])
+        self.assertFalse(Invoice.objects.exists())
+        kept = controller.post(f"{RECORDS}run/", {
+            **file, "text": "customer,reference,date,amount\nC-1,OLD/0500,2026-10-01,2360\n"}, format="json")
+        self.assertEqual((kept.json()["committed"], kept.json()["errors"]), (True, []), kept.content)
+        self.assertEqual((self.balance(self.ar), self.balance(self.opening)),
+                         (Decimal("2360.00"), Decimal("-2360.00")))
+
     def test_who_may(self):
         self.assertEqual(self.as_("Bookkeeper").get(RECORDS).status_code, 403)
         self.assertEqual(self.as_("HR Admin").post(f"{RECORDS}run/", {"kind": "parties", "text": "code\n"},
