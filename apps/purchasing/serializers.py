@@ -163,6 +163,7 @@ class BillSerializer(TakesItsLinesMixin, ExtensibleSerializerMixin, serializers.
             "bill_date",
             "due_date",
             "terms_due_date",
+            "accepted_on",
             "act_pay_by",
             "currency",
             "payment_terms",
@@ -194,7 +195,7 @@ class BillSerializer(TakesItsLinesMixin, ExtensibleSerializerMixin, serializers.
         ]
         read_only_fields = [
             "taxes_taken_under",
-            "number", "due_date", "terms_due_date", "debits", "journal_entry", "posted", "posted_at",
+            "number", "due_date", "terms_due_date", "accepted_on", "debits", "journal_entry", "posted", "posted_at",
             "exchange_rate", "is_prepayment", "is_opening_balance", "corrects_old_supply",
             "old_bill_value",
         ]

@@ -980,7 +980,7 @@ export const MODULES: Module[] = [
       {
         path: "msme-payments", label: "MSME payments", permission: "purchasing.view_bill",
         also: ["purchasing.view_purchaseorder"],
-        keywords: "msme 43b udyam 45 days micro small late payment", load: () => import("../modules/accounts/MsmeReport"),
+        keywords: "msme 43b udyam 45 days micro small late payment interest section 16 22 23", load: () => import("../modules/accounts/MsmeReport"),
       },
       {
         path: "customer-tds", label: "TDS by customers", permission: "sales.view_customertds",
@@ -1455,6 +1455,14 @@ export const MODULES: Module[] = [
         create: "accounting.add_tcssection",
         keywords: "tcs 206c 394 scrap section", load: () => import("../modules/settings/TcsSections"),
         detail: () => import("../modules/settings/TcsSectionForm"),
+      },
+      {
+        // The Reserve Bank's bank rate: three times it is MSME interest (MSMED Act s.16).
+        path: "bank-rates", label: "Bank rates", permission: "accounting.view_bankrate",
+        keep: "accounting.change_bankrate",
+        create: "accounting.add_bankrate",
+        keywords: "bank rate rbi msme interest late payment section 16", load: () => import("../modules/settings/BankRates"),
+        detail: () => import("../modules/settings/BankRateForm"),
       },
       {
         path: "tcs-rates", label: "TCS rates", permission: "accounting.view_tcsrate",

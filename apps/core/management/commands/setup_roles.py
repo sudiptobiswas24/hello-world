@@ -155,6 +155,8 @@ ROLES = {
         *crud("accounting", "tdssection"),
         *crud("accounting", "tdsrate"),
         "accounting.confirm_tdsrate",
+        *crud("accounting", "bankrate"),
+        "accounting.confirm_bankrate",
         *crud("accounting", "tcssection"),
         *crud("accounting", "tcsrate"),
         "accounting.confirm_tcsrate",
@@ -367,7 +369,7 @@ ROLES = {
         *crud("gst", "gstcashpayment", actions=("add", "view")),
         # The voucher is issued with the payment, by whoever pays (s.31(3)(g)).
         *crud("gst", "paymentvoucher", actions=("add", "view")),
-        *view("accounting", "tdssection", "tdsrate"),
+        *view("accounting", "tdssection", "tdsrate", "bankrate"),
         *view("purchasing", "weightclaim"),
         # Import accounting (L21): the bill of entry is booked and voided here, its duty paid like any bill.
         *crud("purchasing", "billofentry", actions=("add", "change", "delete", "view")),

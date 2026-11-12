@@ -82,7 +82,7 @@ export const GROUPS: Record<string, [string, string[]][]> = {
   settings: [
     ["People", ["logins", "role-proposals"]],
     ["Company", ["company", "numbering", "plant-gst", "books-opening", "gst-registrations", "licences", "luts", "gst-returns-filed", "custom-fields"]],
-    ["Taxes", ["taxes", "tax-groups", "fiscal-positions", "tds-sections", "tds-rates", "tcs-sections", "tcs-rates"]],
+    ["Taxes", ["taxes", "tax-groups", "fiscal-positions", "tds-sections", "tds-rates", "tcs-sections", "tcs-rates", "bank-rates"]],
     ["Masters", ["currencies", "exchange-rates", "countries", "units", "payment-terms", "party-tags", "charge-types"]],
     ["System", ["health", "edit-log", "problems", "import", "seeded-defaults"]],
   ],
