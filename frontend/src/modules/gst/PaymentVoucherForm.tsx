@@ -18,6 +18,7 @@ export default function PaymentVoucherForm() {
       newTitle="Issue payment vouchers"
       heading={(row) => String(row.number ?? "")}
       state={(row) => (row.cancelled_on ? { label: "Cancelled", tone: "void" } : { label: "Issued", tone: "done" })}
+      links={[{ label: "Print", href: (row) => `/api/gst/payment-vouchers/${String(row.id)}/pdf/` }]}
       permissions={{ add: "gst.add_paymentvoucher" }}
       note={() => "One voucher is issued for each reverse-charge bill the payment settles."}
       fields={[

@@ -21,7 +21,9 @@ Built:
   adjusted against an invoice or refunded).
 - GSTR-3B: 3.1(a), (b), (c), (d), (e); 3.2; 4(A)(3), 4(A)(5); 5; and
   6.1's reverse-charge row: the tax owed and what challans paid of it in
-  cash (reverse_charge.GstCashPayment). 4(A)(3) is what was paid, not what
+  cash (reverse_charge.GstCashPayment); and 6.1's working, the tax payable
+  split into what credit may set off and what must be paid in cash, the
+  cash footed to the ledger (`6.1_working`). 4(A)(3) is what was paid, not what
   was owed: credit on reverse charge waits for the payment (Rule 36(1)(b)).
 
 Not built, and returned as `not_built` rather than left looking
@@ -58,7 +60,8 @@ NOT_BUILT = [
     "4(B), 4(D): credit reversed or ineligible",
     "Amendments to earlier periods",
     "Supplies through e-commerce operators",
-    "GSTR-3B table 6.1 (A): set-off of tax other than reverse charge, interest and late fee",
+    "GSTR-3B table 6.1 (A): how much of the tax other than reverse charge the credit ledger pays (the "
+    "portal keeps that ledger and applies it); interest and late fee",
 ]
 # The portal refuses a document number longer than this.
 NUMBER_LIMIT = 16
@@ -645,6 +648,30 @@ def gstr3b(start, end):
             result["warnings"].append(
                 f"Reverse charge {head.upper()}: {payable[head]} owed for the period, {paid[head]} paid in cash; "
                 "the credit is claimed only on what is paid.")
+    # The working behind table 6.1, not a reported figure (left out when a filed return is compared):
+    # the tax payable split into what credit may set off and what must be paid in cash. Output tax
+    # excludes tax payable on reverse charge (s.2(82)) and the credit ledger pays only output tax
+    # (s.49(4)), so reverse charge is cash, always; the rest may be paid from credit, in the order the
+    # portal applies (s.49(5), s.49A, Rule 88A) against a credit ledger the portal keeps, not these books.
+    from .reverse_charge import owed_against_the_ledger
+
+    output = {head: result["3.1a"][head] + result["3.1b"][head] for head in HEADS}
+    credit = {head: result["4A3"][head] + result["4A5"][head] for head in HEADS}
+    footing = owed_against_the_ledger()
+    result["6.1_working"] = {
+        "payable": {head: output[head] + payable[head] for head in HEADS},
+        "credit_may_set_off": output,
+        "credit_of_the_period": credit,
+        "cash_only": payable,
+        "paid_in_cash": dict(paid),
+        "still_to_pay_in_cash": {head: payable[head] - paid[head] for head in HEADS},
+        "ledger": footing,
+    }
+    if not footing["agrees"]:
+        result["warnings"].append(
+            f"Reverse charge still to pay in cash is {footing['to_pay']} by the bills and challans, and "
+            f"{footing['ledger']} in the ledger accounts it is owed into: something else moved them by "
+            f"{footing['difference']}.")
     result["warnings"] = sorted(set(result["warnings"]))
     return result
 
@@ -773,7 +800,7 @@ def gstr1_json(result):
 
 COMPILERS = {"gstr1": gstr1, "gstr3b": gstr3b}
 # What a return says about itself rather than reports: left out when a filed return is compared with the books.
-_NOT_REPORTED = ("warnings", "not_built", "filed")
+_NOT_REPORTED = ("warnings", "not_built", "filed", "6.1_working")
 
 
 def kept(value):
