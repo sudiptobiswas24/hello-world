@@ -114,3 +114,41 @@ class AnUnregisteredWorkersOwnAddressTests(ChallanEwayBillTestCase):
                                is_primary=True)
         with self.assertRaisesMessage(ValidationError, "says its state is nothing"):
             prepare(self.challan("50"), vehicle_number="MH12AB1234")
+
+
+class AWorkersSiteInAnotherStateTests(ChallanEwayBillTestCase):
+    """
+    The auditor's case: a laminator registered in Karnataka (29) with works at Kolhapur, Maharashtra.
+    50 kg at 95 = 4,750.00. It was refused: "is in Maharashtra, but the registration is in Karnataka".
+    """
+
+    def works(self, state):
+        Address.objects.filter(party=self.laminator, address_type=AddressType.SHIPPING).delete()
+        Address.objects.create(party=self.laminator, address_type=AddressType.BILLING, line1="KIADB Plot 7",
+                               city="Dharwad", state="Karnataka", postal_code="580011", is_primary=True)
+        return Address.objects.create(party=self.laminator, address_type=AddressType.SHIPPING, line1="Gat 12, Shiroli MIDC",
+                                      city="Kolhapur", state=state, postal_code="416001", is_primary=True)
+
+    def test_a_site_with_no_state_is_refused_rather_than_given_the_registrations(self):
+        """It built state code 29 over PIN 416001, which the portal rejects."""
+        self.works("")
+        with self.assertRaisesMessage(ValidationError, "says its state is nothing"):
+            prepare(self.challan("50"), vehicle_number="MH12AB1234")
+
+    def test_the_bill_says_where_the_lorry_goes_and_whom_it_is_sent_to(self):
+        self.works("Maharashtra")
+        bill = prepare(self.challan("50"), vehicle_number="MH12AB1234")
+        payload = bill.payload
+        self.assertEqual((payload["toGstin"], payload["toStateCode"], payload["actToStateCode"], payload["toPincode"],
+                          payload["toPlace"], payload["transactionType"], payload["totInvValue"]),
+                         ("29AABCE5678F1ZD", 29, 27, 416001, "Kolhapur", 2, 4750.0))
+        # The goods cross no state line; that the worker is registered across one is said.
+        self.assertFalse(bill.required)
+        self.assertIn("Worth 4750", bill.required_because)
+        self.assertIn("registered in Karnataka and takes the goods in Maharashtra", bill.required_because)
+
+    def test_works_across_the_line_still_need_a_bill_whatever_they_are_worth(self):
+        bill = prepare(self.second, vehicle_number="MH12AB1234")
+        self.assertTrue(bill.required)
+        self.assertEqual((bill.payload["toStateCode"], bill.payload["actToStateCode"], bill.payload["transactionType"]),
+                         (29, 29, 1))
