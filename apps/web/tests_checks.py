@@ -39,10 +39,11 @@ class ChecksTestCase(ImportTestCase):
         JournalLine.objects.bulk_create([JournalLine(entry=opening_stock, account=self.inventory, debit=Decimal("2000")),
                                          JournalLine(entry=opening_stock, account=self.opening, credit=Decimal("2000"))])
         ago = lambda days: self.today - datetime.timedelta(days=days)  # noqa: E731
-        # The books opened on 1 January: an open invoice waits for the setting (O529).
+        # The books opened the day the old invoice is dated: an open invoice waits for the setting (O529), and
+        # one raised after the books opened is no part of the opening position (O541). 1 January was before it.
         from apps.accounting.models import BooksOpening
 
-        BooksOpening.objects.create(opened_on=datetime.date(2026, 1, 1), opening_account=self.opening)
+        BooksOpening.objects.create(opened_on=ago(92), opening_account=self.opening)
         report = run("open_invoices", f"customer,reference,date,amount\nC-1,OLD/1,{ago(92)},20000\n",
                      commit=True, against="3900")
         self.assertTrue(report.committed, report.errors)
