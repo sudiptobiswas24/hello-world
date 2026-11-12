@@ -53,6 +53,8 @@ interface Bill {
   due_date: string | null;
   // The terms' own day, shown beside it only when the Act brings the bill forward.
   terms_due_date: string | null;
+  // The day of acceptance the MSME Act counts from, for a micro or small vendor's posted bill.
+  accepted_on: string | null;
   reference: string;
   purchase_order: number | null;
   debits: number | null;
@@ -190,8 +192,8 @@ export default function BillForm() {
           </Field>
           <Field label="Due" errors={[]}
             hint={bill?.due_date && bill.terms_due_date && bill.terms_due_date !== bill.due_date
-              ? `By the MSME Act: 45 days from acceptance at most. The terms said ${date(bill.terms_due_date)}.`
-              : undefined}>
+              ? `By the MSME Act: 45 days from acceptance${bill.accepted_on ? ` on ${date(bill.accepted_on)}` : ""} at most. The terms said ${date(bill.terms_due_date)}.`
+              : bill?.accepted_on ? `MSME Act: accepted on ${date(bill.accepted_on)}.` : undefined}>
             {(fid, described) => <output id={fid} aria-describedby={described}>{bill?.due_date ? date(bill.due_date) : "Set when posted"}</output>}
           </Field>
           <Field label="Their invoice number" hint="As printed on the vendor's invoice" errors={draft.errors.reference}>

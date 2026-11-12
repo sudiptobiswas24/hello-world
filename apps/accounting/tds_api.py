@@ -6,6 +6,7 @@ from rest_framework.response import Response
 
 from apps.core.audit import AuditableViewSetMixin
 
+from .bank_rate import BankRate
 from .tcs import TcsDeclaration, TcsRate, TcsSection
 from .tds import TdsRate, TdsSection
 
@@ -93,6 +94,23 @@ class TdsRateViewSet(TcsRateViewSet):
     queryset = TdsRate.objects.select_related("section")
     serializer_class = TdsRateSerializer
     action_permission_map = {"confirm": "accounting.confirm_tdsrate"}
+
+
+class BankRateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = BankRate
+        fields = ["id", "applies_from", "rate_percent", "authority", "confirmed_by", "confirmed_on"]
+        read_only_fields = ["confirmed_by", "confirmed_on"]
+
+
+class BankRateViewSet(TcsRateViewSet):
+    """The Reserve Bank's bank rate from a day (MSMED Act s.16): the dated rate's screen and rules."""
+
+    queryset = BankRate.objects.all()
+    serializer_class = BankRateSerializer
+    filter_fields = []
+    search_fields = ["authority"]
+    action_permission_map = {"confirm": "accounting.confirm_bankrate"}
 
 
 class TcsDeclarationSerializer(serializers.ModelSerializer):
