@@ -57,7 +57,9 @@ class HealthTestCase(ImportTestCase):
         # open invoice of 20,000 from the old system: receivables ledger
         # 20,000 = documents 20,000.
         self.hand_journal(self.inventory, self.opening, "2000")
-        self.open_books()
+        # Opened the day the old invoice is dated, whatever today is: an invoice raised after the books
+        # opened is no part of the opening position (O541), and GO_LIVE fell before it from 10 November.
+        self.open_books(on=self.today - datetime.timedelta(days=40))
         report = run("open_invoices", f"customer,reference,date,amount\nC-1,OLD/1,{self.today - datetime.timedelta(days=40)},20000\n",
                      commit=True, against="3900")
         self.assertTrue(report.committed, report.errors)
@@ -119,8 +121,9 @@ class ProbeTests(HealthTestCase):
         from apps.core.models import Party, PartyRole, PartyRoleAssignment
 
         vendor = Party.objects.create(code="V-1", name="Granules", default_currency=self.usd)
+        # An old bill, so dated on or before the day the books opened (O541), as the old invoice is.
         PartyRoleAssignment.objects.create(party=vendor, role=PartyRole.VENDOR)
-        report = run("open_bills", f"vendor,reference,date,amount\nV-1,GH/7,{self.today},7000\n", commit=True, against="3900")
+        report = run("open_bills", f"vendor,reference,date,amount\nV-1,GH/7,{self.today - datetime.timedelta(days=40)},7000\n", commit=True, against="3900")
         self.assertTrue(report.committed, report.errors)
         self.assertEqual(self.finding("payables")["ok"], True)
         self.hand_journal(self.opening, self.payable, "250")

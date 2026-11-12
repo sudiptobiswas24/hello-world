@@ -21,7 +21,7 @@ from rest_framework.test import APIClient
 
 from apps.core.models import Party, PartyRole, PartyRoleAssignment
 from apps.imports.importer import run
-from apps.imports.tests import GO_LIVE, ImportTestCase
+from apps.imports.tests import ImportTestCase
 from apps.inventory.models import AdjustmentReason
 
 from .bank import stock_statement
@@ -36,15 +36,17 @@ class BankStatementTestCase(ImportTestCase):
         vendor = Party.objects.create(code="V-9", name="Granules", default_currency=self.usd)
         PartyRoleAssignment.objects.create(party=vendor, role=PartyRole.VENDOR)
         self.today = timezone.localdate()
-        self.open_books()
         ago = lambda days: self.today - datetime.timedelta(days=days)  # noqa: E731
+        # Opened the day the latest old bill is dated, whatever today is (O541): GO_LIVE fell before it from
+        # 13 October. The stock is counted that day, as before (after the 80-days-ago statement, either way).
+        self.opened = opened = self.open_books(on=ago(29)).opened_on
         for kind, text in (
             ("opening_stock", "sku,warehouse,quantity,unit_cost\nWDG-1,WH1,250,4.2\n"),
             ("open_invoices", "customer,reference,date,amount\n"
                               f"C-1,OLD/1,{ago(92)},20000\nC-1,OLD/2,{ago(153)},5000\n"),
             ("open_bills", f"vendor,reference,date,amount\nV-9,GH-1,{ago(29)},800\n"),
         ):
-            report = run(kind, text, commit=True, date=GO_LIVE, reason="OPENING", against="3900")
+            report = run(kind, text, commit=True, date=opened, reason="OPENING", against="3900")
             self.assertTrue(report.committed, report.errors)
 
 
@@ -61,7 +63,8 @@ class StatementTests(BankStatementTestCase):
                          (Decimal("1687.50"), Decimal("12000.00"), Decimal("13687.50")))
 
     def test_creditors_eat_into_paid_stock_and_full_margins_leave_nothing(self):
-        report = run("open_bills", f"vendor,reference,date,amount\nV-9,GH-2,{self.today},900\n", commit=True,
+        # Old bills, so dated on or before the day the books opened (O541); still owed today either way.
+        report = run("open_bills", f"vendor,reference,date,amount\nV-9,GH-2,{self.opened},900\n", commit=True,
                      against="3900")
         self.assertTrue(report.committed, report.errors)
         found = stock_statement(as_of=self.today)
@@ -69,7 +72,7 @@ class StatementTests(BankStatementTestCase):
         self.assertEqual((found["creditors"], found["paid_stock"], found["drawing_power"]),
                          (Decimal("1700.00"), Decimal("1350.00"), Decimal("13012.50")))
         # More owed than held leaves no paid stock at all, not a negative one.
-        report = run("open_bills", f"vendor,reference,date,amount\nV-9,GH-3,{self.today},2000\n", commit=True,
+        report = run("open_bills", f"vendor,reference,date,amount\nV-9,GH-3,{self.opened},2000\n", commit=True,
                      against="3900")
         self.assertTrue(report.committed, report.errors)
         owed_more = stock_statement(as_of=self.today)
