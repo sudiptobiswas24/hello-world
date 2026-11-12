@@ -69,7 +69,9 @@ class ImportApiTests(ImportTestCase):
                 self.assertEqual((checked.status_code, checked.json()["errors"], checked.json()["committed"]),
                                  (200, [], False), checked.content)
         bad = controller.post(f"{RECORDS}run/", {"kind": "opening_stock", "text": "sku\n", "date": "10 Oct"}, format="json")
-        self.assertEqual((bad.status_code, bad.json()), (400, ["'10 Oct' is not a date. Write it as 2026-03-31."]))
+        # Beside the date box, as a form reads it (O543): it was a bare list.
+        self.assertEqual((bad.status_code, bad.json()),
+                         (400, {"date": ["'10 Oct' is not a date. Write it as 2026-03-31."]}))
         self.assertEqual(controller.post(f"{RECORDS}run/", {"kind": "nothing", "text": "x\n"}, format="json").status_code, 400)
         self.assertEqual(controller.post(f"{RECORDS}run/", {"kind": "parties", "text": " "}, format="json").status_code, 400)
 
