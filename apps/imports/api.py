@@ -7,6 +7,7 @@ controller: an import posts invoices, confirms orders and writes the
 asset register, so it is not a clerk's.
 """
 
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.http import HttpResponse
 from rest_framework import viewsets
 from rest_framework.decorators import action
@@ -81,7 +82,11 @@ class ImportViewSet(viewsets.ViewSet):
             raise DRFValidationError({"text": ["Paste or upload the file, headings first."]})
         # Neither is demanded (O531): the books' setting decides the day and the account, and the
         # importer's refusal says where to set it. One sent is a second look, refused if it disagrees.
-        day = to_date(request.data.get("date") or None)
+        # A date that is none is said beside the date box, as a form reads it, not as a bare list (O543).
+        try:
+            day = to_date(request.data.get("date") or None)
+        except DjangoValidationError as error:
+            raise DRFValidationError({"date": error.messages}) from None
         against = str(request.data.get("against") or "")
         commit = flag(request.data, "commit", False)
         report = run(kind, text, commit=commit, user=request.user, date=day, against=against,
