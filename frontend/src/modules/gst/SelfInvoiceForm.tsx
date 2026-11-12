@@ -21,6 +21,7 @@ export default function SelfInvoiceForm() {
       newTitle="Issue a self-invoice"
       heading={(row) => String(row.number ?? "")}
       state={(row) => (row.cancelled_on ? { label: "Cancelled", tone: "void" } : { label: "Issued", tone: "done" })}
+      links={[{ label: "Print", href: (row) => `/api/gst/self-invoices/${String(row.id)}/pdf/` }]}
       permissions={{ add: "gst.add_selfinvoice" }}
       fields={[
         { key: "bill", label: "From bill", kind: "pick", pick: BILL, show: (row) => String(row.bill_number ?? "") },

@@ -26,7 +26,8 @@ what was not confirmed from the Gazette text):
   (gst.returns), never what was owed.
 
 Decided here (g24 brief): a self-invoice is numbered from its own series
-(gst.self_invoice), made from the bill, refused past the thirty days, and
+(gst.self_invoice), made from the bill (as the bill posts when that is within
+the thirty days, g38: raise_self_invoice), refused past the thirty days, and
 taken back only by a cancellation; the reverse-charge tax is cleared only by
 a GstCashPayment; a debit note that takes the whole supply back cancels its
 self-invoice; a void of the supplier's payment cancels its voucher.
@@ -210,6 +211,30 @@ class SelfInvoice(AuditModel):
             paid__in=_paid_rows_of(self.bill), taken_back_entry__isnull=True), self.cancelled_on,
             f"Credit taken back: self-invoice {self.number} cancelled")
         return self
+
+
+def raise_self_invoice(bill):
+    """
+    Bill.post's follow-up (purchasing.AFTER_BILL_POSTED), inside its transaction: a bill that posts with tax
+    under reverse charge from a supplier not registered is given its self-invoice there and then, dated the
+    day it posts, from the series (s.31(3)(f)). Whether a supply is under reverse charge is decided nowhere
+    here: it is what the bill recorded on its lines (reverse_charge_figures), as issue() reads it.
+
+    Not raised where Rule 47A's thirty days from receipt have run out, or the supply is dated ahead of
+    today: the bill still posts, stays on awaiting_self_invoice(), which the health check names, and a
+    person issues it or takes the late one to the tax adviser. Its reverse is the debit note that takes the
+    whole supply back (cancel_with_a_whole_debit_note); issued, it is cancelled, never edited or deleted.
+    """
+    if bill.is_debit_note() or bill.is_prepayment or bill.is_opening_balance or bill.party_gstin:
+        return None
+    if not any(reverse_charge_figures(bill)[head] for head in HEADS):
+        return None
+    today, received = timezone.localdate(), received_on(bill)
+    if not received <= today <= received + datetime.timedelta(days=SELF_INVOICE_DAYS):
+        return None
+    if SelfInvoice.objects.filter(bill=bill, cancelled_on__isnull=True).exists():
+        return None
+    return SelfInvoice.issue(bill, on_date=today)
 
 
 def cancel_with_a_whole_debit_note(note):
@@ -527,6 +552,36 @@ def cash_ledger(account):
     balance = sum((totals["balance"] for totals in heads.values()), ZERO)
     return {"account": account, "heads": heads, "balance": balance, "ledger": ledger,
             "difference": ledger - balance}
+
+
+def owed_against_the_ledger():
+    """
+    The reverse-charge tax still to be paid in cash, footed to the books as they stand: for each account
+    it was owed into (kept on the bill's tax row as it posted), what every posted bill owed there, a debit
+    note's taken off, less what the challans standing paid of it, beside the account's own balance in
+    the ledger (credit less debit). They agree unless something else moved the account: a journal made by
+    hand, a balance brought in at go-live. {accounts: [{account, code, name, owed, paid, to_pay, ledger,
+    difference}], owed, paid, to_pay, ledger, difference, agrees}.
+    """
+    owed, paid = defaultdict(Decimal), defaultdict(Decimal)
+    rows = BillLineTax.objects.filter(reverse_charge=True, gst_head__in=HEADS, owed_account__isnull=False,
+                                      line__bill__posted=True).select_related("line__bill")
+    for row in rows:
+        bill = row.line.bill
+        owed[row.owed_account_id] += _base(row, bill) * (-1 if bill.is_debit_note() else 1)
+    for row in GstCashPaymentRow.objects.filter(payment__voided_entry__isnull=True):
+        paid[row.account_id] += row.amount
+    accounts = []
+    for account in Account.objects.filter(pk__in=set(owed) | set(paid)).order_by("code"):
+        lines = JournalLine.objects.filter(account=account, entry__posted=True)
+        ledger = sum((line.credit - line.debit for line in lines), ZERO)
+        to_pay = owed[account.pk] - paid[account.pk]
+        accounts.append({"account": account.pk, "code": account.code, "name": account.name,
+                         "owed": owed[account.pk], "paid": paid[account.pk], "to_pay": to_pay,
+                         "ledger": ledger, "difference": ledger - to_pay})
+    totals = {name: sum((row[name] for row in accounts), ZERO)
+              for name in ("owed", "paid", "to_pay", "ledger", "difference")}
+    return {"accounts": accounts, **totals, "agrees": not totals["difference"]}
 
 
 def ledger_accounts():
