@@ -409,12 +409,18 @@ def _challan_payload(challan):
             f"{worker} had no state on its tax profile when {challan.number} was issued."
         )
     going_to = worker.shipping_address()
-    # An unregistered worker's own billing address with no state reads the state the challan
-    # recorded at issue, by the rule a sale reads (O533).
+    billed_at = worker.billing_address()
+    # Where the lorry goes is the address's own state, by the rule a sale reads (O533, O546): the
+    # worker's own billing address with no state reads the state the challan recorded at issue; any
+    # other site with none is nobody's to guess. The registration's state is whom it is sent to
+    # (toStateCode), never where: a laminator registered in Karnataka with works at Kolhapur was
+    # refused, and with no state on the site it built 29 over a Maharashtra PIN.
     place = p.place(going_to, f"{worker}",
-                    registered_state=challan.job_worker_state if challan.job_worker_gstin
-                    else None,
-                    standing=state_delivered_in(going_to, worker.billing_address(), challan.job_worker_state))
+                    standing=state_delivered_in(going_to, billed_at, challan.job_worker_state))
+    # Bill-to and ship-to differ where the addresses do, or where the one address is in another
+    # state than the registration it is sent to.
+    two_places = ((billed_at is not None and going_to is not None and going_to.pk != billed_at.pk)
+                  or place["state"] != challan.job_worker_state)
     items, total = [], ZERO
     for number, line in enumerate(challan.lines.select_related(
             "operation__work_order__uom__gst_uqc"), start=1):
@@ -437,17 +443,24 @@ def _challan_payload(challan):
         **_from(p.seller()),
         **_to(challan.job_worker_gstin or p.UNREGISTERED, p.party_name(worker), place,
               challan.job_worker_state),
-        "transactionType": 1,
+        "transactionType": 2 if two_places else 1,
         "totalValue": float(total),
         "cgstValue": 0, "sgstValue": 0, "igstValue": 0, "cessValue": 0,
         "cessNonAdvolValue": 0, "otherValue": 0,
         "totInvValue": float(total),
         "itemList": items,
     }
-    if challan.job_worker_state != registration.state:
-        return payload, True, (f"Sent to a job worker in {STATES[challan.job_worker_state]}: "
+    # CGST Rule 138(1), third proviso: goods sent by a principal in one state to a job worker in
+    # another need a bill whatever they are worth. Read as where the goods go; a worker registered in
+    # another state taking them at works in this one is said, and is the plant's practitioner's to
+    # confirm (not confirmed).
+    if place["state"] != registration.state:
+        return payload, True, (f"Sent to a job worker in {STATES[place['state']]}: "
                                "across a state line, whatever it is worth.")
     required, because = _limit_test(total, registration)
+    if challan.job_worker_state != registration.state:
+        because += (f" The worker is registered in {STATES[challan.job_worker_state]} and takes the goods in "
+                    f"{STATES[place['state']]}: read here as no state line crossed.")
     return payload, required, because
 
 
@@ -497,11 +510,14 @@ def _delivery_payload(delivery, declared_value):
     profile = PartyTaxProfile.objects.filter(party=customer).first()
     gstin = profile.gstin if profile else ""
     going_to = delivery.shipping_address or order.shipping_address or customer.shipping_address()
-    # Its own billing address with no state reads the state on its record, as a sale's does (O533).
+    billed_at = order.billing_address or customer.billing_address()
+    # Its own billing address with no state reads the state on its record, as a sale's does (O533);
+    # a site of its own in another state is where the goods go, and the registration's state is only
+    # whom they go back to (O546).
     place = p.place(going_to, f"{customer}'s delivery address",
-                    registered_state=gstin[:2] if gstin else None,
-                    standing=state_delivered_in(going_to, order.billing_address or customer.billing_address(),
-                                                profile.place_of_supply() if profile else None))
+                    standing=state_delivered_in(going_to, billed_at, profile.place_of_supply() if profile else None))
+    two_places = ((billed_at is not None and going_to is not None and going_to.pk != billed_at.pk)
+                  or bool(gstin and place["state"] != gstin[:2]))
     items, spread, total = [], ZERO, sum(conversion, ZERO)
     for number, (line, share) in enumerate(zip(lines, conversion), start=1):
         item = line.order_line.item
@@ -530,7 +546,7 @@ def _delivery_payload(delivery, declared_value):
         **_from(p.seller()),
         **_to(gstin or p.UNREGISTERED, p.party_name(customer), place,
               gstin[:2] if gstin else place["state"]),
-        "transactionType": 1,
+        "transactionType": 2 if two_places else 1,
         "totalValue": float(declared_value),
         "cgstValue": 0, "sgstValue": 0, "igstValue": 0, "cessValue": 0,
         "cessNonAdvolValue": 0, "otherValue": 0,
