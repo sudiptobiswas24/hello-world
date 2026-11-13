@@ -1,4 +1,5 @@
 import datetime
+from decimal import Decimal
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework.exceptions import PermissionDenied, ValidationError as DRFValidationError
@@ -207,11 +208,15 @@ class EwayBillViewSet(RowHeldViewSetMixin, mixins.ListModelMixin, mixins.Retriev
     portal gave; cancel/ within 24 hours of it.
     """
 
-    queryset = ewaybill.EwayBill.objects.select_related("invoice", "challan")
+    queryset = ewaybill.EwayBill.objects.select_related("invoice", "challan", "delivery", "carried_on")
     serializer_class = EwayBillSerializer
-    filter_fields = ["invoice", "delivery", "challan"]
-    search_fields = ["number", "vehicle_number", "invoice__number", "transporter_name"]
-    action_permission_map = {"record": "gst.change_ewaybill", "cancel": "gst.change_ewaybill"}
+    filter_fields = ["invoice", "delivery", "challan", "carried_on"]
+    search_fields = ["number", "vehicle_number", "invoice__number", "transporter_name", "carried_on__number"]
+    action_permission_map = {"record": "gst.change_ewaybill", "cancel": "gst.change_ewaybill",
+                             "consignments": "gst.view_ewaybill", "lacking": "gst.view_ewaybill",
+                             # Where a posted invoice's goods went is recorded by whoever makes its bill.
+                             "record_where_it_went": "gst.add_ewaybill",
+                             "withdraw_where_it_went": "gst.change_ewaybill"}
 
     def create(self, request):
         from apps.manufacturing.jobwork import JobWorkChallan
@@ -226,8 +231,9 @@ class EwayBillViewSet(RowHeldViewSetMixin, mixins.ListModelMixin, mixins.Retriev
         doc_date = data.get("transport_doc_date")
         if doc_date and parse_date(str(doc_date)) is None:
             raise DRFValidationError(["The transport document's date is YYYY-MM-DD."])
+        carried_on = (get_object_or_404(Delivery, pk=data["carried_on"]) if data.get("carried_on") else None)
         bill = ewaybill.prepare(
-            document,
+            document, carried_on=carried_on,
             mode=str(data.get("mode", ewaybill.TransportMode.ROAD)),
             distance_km=data.get("distance_km", 0),
             transporter_id=data.get("transporter_id", ""),
@@ -239,6 +245,58 @@ class EwayBillViewSet(RowHeldViewSetMixin, mixins.ListModelMixin, mixins.Retriev
             declared_value=data.get("declared_value"),
         )
         return Response(EwayBillSerializer(bill).data, status=201)
+
+    @action(detail=False, methods=["get"])
+    def consignments(self, request):
+        """?invoice=: the trucks an invoice went on, each with its share of the invoice and its bill, if made."""
+        from apps.sales.models import Invoice
+
+        invoice = get_object_or_404(Invoice, pk=request.query_params.get("invoice") or 0)
+        rows = []
+        for delivery in ewaybill.consignments(invoice):
+            row = {"delivery": delivery.pk, "number": delivery.number, "delivery_date": delivery.delivery_date,
+                   "vehicle_number": delivery.vehicle_number, "lr_number": delivery.lr_number,
+                   "transporter_name": delivery.transporter.name if delivery.transporter_id else ""}
+            try:
+                payload, needed, because = ewaybill._invoice_payload(invoice, delivery)
+            except DjangoValidationError as refused:
+                row["refused"] = " ".join(refused.messages)
+            else:
+                row |= {"document_type": payload["docType"], "document_number": payload["docNo"],
+                        "taxable": Decimal(str(payload["totalValue"])), "value": Decimal(str(payload["totInvValue"])),
+                        "required": needed, "required_because": because}
+            standing = ewaybill.EwayBill.objects.filter(carried_on=delivery, cancelled_at__isnull=True).first()
+            row["eway_bill"] = standing.pk if standing else None
+            row["eway_bill_number"] = standing.number if standing else ""
+            rows.append(row)
+        return Response(rows)
+
+    @action(detail=False, methods=["get"])
+    def lacking(self, request):
+        """Posted invoices no e-way bill can be made for until where their goods went is recorded (O544, O545)."""
+        return Response([{"invoice": invoice.pk, "number": invoice.number, "invoice_date": invoice.invoice_date,
+                          "customer_name": invoice.customer.name, "export": invoice.party_registration == "overseas",
+                          "why": why} for invoice, why in ewaybill.lacking_where_they_went()])
+
+    @action(detail=False, methods=["post"], url_path="record-where-it-went")
+    def record_where_it_went(self, request):
+        """{invoice, state | port_address}: on a posted invoice, the state delivered in or, an export, its port."""
+        from apps.core.models import Address
+        from apps.sales.models import Invoice
+
+        invoice = get_object_or_404(Invoice, pk=request.data.get("invoice") or 0)
+        port = (get_object_or_404(Address, pk=request.data["port_address"])
+                if request.data.get("port_address") else None)
+        invoice.record_where_it_went(request.user, state=str(request.data.get("state") or ""), port_address=port)
+        return Response(_where_it_went(invoice))
+
+    @action(detail=False, methods=["post"], url_path="withdraw-where-it-went")
+    def withdraw_where_it_went(self, request):
+        from apps.sales.models import Invoice
+
+        invoice = get_object_or_404(Invoice, pk=request.data.get("invoice") or 0)
+        invoice.withdraw_where_it_went()
+        return Response(_where_it_went(invoice))
 
     @action(detail=True, methods=["post"])
     def record(self, request, pk=None):
@@ -255,6 +313,13 @@ class EwayBillViewSet(RowHeldViewSetMixin, mixins.ListModelMixin, mixins.Retriev
         bill = self.get_object()
         bill.cancel(str(request.data.get("reason", "")), str(request.data.get("remarks", "")))
         return Response(EwayBillSerializer(bill).data)
+
+
+def _where_it_went(invoice):
+    by = invoice.delivery_recorded_by
+    return {"invoice": invoice.pk, "number": invoice.number, "delivery_state": invoice.delivery_state,
+            "port": invoice.port, "recorded_at": invoice.delivery_recorded_at,
+            "recorded_by": (by.get_full_name() or by.username) if by else ""}
 
 
 # -- Reverse charge: the self-invoice, the payment voucher, the tax paid in cash ------------------------

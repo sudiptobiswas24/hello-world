@@ -471,6 +471,35 @@ def document_number_key(number):
     return "".join(part.lstrip("0") or "0" if part.isdigit() else part for part in parts)
 
 
+def place_in_india(address, what):
+    """
+    An address as a place in India the portal's documents can name: {"label", "line1", "line2",
+    "city", "pin", "state"}, or refused in words. For the port, ICD or CFS an export's goods leave
+    the plant for (O545): asked while the document can still be put right and kept by the invoice
+    as it posts, so every limit the e-way bill's schema sets on an address is asked here, not
+    found at the gate (first line 1 to 100 characters, town 3 to 50, second line 3 to 100).
+    """
+    if address is None:
+        raise ValidationError(f"{what} is not named.")
+    country = getattr(address, "country", None)
+    if country is not None and country.code != "IN":
+        raise ValidationError(f"{what} ({address.one_line()}) is in {country.name}. Name the place in India the "
+                              "goods leave the plant for: the port, ICD or CFS.")
+    pin = validate_pincode(address.postal_code, f"{what} ({address.one_line()})")
+    state = state_code(address)
+    if state is None or state == OVERSEAS_PLACE:
+        raise ValidationError(f"{what} ({address.one_line()}) says its state is {address.state or 'nothing'}, which "
+                              "is no GST state. Give the state's name or its two-digit code.")
+    line1, line2, city = (" ".join((part or "").split()) for part in (address.line1, address.line2, address.city))
+    for value, low, high, part in ((line1, 1, 100, "first line"), (city, 3, 50, "town")) + (
+            ((line2, 3, 100, "second line"),) if line2 else ()):
+        if not low <= len(value) <= high:
+            raise ValidationError(f"{what}'s {part} is {len(value)} characters ({value or 'blank'}); the portal "
+                                  f"takes {low} to {high}.")
+    return {"label": " ".join((address.label or "").split()), "line1": line1, "line2": line2, "city": city,
+            "pin": pin, "state": state}
+
+
 def state_delivered_in(ship_to, bill_to, principal):
     """
     The GST state of the address goods are delivered at, or None where nothing says it (O533).

@@ -632,7 +632,10 @@ ROLES = {
         *REFERENCE,
         "gst.compile_returns",
         *crud("gst", "einvoice", actions=("add", "change", "view")),
-        *crud("gst", "ewaybill", actions=("add", "change", "view")),
+        # Delete too: a bill prepared and never generated is the officer's to take back (the model
+        # refuses a generated one), or a challan's void and a truck's move to another invoice wait
+        # on a bill nobody in a role could remove (g38).
+        *crud("gst", "ewaybill", actions=("add", "change", "view", "delete")),
         # Reverse charge: the self-invoice and the payment voucher are the officer's papers; the challan
         # moves money, so it is paid by the AP Manager, and read here.
         *crud("gst", "selfinvoice", actions=("add", "change", "view")),

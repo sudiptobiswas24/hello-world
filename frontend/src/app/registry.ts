@@ -1011,6 +1011,16 @@ export const MODULES: Module[] = [
         keywords: "eway e-way transport vehicle lr", load: () => import("../modules/gst/EwayBills"),
         detail: () => import("../modules/gst/EwayBillForm"),
       },
+      {
+        path: "where-goods-went", label: "Where goods went", permission: "gst.view_ewaybill",
+        keywords: "delivery state port export eway posted invoice", load: () => import("../modules/gst/WhereItWent"),
+      },
+      {
+        // The GST officer's master data: a rep picks a port on an order (core.view_address) but has no Accounts tab.
+        path: "ports", label: "Ports and depots", permission: "gst.view_ewaybill", create: "core.add_address",
+        keywords: "port icd cfs export jnpt nhava sheva", load: () => import("../modules/gst/Ports"),
+        detail: () => import("../modules/gst/PortForm"),
+      },
     ],
   },
   {

@@ -527,8 +527,14 @@ class Command(BaseCommand):
             # order, each confirm finds its customer already held (O183).
             lock_rows(sahyadri, konkan, narmada, malwa, godavari, kaveri, gulf, refresh=False)
 
+            # Where an export leaves the plant for: its invoice does not post without it (O545).
+            jnpt = M("core.Address").objects.create(
+                label="JNPT (Nhava Sheva)", address_type="other", line1="Jawaharlal Nehru Port, Sheva", city="Navi Mumbai",
+                state="Maharashtra", postal_code="400707")
+
             def order(customer, when, lines, currency=None):
-                o = Order.objects.create(customer=customer, order_date=when, currency=currency or inr)
+                o = Order.objects.create(customer=customer, order_date=when, currency=currency or inr,
+                                         port_address=jnpt if customer == gulf else None)
                 for it, qty, price in lines:
                     line = OrderLine.objects.create(
                         order=o, item=it, uom=it.uom, quantity=D(qty), unit_price=D(price), warehouse=plant,

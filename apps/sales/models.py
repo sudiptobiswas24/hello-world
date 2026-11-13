@@ -3,6 +3,7 @@ from collections import defaultdict
 from decimal import Decimal
 
 from django.core.exceptions import ObjectDoesNotExist, ValidationError
+from django.conf import settings
 from django.db import models, transaction
 from django.db.models import Q
 from django.utils import timezone
@@ -530,6 +531,20 @@ class OrderStatus(models.TextChoices):
     CANCELLED = "cancelled", "Cancelled"
 
 
+def port_kept(document):
+    """
+    The place in India an export's goods leave the plant for, as the e-way bill and the e-invoice
+    name it (accounting.gst.place_in_india), or None where the document names none. Refused, in
+    words, where the address cannot go on either: asked as the document is saved, while it can be
+    put right, and kept by the invoice as it posts (O545).
+    """
+    from apps.accounting.gst import place_in_india
+
+    if not document.port_address_id:
+        return None
+    return place_in_india(document.port_address, "The place the goods leave the plant for")
+
+
 class PlacedWhereTheGoodsGo:
     """
     A sale's place of supply, from where its goods go and whose address that
@@ -615,6 +630,11 @@ class SalesOrder(PlacedWhereTheGoodsGo, Extensible, TaxesTakenUnder, TaxedDocume
     shipping_address = models.ForeignKey(
         Address, null=True, blank=True, on_delete=models.PROTECT, related_name="+"
     )
+    port_address = models.ForeignKey(
+        Address, null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="For an export of goods: the place in India they leave the plant for (the port, ICD or CFS), "
+                  "with its PIN and state. The e-way bill to the port is made out to it.",
+    )
     sales_rep = models.ForeignKey(
         Party, null=True, blank=True, on_delete=models.PROTECT, related_name="%(class)s_sales",
         help_text="The employee credited with this sale.",
@@ -697,6 +717,7 @@ class SalesOrder(PlacedWhereTheGoodsGo, Extensible, TaxesTakenUnder, TaxedDocume
     @transaction.atomic
     def save(self, *args, **kwargs):
         self._check_customer()
+        port_kept(self)
         if self._state.adding:
             self._apply_customer_defaults()
         else:
@@ -1169,6 +1190,7 @@ class SalesOrder(PlacedWhereTheGoodsGo, Extensible, TaxesTakenUnder, TaxedDocume
             payment_terms=self.payment_terms,
             billing_address=self.billing_address,
             shipping_address=self.shipping_address,
+            port_address=self.port_address,
             sales_rep=self.sales_rep,
         )
         for line, remaining in outstanding:
@@ -1184,6 +1206,8 @@ class SalesOrder(PlacedWhereTheGoodsGo, Extensible, TaxesTakenUnder, TaxedDocume
                 revenue_account=line.revenue_account,
                 given_taxes=line.taxes.all(),
             )
+        # Which trucks its goods went on (limit 20): what shipped and is on no invoice yet.
+        invoice.take_the_deliveries_it_bills()
         return invoice
 
     def deposits(self):
@@ -1956,6 +1980,11 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxesTa
     shipping_address = models.ForeignKey(
         Address, null=True, blank=True, on_delete=models.PROTECT, related_name="+"
     )
+    port_address = models.ForeignKey(
+        Address, null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="For an export of goods: the place in India they leave the plant for (the port, ICD or CFS), "
+                  "with its PIN and state. The e-way bill to the port is made out to it.",
+    )
     sales_rep = models.ForeignKey(
         Party, null=True, blank=True, on_delete=models.PROTECT, related_name="%(class)s_sales",
         help_text="The employee credited with this sale.",
@@ -2003,6 +2032,20 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxesTa
         help_text="Who issued it to whom, where and under which registrations, as they stood when it "
                   "posted: what the printed tax invoice reads (documents.issued_particulars), never "
                   "the company or the customer as they stand today.")
+    delivery_state = models.CharField(
+        max_length=2, blank=True, editable=False,
+        help_text="The GST state its goods are delivered in, kept as it posts (accounting.gst."
+                  "state_delivered_in; for an export, the port's): what the e-way bill and the e-invoice's "
+                  "ship-to say, never the address as it reads today. Blank: no goods move on it, it posted "
+                  "before this was kept, or nothing said the state; record_where_it_went() records it then.")
+    port = models.JSONField(
+        null=True, blank=True, editable=False,
+        help_text="On an export of goods: the place in India they left the plant for, as port_address "
+                  "read when it posted (accounting.gst.place_in_india).")
+    delivery_recorded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.PROTECT, related_name="+", editable=False,
+        help_text="Who recorded where it went, when that was recorded after it posted.")
+    delivery_recorded_at = models.DateTimeField(null=True, blank=True, editable=False)
     posted_total = models.DecimalField(
         max_digits=18, decimal_places=2, null=True, blank=True, editable=False,
         help_text="The total when it posted, in its own currency. A fact of the "
@@ -2083,6 +2126,157 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxesTa
 
     def tax_party(self):
         return self.customer
+
+    # -- Where its goods go, as a fact (O544, O545) -------------------------------------------------
+
+    def is_export_of_goods(self):
+        profile = getattr(self.customer, "tax_profile", None)
+        return (profile is not None and profile.gst_registration == "overseas"
+                and not self.is_opening_balance and self.moves_goods())
+
+    def _port_to_post_with(self):
+        """
+        What an export of goods posts naming: the place in India they leave the plant for. Refused
+        without one, because the e-way bill to the port is made out to it and a posted invoice
+        cannot be given one by an edit. A note names none: it reads its invoice's (where_it_went).
+        """
+        from apps.accounting.gst import GstSettings
+
+        if self.credits_id or self.debits_id or GstSettings.active() is None or not self.is_export_of_goods():
+            return None
+        if not self.port_address_id:
+            raise ValidationError(
+                f"{self.number or 'This invoice'} is an export of goods and names no place in India they "
+                "leave the plant for: the port, ICD or CFS, with its PIN and state. The e-way bill to the "
+                "port is made out to it. Name it on the invoice (or on the order, before it is invoiced), "
+                "then post.")
+        return port_kept(self)
+
+    def _state_it_is_delivered_in(self, port=None):
+        """The state to keep at posting: the port's; else the one rule's answer (O533); blank where no goods move."""
+        from apps.accounting.gst import state_delivered_in
+
+        if port:
+            return port["state"]
+        if (self.credits_id or self.debits_id or self.is_opening_balance or not self.taxes_recorded
+                or self.party_registration == "overseas" or not self.moves_goods()):
+            return ""
+        return state_delivered_in(self.delivered_to(), self.billed_to(), self.place_of_supply) or ""
+
+    def where_it_went(self):
+        """
+        (state, port) as kept: the GST state its goods were delivered in, and for an export the place
+        in India they left for. A credit or debit note reads its invoice's, so one record answers for
+        both and recording it late on the invoice mends its notes too.
+        """
+        source = self.credits or self.debits or self
+        return source.delivery_state, source.port
+
+    def lacks_where_it_went(self):
+        """
+        Why no e-way bill or e-invoice ship-to can be built for it, or "": a posted invoice of goods
+        whose delivery state nothing says (a third party's site with no state, posted before O533
+        refused that), or an export posted naming no port (before O545 did). The go-live check lists
+        them; record_where_it_went() mends one.
+        """
+        from apps.accounting.gst import state_delivered_in
+
+        if (not self.posted or self.credits_id or self.debits_id or self.is_opening_balance
+                or not self.taxes_recorded or self.delivery_state or not self.moves_goods()):
+            return ""
+        if self.party_registration == "overseas":
+            return ("" if self.port else "It is an export of goods and names no place in India they left the "
+                    "plant for (the port, ICD or CFS).")
+        if state_delivered_in(self.delivered_to(), self.billed_to(), self.place_of_supply):
+            return ""
+        going_to = self.delivered_to()
+        return (f"Its delivery address ({going_to.one_line() if going_to else 'none'}) says no GST state, and it "
+                "is not the address billed to, so the registration's state does not stand for it.")
+
+    @transaction.atomic
+    @serialised("posted", "delivery_state", "port", "delivery_recorded_at")
+    def record_where_it_went(self, by, state="", port_address=None):
+        """
+        Record, on a posted invoice, the state its goods were delivered in (or, for an export, the
+        place in India they left the plant for): a fact nobody recorded when it posted, with who
+        recorded it and when. Written past the posted guard because it changes nothing the invoice
+        billed: no line, no tax, no place of supply. It may be recorded again while nothing reads
+        it; once an e-way bill is generated or an IRN registered from it, it stands.
+        """
+        from types import SimpleNamespace
+
+        from apps.accounting.gst import OVERSEAS_PLACE, STATES, place_in_india, state_code, state_delivered_in
+
+        name = self.number or "This invoice"
+        if not self.posted:
+            raise ValidationError(f"{name} is a draft: put its address right, or name its port, on the invoice itself.")
+        if self.credits_id or self.debits_id:
+            original = self.credits or self.debits
+            raise ValidationError(f"{name} is a note on {original.number}: it reads where {original.number} went. "
+                                  "Record it there.")
+        if self.is_opening_balance or not self.taxes_recorded or not self.moves_goods():
+            raise ValidationError(f"No goods move on {name}; there is nowhere they went to record.")
+        if (self.delivery_state or self.port) and self.delivery_recorded_at is None:
+            raise ValidationError(
+                f"{name} posted as delivered in {STATES.get(self.delivery_state, self.delivery_state)} "
+                f"({self.delivery_state}); that stands. A wrong place is corrected by a credit note and a new invoice.")
+        self._refuse_once_it_is_read()
+        if self.party_registration == "overseas":
+            if port_address is None:
+                raise ValidationError(f"{name} is an export: name the place in India its goods left the plant for "
+                                      "(the port, ICD or CFS, with its PIN and state).")
+            port = place_in_india(port_address, "The place the goods left the plant for")
+            state = port["state"]
+        else:
+            if port_address is not None:
+                raise ValidationError(f"{name} is not an export; record the state its goods were delivered in.")
+            standing = state_delivered_in(self.delivered_to(), self.billed_to(), self.place_of_supply)
+            if standing:
+                raise ValidationError(f"{name}'s delivery address already says {STATES[standing]} ({standing}); "
+                                      "nothing is lacking.")
+            state = state_code(SimpleNamespace(state=str(state or "")))
+            if state is None or state == OVERSEAS_PLACE:
+                raise ValidationError("Give the state the goods were delivered in: its name as the GST network "
+                                      "spells it, or its two-digit code.")
+            port = None
+        self.delivery_state, self.port = state, port
+        self.delivery_recorded_by, self.delivery_recorded_at = by, timezone.now()
+        super(Invoice, self).save(update_fields=["delivery_state", "port", "delivery_recorded_by",
+                                                 "delivery_recorded_at", "updated_at"])
+
+    @transaction.atomic
+    @serialised("posted", "delivery_state", "port", "delivery_recorded_at")
+    def withdraw_where_it_went(self):
+        """Take back what record_where_it_went() recorded, while nothing reads it: typed wrong, it is typed again."""
+        if self.delivery_recorded_at is None:
+            raise ValidationError(f"Nothing was recorded on {self.number or 'this invoice'} after it posted; what it "
+                                  "posted with stands.")
+        self._refuse_once_it_is_read()
+        self.delivery_state, self.port, self.delivery_recorded_by, self.delivery_recorded_at = "", None, None, None
+        super(Invoice, self).save(update_fields=["delivery_state", "port", "delivery_recorded_by",
+                                                 "delivery_recorded_at", "updated_at"])
+
+    def _refuse_once_it_is_read(self):
+        """One check for recording again and for withdrawing: the reverse cannot be written without it."""
+        from apps.gst.ewaybill import refuse_changing_where_it_went
+
+        refuse_changing_where_it_went(self)
+
+    # -- Which trucks it went on (limit 20) ---------------------------------------------------------
+
+    def take_the_deliveries_it_bills(self):
+        """
+        Tie to this invoice the deliveries that carried what it bills and are on no invoice yet:
+        posted shipments (not returns, not drop-shipped) of the order lines it bills. Asked as an
+        order drafts its invoice, under the order's lock, which deliveries post under.
+        """
+        if self.credits_id or self.debits_id or self.is_down_payment or not self.pk:
+            return
+        billed = self.lines.exclude(order_line=None).values("order_line")
+        loose = Delivery.objects.filter(posted=True, reverses__isnull=True, is_drop_ship=False, invoice__isnull=True,
+                                        sales_order__is_job_work=False,
+                                        lines__order_line__in=billed).values("pk")
+        Delivery.objects.filter(pk__in=loose).update(invoice=self)
 
     def corrected_document(self):
         return self.credits
@@ -2780,6 +2974,7 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxesTa
                 "This invoice is posted and immutable. Issue a credit note instead."
             )
         self._check_kind()
+        port_kept(self)
         if not self._state.adding and not self.posted:
             self.check_place()
         if self._state.adding:
@@ -2805,13 +3000,25 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxesTa
         self.payment_terms = self.payment_terms or customer.payment_terms
         self.billing_address = self.billing_address or customer.billing_address()
         self.shipping_address = self.shipping_address or customer.shipping_address()
+        if not self.port_address_id and self.sales_order_id:
+            self.port_address_id = self.sales_order.port_address_id
         # An invoice from an order, or a credit note, carries the rep of
         # what it came from; only one typed in afresh takes the customer's.
         if not self.sales_rep_id and not self.sales_order_id and not self.credits_id:
             self.sales_rep_id = (CustomerProfile.objects.filter(party=customer)
                                  .values_list("sales_rep_id", flat=True).first())
 
-    @serialised("posted", held_first=True)
+    def held_before_deleting(self):
+        """
+        What locked_before_it names, and the deliveries travelling on it, which deleting a draft lets
+        go (Delivery.invoice is set null): a delivery is held after its order and before any invoice.
+        """
+        first = self.locked_before_it()
+        orders = [row for row in first if isinstance(row, SalesOrder)]
+        return (orders + list(Delivery.objects.filter(invoice=self.pk).order_by("pk"))
+                + [row for row in first if not isinstance(row, SalesOrder)])
+
+    @serialised("posted", held_first="held_before_deleting")
     def delete(self, *args, **kwargs):
         # Held, then asked: read unlocked, a draft could be deleted as it posted, and its lines went
         # before the invoice, against the lock order (O184's survey).
@@ -2916,6 +3123,8 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxesTa
         refuse_money_kept_as(self, "receivable_account", changed_only=False)
         # The address may have been edited since the draft was saved.
         self.check_place()
+        # An export of goods names where in India they leave the plant for, before it posts (O545).
+        port = self._port_to_post_with()
         # A note takes back what was posted, at its taxes; an advance against goods bears no GST; an opening
         # balance carries what the old books did (O395).
         if not (self.is_credit_note() or self.is_down_payment or self.is_opening_balance):
@@ -3045,6 +3254,9 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxesTa
             entry.post(opening_balance=self.is_opening_balance)
 
         self.record_taxes()
+        # Where the lorry goes, kept as the place of supply is: the e-way bill and the e-invoice read it.
+        self.port = port
+        self.delivery_state = self._state_it_is_delivered_in(port)
         from .documents import issued_particulars
 
         self.issued_as = issued_particulars(self, posting=True)
@@ -3065,6 +3277,7 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxesTa
                 "number", "invoice_date", "due_date", "exchange_rate", "journal_entry",
                 "posted", "posted_at", "taxes_recorded", "party_gstin", "party_registration",
                 "place_of_supply", "issued_as", "tcs_amount", "b2cl_limit", "posted_total", "updated_at",
+                "delivery_state", "port",
             ]
         )
 
@@ -4445,6 +4658,12 @@ class Delivery(AuditModel):
     received_by = models.CharField(max_length=100, blank=True, editable=False)
     receipt_reference = models.CharField(max_length=64, blank=True, editable=False,
                                          help_text="The customer's goods-received note or the signed copy's number.")
+    # Which invoice its goods travelled under (limit 20): the delivery is the truck, and the one
+    # that would mean nothing to an e-way bill without the invoice, so it holds the pointer. Tied
+    # as the order drafts its invoice or as the delivery posts, and by travel_on() after.
+    invoice = models.ForeignKey(
+        "Invoice", null=True, blank=True, on_delete=models.SET_NULL, related_name="consignments", editable=False,
+        help_text="The invoice its goods travelled under: the e-way bill for this truck is made from it.")
 
     class Meta:
         verbose_name_plural = "deliveries"
@@ -4505,6 +4724,43 @@ class Delivery(AuditModel):
         self.lr_date = to_date(lr_date)
         self.vehicle_number = normalise_vehicle(vehicle_number) if vehicle_number else ""
         super().save(update_fields=["transporter", "lr_number", "lr_date", "vehicle_number", "updated_at"])
+
+    def _the_invoice_it_would_travel_on(self):
+        """As it posts: the one invoice that bills its order lines, where there is just the one; else None."""
+        if self.reverses_id or self.is_drop_ship or self.invoice_id or self.sales_order.is_job_work:
+            # Job work goes back on the delivery's own e-way bill; its invoice bills a service.
+            return None
+        found = list(Invoice.objects.filter(
+            lines__order_line__in=self.lines.values("order_line"), credits__isnull=True, debits__isnull=True,
+            is_down_payment=False, is_opening_balance=False).distinct()[:2])
+        return found[0] if len(found) == 1 else None
+
+    @transaction.atomic
+    @serialised("posted", "invoice")
+    def travel_on(self, invoice):
+        """
+        Record which invoice this truck's goods travelled under, or with None that it is on none.
+        Written past the posted guard, as the transport is: it changes nothing the delivery moved.
+        Refused while an e-way bill made for this truck stands, by the one check its untying shares.
+        """
+        from apps.gst.ewaybill import refuse_retying
+
+        if self.reverses_id:
+            raise ValidationError("A return comes back on the customer's own e-way bill; it travels on no invoice of ours.")
+        if self.is_drop_ship:
+            raise ValidationError(f"{self.number or 'This delivery'} was shipped by the vendor straight to the customer; "
+                                  "the vendor's e-way bill carried it.")
+        refuse_retying(self)
+        if invoice is not None:
+            if invoice.credits_id or invoice.debits_id or invoice.is_down_payment or invoice.is_opening_balance:
+                raise ValidationError(f"{invoice.number or 'That document'} is not an invoice for goods: a note, an "
+                                      "advance or an opening balance carries none.")
+            mine = self.lines.values("order_line")
+            if not invoice.lines.filter(order_line__in=mine).exists():
+                raise ValidationError(f"{invoice.number or 'That invoice'} bills none of what "
+                                      f"{self.number or 'this delivery'} carried.")
+        self.invoice = invoice
+        super().save(update_fields=["invoice", "updated_at"])
 
     @serialised("weighing")
     def record_weighing(self, weighing):
@@ -4865,6 +5121,11 @@ class Delivery(AuditModel):
             update_fields=["number", "delivery_date", "posted", "posted_at",
                            "returned_under_release", "journal_entry", "updated_at"]
         )
+        # Billed before it shipped (an order invoiced on order): the truck travels on that invoice.
+        going_on = self._the_invoice_it_would_travel_on()
+        if going_on is not None:
+            self.invoice = going_on
+            super(Delivery, self).save(update_fields=["invoice", "updated_at"])
         # Met inside its tolerance: what is still held for a line is held
         # for nobody. Asked once this shipment counts as shipped.
         if not is_return:
