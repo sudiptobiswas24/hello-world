@@ -83,9 +83,11 @@ class AuditTestCase(TestCase):
         PartyRoleAssignment.objects.create(party=self.customer, role=PartyRole.CUSTOMER)
 
     def make_invoice(self, amount="100", currency=None, taxes=(), post=True):
+        from .tests_base import port_for
+
         invoice = Invoice.objects.create(
             customer=self.customer, invoice_date=datetime.date(2026, 3, 1),
-            receivable_account=self.ar, currency=currency or self.usd,
+            receivable_account=self.ar, currency=currency or self.usd, port_address=port_for(self.customer),
         )
         line = InvoiceLine.objects.create(
             invoice=invoice, item=self.item, quantity=Decimal("1"),

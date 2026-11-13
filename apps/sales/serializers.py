@@ -71,7 +71,7 @@ class SalesOrderSerializer(TakesItsLinesMixin, ExtensibleSerializerMixin, serial
         model = SalesOrder
         fields = [
             "id", "number", "customer", "customer_name", "order_date", "reference", "status", "currency",
-            "payment_terms", "billing_address", "shipping_address", "sales_rep",
+            "payment_terms", "billing_address", "shipping_address", "port_address", "port_address_label", "sales_rep",
             "lines", "subtotal", "tax_total", "total",
             "invoice_status", "delivery_status", "is_job_work", "supplied_items",
             "third_party_inspection",
@@ -81,6 +81,12 @@ class SalesOrderSerializer(TakesItsLinesMixin, ExtensibleSerializerMixin, serial
         read_only_fields = ["number", "status", "taxes_taken_under"]
 
     supplied_items = serializers.SerializerMethodField()
+    port_address_label = serializers.SerializerMethodField()
+
+    def get_port_address_label(self, order):
+        """How the port reads once the order cannot be changed: its name and place, not its key."""
+        port = order.port_address
+        return ", ".join(part for part in (port.label, port.one_line()) if part) if port is not None else ""
 
     def get_supplied_items(self, obj):
         return [row.item_id for row in obj.supplied_items.all()]
@@ -129,6 +135,18 @@ class InvoiceSerializer(TakesItsLinesMixin, ExtensibleSerializerMixin, serialize
     amount_due = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
     settlement_status = serializers.CharField(read_only=True)
     not_sendable = serializers.SerializerMethodField()
+    lacks_where_it_went = serializers.SerializerMethodField()
+    delivery_recorded_by_name = serializers.SerializerMethodField()
+
+    def get_lacks_where_it_went(self, invoice):
+        """Why no e-way bill can be made for it yet (Invoice.lacks_where_it_went); on the record only."""
+        if self.parent is not None or not invoice.posted:
+            return ""
+        return invoice.lacks_where_it_went()
+
+    def get_delivery_recorded_by_name(self, invoice):
+        by = invoice.delivery_recorded_by
+        return (by.get_full_name() or by.username) if by else ""
 
     def get_not_sendable(self, invoice):
         """Why the screen offers no Email (Invoice.refused_sending); on the record only, not in a list."""
@@ -141,7 +159,8 @@ class InvoiceSerializer(TakesItsLinesMixin, ExtensibleSerializerMixin, serialize
         fields = [
             "id", "number", "customer", "customer_name", "invoice_date", "due_date", "reference",
             "sales_order", "receivable_account", "currency", "exchange_rate",
-            "payment_terms", "billing_address", "shipping_address", "sales_rep",
+            "payment_terms", "billing_address", "shipping_address", "port_address", "sales_rep",
+            "delivery_state", "port", "delivery_recorded_at", "delivery_recorded_by_name", "lacks_where_it_went",
             "credits", "debits", "journal_entry", "posted", "posted_at",
             "lines", "subtotal", "tax_total", "total",
             "amount_paid", "amount_credited", "amount_due", "settlement_status", "sent_at",
@@ -153,6 +172,7 @@ class InvoiceSerializer(TakesItsLinesMixin, ExtensibleSerializerMixin, serialize
             "number", "due_date", "exchange_rate", "credits", "debits", "journal_entry",
             "posted", "posted_at", "sent_at", "is_down_payment", "is_opening_balance",
             "corrects_old_supply", "old_invoice_value", "party_gstin",
+            "delivery_state", "port", "delivery_recorded_at",
         ]
         # Left out, the company's default receivable account (Invoice.save).
         extra_kwargs = {"receivable_account": {"required": False}}
@@ -212,17 +232,24 @@ class DeliverySerializer(serializers.ModelSerializer):
     order_number = serializers.CharField(source="sales_order.number", read_only=True)
     weighing_number = serializers.CharField(source="weighing.number", read_only=True, default="")
     transporter_name = serializers.CharField(source="transporter.name", read_only=True, default="")
+    invoice_number = serializers.CharField(source="invoice.number", read_only=True, default="")
+    port = serializers.SerializerMethodField()
+
+    def get_port(self, delivery):
+        """For an export: the place in India the lorry goes to, as its order names it."""
+        port = delivery.sales_order.port_address
+        return port.one_line() if port is not None else ""
 
     class Meta:
         model = Delivery
-        fields = ["weighing", "weighing_number",
+        fields = ["weighing", "weighing_number", "invoice", "invoice_number", "port",
             "id", "number", "sales_order", "order_number", "customer_name", "delivery_date",
             "reference", "shipping_address", "reverses", "backorder_of", "posted", "posted_at", "lines",
             "returned_under_release", "transporter", "transporter_name", "lr_number", "lr_date", "vehicle_number",
             "received_on", "received_by", "receipt_reference",
         ]
         read_only_fields = ["weighing", "number", "reverses", "backorder_of", "posted", "posted_at",
-                            "returned_under_release"]
+                            "returned_under_release", "invoice"]
 
 
 class PriceListItemSerializer(serializers.ModelSerializer):

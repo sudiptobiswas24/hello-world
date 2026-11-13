@@ -17,6 +17,13 @@ Two documents move goods out of this plant:
   which only the plant and the customer know, so it is stated; it may not
   be less than the conversion billed on those lines.
 
+**One invoice on several trucks** (limit 20). A delivery records the invoice its goods
+travelled under (`Delivery.invoice`), and an e-way bill is made for each such consignment
+(`carried_on`): the truck's own transporter, lorry receipt and vehicle, and its own share of the
+invoice's value, worked total first so the parts foot to the invoice to the paisa and the last
+takes what rounding leaves. CGST Rule 55(5) has goods sent in lots move on a delivery challan for
+each consignment but the last, which carries the invoice, and that is how each part is headed.
+
 **Required is said, not enforced.** Under the limit an e-way bill is
 optional and some plants make one anyway, so a payload is built either
 way and says whether one was needed, and why.
@@ -47,6 +54,8 @@ from django.db import models, transaction
 from django.db.models import Q
 from django.utils import timezone
 
+from collections import defaultdict
+
 from apps.accounting.gst import STATES, state_delivered_in
 from apps.core.models import numbering_first, AuditModel, moment_that_has_come, serialised, to_date
 
@@ -63,6 +72,11 @@ _VEHICLE = [
     re.compile(r"^TR[A-Z0-9]{6,13}$"),                        # temporary
 ]
 _TRANSPORTER = re.compile(r"^[0-9]{2}[A-Z0-9]{13}$")
+# The portal's sub-supply type for goods sent in lots on one invoice (its master code 9, "SKD/CKD/Lots"),
+# the only outward type it takes a delivery challan under beside an invoice. NOT CONFIRMED against the
+# portal's current masters: the plant's GST practitioner confirms it before the first such bill is uploaded.
+LOTS = "9"
+HEADS = ("taxable", "cgst", "sgst", "igst", "cess")
 
 
 class TransportMode(models.TextChoices):
@@ -91,6 +105,10 @@ class EwayBill(AuditModel):
                                 on_delete=models.PROTECT, related_name="eway_bills")
     delivery = models.ForeignKey("sales.Delivery", null=True, blank=True,
                                  on_delete=models.PROTECT, related_name="eway_bills")
+    carried_on = models.ForeignKey(
+        "sales.Delivery", null=True, blank=True, on_delete=models.PROTECT, related_name="consignment_bills",
+        help_text="On an invoice's bill: the delivery (truck) of that invoice this consignment is. Blank: "
+                  "the invoice names no delivery and the bill covers it whole.")
     mode = models.CharField(max_length=1, choices=TransportMode.choices,
                             default=TransportMode.ROAD)
     distance_km = models.PositiveIntegerField(
@@ -126,8 +144,13 @@ class EwayBill(AuditModel):
                 name="eway_bill_one_document"),
             models.UniqueConstraint(fields=["number"], condition=~Q(number=""),
                                     name="eway_bill_number_unique"),
-            models.UniqueConstraint(fields=["invoice"], condition=Q(cancelled_at__isnull=True),
+            models.CheckConstraint(check=Q(carried_on__isnull=True) | Q(invoice__isnull=False),
+                                   name="eway_bill_consignment_of_an_invoice"),
+            models.UniqueConstraint(fields=["invoice"],
+                                    condition=Q(cancelled_at__isnull=True, carried_on__isnull=True),
                                     name="one_standing_eway_bill_per_invoice"),
+            models.UniqueConstraint(fields=["carried_on"], condition=Q(cancelled_at__isnull=True),
+                                    name="one_standing_eway_bill_per_consignment"),
             models.UniqueConstraint(fields=["challan"], condition=Q(cancelled_at__isnull=True),
                                     name="one_standing_eway_bill_per_challan"),
             models.UniqueConstraint(fields=["delivery"], condition=Q(cancelled_at__isnull=True),
@@ -139,6 +162,12 @@ class EwayBill(AuditModel):
 
     def document(self):
         return self.invoice or self.challan or self.delivery
+
+    def document_date(self):
+        """The date of the paper the goods move on: a lot's challan is its delivery's, not the invoice's."""
+        if self.carried_on_id and (self.payload or {}).get("docType") == "CHL":
+            return self.carried_on.delivery_date
+        return _document_date(self.document())
 
     def save(self, *args, **kwargs):
         if (self.pk and not getattr(self, "_cancelling", False)
@@ -161,10 +190,10 @@ class EwayBill(AuditModel):
         number = str(number or "").strip()
         if not _NUMBER.match(number):
             raise ValidationError("An e-way bill number is twelve digits.")
-        if generated_at is None or to_date(generated_at) < _document_date(self.document()):
+        if generated_at is None or to_date(generated_at) < self.document_date():
             raise ValidationError(
-                f"An e-way bill cannot be generated before {self.document().number}, dated "
-                f"{_document_date(self.document())}."
+                f"An e-way bill cannot be generated before {self.payload.get('docNo') or self.document().number}, "
+                f"dated {self.document_date()}."
             )
         moment_that_has_come(generated_at, "the portal answers with when it generated the e-way bill")
         if valid_until is not None and valid_until <= generated_at:
@@ -293,7 +322,96 @@ def _limit_test(value, registration):
     return False, f"Worth {value}, not above the limit of {registration.eway_bill_limit}."
 
 
-def _invoice_payload(invoice):
+def consignments(invoice):
+    """
+    The deliveries an invoice's goods went on, oldest first (`Delivery.invoice`). A delivery since
+    returned in full, for which no e-way bill was generated, was a shipment put right and is no
+    consignment; one a bill was generated for went, whatever came back.
+    """
+    from django.db.models import Sum
+
+    from apps.sales.models import Delivery, DeliveryLine
+
+    found = []
+    for delivery in Delivery.objects.filter(invoice=invoice, posted=True, reverses__isnull=True).order_by(
+            "delivery_date", "pk"):
+        shipped = delivery.lines.aggregate(total=Sum("quantity_shipped"))["total"] or ZERO
+        back = DeliveryLine.objects.filter(delivery__reverses=delivery, delivery__posted=True).aggregate(
+            total=Sum("quantity_shipped"))["total"] or ZERO
+        if back >= shipped and not EwayBill.objects.filter(carried_on=delivery).exclude(number="").exists():
+            continue
+        found.append(delivery)
+    return found
+
+
+def consignment_shares(invoice, goods, other, tcs, parts):
+    """
+    Each consignment's share of an invoice, in the order the trucks left: [{"delivery", "lines":
+    {index of the goods line: (quantity, {head: amount})}, "other", "tcs", "final", "lots"}].
+
+    Total first, divide last (CLAUDE.md, numbers): a line's taxable value and each tax on it are
+    the invoice's own recorded figures times the quantity this truck carried over the quantity
+    billed, rounded once; the truck that completes the line takes what is left of each, so the
+    parts foot to the line to the paisa. What the invoice bills beside the goods (freight, its tax,
+    TCS, rounding) follows the goods' taxable value the same way and the last truck takes the rest.
+    A truck's share never moves when a later truck is tied: only the one that completes is "what is left".
+    """
+    from apps.accounting.models import round_money
+    from apps.core.api import plain
+    from apps.sales.models import DeliveryLine
+
+    order_lines = [line.source.order_line_id for line in goods]
+    if None in order_lines or len(set(order_lines)) != len(order_lines):
+        raise ValidationError(
+            f"{invoice.number} bills goods from no order line, or one order line twice, so which truck carried "
+            "what cannot be worked out. Take its deliveries off it (the delivery's page) and make one e-way "
+            "bill for the whole invoice, typing the transport.")
+    carried = defaultdict(Decimal)
+    for delivery_id, order_line_id, quantity in DeliveryLine.objects.filter(
+            delivery__in=parts, order_line__in=order_lines).values_list("delivery", "order_line", "quantity_shipped"):
+        carried[delivery_id, order_line_id] += quantity
+    done = [dict.fromkeys(("quantity",) + HEADS, ZERO) for _ in goods]
+    whole_taxable = sum((line.taxable for line in goods), ZERO)
+    spread = {"other": ZERO, "tcs": ZERO}
+    shares = []
+    for position, delivery in enumerate(parts):
+        lines = {}
+        for index, line in enumerate(goods):
+            quantity = carried[delivery.pk, line.source.order_line_id]
+            if not quantity:
+                continue
+            billed, so_far = line.source.quantity, done[index]
+            if so_far["quantity"] + quantity > billed:
+                raise ValidationError(
+                    f"{invoice.number} bills {plain(billed)} of {line.source.label()}, and its deliveries up to "
+                    f"{delivery.number} carried {plain(so_far['quantity'] + quantity)}. A delivery billed on two "
+                    "invoices cannot be split here: take it off this invoice and type the transport.")
+            completes = so_far["quantity"] + quantity == billed
+            amounts = {}
+            for head in HEADS:
+                whole = getattr(line, head)
+                amounts[head] = whole - so_far[head] if completes else round_money(whole * quantity / billed)
+                so_far[head] += amounts[head]
+            so_far["quantity"] += quantity
+            lines[index] = (quantity, amounts)
+        if not lines:
+            raise ValidationError(f"{delivery.number} travels on {invoice.number} and carried none of the goods it "
+                                  "bills. Take it off the invoice (the delivery's page).")
+        final = position == len(parts) - 1 and all(
+            row["quantity"] == line.source.quantity for row, line in zip(done, goods))
+        taxable = sum((amounts["taxable"] for _, amounts in lines.values()), ZERO)
+        share = {"delivery": delivery, "lines": lines, "final": final}
+        for name, whole in (("other", other), ("tcs", tcs)):
+            share[name] = (whole - spread[name] if final
+                           else round_money(whole * taxable / whole_taxable) if whole_taxable else ZERO)
+            spread[name] += share[name]
+        shares.append(share)
+    for share in shares:
+        share["lots"] = len(shares) > 1 or not shares[0]["final"]
+    return shares
+
+
+def _invoice_payload(invoice, carried_on=None):
     from .returns import _document
 
     if not invoice.posted:
@@ -330,12 +448,30 @@ def _invoice_payload(invoice):
     # Where the goods go, as the invoice's place of supply read it.
     going_to = invoice.delivered_to()
     billed_at = invoice.billed_to()
-    # For an export, where the goods go in India is the port. Otherwise an address with no state of
-    # its own that is the one billed to reads the place of supply the invoice posted at, which is
-    # how posting placed it (accounting.gst.state_delivered_in, O533): the e-invoice built at the
-    # registration's state while this refused, and a posted invoice's address cannot be edited.
-    place = p.place(going_to, f"{buyer}'s delivery address" + (" (the port)" if overseas else ""),
-                    standing=None if overseas else state_delivered_in(going_to, billed_at, document.place))
+    # Where the lorry goes is a fact the invoice kept as it posted (Invoice.delivery_state, .port), or
+    # that was recorded on it since (record_where_it_went): never the address as it reads today.
+    kept_state, kept_port = invoice.where_it_went()
+    if overseas:
+        # An export goes to a place in India first: the port, ICD or CFS it named as it posted (O545).
+        # The buyer's address abroad was read for it, and refused for having no Indian PIN.
+        if not kept_port:
+            raise ValidationError(
+                f"{invoice.number} is an export and records no place in India its goods left the plant for "
+                "(the port, ICD or CFS), which this bill is made out to. It posted before one was asked for: "
+                "record it on the invoice (Record where it went).")
+        place = p.kept_place(kept_port, f"{invoice.number}'s port")
+    else:
+        # From before the state was kept: the one rule's answer, as posting placed it (O533). An address
+        # with no state that is the one billed to reads the place of supply the invoice posted at.
+        state = kept_state or state_delivered_in(going_to, billed_at, document.place)
+        if going_to is not None and state is None:
+            raise ValidationError(
+                f"{invoice.number}'s delivery address ({going_to.one_line()}) says no GST state, and a posted "
+                "invoice's address is not edited. Record the state its goods were delivered in on the invoice "
+                "(Record where it went).")
+        place = p.place(going_to, f"{buyer}'s delivery address", standing=state)
+        if kept_state:
+            place["state"] = kept_state
     if overseas:
         billed_state = p.OTHER_COUNTRY
     else:
@@ -347,17 +483,33 @@ def _invoice_payload(invoice):
         billed_state = document.place
         if not billed_state:
             raise ValidationError(f"{invoice.number} records no place of supply.")
-    two_places = billed_at is not None and going_to is not None and going_to.pk != billed_at.pk
+    two_places = overseas or (billed_at is not None and going_to is not None and going_to.pk != billed_at.pk)
+    from apps.accounting.models import round_money
+
+    tcs = round_money(invoice.tcs_amount * (invoice.exchange_rate or Decimal("1")))
+
+    def whole(name):
+        return sum((getattr(line, name) for line in goods), ZERO)
+
+    whole_other = document.value - sum((whole(name) for name in HEADS), ZERO)
+    share = None
+    if carried_on is not None:
+        shares = consignment_shares(invoice, goods, whole_other, tcs, consignments(invoice))
+        share = next(row for row in shares if row["delivery"].pk == carried_on.pk)
     items = []
-    for number, line in enumerate(goods, start=1):
+    for index, line in enumerate(goods):
+        if share is not None and index not in share["lines"]:
+            continue
+        number = len(items) + 1
+        quantity, amounts = share["lines"][index] if share is not None else (line.source.quantity, None)
         items.append({
             "itemNo": number,
             "productName": p.text(line.source.label(), f"Line {number}'s description", 1, 100),
             "productDesc": p.text(line.source.label(), f"Line {number}'s description", 1, 100),
             "hsnCode": int(line.hsn),
-            "quantity": p.quantity(line.source.quantity, f"Line {number}'s quantity"),
+            "quantity": p.quantity(quantity, f"Line {number}'s quantity"),
             "qtyUnit": line.uqc,
-            "taxableAmount": float(line.taxable),
+            "taxableAmount": float(amounts["taxable"] if amounts else line.taxable),
             "cgstRate": float(line.rates.get("cgst", ZERO)),
             "sgstRate": float(line.rates.get("sgst", ZERO)),
             "igstRate": float(line.rates.get("igst", ZERO)),
@@ -366,15 +518,24 @@ def _invoice_payload(invoice):
         })
 
     def head(name):
-        return sum((getattr(line, name) for line in goods), ZERO)
+        """This consignment's share of the head, or the invoice's whole."""
+        if share is None:
+            return whole(name)
+        return sum((amounts[name] for _, amounts in share["lines"].values()), ZERO)
 
     taxable = head("taxable")
     taxes = head("cgst") + head("sgst") + head("igst") + head("cess")
+    other = share["other"] if share is not None else whole_other
+    value = taxable + taxes + other
     seller = p.seller()
+    lots = share is not None and share["lots"]
+    # In lots, each consignment but the last moves on its delivery challan and the last carries the
+    # invoice (CGST Rule 55(5)(b) and (d)).
+    on_challan = lots and not share["final"]
     payload = {
-        "supplyType": "O", "subSupplyType": "3" if overseas else "1", "subSupplyDesc": "",
-        "docType": "INV", "docNo": invoice.number,
-        "docDate": p.portal_date(invoice.invoice_date),
+        "supplyType": "O", "subSupplyType": LOTS if lots else "3" if overseas else "1", "subSupplyDesc": "",
+        "docType": "CHL" if on_challan else "INV", "docNo": carried_on.number if on_challan else invoice.number,
+        "docDate": p.portal_date(carried_on.delivery_date if on_challan else invoice.invoice_date),
         **_from(seller),
         **_to(p.UNREGISTERED if overseas or not document.gstin else document.gstin,
               p.party_name(buyer), place, billed_state),
@@ -385,17 +546,17 @@ def _invoice_payload(invoice):
         "cessNonAdvolValue": 0,
         # Services billed alongside, their tax, and any paisa of rounding:
         # on the invoice, not goods on the lorry.
-        "otherValue": float(document.value - taxable - taxes),
-        "totInvValue": float(document.value),
+        "otherValue": float(other),
+        "totInvValue": float(value),
         "itemList": items,
     }
     # The consignment's value is the supply's (Rule 138) with its GST: TCS collected with it is
     # income tax, not part of the value of supply (CBIC Circular 76/50/2018-GST as corrected on
     # 7 March 2019), so it counts in totInvValue as an other value but never towards the limit.
-    from apps.accounting.models import round_money
-
-    tcs = round_money(invoice.tcs_amount * (invoice.exchange_rate or Decimal("1")))
-    required, because = _limit_test(document.value - tcs, registration)
+    # A lot is judged by its own value, as the paper it moves on states it (Rule 138(1), Explanation 2).
+    required, because = _limit_test(value - (share["tcs"] if share is not None else tcs), registration)
+    if lots:
+        because = (f"Consignment {carried_on.number} of {invoice.number}, sent in lots. " + because)
     return payload, required, because
 
 
@@ -560,14 +721,31 @@ def _delivery_payload(delivery, declared_value):
 @transaction.atomic
 def prepare(document, mode=TransportMode.ROAD, distance_km=0, transporter_id="",
             transporter_name="", vehicle_number="", vehicle_type=VehicleType.REGULAR,
-            transport_doc_number="", transport_doc_date=None, declared_value=None):
-    """Build the payload for an invoice, a challan or a job-work delivery, and keep it."""
+            transport_doc_number="", transport_doc_date=None, declared_value=None, carried_on=None):
+    """
+    Build the payload for an invoice, a challan or a job-work delivery, and keep it. `carried_on`,
+    for an invoice: which of its deliveries (trucks) this bill is for; left out where it went on one.
+    """
     from apps.sales.models import Delivery, Invoice
 
     is_invoice = isinstance(document, Invoice)
     is_delivery = isinstance(document, Delivery)
+    if carried_on is not None and not is_invoice:
+        raise ValidationError("Only an invoice's e-way bill names the delivery it went on.")
     carried = document if is_delivery else None
-    if is_invoice and document.sales_order_id:
+    if is_invoice:
+        trucks = consignments(document)
+        if carried_on is not None and carried_on.pk not in [truck.pk for truck in trucks]:
+            raise ValidationError(
+                f"{carried_on.number or 'That delivery'} is not a shipment travelling on {document.number}. "
+                "Record the invoice it went on, on the delivery's page.")
+        if carried_on is None and len(trucks) > 1:
+            raise ValidationError(
+                f"{document.number} went on {len(trucks)} deliveries ({', '.join(truck.number for truck in trucks)}). "
+                "The portal wants an e-way bill for each consignment: make one for each delivery.")
+        carried_on = carried_on or (trucks[0] if trucks else None)
+        carried = carried_on
+    if is_invoice and carried is None and document.sales_order_id:
         # A sale moves on its invoice's e-way bill; the truck is on the
         # delivery. Taken from it only when there is just the one.
         shipped = list(Delivery.objects.filter(sales_order_id=document.sales_order_id, posted=True,
@@ -590,11 +768,15 @@ def prepare(document, mode=TransportMode.ROAD, distance_km=0, transporter_id="",
                 f"{document.number} says it went on {challan_vehicle}, not {given}."
             )
         vehicle_number = given or challan_vehicle
+    goods_dated = _document_date(document)
+    if carried_on is not None:
+        # The lorry receipt is the truck's: a delivery billed two days later was loaded before its invoice.
+        goods_dated = min(goods_dated, carried_on.delivery_date)
     transport = _transport(mode, distance_km, transporter_id, transporter_name,
                            vehicle_number, vehicle_type, transport_doc_number,
-                           transport_doc_date, _document_date(document))
+                           transport_doc_date, goods_dated)
     if is_invoice:
-        payload, required, because = _invoice_payload(document)
+        payload, required, because = _invoice_payload(document, carried_on)
     elif is_delivery:
         payload, required, because = _delivery_payload(document, declared_value)
     else:
@@ -607,9 +789,19 @@ def prepare(document, mode=TransportMode.ROAD, distance_km=0, transporter_id="",
             "letters, digits, / and -."
         )
     payload |= _transport_payload(transport)
-    key = ({"invoice": document} if is_invoice else {"delivery": document} if is_delivery
+    key = ({"invoice": document, "carried_on": carried_on} if is_invoice else {"delivery": document} if is_delivery
            else {"challan": document})
     numbering_first()  # a raw row lock, after the company's numbering row (O257)
+    if is_invoice:
+        # One bill for the whole invoice, or one for each truck: never both standing.
+        other = EwayBill.objects.select_for_update(no_key=True).filter(
+            invoice=document, cancelled_at__isnull=True, carried_on__isnull=carried_on is not None).first()
+        if other is not None:
+            raise ValidationError(
+                f"{document.number} has e-way bill {other.number or '(not yet generated)'} standing, made "
+                + ("for the whole invoice before its deliveries were recorded" if carried_on is not None
+                   else f"for {other.carried_on.number}")
+                + ". Cancel or delete it first.")
     existing = EwayBill.objects.select_for_update(no_key=True).filter(
         cancelled_at__isnull=True, **key).first()
     if existing is not None and existing.number:
@@ -634,3 +826,62 @@ def refuse_challan_void(challan):
             f"{challan} has e-way bill {standing.number or '(not yet generated)'} standing. "
             "Cancel or delete it first."
         )
+
+
+def refuse_retying(delivery):
+    """
+    A delivery is not moved to another invoice, or off its invoice, while an e-way bill made for it
+    as that invoice's consignment stands: the bill says which invoice the truck carried. Asked by
+    Delivery.travel_on for tying and untying alike.
+    """
+    standing = EwayBill.objects.filter(carried_on=delivery, cancelled_at__isnull=True).first()
+    if standing is not None:
+        raise ValidationError(
+            f"{delivery.number or 'This delivery'} has e-way bill {standing.number or '(not yet generated)'} "
+            f"standing, as a consignment of {standing.invoice.number}. Cancel or delete it first.")
+
+
+def refuse_changing_where_it_went(invoice):
+    """
+    Where an invoice's goods went, recorded after it posted, stands once something reads it: a
+    generated e-way bill, or a registered IRN. Asked by Invoice.record_where_it_went and its
+    withdrawal alike.
+    """
+    from .einvoice import EInvoice
+
+    bill = EwayBill.objects.filter(invoice=invoice, cancelled_at__isnull=True).exclude(number="").first()
+    if bill is not None:
+        raise ValidationError(f"{invoice.number} moves on e-way bill {bill.number}, which says where it went. "
+                              "Cancel the bill first.")
+    registered = EInvoice.objects.filter(invoice=invoice, cancelled_at__isnull=True).exclude(irn="").first()
+    if registered is not None:
+        raise ValidationError(f"{invoice.number} is registered under IRN {registered.irn[:12]}..., which says where "
+                              "it went; that stands.")
+
+
+def lacking_where_they_went(queryset=None):
+    """
+    [(invoice, why)]: posted invoices of goods for which no e-way bill or e-invoice ship-to can be
+    built, because nothing says the state they were delivered in or, for an export, the place in
+    India they left for (Invoice.lacks_where_it_went). The go-live check and the office list read it.
+    """
+    from django.db.models.functions import Lower, Trim
+
+    from apps.sales.models import Invoice
+
+    # Asked every morning: an invoice from before the state was kept whose ship-to says a state, as
+    # accounting.gst.state_code reads one, lacks nothing and is passed over in the query, so only the
+    # few that might lack it are opened.
+    says_a_state = [name.lower() for name in STATES.values()] + list(STATES)
+    rows = (queryset if queryset is not None else Invoice.objects.all()).filter(
+        posted=True, credits__isnull=True, debits__isnull=True, is_opening_balance=False, is_down_payment=False,
+        taxes_recorded=True, delivery_state="").annotate(
+            ship_to_state=Lower(Trim("shipping_address__state"))).exclude(
+            Q(ship_to_state__in=says_a_state) & ~Q(party_registration="overseas")).select_related(
+            "customer", "shipping_address", "billing_address", "sales_order").order_by("invoice_date", "pk")
+    found = []
+    for invoice in rows:
+        why = invoice.lacks_where_it_went()
+        if why:
+            found.append((invoice, why))
+    return found

@@ -21,9 +21,17 @@ class EInvoiceSerializer(serializers.ModelSerializer):
 
 
 class EwayBillSerializer(serializers.ModelSerializer):
+    carried_on_number = serializers.CharField(source="carried_on.number", read_only=True, default="")
+    document_number = serializers.SerializerMethodField()
+
+    def get_document_number(self, bill):
+        """The paper it moves on: a lot's delivery challan, else the document's own number."""
+        return (bill.payload or {}).get("docNo") or bill.document().number
+
     class Meta:
         model = EwayBill
-        fields = ["id", "invoice", "challan", "delivery", "mode", "distance_km", "transporter_id",
+        fields = ["id", "invoice", "challan", "delivery", "carried_on", "carried_on_number", "document_number",
+                  "mode", "distance_km", "transporter_id",
                   "transporter_name", "vehicle_number", "vehicle_type",
                   "transport_doc_number", "transport_doc_date", "payload", "required",
                   "required_because", "number", "generated_at", "valid_until",

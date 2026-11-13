@@ -13,6 +13,9 @@ import { useDraft } from "../../forms/useDraft";
 import { minus, positive } from "../../lib/decimal";
 import { date, money } from "../../lib/format";
 import { ErrorPanel } from "../../shell/ErrorPanel";
+import { RecordPicker } from "../../forms/RecordPicker";
+import { Consignments } from "../gst/Consignments";
+import { PORT, PORT_HINT, addressLabel } from "../gst/ports";
 import { CustomerPicker } from "./OrderForm";
 
 export interface Invoice {
@@ -191,7 +194,26 @@ export default function InvoiceForm() {
           {invoice?.credits && (
             <Field label="Credits">{(fid) => <output id={fid}><Link to={`/sales/invoices/${invoice.credits}`}>Open the invoice</Link></output>}</Field>
           )}
+          {/* An export of goods names where in India they leave the plant for, before it posts (O545). */}
+          {invoice && !invoice.posted && !invoice.credits && editable && (
+            <Field label="Leaves India from" hint={PORT_HINT} errors={draft.errors.port_address}>
+              {(fid) => <RecordPicker<Record<string, unknown> & { id: number }> id={fid} endpoint={PORT.endpoint} value={(value.port_address as number | null) ?? null}
+                onChange={(next) => draft.set("port_address", next as never)} label={PORT.label} fixed={PORT.query} ariaLabel="Leaves India from" />}
+            </Field>
+          )}
+          {invoice?.posted && Boolean(invoice.port) && (
+            <Field label="Left India from">{(fid) => <output id={fid}>{addressLabel({ ...(invoice.port as Record<string, unknown>), state: "", postal_code: (invoice.port as Record<string, unknown>).pin })}</output>}</Field>
+          )}
+          {invoice?.posted && !invoice.port && Boolean(invoice.delivery_state) && (
+            <Field label="Delivered in state">{(fid) => <output id={fid}>{String(invoice.delivery_state)}{invoice.delivery_recorded_by_name ? ` · recorded by ${String(invoice.delivery_recorded_by_name)}` : ""}</output>}</Field>
+          )}
         </div>
+        {invoice?.posted && Boolean(invoice.lacks_where_it_went) && (
+          <div className="note warn" role="note">
+            <strong>No e-way bill can be made for it yet.</strong> {String(invoice.lacks_where_it_went)}{" "}
+            {can("gst.view_ewaybill") && <Link to="/accounts/where-goods-went">Record where it went</Link>}
+          </div>
+        )}
         <ExtraFields kind="sales.invoice" value={value.extra as Record<string, unknown> | undefined} set={(next) => draft.set("extra", next as never)} errors={draft.errors} editable={editable} />
         {draft.errors.receivable_account && <p className="form-error" role="alert">{draft.errors.receivable_account.join(" ")}</p>}
         {draft.errors.non_field_errors && <p className="form-error" role="alert">{draft.errors.non_field_errors.join(" ")}</p>}
@@ -246,6 +268,7 @@ export default function InvoiceForm() {
           ) : <p className="muted">{allocations.isPending ? "…" : "None yet."}</p>}
         </section>
       )}
+      {invoice?.posted && !invoice.credits && !invoice.is_down_payment && can("gst.view_ewaybill") && <Consignments invoice={invoice.id} />}
       {invoice && <Trail model="sales.invoice" id={invoice.id} />}
     </article>
   );

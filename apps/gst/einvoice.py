@@ -437,10 +437,18 @@ def build(invoice):
         "SellerDtls": _block(seller, seller["gstin"], seller["legal_name"], seller["trade_name"]),
         "BuyerDtls": buyer_block,
     }
-    # Shipped somewhere other than billed. Not for an export: the goods
-    # leave by a port, and the block is optional there.
+    # Shipped somewhere other than billed; for an export, to the port it named.
+    # Where the goods went is the fact the invoice kept (Invoice.where_it_went; a note reads its
+    # invoice's), as the e-way bill reads it: never the address as it stands today.
+    kept_state, kept_port = invoice.where_it_went()
+    if overseas and kept_port:
+        # An export's goods are shipped to a place in India, the port it named as it posted (O545).
+        payload["ShipDtls"] = _block(p.kept_place(kept_port, f"{invoice.number}'s port"), p.UNREGISTERED,
+                                     p.party_name(buyer))
     if not overseas and shipped is not None and shipped.pk != billed_at.pk:
-        ship = p.place(shipped, f"{buyer}'s delivery address")
+        ship = p.place(shipped, f"{buyer}'s delivery address", standing=kept_state or None)
+        if kept_state:
+            ship["state"] = kept_state
         if ship_to:
             # A third party's site, on the buyer's direction: the party the goods go to, by its own
             # registration, or URP where it has none (O152).

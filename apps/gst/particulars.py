@@ -108,6 +108,17 @@ def place(address, what, registered_state=None, domestic=True, standing=None):
     return row
 
 
+def kept_place(kept, what):
+    """A place an invoice kept as it posted (accounting.gst.place_in_india), in the shape place() gives."""
+    row = {"addr1": text(kept["line1"], f"{what}'s first line", 1, 100),
+           "location": text(kept["city"], f"{what}'s town", 3, 50)}
+    if kept.get("line2", "").strip():
+        row["addr2"] = text(kept["line2"], f"{what}'s second line", 3, 100)
+    row["pin"] = int(kept["pin"])
+    row["state"] = kept["state"]
+    return row
+
+
 def seller():
     from apps.core.models import Company
 

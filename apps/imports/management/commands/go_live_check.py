@@ -167,6 +167,17 @@ def _gst(add):
         add(FAIL, "GST: inter-state position", f"{gst.interstate_position} maps {', '.join(faults[:4])}: a supply "
             "across a state line would be charged central and state tax. Map each CGST to the IGST at the whole "
             "rate and each SGST to no tax (Settings > Fiscal positions), or run setup_indian_books.")
+    # O544, O545: an invoice posted before its delivery state or its port was asked for has no e-way bill
+    # and no e-invoice ship-to until that is recorded on it. A fresh database has none.
+    from apps.gst.ewaybill import lacking_where_they_went
+
+    lacking = lacking_where_they_went()
+    if lacking:
+        numbers = ", ".join(invoice.number for invoice, _ in lacking[:6])
+        add(WARN, "GST: invoices that say nowhere their goods went",
+            f"{len(lacking)} posted invoice(s) of goods record no state they were delivered in, or as an export "
+            f"no place in India they left for ({numbers}{', ...' if len(lacking) > 6 else ''}): no e-way bill "
+            "can be made for them. The GST Officer records it on each (Accounts > Where goods went).")
     if not gst.job_work_sac and SalesOrder.objects.filter(is_job_work=True).exists():
         add(FAIL, "GST: job-work SAC", "Job-work orders exist and the SAC for conversion is not set; "
             "their invoices will be refused.")

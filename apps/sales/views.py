@@ -611,7 +611,7 @@ class DeliveryViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.Model
     date_field = "delivery_date"
     ordering_fields = ["delivery_date", "number"]
 
-    queryset = Delivery.objects.select_related("sales_order__customer").prefetch_related(
+    queryset = Delivery.objects.select_related("sales_order__customer", "sales_order__port_address", "invoice").prefetch_related(
         # The batches each line shipped, once for the page rather than once a line (O490).
         Prefetch("lines", queryset=DeliveryLine.objects.select_related("order_line__item__uom").prefetch_related(
             "allocations__lot", "allocations__bin")))
@@ -623,6 +623,7 @@ class DeliveryViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.Model
         # decision, beside posting it.
         "backorder": "sales.post_delivery",
         "transport": "sales.change_delivery",
+        "travels_on": "sales.change_delivery",
         "weighed": "sales.change_delivery",
         "received": "sales.change_delivery",
         "send": "sales.change_delivery",
@@ -740,6 +741,13 @@ class DeliveryViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.Model
         transporter = record_or_404(Party, given, "transporter", optional=True)
         delivery.record_transport(transporter, request.data.get("lr_number") or "",
                                   request.data.get("lr_date") or None, request.data.get("vehicle_number") or "")
+        return Response(self.get_serializer(delivery).data)
+
+    @action(detail=True, methods=["post"])
+    def travels_on(self, request, pk=None):
+        """The invoice its goods travelled under: {invoice}, or null to take it off (limit 20)."""
+        delivery = self.get_object()
+        delivery.travel_on(record_or_404(Invoice, request.data.get("invoice"), "invoice", optional=True))
         return Response(self.get_serializer(delivery).data)
 
     @action(detail=True, methods=["post"])

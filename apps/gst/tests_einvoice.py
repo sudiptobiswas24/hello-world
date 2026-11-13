@@ -73,9 +73,11 @@ class EInvoiceTestCase(GstReturnTestCase):
                                       country=country)
 
     def invoice(self, customer, lines, currency=None, day=DAY, post=True):
+        from apps.sales.tests_base import port_for
+
         invoice = Invoice.objects.create(customer=customer, invoice_date=day,
                                          receivable_account=self.ar,
-                                         currency=currency or self.inr)
+                                         currency=currency or self.inr, port_address=port_for(customer))
         for what, quantity, price, discount, taxes in lines:
             kind = {"charge": what} if isinstance(what, ChargeType) else {"item": what}
             line = InvoiceLine.objects.create(invoice=invoice, quantity=D(quantity),
@@ -388,10 +390,8 @@ class InvoiceEwayBillTests(EInvoiceTestCase):
                          (2, 590016))
 
     def test_an_export_goes_to_the_port(self):
+        """The port it named as it posted (O545): this test once wrote one onto the posted invoice by SQL."""
         invoice = self.export([(self.sack, "1000", "1.37", "0", [self.zero])])
-        port = self.address(invoice.customer, "JNPT, Nhava Sheva", "Uran", "Maharashtra",
-                            "400707", kind=AddressType.SHIPPING)
-        Invoice.objects.filter(pk=invoice.pk).update(shipping_address=port)
         payload = prepare_eway(Invoice.objects.get(pk=invoice.pk),
                                vehicle_number="MH46AB1234").payload
         self.assertEqual((payload["subSupplyType"], payload["toGstin"], payload["toStateCode"],
