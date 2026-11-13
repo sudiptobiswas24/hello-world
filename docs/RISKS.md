@@ -163,18 +163,31 @@ can prove.
 18. **A claim credit is not undone.** Like every credit note it is a
     posted correction; a claim credited in error is answered by a new
     invoice for the amount, not by reversing the note.
-19. **Gratuity is a component set up by hand; the bonus's surplus is
-    not worked out.** The statutory bonus is seeded (BONUS, BONUS-PAID),
-    given to everyone paid basic or DA at the dated least per cent, and
-    worked out for each accounting year: thirty days' work before it is
-    owed, the statement, the Controller's declaration within the dated
-    8.33 to 20%, the payout on a month's pay, and their reverses. The per
-    cent above the least is typed by the Controller; allocable surplus
-    and set-on and set-off (ss.15-16) are not worked out. Gratuity is
-    still a component made and given by hand (its provision and payout
-    on leaving are drafted, untested, in the g38_hr worktree), and the
-    gratuity list is the Act's own arithmetic on last wages, with no
-    actuarial valuation.
+19. **Gratuity is the Act's arithmetic, with no actuarial valuation;
+    the bonus's surplus is not worked out.** The statutory bonus is
+    seeded (BONUS, BONUS-PAID), given to everyone paid basic or DA at the
+    dated least per cent, and worked out for each accounting year: thirty
+    days' work before it is owed, the statement, the Controller's
+    declaration within the dated 8.33 to 20%, the payout on a month's
+    pay, and their reverses. The per cent above the least is typed by the
+    Controller; allocable surplus and set-on and set-off (ss.15-16) are
+    not worked out. Gratuity is seeded (GRATUITY, 4.81% of basic and DA a
+    month into 2470 Gratuity provision, charged to 6120) and given to
+    everyone paid basic or DA; go_live_check names anyone without it. The
+    payout on leaving is the Controller's, through the API: a posted
+    payment to the leaver against that provision, of exactly what the
+    Act owes on the leaving day (15/26 of the month's basic and DA last
+    drawn for each counted year, after five years, or on death or
+    disablement whatever the service), kept as worked out; void is its
+    reverse, and the leaving or start date is not moved under one that
+    stands. Not worked out: an actuarial valuation (AS 15, Ind AS 19), so
+    the provision understates once wages rise and keeps the part year
+    the Act does not count; service before the first run, which is
+    booked to the provision by journal; a piece-rated worker's three
+    months' average (s.4(2) proviso); payment to a nominee or heir on
+    death (the payment goes to the person's own party). The ceiling is a
+    constant (O551). No screen lists or makes payouts yet; the gratuity
+    list is the liability on last wages.
 20. **An e-way bill per truck needs the truck tied to its invoice.** A
     delivery records the invoice its goods travelled under (tied as the
     order is invoiced or the delivery posts, or on the delivery's page),

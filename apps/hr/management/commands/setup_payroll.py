@@ -20,7 +20,10 @@ professional tax and the welfare fund into it.
     BONUS-PAID                     the bonus paid out: an earning that debits Bonus payable, put on a month's pay
                                    by the year's bonus declaration
 
-BONUS is then given to everyone in service who is paid BASIC or DA and does not have it, at the dated least per
+GRATUITY                       the gratuity provision, 4.81% of BASIC and DA a month into 2470, drawn down by
+                               the payout on leaving
+
+BONUS and GRATUITY are then given to everyone in service who is paid BASIC or DA and does not have it, at the dated least per
 cent (8.33): run again, or setup_statutory run after it, gives it to whoever joined since. go_live_check names
 anyone left without it.
 
@@ -56,6 +59,8 @@ ACCOUNTS = [
     ("6100", "Employer contributions", X, ("employer", "contribution")),
     ("2450", "Bonus payable", L, ("bonus",)),
     ("6110", "Bonus", X, ("bonus",)),
+    ("2470", "Gratuity provision", L, ("gratuity",)),
+    ("6120", "Gratuity", X, ("gratuity",)),
 ]
 EARNED = dict(kind=ComponentKind.EARNING, basis=ComponentBasis.FIXED, reduces_for_unpaid_leave=True)
 PF_TERMS = dict(basis=ComponentBasis.PERCENT_OF_GROSS, ceiling_figure=FigureKind.EPF_WAGE_CEILING,
@@ -101,6 +106,12 @@ COMPONENTS = [
     ("BONUS-PAID", "Statutory bonus, paid",
      dict(kind=ComponentKind.EARNING, basis=ComponentBasis.FIXED, is_taxable=False, sequence=40),
      "2450", None, (), ()),
+    # The gratuity provision (Payment of Gratuity Act 1972 s.4(2): 15/26 of a month's basic and DA a year, 4.81 per
+    # cent a month), given to everyone at that rate; drawn down by the payout on leaving (GratuityPayout).
+    ("GRATUITY", "Gratuity provision",
+     dict(kind=ComponentKind.EMPLOYER_COST, basis=ComponentBasis.PERCENT_OF_GROSS, rounding=Rounding.PAISA,
+          sequence=120),
+     "6120", "2470", ("BASIC", "DA"), ()),
 ]
 
 
