@@ -18,15 +18,26 @@ def _columns(model):
 
 
 def _added_since():
-    from apps.accounting.mixins import TaxesTakenUnder
-
-    return [model._meta.get_field("taxes_taken_under") for model in apps.get_models()
-            if issubclass(model, TaxesTakenUnder)]
+    """
+    Every column today's models write that the schema, as it stands, lacks: on any table that exists.
+    It named taxes_taken_under alone until g38 added port_address to the order and the invoice, and the
+    sales migration tests stopped again on the next column, as this module's docstring said they had.
+    """
+    with connection.cursor() as cursor:
+        tables = set(connection.introspection.table_names(cursor))
+    missing = []
+    for model in apps.get_models():
+        if model._meta.db_table not in tables or not model._meta.managed or model._meta.proxy:
+            continue
+        have = _columns(model)
+        missing += [field for field in model._meta.local_concrete_fields
+                    if field.column not in have and field.db_type(connection)]
+    return missing
 
 
 class TodaysColumns:
     """
-    Plain column DDL both ways, a bare nullable column: a schema editor rebuilds an SQLite table from
+    Plain column DDL both ways, a bare nullable column of the field's type: a schema editor rebuilds an SQLite table from
     today's model, every column it has since gained with it, which is not the old schema.
     """
 
@@ -36,7 +47,7 @@ class TodaysColumns:
             for field in fields or _added_since():
                 if field.column not in _columns(field.model):
                     cursor.execute(f"ALTER TABLE {self._name(field.model._meta.db_table)} "
-                                   f"ADD COLUMN {self._name(field.column)} bigint NULL")
+                                   f"ADD COLUMN {self._name(field.column)} {field.db_type(connection)} NULL")
                     self.added.append(field)
 
     @staticmethod
