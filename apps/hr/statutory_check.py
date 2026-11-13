@@ -16,7 +16,7 @@ from apps.core.models import to_date
 from .payroll import PF_KINDS, WELFARE_FUND, ComponentBasis, PayComponent, Statutory
 from .statutory import BONUS_CEILING, ENGINE_FIGURES, FigureKind, figure_standing, minimum_wage_on  # noqa: F401
 
-ENGINES = ("TDS", "TCS", "PF", "ESI", "PT", "LWF", "Bonus", "Overtime", "Minimum wage")
+ENGINES = ("TDS", "TCS", "PF", "ESI", "PT", "LWF", "Bonus", "Overtime", "Minimum wage", "Gratuity")
 
 
 def _figures(kinds, day, states):
@@ -141,4 +141,8 @@ def statutory_gaps(day):
         except ValidationError:
             wages.append(person.employee_number)
     found.append(("Minimum wage", bool(employees), wages))
+    from .gratuity import PROVISION_CODE
+
+    provision = list(active.filter(code=PROVISION_CODE))
+    found.append(("Gratuity", bool(provision), _not_given(provision, day)))
     return found

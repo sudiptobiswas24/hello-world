@@ -224,7 +224,8 @@ def give_statutory_accruals(day=None):
     """
     Give the bonus accrual to everyone in service who is paid its wages and
     does not have it, at the dated least per cent (the plant types a higher
-    rate on the person's pay when it declares one). Sentences saying what
+    rate on the person's pay when it declares one), and the gratuity
+    provision (GRATUITY) at 4.81%, the Act's 15/26 of a month a year. Sentences saying what
     was done, for setup_payroll and setup_statutory, which both call this:
     whichever runs last finds the component and the figure.
     """
@@ -244,6 +245,16 @@ def give_statutory_accruals(day=None):
                                  f"The statutory bonus accrued at the least per cent, {least.value.normalize():f}")
         if given:
             said.append(f"{component.code} at {least.value.normalize():f}% given to {len(given)}: "
+                        + ", ".join(person.employee_number for person in given))
+    from .gratuity import PROVISION_CODE, PROVISION_PERCENT
+    from .payroll import PayComponent
+
+    provision = PayComponent.objects.filter(code=PROVISION_CODE, is_active=True).first()
+    if provision is not None:
+        given = give_to_everyone(provision, PROVISION_PERCENT, day,
+                                 "The gratuity provision, 15/26 of a month's basic and DA a year")
+        if given:
+            said.append(f"{provision.code} at {PROVISION_PERCENT}% given to {len(given)}: "
                         + ", ".join(person.employee_number for person in given))
     return said
 

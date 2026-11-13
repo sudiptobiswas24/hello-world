@@ -447,3 +447,40 @@ class BonusStatementView(viewsets.ViewSet):
         for row in found["rows"]:
             row.pop("expense"), row.pop("payable")
         return Response(found)
+
+
+class GratuityPayoutSerializer(serializers.ModelSerializer):
+    number = serializers.CharField(source="employee.employee_number", read_only=True)
+    stands = serializers.SerializerMethodField()
+
+    class Meta:
+        from .gratuity import GratuityPayout
+
+        model = GratuityPayout
+        fields = ["id", "employee", "number", "reason", "payment", "left_on", "years", "wages", "amount",
+                  "provision_account", "voided_at", "stands"]
+
+    def get_stands(self, obj):
+        return obj.stands()
+
+
+class GratuityPayoutViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    """Gratuity paid to a leaver, against the provision (known limit 19). Posted as made: voided, never changed."""
+
+    from .gratuity import GratuityPayout
+
+    queryset = GratuityPayout.objects.select_related("employee", "payment")
+    serializer_class = GratuityPayoutSerializer
+    filter_fields = ["employee"]
+    date_field = "left_on"
+    http_method_names = ["get", "post", "head", "options"]
+    action_permission_map = {"void": "hr.void_gratuitypayout"}
+
+    def perform_create(self, serializer):
+        _run(super().perform_create, serializer)
+
+    @action(detail=True, methods=["post"])
+    def void(self, request, pk=None):
+        payout = self.get_object()
+        _run(payout.void, on_date=to_date(request.data.get("on_date")))
+        return Response(self.get_serializer(type(payout).objects.get(pk=payout.pk)).data)

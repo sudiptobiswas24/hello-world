@@ -451,6 +451,9 @@ class EveryCollectionIsKeptOnAScreenTests(TestCase):
             "and given to people in the admin."
         ),
         "/api/manufacturing/scale-readings/": "Posted by a scale's bridge; nobody lists it.",
+        # Known limit 19: the Controller pays a leaver's gratuity through the API's own page until a screen is
+        # built; the gratuity list (Gratuity.tsx) shows what is owed.
+        "/api/hr/gratuity-payouts/": "Made by the Controller at the API's own page until its screen is built.",
         # L12: an administrator keeps them through the API's own pages for now (deploy/scale_bridge/RUNBOOK.md);
         # a screen of their own is reported, not built (reports/fix_sec3.md).
         "/api/core/integrations/": "Made by an administrator at the API's own page until its screen is built.",

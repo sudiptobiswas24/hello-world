@@ -426,6 +426,14 @@ class Employee(Extensible, AuditModel):
                 raise ValidationError(
                     f"{paid.run} is posted and paid {self} for {paid.run.period_start}..{paid.run.period_end} "
                     f"on the days they were employed then; void the run to change their {what}.")
+        if moved:
+            # The edit path of the gratuity payout's guard: it was worked out on the service as it stood.
+            from .gratuity import standing_payout
+
+            standing = standing_payout(self.pk)
+            if standing is not None:
+                raise ValidationError(f"{standing} was worked out on {self}'s service to {standing.left_on}; "
+                                      f"void it to change their {moved[0][0]}.")
 
     def save(self, *args, **kwargs):
         self._check_statutory_ids()
@@ -772,6 +780,7 @@ NOT_PAY_INPUTS = {
     "hr.LeaverLoginSwitch": "whether the leaving switched a login off; no run reads it",
     "hr.BonusDeclarationLine": "what the year's bonus declaration posted for the person; a run reads the payout "
                                "row it puts on their pay (EmployeeCompensation, which holds the person), not this",
+    "hr.GratuityPayout": "paid on leaving by its own payment, after the last run; no run reads it",
 }
 
 
@@ -1320,4 +1329,5 @@ from .pay_details import EmployeePayDetails  # noqa: E402,F401
 from .advances import SalaryAdvance  # noqa: E402,F401
 from .shortfalls import ShortfallSettlement  # noqa: E402,F401
 from .bonus import BonusDeclaration, BonusDeclarationLine  # noqa: E402,F401
+from .gratuity import GratuityPayout  # noqa: E402,F401
 from .bank_file import SalaryTransfer, SalaryTransferFile  # noqa: E402,F401
