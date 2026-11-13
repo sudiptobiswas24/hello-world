@@ -1,3 +1,4 @@
+import { PORT, PORT_HINT } from "../gst/ports";
 import type { FieldDef } from "../../views/RecordScreen";
 
 type Row = Record<string, unknown>;
@@ -41,5 +42,8 @@ export function orderTermFields(side: "sell" | "buy"): FieldDef[] {
     side === "sell"
       ? { key: "port_of_discharge", label: "Port of discharge", hint: "For an export: Jebel Ali" }
       : { key: "port_of_loading", label: "Port of loading", hint: "For an import: Shanghai" },
+    // Where in India an export leaves the plant for: its invoice does not post without it (O545).
+    ...(side === "sell" ? [{ key: "port_address", label: "Leaves India from", kind: "pick", pick: PORT, hint: PORT_HINT,
+      show: (row) => String(row.port_address_label || "—") } as FieldDef] : []),
   ];
 }

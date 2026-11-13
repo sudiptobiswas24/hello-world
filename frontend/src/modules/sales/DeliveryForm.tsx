@@ -12,6 +12,7 @@ import { CommitDecimal, DecimalInput, Field } from "../../forms/fields";
 import { aboveZero } from "../../lib/decimal";
 import { date, dateTime, quantity } from "../../lib/format";
 import { PartyPicker } from "../../forms/PartyPicker";
+import { RecordPicker } from "../../forms/RecordPicker";
 import { ErrorPanel } from "../../shell/ErrorPanel";
 
 interface DeliveryLine {
@@ -37,6 +38,9 @@ interface Delivery {
   lines: DeliveryLine[];
   transporter: number | null;
   transporter_name: string;
+  invoice: number | null;
+  invoice_number: string;
+  port: string;
   lr_number: string;
   lr_date: string | null;
   vehicle_number: string;
@@ -255,6 +259,35 @@ function Transport({ delivery, editable }: { delivery: Delivery; editable: boole
   );
 }
 
+/**
+ * Which invoice this truck's goods travelled under: the e-way bill for the
+ * truck is made from it, at the truck's own share of the invoice. Set as
+ * the order is invoiced or the delivery posts; changed here when that
+ * guessed wrong, until an e-way bill made for the truck stands.
+ */
+function TravelsOn({ delivery, editable, mayOpen }: { delivery: Delivery; editable: boolean; mayOpen: boolean }) {
+  const act = useAct<Delivery>();
+  const [invoice, setInvoice] = useState<number | null>(delivery.invoice ?? null);
+  const save = () => void act.run("POST", `${ENDPOINT}${delivery.id}/travels_on/`, { invoice }, { done: invoice ? "Invoice recorded" : "Taken off its invoice" });
+  return (
+    <section className="related-list" aria-label="Invoice it travels on">
+      <h2>Invoice it travels on</h2>
+      <div className="field-grid">
+        <Field label="Invoice" hint="The e-way bill for this truck is made from it">
+          {(fid) => editable
+            ? <RecordPicker<Record<string, unknown> & { id: number }> id={fid} endpoint="/api/sales/invoices/" value={invoice} ariaLabel="Invoice it travels on"
+                onChange={(next) => setInvoice(next as number | null)} fixed={{ sales_order: delivery.sales_order, credits__isnull: "true" }}
+                label={(row) => String(row.number || "Draft invoice")} />
+            : <output id={fid}>{delivery.invoice ? (delivery.invoice_number || "Draft invoice") : "—"}</output>}
+        </Field>
+        {delivery.port && <Field label="Goes to the port">{(fid) => <output id={fid}>{delivery.port}</output>}</Field>}
+      </div>
+      {editable && invoice !== (delivery.invoice ?? null) && <ActionButton pending={act.pending} onClick={save}>Save invoice</ActionButton>}
+      {delivery.invoice && mayOpen && <p className="muted"><Link to={`/sales/invoices/${delivery.invoice}`}>Open {delivery.invoice_number || "the invoice"}</Link></p>}
+    </section>
+  );
+}
+
 interface Warehouse {
   id: number;
   code: string;
@@ -389,6 +422,7 @@ export default function DeliveryForm() {
       </Sheet>
 
       {!delivery.posted && !shipping && !delivery.reverses && delivery.lines.length > 0 && <PickList key={`pick-${delivery.id}-${delivery.lines.length}`} delivery={delivery} />}
+      {!delivery.reverses && <TravelsOn key={`on-${delivery.id}-${delivery.invoice}`} delivery={delivery} editable={can("sales.change_delivery") && can("sales.view_invoice")} mayOpen={can("sales.view_invoice")} />}
       {!delivery.reverses && <Transport key={`transport-${delivery.id}-${delivery.lr_number}`} delivery={delivery} editable={can("sales.change_delivery")} />}
       {delivery.posted && !delivery.reverses && (
         <Received key={`received-${delivery.id}-${delivery.received_on ?? ""}`} delivery={delivery} editable={can("sales.change_delivery")} />

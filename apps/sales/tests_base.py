@@ -173,3 +173,20 @@ def carries_every_customer(user):
         profile.sales_rep = employee.party
         profile.save()
     return user
+
+
+def a_port():
+    """The place in India a test's exports leave the plant for (O545): an export of goods names one before it posts."""
+    from apps.core.models import Address
+
+    return Address.objects.get_or_create(
+        label="JNPT", defaults={"address_type": "other", "line1": "Jawaharlal Nehru Port, Sheva", "city": "Navi Mumbai",
+                                "state": "Maharashtra", "postal_code": "400707"})[0]
+
+
+def port_for(customer):
+    """a_port() for a customer overseas, as an order for one would name it; None for any other."""
+    from apps.accounting.models import PartyTaxProfile
+
+    overseas = PartyTaxProfile.objects.filter(party=customer, gst_registration="overseas").exists()
+    return a_port() if overseas else None

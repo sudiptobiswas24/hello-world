@@ -320,6 +320,16 @@ def _invoices_without_irn(day, user=None):
     return invoices_without_irn(_visible(Invoice.objects.all(), user, "customer")).count()
 
 
+def _invoices_lacking_where_they_went(day, user=None):
+    """Posted invoices of goods no e-way bill can be made for until where they went is recorded (O544, O545)."""
+    from apps.gst.ewaybill import lacking_where_they_went
+    from apps.sales.models import Invoice
+
+    if not _gst_in_use():
+        return 0
+    return len(lacking_where_they_went(_visible(Invoice.objects.all(), user, "customer")))
+
+
 def _books_disagree(day):
     from .health import integrity
 
@@ -401,6 +411,9 @@ CHECKS = [
           _wages_not_posted),
     Check("invoices_without_irn", "Invoices the e-invoice portal has not registered", ("gst.view_einvoice",),
           "/sales/invoices?without_irn=true", _invoices_without_irn, scoped=True),
+    Check("invoices_lacking_where_they_went", "Posted invoices that say nowhere their goods went",
+          ("gst.view_ewaybill",), "/accounts/where-goods-went", _invoices_lacking_where_they_went,
+          scoped=True),
     # The books against themselves, and the machine.
     Check("books_disagree", "Books that do not agree with themselves", ("core.check_health",), "/settings/health",
           _books_disagree),

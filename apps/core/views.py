@@ -320,7 +320,9 @@ class PartyRoleAssignmentViewSet(PartyScopedMixin, viewsets.ReadOnlyModelViewSet
 class AddressViewSet(PartyScopedMixin, AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = Address.objects.select_related("country", "party")
     serializer_class = AddressSerializer
-    filter_fields = ["party", "address_type", "is_active", "is_primary"]
+    # party__isnull: the ports and depots, which are nobody's party (Accounts > Ports and depots).
+    filter_fields = ["party", "party__isnull", "address_type", "is_active", "is_primary"]
+    search_fields = ["label", "line1", "city", "postal_code", "party__name"]
 
 
 class ContactViewSet(PartyScopedMixin, AuditableViewSetMixin, viewsets.ModelViewSet):

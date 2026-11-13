@@ -118,9 +118,11 @@ class GstReturnTestCase(TestCase):
 
     def sell(self, customer, price, quantity="1", taxes=None, currency=None, day=DAY,
              freight=None):
+        from apps.sales.tests_base import port_for
+
         invoice = Invoice.objects.create(
             customer=customer, invoice_date=day, receivable_account=self.ar,
-            currency=currency or self.inr,
+            currency=currency or self.inr, port_address=port_for(customer),
         )
         line = InvoiceLine.objects.create(
             invoice=invoice, item=self.sack, quantity=D(quantity), unit_price=D(price),
@@ -854,8 +856,10 @@ class ExportLineStoresWhatItPostsTests(GstReturnTestCase):
         self.assertEqual(stored, {"quotation": [self.zero.pk], "order": [self.zero.pk], "invoice": [self.zero.pk]})
 
     def test_a_note_line_stores_igst_0(self):
+        from apps.sales.tests_base import a_port
+
         invoice = Invoice.objects.create(customer=self.abroad, invoice_date=DAY, receivable_account=self.ar,
-                                         currency=self.usd)
+                                         currency=self.usd, port_address=a_port())
         self.added("AR Manager", "/api/sales/invoice-lines/", invoice=invoice.pk, revenue_account=self.revenue.pk)
         invoice.refresh_from_db()
         invoice.post()
@@ -877,8 +881,10 @@ class ExportLineStoresWhatItPostsTests(GstReturnTestCase):
             return sorted((row.account.code, row.debit, row.credit) for row in invoice.journal_entry.lines.all())
 
         legacy = self.sell(self.abroad, "100", currency=self.usd, taxes=self.pair)
+        from apps.sales.tests_base import a_port
+
         invoice = Invoice.objects.create(customer=self.abroad, invoice_date=DAY, receivable_account=self.ar,
-                                         currency=self.usd)
+                                         currency=self.usd, port_address=a_port())
         self.added("AR Manager", "/api/sales/invoice-lines/", invoice=invoice.pk, revenue_account=self.revenue.pk)
         invoice.refresh_from_db()
         invoice.post()

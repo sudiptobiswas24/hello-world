@@ -35,7 +35,9 @@ export default function EwayBillForm() {
       editable={(row) => !row.number}
       fields={[
         { key: "invoice", label: "For invoice", kind: "pick", pick: INVOICE, newOnly: true, hint: "One of invoice, delivery or challan" },
-        { key: "delivery", label: "Or delivery", kind: "pick", pick: DELIVERY, newOnly: true },
+        { key: "carried_on", label: "Which truck", kind: "pick", pick: DELIVERY, newOnly: true,
+          hint: "Only where the invoice went on several deliveries: the one this bill is for" },
+        { key: "delivery", label: "Or job-work delivery", kind: "pick", pick: DELIVERY, newOnly: true },
         { key: "challan", label: "Or job-work challan", kind: "pick", pick: CHALLAN, newOnly: true },
         { key: "mode", label: "Mode", kind: "choice", choices: [["1", "Road"], ["2", "Rail"], ["3", "Air"], ["4", "Ship"]], initial: "1", createOnly: true },
         { key: "distance_km", label: "Distance (km)", kind: "integer", createOnly: true },
@@ -45,6 +47,8 @@ export default function EwayBillForm() {
         { key: "vehicle_type", label: "Vehicle type", kind: "choice", choices: [["R", "Regular"], ["O", "Over-dimensional cargo"]], initial: "R", createOnly: true },
         { key: "transport_doc_number", label: "LR or RR number", createOnly: true },
         { key: "transport_doc_date", label: "LR date", kind: "date", createOnly: true },
+        { key: "document_number", label: "Moves on", readOnly: true, existingOnly: true },
+        { key: "carried_on_number", label: "Truck (delivery)", readOnly: true, existingOnly: true },
         { key: "required_because", label: "Why it is needed", readOnly: true, existingOnly: true, wide: true },
         { key: "number", label: "Number", readOnly: true, existingOnly: true },
         { key: "valid_until", label: "Valid until", readOnly: true, existingOnly: true, show: (row) => (row.valid_until ? dateTime(String(row.valid_until)) : "—") },
