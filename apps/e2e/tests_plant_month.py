@@ -254,6 +254,9 @@ class Month:
                                city="Asansol", state="West Bengal", postal_code="713325", is_primary=True)
         Address.objects.create(party=self.hooghly, address_type=AddressType.BILLING, line1="NH-6, Uluberia",
                                city="Howrah", state="West Bengal", postal_code="711316", is_primary=True)
+        self.port = Address.objects.create(label="Kolkata Port", address_type=AddressType.OTHER,
+                                           line1="Netaji Subhas Dock, Garden Reach", city="Kolkata",
+                                           state="West Bengal", postal_code="700043")
         self.importer = self.party("C-EXP", "Gulf Coast Sacks LLC", PartyRole.CUSTOMER, currency=self.usd,
                                    fiscal_position=FiscalPosition.objects.get(code="EXPORT-LUT"), gst_registration="overseas")
 
@@ -386,10 +389,11 @@ class Month:
 
     # -- 4. selling --------------------------------------------------------------
 
-    def sell(self, customer, day, quantity, price, currency, taxes=("CGST9", "SGST9")):
+    def sell(self, customer, day, quantity, price, currency, taxes=("CGST9", "SGST9"), port=None):
         rep = "Sales Rep"
         so = self.post(rep, "/api/sales/sales-orders/", {
-            "customer": customer.pk, "order_date": str(day), "currency": currency.pk})
+            "customer": customer.pk, "order_date": str(day), "currency": currency.pk,
+            **({"port_address": port.pk} if port else {})})
         self.post(rep, "/api/sales/sales-order-lines/", {
             "order": so["id"], "item": self.tape.pk, "uom": self.kg.pk, "quantity": quantity, "unit_price": price,
             "revenue_account": self.acct["4000"].pk, "taxes": [self.tax(code) for code in taxes]})
@@ -501,7 +505,8 @@ class Month:
                 "registration": GstSettings.objects.get().pk, "arn": "AD190326000123X", "financial_year": "2026-27",
                 "filed_on": "2026-03-20", "valid_from": "2026-04-01", "valid_to": "2027-03-31"})
         with on(OCT(16)):
-            self.exp_so = self.sell(self.importer, OCT(16), "1000", "2.00", self.usd)
+            # An export of goods names the place in India it leaves the plant for before it is invoiced (O545).
+            self.exp_so = self.sell(self.importer, OCT(16), "1000", "2.00", self.usd, port=self.port)
             self.exp_delivery = self.ship(self.exp_so, OCT(16), "1000")
             self.exp_invoice = self.invoice(self.exp_so, OCT(16))
         with on(OCT(30)):
