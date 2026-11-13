@@ -1,15 +1,16 @@
-import { useState } from "react";
-import { Trail } from "../../views/Trail";
+import { useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { ATTACHMENTS, type AttachmentRow, sizeOf, Trail } from "../../views/Trail";
 import { Link, useNavigate, useParams } from "react-router";
 
-import { ApiError, get } from "../../api/client";
+import { ApiError, get, request } from "../../api/client";
 import { useAct, useGet, useRecord, useReference } from "../../api/hooks";
 import { useAccess } from "../../auth/me";
 import { ActionButton, DocHeader, Sheet } from "../../forms/Document";
 import { ScanBox } from "../../views/ScanBox";
 import { CommitDecimal, DecimalInput, Field } from "../../forms/fields";
 import { aboveZero } from "../../lib/decimal";
-import { date, quantity } from "../../lib/format";
+import { date, dateTime, quantity } from "../../lib/format";
 import { PartyPicker } from "../../forms/PartyPicker";
 import { ErrorPanel } from "../../shell/ErrorPanel";
 
@@ -124,6 +125,89 @@ function Received({ delivery, editable }: { delivery: Delivery; editable: boolea
         </Field>
       </div>
       {editable && <ActionButton pending={act.pending} onClick={save}>Save receipt</ActionButton>}
+    </section>
+  );
+}
+
+/**
+ * The paper the customer signed: a scan or a phone photograph, kept with the
+ * receipt. It is never replaced in place: a better copy is added, the latest
+ * is the one in force and the earlier ones stay listed under it. Kept by
+ * whoever may record the receipt; removed as any attachment is.
+ */
+function ProofOfDelivery({ delivery, mayKeep }: { delivery: Delivery; mayKeep: boolean }) {
+  const { can } = useAccess();
+  const queries = useQueryClient();
+  const rows = useGet<AttachmentRow[]>(ATTACHMENTS, { model: "sales.delivery", id: String(delivery.id), purpose: "proof_of_delivery" });
+  const [problem, setProblem] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const input = useRef<HTMLInputElement>(null);
+  // The attachments list and the history below both gain a line.
+  const refresh = () => {
+    void queries.invalidateQueries({ queryKey: ["get", ATTACHMENTS] });
+    void queries.invalidateQueries({ queryKey: ["get", "/api/core/history/"] });
+  };
+  const keep = async (file: File) => {
+    const body = new FormData();
+    body.append("model", "sales.delivery");
+    body.append("id", String(delivery.id));
+    body.append("purpose", "proof_of_delivery");
+    body.append("file", file);
+    setBusy(true);
+    setProblem(null);
+    try {
+      await request(ATTACHMENTS, { method: "POST", body });
+      refresh();
+    } catch (error) {
+      setProblem(error instanceof ApiError ? error.messages.join(" ") : "The signed copy could not be kept.");
+    } finally {
+      setBusy(false);
+      if (input.current) input.current.value = "";
+    }
+  };
+  const remove = async (row: AttachmentRow) => {
+    setProblem(null);
+    try {
+      await request(`${ATTACHMENTS}${row.id}/`, { method: "DELETE" });
+      refresh();
+    } catch (error) {
+      setProblem(error instanceof ApiError ? error.messages.join(" ") : "The signed copy could not be removed.");
+    }
+  };
+  const received = delivery.received_on !== null;
+  return (
+    <section className="related-list" aria-label="Proof of delivery">
+      <h2>Proof of delivery</h2>
+      {rows.isPending ? <p className="muted">…</p>
+        : rows.isError ? <p className="muted">Could not read it: {rows.error.message}</p>
+        : rows.data.length ? (
+        <table className="data">
+          <tbody>
+            {rows.data.map((row) => (
+              <tr key={row.id}>
+                <td><a href={`${ATTACHMENTS}${row.id}/download/`}>{row.name}</a></td>
+                <td>{row.current ? "The signed copy" : <span className="muted">An earlier copy</span>}</td>
+                <td className="muted">{sizeOf(row.size)}</td>
+                <td className="muted">{row.by} · {dateTime(row.at)}</td>
+                <td>
+                  {(row.mine || can("core.delete_attachment")) && (
+                    <button type="button" className="icon-btn" aria-label={`Remove ${row.name}`} onClick={() => void remove(row)}>×</button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : <p className="muted">{received ? "No signed copy is kept yet." : "No signed copy is kept. Save the receipt first; the signed copy is kept with it."}</p>}
+      {mayKeep && received && (
+        <label className="btn">
+          {busy ? "Keeping…" : rows.data?.length ? "Add a newer copy" : "Add the signed copy"}
+          <input ref={input} type="file" hidden disabled={busy} accept=".pdf,.jpg,.jpeg,.png"
+            onChange={(event) => { const file = event.target.files?.[0]; if (file) void keep(file); }} />
+        </label>
+      )}
+      {mayKeep && received && <p className="muted">A scan or a photograph: PDF, JPEG or PNG, up to 20 MB.</p>}
+      {problem && <p className="form-error" role="alert">{problem}</p>}
     </section>
   );
 }
@@ -305,9 +389,12 @@ export default function DeliveryForm() {
       </Sheet>
 
       {!delivery.posted && !shipping && !delivery.reverses && delivery.lines.length > 0 && <PickList key={`pick-${delivery.id}-${delivery.lines.length}`} delivery={delivery} />}
-      {!delivery.reverses && <Transport key={`${delivery.id}-${delivery.lr_number}`} delivery={delivery} editable={can("sales.change_delivery")} />}
+      {!delivery.reverses && <Transport key={`transport-${delivery.id}-${delivery.lr_number}`} delivery={delivery} editable={can("sales.change_delivery")} />}
       {delivery.posted && !delivery.reverses && (
-        <Received key={`${delivery.id}-${delivery.received_on ?? ""}`} delivery={delivery} editable={can("sales.change_delivery")} />
+        <Received key={`received-${delivery.id}-${delivery.received_on ?? ""}`} delivery={delivery} editable={can("sales.change_delivery")} />
+      )}
+      {delivery.posted && !delivery.reverses && (
+        <ProofOfDelivery delivery={delivery} mayKeep={can("sales.change_delivery") && can("core.add_attachment")} />
       )}
       {delivery && <Trail model="sales.delivery" id={delivery.id} />}
     </article>
