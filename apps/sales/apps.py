@@ -65,3 +65,8 @@ class SalesConfig(AppConfig):
         register_allocation_model(InvoicePayment)
         register_void_follow_up(undo_what_it_settled)
         register_party_scope(SalesScope())
+
+        # The signed copy of a delivery, kept as a file (limit 21).
+        from .proof import register as register_proof_of_delivery
+
+        register_proof_of_delivery()

@@ -8,11 +8,15 @@ import { dateTime } from "../lib/format";
 import { FollowUpsPanel, NotesPanel } from "./Chatter";
 import { HistoryPanel } from "./HistoryPanel";
 
-interface AttachmentRow { id: number; name: string; size: number; by: string; at: string; mine: boolean }
+export interface AttachmentRow {
+  id: number; name: string; size: number; by: string; at: string; mine: boolean;
+  /** Which paper of the record it is, where it is one (a delivery's proof of delivery); the latest is current. */
+  purpose: string; purpose_label: string; current: boolean;
+}
 
-const ATTACHMENTS = "/api/core/attachments/";
+export const ATTACHMENTS = "/api/core/attachments/";
 
-function sizeOf(bytes: number): string {
+export function sizeOf(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
@@ -76,7 +80,10 @@ export function AttachmentsPanel({ model, id }: { model: string; id: number }) {
           <tbody>
             {rows.data.map((row) => (
               <tr key={row.id}>
-                <td><a href={`${ATTACHMENTS}${row.id}/download/`}>{row.name}</a></td>
+                <td>
+                  <a href={`${ATTACHMENTS}${row.id}/download/`}>{row.name}</a>
+                  {row.purpose && <span className="muted"> · {row.purpose_label}{row.current ? "" : ", an earlier copy"}</span>}
+                </td>
                 <td className="muted">{sizeOf(row.size)}</td>
                 <td className="muted">{row.by} · {dateTime(row.at)}</td>
                 <td>
