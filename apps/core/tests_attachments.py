@@ -101,3 +101,52 @@ class AttachmentTests(TestCase):
                          [("Removed", "theirs.pdf"), ("Removed", "mine.pdf"), ("Attached", "theirs.pdf"), ("Attached", "mine.pdf"),
                           # The party's own making, logged by the model layer (apps/core/history.py).
                           ("Made", "")])
+
+
+@override_settings(MEDIA_ROOT=MEDIA)
+class AFileKeptForAPurposeTests(TestCase):
+    """
+    The facility's half of a purpose, with one registered here for a party
+    (the module owning a record registers its own: sales, the proof of
+    delivery, tested as its people in apps/sales/tests_proof_of_delivery.py).
+    """
+
+    def setUp(self):
+        from . import attachments
+
+        self.party = Party.objects.create(code="V-1", name="Granule Traders")
+        self.where = {"model": "core.party", "id": self.party.pk, "purpose": "signed_terms"}
+        self.asked = []
+        attachments.register_purpose("signed_terms", label="Signed terms", model="core.Party",
+                                     extensions=(".pdf", ".png"), check=lambda party, user: self.asked.append(party))
+        self.addCleanup(attachments.PURPOSES.pop, "signed_terms")
+
+    def test_a_purpose_takes_only_kinds_whose_content_is_read(self):
+        from .attachments import PURPOSES, register_purpose
+
+        with self.assertRaisesMessage(ValueError, "no rule here reads the content of .txt"):
+            register_purpose("notes", label="Notes", model="core.party", extensions=(".txt",), check=None)
+        self.assertNotIn("notes", PURPOSES)
+
+    def test_kept_by_name_and_content_the_owners_rule_asked_and_the_latest_current(self):
+        clerk = login("clerk", "view_party", "add_attachment")
+        for name, body, words in (("terms.jpg", b"\xff\xd8\xff", "A signed terms is kept as .pdf, .png"),
+                                  ("terms.png", b"%PDF-1.4", "is named .png and is not one inside")):
+            refused = clerk.post("/api/core/attachments/", {**self.where, "file": SimpleUploadedFile(name, body)},
+                                 format="multipart")
+            self.assertEqual(refused.status_code, 400, refused.content)
+            self.assertIn(words, refused.json()["file"][0])
+        self.assertEqual(Attachment.objects.count(), 0)
+        for name in ("terms.pdf", "terms-2.pdf"):
+            kept = clerk.post("/api/core/attachments/", {**self.where, "file": SimpleUploadedFile(name, b"%PDF-1.4 x")},
+                              format="multipart")
+            self.assertEqual(kept.status_code, 201, kept.content)
+        self.assertEqual(self.asked, [self.party] * 4)  # asked before the file is looked at, each time
+        plain = clerk.post("/api/core/attachments/", {"model": "core.party", "id": self.party.pk,
+                                                      "file": SimpleUploadedFile("po.txt", b"anything")},
+                           format="multipart")
+        self.assertEqual((plain.status_code, plain.json()["purpose"], plain.json()["current"]), (201, "", False))
+        self.assertEqual([(row["name"], row["purpose_label"], row["current"])
+                          for row in clerk.get("/api/core/attachments/", self.where).json()],
+                         [("terms-2.pdf", "Signed terms", True), ("terms.pdf", "Signed terms", False)])
+        self.assertEqual(len(clerk.get("/api/core/attachments/", {"model": "core.party", "id": self.party.pk}).json()), 3)
