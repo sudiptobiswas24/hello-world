@@ -144,37 +144,52 @@ can prove.
     paid before one, and payments abroad (section 195) are refused. A
     year's threshold is reckoned in bill-date order: a bill entered late
     for an earlier date does not re-reckon the deductions after it.
-16. **Reverse charge stops at the books and the return.** The tax is
-    owed and claimed and 3B shows it, but nothing makes it paid in cash
-    rather than set off against credit (table 6 is not built), and no
-    self-invoice is raised for a supply from an unregistered person.
-    The reverse-charge taxes are chosen on the bill line: IGST from
-    another state, CGST and SGST from inside it.
-17. **MSME days run from the bill's date.** The Act counts from the day
-    the goods are accepted, which is usually the bill's date here and
-    sometimes later; the list does not know the difference. Interest
-    owed on a late payment (three times the bank rate, compounded
-    monthly) is not computed, and a Udyam number is checked for its
-    shape, not against the registry.
+16. **Reverse charge: the credit set-off is the portal's.** The
+    self-invoice is raised as the bill posts (by hand past Rule 47A's
+    thirty days), it and the payment voucher print, the tax is paid in
+    cash by challan, and 3B's 6.1 working splits what credit may set off
+    from what is cash and foots the cash to the ledger. Not built: how
+    much of the other tax the credit ledger pays (no credit ledger is
+    kept here), and the payment voucher is issued by hand from the
+    payment, not as it is applied. The reverse-charge taxes are chosen on
+    the bill line: IGST from another state, CGST and SGST from inside it.
+17. **MSME interest is shown, not posted, on rules the accountant has
+    yet to confirm.** Days run from the day of acceptance kept on the
+    bill. Interest (three times the confirmed bank rate, monthly rests)
+    is worked for the list and the year's note; interest paid to a
+    supplier is not recorded, so the note's "interest paid" is empty and
+    further interest in later years is not worked. A Udyam number is
+    checked for its shape, not against the registry.
 18. **A claim credit is not undone.** Like every credit note it is a
     posted correction; a claim credited in error is answered by a new
     invoice for the amount, not by reversing the note.
-19. **Bonus and gratuity are pay components, set up by hand.** The
-    statutory bonus (8.33% of basic and DA capped at 7,000, for those
-    earning 21,000 or less) and the gratuity provision (4.81% of basic)
-    accrue only once those components are made and given to each person;
-    nothing makes them. The bonus is paid out by an earning that debits
-    the bonus payable. Thirty days' work before a bonus is owed, and the
-    actuarial valuation an auditor may want for gratuity, are not done:
-    the gratuity list is the Act's own arithmetic on last wages.
-20. **A sale's e-way bill takes the truck from its order's one delivery.**
-    An order shipped on two trucks and invoiced once leaves the e-way
-    bill's transport to be typed, because which truck the invoice went
-    on is not recorded.
-21. **A proof of delivery is a reference, not the paper.** The receipt
-    records the date, who signed and the customer's GRN number; the
-    signed copy itself is kept in the file, because nothing here stores
-    a scan.
+19. **Gratuity is a component set up by hand; the bonus's surplus is
+    not worked out.** The statutory bonus is seeded (BONUS, BONUS-PAID),
+    given to everyone paid basic or DA at the dated least per cent, and
+    worked out for each accounting year: thirty days' work before it is
+    owed, the statement, the Controller's declaration within the dated
+    8.33 to 20%, the payout on a month's pay, and their reverses. The per
+    cent above the least is typed by the Controller; allocable surplus
+    and set-on and set-off (ss.15-16) are not worked out. Gratuity is
+    still a component made and given by hand (its provision and payout
+    on leaving are drafted, untested, in the g38_hr worktree), and the
+    gratuity list is the Act's own arithmetic on last wages, with no
+    actuarial valuation.
+20. **An e-way bill per truck needs the truck tied to its invoice.** A
+    delivery records the invoice its goods travelled under (tied as the
+    order is invoiced or the delivery posts, or on the delivery's page),
+    and each truck gets its own e-way bill at its share of the invoice.
+    Not split: a delivery billed on two invoices, and an invoice whose
+    goods lines name no order line or one order line twice. Both are
+    refused in words, and the invoice then takes one bill with the
+    transport typed. A sale's e-way bill is still made from its invoice,
+    so a truck that leaves before the invoice posts has no bill of its
+    own at the gate (O559).
+21. **A proof of delivery is kept as the paper, and nothing reads it.**
+    The signed copy is kept on the delivery as a scan or a photograph
+    (PDF, JPEG, PNG, up to 20 MB) once its receipt is recorded; a better
+    copy is added, never swapped. The date, the signatory and the
+    customer's GRN number are still typed from it.
 22. **Tape line settings are typed from the line, not read from it.**
     They are as good as the shift's habit of entering a change when it
     is made; a run with no setting recorded traces only to its granule
@@ -287,22 +302,25 @@ missing), **minor**.
 | O391 | core | The database role that owns the tables can still disable a books-log trigger; the health check names a table without its trigger. Stopping the owner needs the database administrator's own controls (seen 2026-10-27, fix_audit) | security | latent |
 | O448 | sales, purchasing | O366 decided the whole case: a return after a goodwill credit of the whole invoice or bill brings the goods back and gives back nothing more. A goodwill credit of part (600 of 1,000) then a return of all the goods still refuses the return's note ("has 400 left to give back"), and the goods with it; whether the return should give back what is left (400) or nothing wants the owner (seen 2026-11-05, fix_trade3) | rule | a part goodwill credit then a return |
 | O449 | gst | The e-way bill builder names the buyer as consignee on a bill-to/ship-to supply: _invoice_payload sends toGstin/toTrdName as the buyer with the third party's address and no ship-to party's GSTIN or name, and _delivery_payload (a challan) sends the customer's GSTIN at a delivery address that may be another party's (apps/gst/ewaybill.py:281, :491). The e-invoice names the consignee since O152; check the portal schema's ship-to fields with the tax adviser, with O153 (seen 2026-11-05, fix_trade3) | statutory | goods sent to a third party on an e-way bill |
-| O457 | core | To-dos raised by tell() before migration core 0047 read raised_by_a_rule=False and keep the old rule (O454): the person whose act raised one can still mark it done. No data migration was written because nothing reliably tells them apart; at go-live from a fresh database there are none (seen 2026-11-05, fix_new) | rule | an existing database's open to-dos |
 | O494 | accounting, sales, purchasing | A charge line that names no taxes (taxes: []) confirms and posts untaxed even when its charge declares GST; refuse_untaxed_lines (accounting/gst.py) asks item lines only. That keeps a deliberate "no tax" working; whether a charge is refused as an item is, is the owner's (seen 2026-11-09, g33 O488) | decide | charge lines entered with no tax |
 | O500 | purchasing | MSMED Act readings the code cannot settle (g34 O498): a bill with no terms is read as nothing agreed, so the Act's 15 days apply (an unwritten agreement would put it under the 45-day cap); and while an objection stands on a no-terms bill the bill's own date is used, as the Act gives no day. The tax adviser confirms both (seen 2026-11-09, g34) | decide | MSME bills with no terms |
-| O528 | manufacturing | The dispatch board's `CrewBook` (dispatch.py:166) reads `crewed_on(centre, shift, day)` (manning.py:111) shift by shift within each day: g36_a reports that a shift running past the start of the next day's first shift loses the overlap; not worked through with numbers, so the first fix starts with a scenario table. No fixture or demo shift overlaps (seen 2026-11-11, g36_a) | rule | minor |
 | O534 | gst | GSTR-3B 4(A)(5) claims input credit without reading GSTR-2B and warns of nothing (returns.py:608). Demo September: 398,250.00 claimed while the 2B match lists all three bills as not in any 2B. Section 16(2)(aa) limits credit to what 2B shows: limit it, warn, or leave it to the officer (seen 2026-11-11, g37_stat; /home/user/work/reports/g37_stat.md) | statutory | decide: the tax adviser |
 | O535 | gst | The GSTR-1 JSON may not be the offline tool's shape: `hsn` is written as {b2b, b2c} (returns.py:736), export items are nested as num/itm_det (692-696), and there is no shipping bill (sbnum, sbdt, sbpcode) nor gt/cur_gt/version. Not verifiable here; one import of a month's file into the GST offline tool settles it (seen 2026-11-11, g37_stat; /home/user/work/reports/g37_stat.md) | statutory | open: needs the offline tool |
 | O536 | hr | No EPF administration charge or EDLI contribution is calculated anywhere (no component, no figure in statutory/provident_fund.csv). Demo September: PF payable 138,120; at 0.5% each the reviewer makes admin 2,877.50 on 575,500 and EDLI 1,050.00 on 210,000, so the challan is about 142,048 and employer cost is short by about 3,928. Rates and the minimum are the accountant's to confirm before it is built (seen 2026-11-11, g37_stat; /home/user/work/reports/g37_stat.md) | statutory | open |
 | O538 | hr | statutory/provident_fund.csv:6-7 holds an EPF ceiling of 25,000 from 2026-09-17 marked "Gazette not read", and a rule that the whole of September is paid at the ceiling standing on the 30th. Unconfirmed figures in a statutory file: at 25,000 the EPS share of a member above it is 2,082.50, not 1,250. The accountant confirms the notification and the split-month rule, or the row comes out of the file (seen 2026-11-11, g37_stat; /home/user/work/reports/g37_stat.md) | statutory | decide: the accountant |
 | O540 | web | The demo bills woven PP sacks under HSN 63053300 at 18%. The reviewer recalls PP woven sacks placed under 3923 by circular. Demo data only; the plant enters its own codes, and the accountant says which (seen 2026-11-11, g37_stat; /home/user/work/reports/g37_stat.md) | statutory | demo data |
-| O541 | imports | An open invoice or bill row dated after the books' opening day still comes in as an opening balance (importer.py `_open_document`: the row's date is not compared with the opening day). Books opened 2026-10-01; an open_invoices row dated 2026-10-20 comes in flagged is_opening_balance against the opening account, though it is no part of that day's position. The reverse of O529; whether the opening day itself is allowed is to decide (seen 2026-11-11, g37_imports) | rule | open |
-| O542 | imports | setup_stores makes the OPENING reason post to 3900 by code, while the books' opening account is whatever Settings holds. A plant that opens against another account is refused opening stock, in words naming both accounts (O530), until the reason is changed by hand (seen 2026-11-11, g37_imports) | rule | minor |
-| O543 | imports | A malformed date ("10 Oct") on the import screen's API answers 400 as a bare list, not beside the date field (apps/imports/api.py) (seen 2026-11-11, g37_imports) | rule | minor |
-| O544 | gst | An invoice posted before O533 to a third party's site with no state is still a dead end: no e-way bill, no e-invoice ship-to block, and the address cannot be edited (ewaybill.py:333, einvoice.py:443). It wants a way to record the delivery state on a posted document as a fact, or a check that lists them. At go-live from a fresh database there are none (seen 2026-11-11, g37_gst) | rule | an existing database's posted invoices |
-| O545 | gst | An export invoice that names no ship-to can never have an e-way bill: `delivered_to()` falls back to the buyer's address abroad, which is read as the port and refused for having no Indian PIN (ewaybill.py:330-334). Nothing at order or posting asks for the port and a posted invoice cannot be given one. Demo INV-2026-00007 (Gulf Bulk, USD 17,100, 1,426,995.00): 400. Whether an export must name its port at posting is to decide (seen 2026-11-11, g37_gst, g37_demo) | rule | open |
-| O546 | gst | A job-work challan or a job-work return to a registered party's site in another state is refused: ewaybill.py (`_challan_payload`, `_delivery_payload`) passes the registration's state for the delivery address. A laminator registered in Karnataka with works at Kolhapur, challan of 50 kg (4,750.00): 'is in Maharashtra, but the registration is in Karnataka'. The same site with no state builds with state code 29 under PIN 416001, which the portal rejects. Read `state_delivered_in` for the delivery state and keep the registration for toStateCode only (seen 2026-11-11, g37_gst; confirmed by a run) | rule | open |
-| O547 | hr | statutory/labour_welfare_fund.csv holds West Bengal only, while setup_payroll seeds LWF for every plant: a Maharashtra plant fails go_live_check on the welfare fund with nothing it can confirm, and the check words West Bengal's unconfirmed slabs as 'LWF MH (not confirmed)' (statutory_check.py:45-54). Whether an MH pay run with LWF on it is refused was not tested (seen 2026-11-11, g37_demo) | statutory | open |
+| O548 | inventory | The item admin answers 500 when a costing method is changed over moved stock: save() refuses it, clean() does not ask. Admin change form of an item with 10 kg received, costing method to FIFO, Save: 500. Fixed in L5's uncommitted change (g38_imports worktree) (seen 2026-11-12, g38_imports) | crash | minor |
+| O549 | web (tests) | Fixtures that date old documents relative to today against a fixed books-opening day pass only until the calendar crosses it; tests_health, tests_checks and tests_bank were reworked for O541, others dated relative to today against GO_LIVE were not surveyed (seen 2026-11-12, g38_imports) | rule | minor |
+| O550 | web (demo) | load_demo seeds BONUS but gives it to nobody (it calls seed_payroll, so `give_statutory_accruals` never runs) and go_live_check's Bonus line names all 14 people. Giving it would refuse every demo run: the demo loads no Maharashtra minimum wage (statutory/minimum_wages.csv holds West Bengal only) and the bonus ceiling reads it (load_demo.py:222-233) (seen 2026-11-12, g38_hr) | rule | demo |
+| O551 | hr | The gratuity ceiling is a constant (gratuity.py `CEILING = 2000000`), not a dated setting the Controller confirms (s.4(3), S.O. 1420(E) of 29 March 2018): a notification raising it changes past answers too (seen 2026-11-12, g38_hr) | statutory | minor |
+| O552 | gst | A self-invoice and a payment voucher print the plant's letterhead and GSTIN as they stand today (reverse_charge_documents.py:66, `GstSettings.active()`), not as issued: `SelfInvoice` keeps no recipient GSTIN. A GSTIN changed in 2027 reprints SI-2026-00001 with the new one. Needs a field on both (gst migration) (seen 2026-11-12, g38_purch) | rule | minor |
+| O553 | gst | A reverse-charge bill dated within thirty days of the machine's date now gets its self-invoice at posting, so a fixture that posts such a bill and issues by hand is refused "has a self-invoice standing" on some days and not others (reverse_charge.py `raise_self_invoice`). The gst tests use September 2026; anything dated today must expect the document (seen 2026-11-12, g38_purch) | rule | minor |
+| O554 | gst | `owed_against_the_ledger()` foots every posted bill's reverse-charge rows, but `GstCashPayment.pay` pays only the bills a return reports (`reported_bills()`): reverse-charge tax on a prepayment or an opening-balance bill, e.g. 500.00, would stand as still to pay with no challan able to pay it. Not probed (seen 2026-11-12, g38_purch) | rule | minor |
+| O555 | purchasing | A bill made through the API with `lines` instead of `new_lines` is created with no lines and no word (accounting/serializers.py:247, `lines` read-only on BillSerializer); posting then says "no value to post" (seen 2026-11-12, g38_purch) | rule | minor |
+| O556 | web | A confirmed bank rate (and TDS or TCS rate) still offers Delete on its screen; the server refuses it in words (frontend/src/modules/settings/BankRateForm.tsx) (seen 2026-11-12, g38_purch) | rule | minor |
+| O557 | manufacturing | The dispatch board cuts a crewed machine's shifts to its own day window (dispatch.py:73 `Clock._spans`) while `manned_minutes` (manning.py:132) counts every crewed shift: a 16-hour loom crewed on B (14:00) and N (22:00) at a bank whose first shift is 06:00 has 960 minutes a day of capacity, but the board runs it 14:00-22:00 (480). A 630-minute run from 06:00 D1 ends 16:30 D2 on the board; the crew could finish it 00:30 D2. Whether its hours run from the first shift or on the crewed shifts is the owner's question (seen 2026-11-12, g38_floor) | rule | decide |
+| O558 | sales | No role reads deliveries for a Sales Rep (setup_roles.py), so a rep sees no proof of delivery at all; the rule that a rep sees only their own customers' holds and is tested for a rep given view_delivery. Granting it is a roles decision (seen 2026-11-12, g38_floor) | rule | decide |
+| O559 | gst, sales | A sale's goods leave on a delivery before its invoice posts, and its e-way bill can be made only from the posted invoice (ewaybill.py `prepare`, `_invoice_payload`; a sale's delivery is refused its own: "its goods move on the invoice's e-way bill"). Demo SO-2026-00018: DO-2026-00017 (1,000 bags, 17,110.00) left on 11 Nov with no bill possible until INV-2026-00017 posted. Under the limit that is lawful; at 50,000.01 and above the truck moves without the bill Rule 138 requires. Rule 55(5) has the invoice issued before the first lot leaves, so the fix is likely in the order of work, invoice before dispatch, not in the code alone: the owner and the tax adviser to decide (seen 2026-11-12, g38_gst) | statutory | decide |
 
 Upgrade notes, true of data made before the 8 October fixes:
 - Landed cost allocated before the stores fix releases to cost of sales, and old inventory differences stay where they were.
@@ -312,6 +330,7 @@ Upgrade notes, true of data made before the 8 October fixes:
 - A landed-cost allocation made before purchasing migration 0059 releases through its one `stock_movement`; a clearance out of inspection made before 0059 recorded no movement, so under FIFO freight landed on its goods goes to cost of sales.
 - A run operation given a machine before manufacturing migration 0091 records no minutes on that machine. It earns, and its traveller prints, its planned minutes until it is given a machine again.
 - A time booking posted before manufacturing migration 0092 has no `ideal_minutes`. Its performance is measured at the operation's rate, as it was then.
+- A delivery posted before sales migration 0085 is tied to no invoice: an invoice of such deliveries on two trucks takes one e-way bill with the transport typed until each delivery is tied on its page (no backfill). An invoice posted before it keeps no delivery state or port; one sent to a site with no state is listed by go_live_check and the morning checks until its delivery state is recorded.
 
 ## Decisions taken for the owner, confirmed on 2026-10-05
 
@@ -406,6 +425,16 @@ Upgrade notes, true of data made before the 8 October fixes:
      follow).
    - Unit prices keep two places; a price converted from another currency
      is rounded to the paisa per unit (O208). Not to change.
+24. **Decided for the owner on 11 November 2026, by the integrator, to
+    confirm or overturn:**
+   - An open invoice or bill brought in from the old system dated on or
+     before the books' opening day is an opening balance; one dated after
+     it is refused, since it is no part of that day's position and is
+     entered as a document of its own (O541; done in g38).
+   - An export of goods names the Indian port, ICD or CFS it leaves
+     through, with its PIN and state, before the invoice posts; the
+     invoice keeps it as a fact and the e-way bill and the e-invoice
+     ship-to read it (O545; done in g38).
 ## Later items
 
 Tracked here until done; each moves to "Known limits" with what it does

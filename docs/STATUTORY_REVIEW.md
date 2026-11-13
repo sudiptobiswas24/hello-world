@@ -315,6 +315,60 @@ Questions for you:
 
 ---
 
+## 14. Built in g38, not yet seen by the accountant
+
+These are choices the code makes and says. Each is to be confirmed or corrected; the figures are settings
+marked "not confirmed" until the Controller confirms them.
+
+**Labour welfare fund (Maharashtra).** 25 (employee) and 75 (employer) a half-year from 18 March 2024, under
+the MLWF (Amendment) Act 2024, recalled from compliance summaries; the Gazette was not seen. Confirm the
+figures, the day and the Act's number. Before it: 6 or 12 and 18 or 36, by wages. Also: is the half-year
+deducted in June and December, or on those months' wages paid in July and January?
+
+**Statutory bonus.**
+- Paid leave counts as days worked (s.14, through the slip's paid days); lay-off and maternity days do not
+  (they are unpaid days here). Confirm both.
+- Wages counted are basic and DA within the calculation ceiling, and only months within 21,000; eligibility
+  is judged month by month, not on the year's average.
+- The payout is in no levy's base: confirm it is outside PF basic wages and ESI wages.
+- Payment within eight months of the year's close (s.19): the statement shows "pay by" 30 November, but a
+  later payout is not refused.
+- Allocable surplus and set-on and set-off (ss.15-16) are not worked out; the per cent above the least is
+  typed by the Controller.
+
+**Gratuity.** 15/26 of basic and DA per counted year (s.4(2)); the 4.81% provision is that arithmetic, not
+a notified rate, and understates once wages rise. No actuarial valuation (AS 15 / Ind AS 19). The ceiling
+is a constant (O551).
+
+**MSME interest (s.16).**
+1. Days of interest: the day after the due day through the day of payment, both counted; 365 days a year.
+2. Monthly rests are counted from the first day of interest, not by calendar month.
+3. A bank rate changed during the delay applies from its own day.
+4. "Bank rate" is the Reserve Bank's Bank Rate, not the repo rate.
+5. Terms longer than 45 days are capped at 45 from acceptance, not treated as no agreement (15 days).
+6. The payment terms on the bill are taken as the agreement in writing.
+7. A payment goes to principal, oldest part first, never to interest first.
+8. Interest paid to a supplier is not recorded, so s.22's "interest paid" reads "not recorded".
+9. A debit note, tax deducted, a prepayment drawn or a discount settles its part on its own day.
+10. Whether s.15 reaches a micro or small supplier that is only a trader is not asked.
+
+**Reverse charge.**
+1. The self-invoice is dated the day the bill posts, not the day of receipt, and is raised by whoever may
+   post the bill.
+2. The order in which credit is applied (s.49(5), s.49A, Rule 88A), the split of IGST credit and Rule 86B's
+   1% in cash are left to the portal.
+3. 3.1(a) + 3.1(b) is read as the whole of the tax credit may set off; interest and late fee are not in it.
+
+**E-way bills for lots and job work.**
+1. Portal sub-supply type 9 ("SKD/CKD/Lots") for each consignment of an invoice sent in lots, every lot but
+   the last on its delivery challan and the last on the invoice (Rule 55(5)(b), (d)); for an export in lots it
+   replaces sub-type 3. Confirm against the portal's current masters.
+2. A lot's need of an e-way bill is judged by the lot's own value against the limit (Rule 138(1)), not the
+   whole invoice's. Confirm.
+3. Rule 138(1)'s third proviso is read as where the goods go: a job worker registered in another state taking
+   goods at works inside this state is said in the bill's reason as not required. Confirm.
+4. Rule 55(5) has the invoice issued before the first lot leaves; this plant ships, then invoices (O559).
+
 ## Decisions waiting on the register that touch these outputs
 
 **O448. A goodwill credit of part of an invoice, then all the goods come back.** An invoice of 1,000; a
