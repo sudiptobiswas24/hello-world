@@ -167,10 +167,10 @@ class BackflushTests(RunTestCase):
 
 
 class ReworkTestCase(RunTestCase):
+    by_batch = ("tape",)
+
     def setUp(self):
         super().setUp()
-        self.tape.tracking = TrackingMode.LOT
-        self.tape.save()
         self.characteristic = Characteristic.objects.create(
             code="DEN", name="Denier", uom=self.kg
         )

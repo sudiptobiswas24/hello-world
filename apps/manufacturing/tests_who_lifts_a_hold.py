@@ -277,6 +277,8 @@ from .tests_orders import RunTestCase  # noqa: E402
 
 
 class TraceOnALoop(RunTestCase):
+    by_batch = ("regrind",)  # before its stock is placed (L5)
+
     def run_of(self, eats, makes):
         order = self.order()
         order.release(TODAY)
@@ -291,8 +293,6 @@ class TraceOnALoop(RunTestCase):
 
         from .trace import descendants, recall
 
-        Item.objects.filter(pk=self.regrind.pk).update(tracking="lot")
-        self.regrind.refresh_from_db()
         rg1, rg2 = (Lot.objects.create(item=self.regrind, code=code) for code in ("RG-1", "RG-2"))
         for lot in (rg1, rg2):
             self.stock(self.regrind, "50", "60", lot=lot)

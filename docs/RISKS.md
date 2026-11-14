@@ -309,7 +309,6 @@ missing), **minor**.
 | O536 | hr | No EPF administration charge or EDLI contribution is calculated anywhere (no component, no figure in statutory/provident_fund.csv). Demo September: PF payable 138,120; at 0.5% each the reviewer makes admin 2,877.50 on 575,500 and EDLI 1,050.00 on 210,000, so the challan is about 142,048 and employer cost is short by about 3,928. Rates and the minimum are the accountant's to confirm before it is built (seen 2026-11-11, g37_stat; /home/user/work/reports/g37_stat.md) | statutory | open |
 | O538 | hr | statutory/provident_fund.csv:6-7 holds an EPF ceiling of 25,000 from 2026-09-17 marked "Gazette not read", and a rule that the whole of September is paid at the ceiling standing on the 30th. Unconfirmed figures in a statutory file: at 25,000 the EPS share of a member above it is 2,082.50, not 1,250. The accountant confirms the notification and the split-month rule, or the row comes out of the file (seen 2026-11-11, g37_stat; /home/user/work/reports/g37_stat.md) | statutory | decide: the accountant |
 | O540 | web | The demo bills woven PP sacks under HSN 63053300 at 18%. The reviewer recalls PP woven sacks placed under 3923 by circular. Demo data only; the plant enters its own codes, and the accountant says which (seen 2026-11-11, g37_stat; /home/user/work/reports/g37_stat.md) | statutory | demo data |
-| O548 | inventory | The item admin answers 500 when a costing method is changed over moved stock: save() refuses it, clean() does not ask. Admin change form of an item with 10 kg received, costing method to FIFO, Save: 500. Fixed in L5's uncommitted change (g38_imports worktree) (seen 2026-11-12, g38_imports) | crash | minor |
 | O549 | web (tests) | Fixtures that date old documents relative to today against a fixed books-opening day pass only until the calendar crosses it; tests_health, tests_checks and tests_bank were reworked for O541, others dated relative to today against GO_LIVE were not surveyed (seen 2026-11-12, g38_imports) | rule | minor |
 | O550 | web (demo) | load_demo seeds BONUS but gives it to nobody (it calls seed_payroll, so `give_statutory_accruals` never runs) and go_live_check's Bonus line names all 14 people. Giving it would refuse every demo run: the demo loads no Maharashtra minimum wage (statutory/minimum_wages.csv holds West Bengal only) and the bonus ceiling reads it (load_demo.py:222-233) (seen 2026-11-12, g38_hr) | rule | demo |
 | O551 | hr | The gratuity ceiling is a constant (gratuity.py `CEILING = 2000000`), not a dated setting the Controller confirms (s.4(3), S.O. 1420(E) of 29 March 2018): a notification raising it changes past answers too (seen 2026-11-12, g38_hr) | statutory | minor |
@@ -448,17 +447,14 @@ not cover, or is deleted with the commit that finishes it.
 - ~~L3 Link a login to an employee~~ — done, for leave; see items 6 and 17.
 - ~~L4 Import from files (CSV)~~ — done; see item 2 for what it has
   not been tried on.
-- L5 An item's costing method and tracking are not yet fixed once its
-  stock has moved, as its unit is. A costing method changed over stock
-  already held replays every past movement under a method it never
-  happened by, and the stock's value parts from the ledger with no
-  entry to say why. Lot tracking switched on over stock already held
-  strands that stock: every movement must then name a batch, and that
-  stock is in none. The item screen sets both only when the item is
-  made; the API still takes a change. Test fixtures under standard
-  costing, valuation folds and lot trace switch them over stock and are
-  reworked first, or a step that switches one revalues the stock or
-  puts it into an opening batch.
+- ~~L5 An item's costing method and tracking fixed once its stock has
+  moved~~ — done: both are fixed as its unit is, over the API, the
+  admin and code alike (the costing method by O330, tracking in g39);
+  the refusal says to make a new item kept as meant and move the stock
+  to it by a stock adjustment, each batch named. A product refuses
+  either while a variant has moved. Test fixtures make an item tracked
+  before its stock is placed, its opening stock in a named batch, and
+  `audit_invariants` reports code that sets either by a queryset update.
 - ~~L6 A second role for a party already made~~ — done: given on the
   party's page (`parties/<id>/roles/`), asked as making the party is
   asked; a rep claims no vendor, and a role a document names stays.

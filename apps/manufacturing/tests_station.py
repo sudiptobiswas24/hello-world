@@ -16,6 +16,8 @@ from django.utils import timezone
 
 from apps.core.models import Party, PartyRole, PartyRoleAssignment
 from apps.hr.models import Employee, EmploymentStatus
+from apps.inventory.models import Lot
+from apps.inventory.tracking import TrackingMode
 
 from .machines import Machine
 from .orders import WorkCentre, WorkOrder
@@ -31,6 +33,16 @@ def at(day, hour, minute=0):
 
 
 class StationTestCase(RollTestCase):
+    # The warp tape kept by batch from the start, made so before its stock is placed (tracking is fixed once stock
+    # has moved, docs/RISKS.md L5): its 5,000 kg then go into a batch named OPENING. A case whose shelf is only the
+    # batches it names places them in place_tape() instead, before the run is released and costed from them.
+    tape_by_batch = False
+
+    def place_tape(self, warp):
+        if self.tape_by_batch:
+            self.opening_lots[warp] = Lot.objects.create(item=warp, code="OPENING")
+        self.stock(warp, "5000", "120", lot=self.opening_lots.get(warp))
+
     def setUp(self):
         super().setUp()
         self.spec = self.specification()
@@ -48,7 +60,11 @@ class StationTestCase(RollTestCase):
         )
         self.spec.routing = routing
         self.spec.save()
-        self.stock(self.spec.warp_tape.tape_item, "5000", "120")
+        warp = self.spec.warp_tape.tape_item
+        if self.tape_by_batch:
+            warp.tracking = TrackingMode.LOT
+            warp.save()
+        self.place_tape(warp)
         self.run = self.released_run()
 
         self.day = Shift.objects.create(code="D", name="Day", starts_at=datetime.time(8),

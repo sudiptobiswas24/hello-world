@@ -73,6 +73,30 @@ class MovementsWrittenAroundSaveTests(SimpleTestCase):
                                "def f():\n    StockMovement.objects.create(item=item)\n"), [])
 
 
+class ItemCountingChangedAroundSaveTests(SimpleTestCase):
+    # L5: tracking switched by a queryset update went round the refusal save() makes once stock has moved.
+    def test_tracking_by_a_queryset_update_is_reported(self):
+        (finding,) = asked("item_counting_changed_around_save",
+                           "def f():\n    Item.objects.filter(pk=1).update(tracking='lot')\n")
+        self.assertEqual(finding[0], "item counting changed around save")
+        self.assertIn("sales/example.py:2 sets tracking", finding[1])
+
+    def test_a_products_variants_and_its_costing_method_are_reported(self):
+        (finding,) = asked("item_counting_changed_around_save",
+                           "def f(template):\n    template.variants.update(costing_method='fifo', name='x')\n")
+        self.assertIn("sets costing_method by update()", finding[1])
+
+    def test_another_field_or_another_model_is_not(self):
+        self.assertEqual(asked("item_counting_changed_around_save",
+                               "def f(t):\n    t.variants.update(is_active=False)\n"
+                               "    Line.objects.filter(pk=1).update(uom=None)\n"), [])
+
+    def test_a_test_fixture_is_not_asked(self):
+        self.assertEqual(asked("item_counting_changed_around_save",
+                               "def f():\n    Item.objects.filter(pk=1).update(tracking='lot')\n",
+                               name="tests_example.py"), [])
+
+
 class ArrivalsWithoutTheirDepartureTests(SimpleTestCase):
     # O210: an arrival that does not name the leg it came from is not followed.
     def test_a_transfer_in_naming_no_departure_is_reported(self):

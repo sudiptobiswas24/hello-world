@@ -137,8 +137,9 @@ class StoresReviewLandedProbes(base.LandedWhereTheGoodsAreTests):
 
     # ---- rebatch
     def lot_receipt(self, code, qty="10", price="5"):
-        Item.objects.filter(pk=self.item.pk).update(tracking="lot")
         self.item.refresh_from_db()
+        self.item.tracking = "lot"
+        self.item.save()
         lot = Lot.objects.create(item=self.item, code=code)
         order = self.make_order(qty, price)
         receipt = GoodsReceipt.objects.create(purchase_order=order, receipt_date=datetime.date(2026, 1, 5))

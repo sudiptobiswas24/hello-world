@@ -35,6 +35,8 @@ from .tests_station import at
 
 
 class RunRecallTestCase(ConversionTestCase):
+    tape_by_batch = True  # before its stock is placed (L5)
+
     def setUp(self):
         super().setUp()
         call_command("setup_roles", verbosity=0)
@@ -52,8 +54,6 @@ class RunRecallTestCase(ConversionTestCase):
         # The fabric's plan advisory, as a plant that does not inspect each roll keeps it.
         InspectionPlan.objects.filter(item=self.fabric).update(is_mandatory=False)
         self.tape = self.spec.warp_tape.tape_item
-        Item.objects.filter(pk=self.tape.pk).update(tracking="lot")
-        self.tape.refresh_from_db()
         self.doff = Lot.objects.create(item=self.tape, code="T-1")
         self.stock(self.tape, "100", "120", lot=self.doff)
         load_tape(self.station, self.operator, self.l17, "T-1", "30", CreelSide.WARP, at=at(TODAY, 9))

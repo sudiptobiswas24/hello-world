@@ -17,11 +17,11 @@ from .tests_orders import TODAY, RunTestCase
 
 
 class IssueByScanTests(RunTestCase):
+    by_batch = ("virgin",)
+
     def setUp(self):
         super().setUp()
         call_command("setup_roles", verbosity=0)
-        self.virgin.tracking = TrackingMode.LOT
-        self.virgin.save()
         self.v1 = Lot.objects.create(item=self.virgin, code="V1", expires_on=TODAY.replace(year=2026, month=10, day=1))
         self.v2 = Lot.objects.create(item=self.virgin, code="V2", expires_on=TODAY.replace(year=2027, month=1, day=1))
         self.stock(self.virgin, "200", "100", lot=self.v1)

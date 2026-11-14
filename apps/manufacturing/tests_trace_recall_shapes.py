@@ -41,6 +41,8 @@ class TraceShape(RecallTestCase):
 
 
 class TraceOnALoop(RunTestCase):
+    by_batch = ("regrind",)  # before its stock is placed (L5)
+
     def run_of(self, eats, makes):
         order = self.order()
         order.release(TODAY)
@@ -54,8 +56,6 @@ class TraceOnALoop(RunTestCase):
 
         from .trace import recall
 
-        Item.objects.filter(pk=self.regrind.pk).update(tracking="lot")
-        self.regrind.refresh_from_db()
         lots = [Lot.objects.create(item=self.regrind, code=f"RG-{n}") for n in range(1, 7)]
         for lot in lots:
             self.stock(self.regrind, "50", "60", lot=lot)

@@ -22,16 +22,21 @@ from .trace import recall
 
 
 class TapeLoadTestCase(StationTestCase):
+    # The tape on the shelf is three doffs of 100 kg at 120, kept by batch from the start (L5). The 5,000 kg the
+    # station fixture holds were in no batch here before, so no pick, creel or plan ever saw them; the doffs take
+    # their place, and the run is released and costed from them.
+    tape_by_batch = True
+
+    def place_tape(self, warp):
+        self.doffs = {}
+        for code in ("D-1", "D-2", "D-3"):
+            lot = Lot.objects.create(item=warp, code=code)
+            self.stock(warp, "100", "120", lot=lot)
+            self.doffs[code] = lot
+
     def setUp(self):
         super().setUp()
         self.tape = self.spec.warp_tape.tape_item
-        Item.objects.filter(pk=self.tape.pk).update(tracking="lot")
-        self.tape.refresh_from_db()
-        self.doffs = {}
-        for code in ("D-1", "D-2", "D-3"):
-            lot = Lot.objects.create(item=self.tape, code=code)
-            self.stock(self.tape, "100", "120", lot=lot)
-            self.doffs[code] = lot
 
     def load(self, code, kg, side, hour, minute=0):
         return load_tape(self.station, self.operator, self.l17, code, kg, side,
