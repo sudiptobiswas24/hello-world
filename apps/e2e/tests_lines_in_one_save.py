@@ -184,6 +184,35 @@ class ARefusedLineMakesNothing(LinesInOneSaveTestCase):
         self.assertEqual(refused.status_code, 403, refused.content)
         self.assertEqual(self.counts(), before)
 
+    def test_lines_sent_as_lines_are_refused_beside_them_not_dropped(self):
+        # O555: `lines` is read-only, and DRF dropped it without a word: a bill made with no lines, refused only
+        # at posting for having "no value to post". Refused now, beside the field, for every document taking
+        # new_lines (the same mixin), made or saved, and nothing is made.
+        vendor, customer = Party.objects.get(code="V-GRAN").pk, Party.objects.get(code="C-KONK").pk
+        cases = [
+            (self.as_("ravi"), "/api/purchasing/bills/", {"vendor": vendor, "bill_date": TODAY(), "reference": "GR/7"},
+             self.unreceived().pk),
+            (self.as_("rohit"), "/api/sales/invoices/", {"customer": customer, "invoice_date": TODAY()},
+             self.item("SACK-RICE25")),
+            (self.as_("imran"), "/api/sales/sales-orders/", {"customer": customer, "order_date": TODAY()},
+             self.item("SACK-RICE25")),
+            (self.as_("ravi"), "/api/purchasing/purchase-orders/", {"vendor": vendor, "order_date": TODAY()},
+             self.item("PP-RAFFIA")),
+        ]
+        for client, documents, header, item in cases:
+            with self.subTest(documents):
+                before = self.counts()
+                line = {"item": item, "quantity": "50", "unit_price": "112.00"}
+                refused = client.post(documents, {**header, "lines": [line]}, format="json")
+                self.assertEqual(refused.status_code, 400, refused.content)
+                self.assertIn("new_lines", refused.json()["lines"][0])
+                self.assertEqual(self.counts(), before)
+                made = client.post(documents, header, format="json")
+                self.assertEqual(made.status_code, 201, made.content)
+                again = client.patch(f"{documents}{made.json()['id']}/", {"lines": [line]}, format="json")
+                self.assertEqual(again.status_code, 400, again.content)
+                self.assertIn("lines", again.json())
+
     def test_a_saved_document_s_lines_are_not_sent_with_its_header(self):
         imran = self.as_("imran")
         made = imran.post("/api/sales/sales-orders/", {"customer": Party.objects.get(code="C-KONK").pk,
