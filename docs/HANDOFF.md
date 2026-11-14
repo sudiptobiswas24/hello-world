@@ -50,6 +50,42 @@ pg_isready -q || service postgresql start                              # role er
 
 ## 2. Next steps, in order
 
+**g39 is pushed (c198aba, 14 November 2026), all seven lanes green on one tip (gated as ee143c4).** Five commits
+finishing the two pieces g38 left uncommitted. Limit 19: the gratuity provision is seeded (GRATUITY, 4.81% of basic
+and DA a month into 2470, charged to 6120) and given to everyone by `give_statutory_accruals`; go_live_check names
+anyone without it; `GratuityPayout` (hr 0041) pays a leaver exactly what gratuity_due owes on the leaving day, against
+the provision their runs accrued into, refused before five years unless death or disablement, voided with its
+payment, edit and delete refused; `gratuity-payouts/` for the Controller (Payroll Officer reads). Limit L5 and O548:
+an item's tracking is fixed once its stock has moved, as its unit and costing method are, through the API, the admin
+and code; the admin answers beside the form instead of a 500; `audit_invariants` reports a QuerySet.update of an
+item's unit, costing, tracking or inventory account (`item_counting_changed_around_save`); no test switches tracking
+over held stock any more. Register rows O560-O563 are what the gratuity work saw and did not fix: the demo gives
+GRATUITY to nobody (as O550 for BONUS), a death's payout cannot go to a nominee (O561, for the owner and the tax
+adviser), a provision booked by journal cannot be paid out, and whether s.2A's 240 days count toward the fifth year
+(O563, for the accountant). Counts: SQLite 8,805 (246 skipped), PostgreSQL 4,057 + 3,685 + 1,063 = 8,805,
+Asia/Kolkata 8,805 (246 skipped), migration-tagged 43 of 53 (the apps the range needed) and the
+one PostgreSQL-only, vitest 70.
+- Not done: no payout screen, no race() test on PostgreSQL for the payout, no demo or browser drive of either piece.
+- The first tip (5ab7886) failed pg-a: accounting's restatement test found GratuityPayout booking against a payment
+  without asking the restatement or being listed. It is payroll in the base currency and is now listed with that
+  reason. The gratuity agent had run hr, core and web, not accounting: a new model that names a payment and an amount
+  must run apps.accounting too. Before restarting, the five apps neither agent had run were run on the combined tree
+  (1,202 OK).
+- The second tip (524933a) failed pg-c, PostgreSQL only: RunRaceTests borrows RunTestCase.setUp, which since L5
+  reads by_batch, and did not borrow by_batch; and both demo tests failed at "Polymer bought on a circular" with no
+  reason shown (see the register row below). Neither agent ran its tests on PostgreSQL. A change to a fixture that
+  apps/e2e/tests_races.py borrows, or to how stock rows are locked, must run on PostgreSQL before it is handed in.
+  The third tip ran pg-c first, so its answer came in ninety minutes, not at the end.
+- Gate lessons from g39: three tips. Two agents' tests beside two lanes had pushed g38's sales step to its limit, so
+  g39's agents tested only beside one lane. The lane script refuses pg-C while a ui lane builds the office app:
+  start pg-C after ui. The g40 agents' tests, niced and one at a time through /home/user/work/agent_tests.lock,
+  still pushed ist to 7,893 s of tests beside two lanes (about 8,200 of its 9,000 s step); pausing them (SIGSTOP,
+  resumed after) carried it. Agents' tests go beside one lane only. The demo failure on the second tip is O564.
+- Landing: g39 was gated on 8eff573, under g38's handoff commit, so it was replayed onto 1607aca; the replay
+  differs from the gated tip in docs/HANDOFF.md alone. Base the next integration on the handoff commit.
+- Next: g40 is being built (/home/user/work/g40_trade: O555, O556, O552; /home/user/work/g40_people: O560, O549,
+  the gratuity payout's race test).
+
 **g38 is pushed (8eff573, 14 November 2026), all seven lanes green on one tip (gated as 12a107c).** Fifteen
 commits: twelve from five agents deepening the trade, statutory and floor modules, then the register and two gate
 fixes. Fixed: O541 (an open invoice or bill
