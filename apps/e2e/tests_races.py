@@ -811,6 +811,8 @@ class StockAndPlantRaceTests(RaceCase):
 @unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
 class RunRaceTests(RaceCase):
     setUp = run_fixture.RunTestCase.setUp
+    # setUp reads which items it keeps by batch (L5): borrowed with it, or the race case has none to read.
+    by_batch = run_fixture.RunTestCase.by_batch
     stock, order, issue, produce, balance, full_issue = (
         run_fixture.RunTestCase.stock, run_fixture.RunTestCase.order,
         run_fixture.RunTestCase.issue, run_fixture.RunTestCase.produce,

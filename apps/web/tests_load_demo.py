@@ -28,7 +28,14 @@ def load(**options):
     """
     with mock.patch("apps.web.management.commands.load_demo.MigrationExecutor") as executor:
         executor.return_value.migration_plan.return_value = []
-        call_command("load_demo", **options)
+        # A section that fails writes why to stderr; a test that hands in a StringIO would hide it, and a failure
+        # read "these sections failed" with nothing to say why (g39's pg-c). Said in the error instead.
+        told = options.get("stderr")
+        try:
+            call_command("load_demo", **options)
+        except CommandError as refused:
+            why = told.getvalue() if isinstance(told, StringIO) else ""
+            raise CommandError(f"{refused}\n{why}") from refused
 
 
 class LoadDemoTests(TestCase):
