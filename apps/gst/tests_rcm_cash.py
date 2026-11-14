@@ -13,6 +13,8 @@ Reverse charge after the books: the self-invoice (s.31(3)(f), Rule 47A), the pay
 """
 
 import itertools
+import re
+from unittest import mock
 
 import datetime
 from decimal import Decimal as D
@@ -20,14 +22,19 @@ from decimal import Decimal as D
 from django.contrib.auth.models import Group, User
 from django.core.exceptions import ValidationError
 from django.core.management import call_command
+from django.db import connection
+from django.db.migrations.executor import MigrationExecutor
+from django.test import tag
 from rest_framework.test import APIClient
 
+from apps.accounting.gst import GstSettings
 from apps.accounting.models import Account, AccountType, Payment, PaymentDirection, Tax, TaxScope
-from apps.core.models import PartyRole
+from apps.core.models import Address, Company, PartyRole
 from apps.purchasing.models import Bill, BillLine, BillPayment
 from apps.web.health import _gst_cash_ledger, _payment_vouchers, _self_invoices
 
 from .returns import gstr3b
+from .reverse_charge_documents import render_payment_voucher_pdf, render_self_invoice_pdf
 from .reverse_charge import GstCashPayment, PaymentVoucher, SelfInvoice, awaiting_self_invoice, cash_ledger
 from .tests import DAY, GstReturnTestCase, gstin
 
@@ -277,6 +284,107 @@ class PaymentVoucherTests(ReverseChargeCashTestCase):
         self.assertTrue(_payment_vouchers(DAY)["ok"])
         with self.assertRaisesMessage(ValidationError, "not a posted payment standing"):
             PaymentVoucher.issue_for(Payment.objects.get(pk=payment.pk))
+
+
+def text_of(pdf):
+    found = re.findall(rb"\(((?:\\.|[^\\)])*)\) Tj", pdf)
+    return " ".join(re.sub(rb"\\(.)", rb"\1", t).decode("cp1252", "replace") for t in found)
+
+
+class IssuedThenMoved(ReverseChargeCashTestCase):
+    """A self-invoice and a payment voucher issued, then the plant renamed, moved and re-registered (O552)."""
+
+    def issued(self):
+        Company.objects.update(legal_name="Deccan Polysacks Private Limited", tax_id=self.settings.gstin,
+                               address=Address.objects.create(line1="Plot 14, MIDC", city="Aurangabad"))
+        made = SelfInvoice.issue(self.freight_bill(), on_date=DAY)
+        [voucher] = PaymentVoucher.issue_for(self.paid_supplier(self.freight_bill(vendor=self.gta), "4000"))
+        return made, voucher
+
+    def moved(self):
+        """Renamed, moved and re-registered after both were issued."""
+        new = gstin("27AABCD9999E1Z")
+        Company.objects.update(name="Deccan Packaging", legal_name="Deccan Packaging Limited", tax_id=new,
+                               address=Address.objects.create(line1="Gut 210, Waluj", city="Aurangabad"))
+        GstSettings.objects.update(gstin=new)
+        return new
+
+
+class WhatWasIssuedIsWhatReprints(IssuedThenMoved):
+    """
+    O552: a self-invoice and a payment voucher printed the plant's GSTIN (GstSettings.active()) and letterhead (the
+    company) as they stood on the day of printing, so SI-2026-00001 reprinted after a re-registration carried the
+    new GSTIN. Each keeps both as issued, and the printout reads only what is kept.
+    """
+
+    def test_a_reprint_after_a_new_gstin_and_name_says_what_was_issued(self):
+        made, voucher = self.issued()
+        old = self.settings.gstin
+        letterhead = {"name": "Deccan Polysacks", "legal_name": "Deccan Polysacks Private Limited",
+                      "address": ["Plot 14, MIDC", "Aurangabad"], "tax_id": old}
+        for document in (made, voucher):
+            document.refresh_from_db()
+            self.assertEqual((document.recipient_gstin, document.letterhead), (old, letterhead))
+        new = self.moved()
+        for render, document in ((render_self_invoice_pdf, made), (render_payment_voucher_pdf, voucher)):
+            with self.subTest(document.number), mock.patch("reportlab.rl_config.pageCompression", 0):
+                printed = text_of(render(type(document).objects.get(pk=document.pk)))
+                self.assertIn(old, printed)
+                self.assertIn("Deccan Polysacks", printed)
+                self.assertIn("Plot 14, MIDC", printed)
+                self.assertNotIn(new, printed)
+                self.assertNotIn("Deccan Packaging", printed)
+                self.assertNotIn("Waluj", printed)
+        # Kept, it is fixed with the rest of what was issued.
+        made.recipient_gstin = new
+        with self.assertRaisesMessage(ValidationError, "cancel it and issue another"):
+            made.save()
+
+    def test_the_audit_sees_a_printout_read_todays_settings(self):
+        from apps.core.management.commands.audit_invariants import Command, app_sources
+
+        def findings(old, new):
+            sources = app_sources()
+            sources["gst"] = {path: text.replace(old, new) if path.name == "reverse_charge_documents.py" else text
+                              for path, text in sources["gst"].items()}
+            return [text for _, text in Command().kept_settings_read_live(["gst"], sources) if " prints " in text]
+
+        self.assertEqual(findings("", ""), [])
+        planted = findings("[\"Recipient's GSTIN\", document.recipient_gstin]",
+                           "[\"Recipient's GSTIN\", GstSettings.active().gstin]")
+        self.assertEqual(len(planted), 2, planted)
+        self.assertTrue(all("prints `GstSettings.active()` as it stands" in text for text in planted), planted)
+        signed = findings('signatory=document.letterhead.get("name", "")', "signatory=Company.get().name")
+        self.assertEqual(len(signed), 2, signed)
+
+
+@tag("migration")
+class KeptAsIssuedMigrationTests(IssuedThenMoved):
+    """gst 0012 run as it runs: a row issued before it keeps the settings as they stand on the day it runs."""
+
+    @classmethod
+    def _databases_support_transactions(cls):
+        return False  # a TransactionTestCase: the executor changes the schema
+
+    def migrate(self, target):
+        executor = MigrationExecutor(connection)
+        executor.migrate(target)
+
+    def test_rows_issued_before_are_filled_from_the_settings_on_the_day_it_runs(self):
+        made, voucher = self.issued()
+        self.migrate([("gst", "0011_where_goods_went")])
+        new = self.moved()
+        self.migrate([("gst", "0012_kept_as_issued")])
+        for model, pk in ((SelfInvoice, made.pk), (PaymentVoucher, voucher.pk)):
+            row = model.objects.get(pk=pk)
+            self.assertEqual(row.recipient_gstin, new)
+            self.assertEqual(row.letterhead, {"name": "Deccan Packaging", "legal_name": "Deccan Packaging Limited",
+                                              "address": ["Gut 210, Waluj", "Aurangabad"], "tax_id": new})
+
+    def tearDown(self):
+        executor = MigrationExecutor(connection)
+        executor.migrate(executor.loader.graph.leaf_nodes())
+        super().tearDown()
 
 
 class ReverseChargeApiTests(ReverseChargeCashTestCase):

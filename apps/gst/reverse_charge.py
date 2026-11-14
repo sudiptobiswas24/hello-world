@@ -46,6 +46,7 @@ from django.utils import timezone
 from apps.accounting.models import Account, AccountType, JournalEntry, JournalLine, Payment, round_money
 from apps.core.models import (
     AuditModel,
+    Company,
     DocumentSequence,
     correction_date,
     day_that_has_come,
@@ -108,6 +109,20 @@ def received_on(bill):
     return min(received) if received else to_date(bill.bill_date)
 
 
+def keep_as_issued(document):
+    """
+    What a self-invoice or payment voucher prints of the plant, kept as it is issued (O552): the recipient's GSTIN
+    and the letterhead. The printout read GstSettings.active() and the company as they stood on the day it was
+    printed, so a GSTIN changed in 2027 reprinted SI-2026-00001 with the new one. Read here, at the event, once.
+    """
+    from apps.accounting.gst import GstSettings
+    from apps.core.documents import issuer
+
+    registration = GstSettings.active()
+    document.recipient_gstin = registration.gstin if registration else ""
+    document.letterhead = issuer(Company.get())
+
+
 class SelfInvoice(AuditModel):
     """
     The invoice the company issues itself for a supply under reverse charge from a supplier not registered
@@ -128,9 +143,17 @@ class SelfInvoice(AuditModel):
     cess = models.DecimalField(max_digits=18, decimal_places=2, default=ZERO, editable=False)
     cancelled_on = models.DateField(null=True, blank=True, editable=False)
     cancellation_reason = models.CharField(max_length=255, blank=True, editable=False)
+    recipient_gstin = models.CharField(
+        max_length=15, blank=True, editable=False,
+        help_text="The plant's GSTIN as it was issued under: the recipient's, who pays the tax (Rule 46).")
+    letterhead = models.JSONField(
+        default=dict, blank=True, editable=False,
+        help_text="The company as the page's head and foot printed it when issued (core.documents.issuer).")
 
     FIXED = ("number", "bill_id", "date", "received_on", "supplier_name", "place_of_supply", "taxable",
-             *HEADS)
+             *HEADS, "recipient_gstin", "letterhead")
+    # The printout reads only what is kept (audit_invariants: kept_settings_read_live).
+    PRINTED_BY = ("render_self_invoice_pdf",)
 
     class Meta:
         ordering = ["-date", "-id"]
@@ -141,7 +164,9 @@ class SelfInvoice(AuditModel):
         return self.number
 
     def save(self, *args, **kwargs):
-        if not self._state.adding:
+        if self._state.adding:
+            keep_as_issued(self)
+        else:
             before = SelfInvoice.objects.get(pk=self.pk)
             if any(getattr(before, field) != getattr(self, field) for field in self.FIXED):
                 raise ValidationError("A self-invoice issued is not changed; cancel it and issue another.")
@@ -285,8 +310,15 @@ class PaymentVoucher(AuditModel):
     sgst = models.DecimalField(max_digits=18, decimal_places=2, default=ZERO, editable=False)
     cess = models.DecimalField(max_digits=18, decimal_places=2, default=ZERO, editable=False)
     cancelled_on = models.DateField(null=True, blank=True, editable=False)
+    recipient_gstin = models.CharField(
+        max_length=15, blank=True, editable=False,
+        help_text="The plant's GSTIN as it was issued under: the recipient's, who pays the tax (Rule 52).")
+    letterhead = models.JSONField(
+        default=dict, blank=True, editable=False,
+        help_text="The company as the page's head and foot printed it when issued (core.documents.issuer).")
 
-    FIXED = ("number", "payment_id", "bill_id", "date", "amount", *HEADS)
+    FIXED = ("number", "payment_id", "bill_id", "date", "amount", *HEADS, "recipient_gstin", "letterhead")
+    PRINTED_BY = ("render_payment_voucher_pdf",)
 
     class Meta:
         ordering = ["-date", "-id"]
@@ -298,7 +330,9 @@ class PaymentVoucher(AuditModel):
         return self.number
 
     def save(self, *args, **kwargs):
-        if not self._state.adding:
+        if self._state.adding:
+            keep_as_issued(self)
+        else:
             before = PaymentVoucher.objects.get(pk=self.pk)
             if any(getattr(before, field) != getattr(self, field) for field in self.FIXED):
                 raise ValidationError("A payment voucher issued is not changed; it is cancelled with its payment.")
