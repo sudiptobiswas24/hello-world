@@ -1,0 +1,44 @@
+from django.apps import AppConfig
+
+
+class InventoryConfig(AppConfig):
+    default_auto_field = "django.db.models.BigAutoField"
+    name = "apps.inventory"
+    label = "inventory"
+
+    def ready(self):
+        from apps.accounting.models import register_dated_draft
+
+        from .adjustments import StockAdjustment, StockCount
+
+        # A period closes with no draft adjustment or count dated in it (O361). A transfer moves no value.
+        register_dated_draft(StockAdjustment, "adjustment_date", lambda adjustment: "stock adjustment")
+        register_dated_draft(StockCount, "count_date", lambda count: "stock count")
+
+        # A reason that follows the books' opening is kept on its account (O542).
+        from django.db.models.signals import post_save
+
+        from apps.accounting.models import BooksOpening
+
+        from .adjustments import books_opening_saved
+
+        post_save.connect(books_opening_saved, sender=BooksOpening, dispatch_uid="inventory.books_opening_saved")
+
+        from apps.core.models import register_company_check
+
+        from .valuation import (
+            refuse_a_default_cogs_account_that_is_not_one,
+            refuse_a_default_stock_account_that_is_not_one,
+            refuse_moving_the_default_stock_account,
+        )
+
+        register_company_check(refuse_moving_the_default_stock_account)
+        register_company_check(refuse_a_default_stock_account_that_is_not_one)
+        register_company_check(refuse_a_default_cogs_account_that_is_not_one)
+
+        # An asset on a gate pass is not disposed of (g25 review F1): asked by assets, which imports nothing of ours.
+        from apps.assets.models import register_disposal_guard
+
+        from .gate import refuse_disposing_of_an_asset_on_a_pass
+
+        register_disposal_guard(refuse_disposing_of_an_asset_on_a_pass)

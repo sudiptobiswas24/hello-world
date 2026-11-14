@@ -1,0 +1,103 @@
+import { useAccess } from "../../auth/me";
+import { dateTime } from "../../lib/format";
+import { RecordScreen } from "../../views/RecordScreen";
+import { DISPOSITIONS, INSTRUMENT, LOT, PERSON, PLAN } from "./refs";
+
+type Row = Record<string, unknown> & { id: number };
+const draft = (row: Row) => !row.posted;
+/** A failure under an advisory plan, posted, held for the Quality Manager. */
+const waits = (row: Row) => Boolean(row.posted) && !row.voided_at && row.disposition === "awaiting";
+/** Holding its batch (awaiting, rejected, held for rework) or decided by them: theirs to void (review F2). */
+const theirs = (row: Row) => ["awaiting", "reject", "rework"].includes(String(row.disposition)) || Boolean(row.decided_at);
+const WHY = [{ key: "note", label: "Why", kind: "text" as const, wide: true }];
+const decision = (label: string, disposition: string, done: string) => ({
+  label, path: disposition, permission: "quality.decide_inspection", when: waits, done, fields: WHY,
+  url: (row: Row) => `/api/quality/inspections/${row.id}/decide/`,
+  body: (values: Row) => ({ disposition, note: values.note }),
+});
+
+/**
+ * One batch against its plan: the readings, the result the limits give,
+ * and the decision. Posted, it is what releases or holds the batch; a
+ * wrong one is voided, never edited.
+ */
+export default function InspectionForm() {
+  const { can } = useAccess();
+  // Offered only what the server allows (O241): a concession, and a release over a verdict
+  // holding the batch, are the Quality Manager's (quality.decide_inspection).
+  const decides = can("quality.decide_inspection");
+  const offered = (row: Row) => DISPOSITIONS.filter(([key]) => decides
+    || (key !== "concession" && !(row.releasing_is_theirs && ["", "accept"].includes(key))));
+  return (
+    <RecordScreen
+      endpoint="/api/quality/inspections/"
+      back="/quality/inspections"
+      backLabel="Inspections"
+      newTitle="New inspection"
+      heading={(row) => `${String(row.number || "Inspection")} · ${String(row.lot_code ?? "")}`}
+      state={(row) => (row.voided_at ? { label: "Voided", tone: "draft" }
+        : waits(row) ? { label: "Awaiting the Quality Manager", tone: "warn" }
+        : row.posted ? { label: String(row.lot_status ?? "posted"), tone: row.result === "fail" ? "warn" : "done" }
+        : { label: "Draft", tone: "open" })}
+      note={(row) => (row && waits(row) && row.told
+        ? <div className="note warn" role="note" aria-label="Held for the Quality Manager">{String(row.told)}</div>
+        : null)}
+      permissions={{ add: "quality.add_inspection", change: "quality.change_inspection" }}
+      editable={draft}
+      fields={(record: Row) => [
+        { key: "lot", label: "Batch", kind: "pick", pick: LOT, createOnly: true, show: (row) => String(row.lot_code) },
+        { key: "plan", label: "Plan", kind: "ref", ref: PLAN, createOnly: true },
+        { key: "inspected_on", label: "Inspected on", kind: "date" },
+        { key: "inspected_by", label: "By", kind: "pick", pick: PERSON, show: (row) => String(row.inspected_by_name || "—") },
+        { key: "lot_size", label: "Batch size", kind: "integer", hint: "Sets the sample under an AQL plan" },
+        { key: "disposition", label: "Decision", kind: "choice", choices: offered(record),
+          show: (row) => String(row.disposition_label || "—") },
+        { key: "decision_note", label: "Why", kind: "text", wide: true },
+        { key: "decision_login_name", label: "Decided by", readOnly: true, existingOnly: true,
+          show: (row) => (row.decided_at ? `${String(row.decided_by_name || row.decision_login_name)}, ${dateTime(String(row.decided_at))}` : "—") },
+        { key: "notes", label: "Notes", kind: "textarea" },
+        { key: "result", label: "Result", readOnly: true },
+      ]}
+      actions={[
+        { label: "Post", path: "post", permission: "quality.change_inspection", when: draft, primary: true,
+          done: (result) => String(result.warning || "Posted") },
+        decision("Use as is (concession)", "concession", "Taken by concession"),
+        decision("Rework", "rework", "Held for rework"),
+        decision("Reject", "reject", "Rejected"),
+        { label: "Void", path: "void", permission: "quality.change_inspection", danger: true,
+          when: (row) => Boolean(row.posted) && !row.voided_at && !theirs(row), done: "Voided",
+          fields: [{ key: "reason", label: "Why", kind: "text" }] },
+        // Waiting for the Quality Manager, or decided by them: voiding it is theirs (the server asks).
+        { label: "Void", path: "void-theirs", permission: "quality.decide_inspection", danger: true,
+          when: (row) => Boolean(row.posted) && !row.voided_at && theirs(row), done: "Voided",
+          url: (row: Row) => `/api/quality/inspections/${row.id}/void/`,
+          fields: [{ key: "reason", label: "Why", kind: "text" }] },
+      ]}
+      panels={[{
+        title: "Readings", permission: "quality.view_inspection", endpoint: "", query: () => ({}),
+        rows: (record) => (record.readings as Row[]) ?? [],
+        columns: [
+          { key: "characteristic", label: "What" },
+          { key: "sample_reference", label: "Sample", width: "8rem" },
+          { key: "value", label: "Reading", kind: "quantity", width: "8rem" },
+          { key: "limits", label: "Limits", width: "10rem", render: (row) => [row.lower_limit, row.upper_limit].filter((v) => v !== null && v !== undefined).join(" to ") },
+          { key: "passed", label: "", width: "6rem", render: (row) => (row.passed === null ? "" : row.passed ? "Pass" : "Fail") },
+        ],
+        adder: { label: "Add a reading", permission: "quality.change_inspection", when: draft,
+          url: () => "/api/quality/readings/",
+          fields: (record) => [
+            { key: "plan_line", label: "What", kind: "ref", ref: { endpoint: "/api/quality/plan-lines/",
+              permission: "quality.view_planline", query: { plan: String(record.plan) },
+              label: (row) => String(row.characteristic_label ?? row.id) } },
+            { key: "value", label: "Reading", kind: "decimal", hint: "For a measured characteristic" },
+            { key: "present", label: "Present", kind: "bool", hint: "For a present-or-absent one" },
+            { key: "sample_reference", label: "Sample", kind: "text" },
+            { key: "instrument", label: "Instrument", kind: "ref", ref: INSTRUMENT },
+          ],
+          body: (values, record) => ({ inspection: record.id, plan_line: values.plan_line, value: values.value,
+            present: values.present, sample_reference: values.sample_reference, instrument: values.instrument }) },
+        remover: { permission: "quality.change_inspection", when: draft, url: (row) => `/api/quality/readings/${row.id}/` },
+      }]}
+    />
+  );
+}

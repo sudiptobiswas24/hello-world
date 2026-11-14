@@ -1,0 +1,617 @@
+"""
+Micro and small vendors paid in time.
+
+The MSME Act gives a micro or small supplier payment within the days
+agreed, never more than 45, or 15 where nothing was agreed. Since 2024 a
+bill paid later is not deducted as an expense until the year it is paid
+(section 43B(h)), so what stands unpaid past its date at the year's end
+is added back to profit.
+
+Derived each time from the bills and their payments. Two days are kept on
+the bill, written by keep_due_dates whenever what they are read from moves:
+the day it must be paid by (due_date, O498) and the day of acceptance the
+Act counts from (accepted_on).
+
+Paid late, the buyer owes compound interest with monthly rests at three
+times the bank rate the Reserve Bank notifies (s.16), whatever was agreed.
+It is worked here and shown, never posted: the Act asks for it in the
+year's accounts (s.22) and the Income-tax Act does not allow it as an
+expense (MSMED Act s.23). The bank rate is the plant's dated setting
+(accounting.bank_rate), read only once its accountant has confirmed it.
+"""
+
+import calendar
+import datetime
+from decimal import Decimal
+
+from django.db import models
+from django.utils import timezone
+
+from apps.core.models import to_date
+
+COVERED = ("micro", "small")
+# MSMED Act s.15: never more than 45 days from acceptance; with nothing agreed,
+# before the appointed day, 15 days on (s.2(b)); an objection is made in
+# writing within 15 days of delivery, or acceptance is deemed on delivery.
+AGREED_AT_MOST, UNAGREED, TO_OBJECT = 45, 15, 15
+# MSMED Act s.16: "compound interest with monthly rests ... at three times of the bank rate notified by the
+# Reserve Bank". The bank rate itself is never written here: accounting.bank_rate.BankRate, dated and confirmed.
+TIMES_THE_BANK_RATE = 3
+PAISA = Decimal("0.01")
+
+
+def acceptance(receipt):
+    """
+    The day a delivery was accepted (MSMED Act s.2(b) Explanation): the day
+    of delivery, unless the company objected in writing within 15 days of
+    it, and then the day the supplier removed the objection; None while it
+    stands. A routine inspection, passed or not, is no objection (O160): a
+    QC pass on 20 June does not move goods delivered on 10 June.
+    """
+    if receipt.objected_on is None:
+        return to_date(receipt.receipt_date)
+    return to_date(receipt.objection_removed_on)
+
+
+def lots(bill):
+    """
+    [(accepted on, amount)]: what each delivery a bill is for comes to,
+    by the day that delivery was accepted. A bill for several deliveries
+    owes each on its own day (O160): 6 received on 1 June and 4 on 20 June,
+    billed together on 25 June, are 600 from 1 June and 400 from 20 June.
+
+    An order line's deliveries are billed oldest first: what earlier bills
+    took of them is passed over. A quantity billed beyond what has come,
+    and a line for no order (a charge, a service), run from the bill's own
+    date. Amounts are the bill's total shared by line value and quantity,
+    each cumulative figure rounded, so they add to the total exactly.
+    """
+    from .models import BillLine, GoodsReceiptLine
+
+    billed, total = to_date(bill.bill_date), bill.total()
+    taxes = bill.line_tax_amounts()
+    parts = []  # (day, value) before the share is rounded
+    for line in bill.lines.all():
+        value = line.subtotal() + sum((amount for tax, amount in taxes.get(line, []) if not tax.reverse_charge),
+                                      Decimal("0"))
+        if not line.order_line_id or not line.quantity:
+            parts.append((billed, value))
+            continue
+        known = getattr(bill, "_lots_known", None)  # the page's, read once (know_the_page)
+        if known is not None:
+            passed = sum((quantity for day, pk, quantity in known["billed"].get(line.order_line_id, ())
+                          if pk != bill.pk and (day < billed or (day == billed and pk < bill.pk))), Decimal("0"))
+            deliveries = known["received"].get(line.order_line_id, ())
+        else:
+            before = BillLine.objects.filter(
+                order_line_id=line.order_line_id, bill__posted=True, bill__debits__isnull=True,
+                bill__is_prepayment=False,
+            ).exclude(bill=bill).filter(
+                models.Q(bill__bill_date__lt=billed) | models.Q(bill__bill_date=billed, bill__pk__lt=bill.pk))
+            passed = sum((quantity for quantity in before.values_list("quantity", flat=True)), Decimal("0"))
+            deliveries = _deliveries(GoodsReceiptLine.objects.filter(order_line_id=line.order_line_id))
+        left = line.quantity
+        for received in deliveries:
+            if left <= 0:
+                break
+            here = received.quantity_received
+            skip = min(passed, here)
+            passed, here = passed - skip, here - skip
+            take = min(here, left)
+            if take > 0:
+                parts.append((acceptance(received.receipt), value * take / line.quantity))
+                left -= take
+        if left > 0:
+            parts.append((billed, value * left / line.quantity))
+    whole = sum((value for _, value in parts), Decimal("0"))
+    if not parts or whole <= 0:
+        return [(billed, total)]
+    by_day, running, given = {}, Decimal("0"), Decimal("0")
+    for day, value in parts:
+        running += value
+        upto = (total * running / whole).quantize(Decimal("0.01"))
+        by_day[day] = by_day.get(day, Decimal("0")) + upto - given
+        given = upto
+    return sorted(by_day.items(), key=lambda row: (row[0] is None, row[0] or datetime.date.max))
+
+
+def _deliveries(receipt_lines):
+    """An order line's deliveries as lots() gives them to its bills: posted, not returns, oldest first."""
+    return receipt_lines.filter(receipt__posted=True, receipt__reverses__isnull=True).select_related(
+        "receipt").order_by("receipt__receipt_date", "receipt__pk", "pk")
+
+
+def know_the_page(bills):
+    """
+    What lots() asks of each bill's order lines, read once for a page of bills (O501): every posted
+    bill's quantity on them and every delivery of them, kept on each bill. Asked a bill at a time, a
+    list of MSME bills asked two queries a line billing an order. The answer is lots()'s own.
+    """
+    from .models import BillLine, GoodsReceiptLine
+
+    held = [bill for bill in bills if bill.posted and bill.msme_category in COVERED and not bill.debits_id
+            and not bill.is_prepayment]
+    lines = {line.order_line_id for bill in held for line in bill.lines.all() if line.order_line_id}
+    known = {"billed": {}, "received": {}}
+    if lines:
+        for order_line, day, pk, quantity in BillLine.objects.filter(
+                order_line_id__in=lines, bill__posted=True, bill__debits__isnull=True, bill__is_prepayment=False,
+        ).values_list("order_line_id", "bill__bill_date", "bill_id", "quantity"):
+            known["billed"].setdefault(order_line, []).append((to_date(day), pk, quantity))
+        for received in _deliveries(GoodsReceiptLine.objects.filter(order_line_id__in=lines)):
+            known["received"].setdefault(received.order_line_id, []).append(received)
+    for bill in held:
+        bill._lots_known = known
+
+
+def _act_day(bill, accepted):
+    if accepted is None:
+        return None  # an objection stands: the Act has not started the clock
+    # The day agreed is the terms' as the bill posted, never due_date: that is the day this decides (O498).
+    if bill.payment_terms_id and bill.terms_due_date:
+        return min(to_date(bill.terms_due_date), accepted + datetime.timedelta(days=AGREED_AT_MOST))
+    return accepted + datetime.timedelta(days=UNAGREED)
+
+
+def msme_schedule(bill):
+    """
+    [(due, amount)]: each delivery's part of the bill and the day the Act
+    says it is paid by: the day agreed (its terms), never more than 45 days
+    from that delivery's acceptance; 15 days where nothing was agreed. None
+    for a part whose objection stands.
+    """
+    rows = {}
+    for accepted, amount in lots(bill):
+        day = _act_day(bill, accepted)
+        rows[day] = rows.get(day, Decimal("0")) + amount
+    return sorted(rows.items(), key=lambda row: (row[0] is None, row[0] or datetime.date.max))
+
+
+def msme_due(bill, schedule=None):
+    """
+    The day the Act says a bill is paid by in full: its last part's day.
+    Net 60 on a bill of 1 June for goods received that day is due on
+    16 July, not 31 July. None while an objection to a part stands.
+    """
+    days = [day for day, _ in (msme_schedule(bill) if schedule is None else schedule)]
+    return None if not days or None in days else max(days)
+
+
+def accepted_on(bill):
+    """
+    The day of acceptance the Act counts a micro or small vendor's posted
+    bill from (s.2(b)): its delivery's, the later of them where it takes
+    several (each part is still owed from its own, msme_schedule), the
+    bill's own date where it takes none. None while an objection to a
+    delivery stands, and for a bill the Act does not time.
+    """
+    if bill.act_schedule() is None:
+        return None
+    days = [day for day, _ in lots(bill)]
+    return None if not days or None in days else max(days)
+
+
+def earlier_of(rows, act, settled, agreed=True):
+    """
+    The terms' installments ([{due_date, amount}]) and the Act's parts
+    ([(due or None, amount)]) laid over each other, money in order: each
+    rupee is due on the earlier of the two days that claim it. Money
+    received is applied to the earliest first, as installment_schedule does.
+
+    Not `agreed` (a bill with no terms), the terms' row is only the bill's
+    own date, which nobody agreed: the Act's day stands alone, 15 days from
+    acceptance (s.2(b)), and the bill's date only while an objection keeps
+    the Act's clock from starting.
+    """
+    out, act = [], [[day, amount] for day, amount in act]
+    i = 0
+    for row in rows:
+        left = row["amount"]
+        while left > 0:
+            day, amount = act[i] if i < len(act) else (None, left)
+            take = min(left, amount)
+            if not agreed:
+                due = day or row["due_date"]
+            else:
+                due = min(row["due_date"], day) if (day and row["due_date"]) else (row["due_date"] or day)
+            if out and out[-1]["due_date"] == due:
+                out[-1]["amount"] += take
+            else:
+                out.append({"due_date": due, "amount": take})
+            left -= take
+            if i < len(act):
+                act[i][1] -= take
+                if act[i][1] <= 0:
+                    i += 1
+        if row["amount"] <= 0:
+            out.append({"due_date": row["due_date"], "amount": row["amount"]})
+    remaining = Decimal(settled)
+    for row in out:
+        applied = min(remaining, row["amount"])
+        remaining -= applied
+        row["settled"], row["outstanding"] = applied, row["amount"] - applied
+    return out
+
+
+def held_by_the_act(order_lines=()):
+    """
+    The posted bills whose due day the Act may move when what it counts
+    from moves on these order lines (a delivery received, an objection made,
+    removed or withdrawn): a micro or small vendor's bills for goods, in key
+    order, as lock_rows takes them.
+    """
+    from .models import Bill
+
+    return list(Bill.objects.filter(
+        posted=True, debits__isnull=True, is_prepayment=False, msme_category__in=COVERED,
+        lines__order_line__in=[line for line in order_lines if line],
+    ).distinct().order_by("pk"))
+
+
+def billed_alongside(bill):
+    """
+    The other bills for goods on the order lines `bill` bills, in key order: the bills whose split
+    across deliveries it can move as it posts (O499). lots() gives an order line's deliveries to its
+    bills oldest bill first, by bill date, so a bill dated before one already posted takes the
+    deliveries that one was read against, and that one's due day moves to the later deliveries.
+    Drafts too: one posting while this waits for the order would otherwise be named only after
+    this bill is held. A debit note or a prepayment moves no split: lots() passes over neither.
+    """
+    from .models import Bill
+
+    if not bill.pk or bill.debits_id or bill.is_prepayment:
+        return []
+    lines = bill.lines.exclude(order_line=None).values("order_line")
+    return list(Bill.objects.filter(debits__isnull=True, is_prepayment=False, lines__order_line__in=lines)
+                .exclude(pk=bill.pk).distinct().order_by("pk"))
+
+
+def keep_due_dates(bills):
+    """
+    Write each posted bill's due_date as pay_by() reads it (O498): the
+    terms' day, or the Act's when that comes first. One rule, read by the
+    bill screen, every list sorted by due date, and the vendor's open bills,
+    as installments() is by the aging and the payment run. The caller holds
+    the bills (lock_rows) and has already written what moved.
+    """
+    from .models import Bill
+
+    for bill in bills:
+        day, accepted = bill.pay_by(), accepted_on(bill)
+        if day != to_date(bill.due_date) or accepted != to_date(bill.accepted_on):
+            Bill.objects.filter(pk=bill.pk).update(due_date=day, accepted_on=accepted)
+            bill.due_date, bill.accepted_on = day, accepted
+
+
+def keep_unkept_due_dates(**kwargs):
+    """
+    After migrate (post_migrate): a micro or small vendor's bill posted
+    before the bill kept its terms' day (migration 0090) keeps the day it
+    had as the terms', and is due on pay_by() (O498). Run here, not in the
+    migration, because only the bill's own code works out the Act's day,
+    and it reads the bill as the code stands. Nothing to do once done.
+    The same for the day of acceptance the Act counts from (accepted_on).
+    """
+    from django.db import transaction
+
+    from apps.core.models import lock_rows
+
+    from .models import Bill
+
+    unkept = Bill.objects.filter(posted=True, terms_due_date__isnull=True, due_date__isnull=False)
+    if unkept.exists():
+        with transaction.atomic():
+            bills = list(unkept.order_by("pk"))
+            lock_rows(*bills)
+            for bill in bills:
+                bill.terms_due_date = bill.due_date
+                Bill.objects.filter(pk=bill.pk).update(terms_due_date=bill.terms_due_date)
+            keep_due_dates(bills)
+    # Posted before the bill kept its day of acceptance (migration 0091): written as the code reads it
+    # now. One whose objection stands has none to keep, and is read again each time, to no effect.
+    undated = Bill.objects.filter(posted=True, accepted_on__isnull=True, msme_category__in=COVERED,
+                                  debits__isnull=True, is_prepayment=False)
+    if undated.exists():
+        with transaction.atomic():
+            bills = list(undated.order_by("pk"))
+            lock_rows(*bills)
+            keep_due_dates(bills)
+
+
+def _standing(bill, day):
+    """[(paid on, amount)] of payments against the bill made by `day` that still stand."""
+    from apps.accounting.settlement import standing_allocations
+
+    return [(to_date(row.payment.payment_date), row.amount) for row in standing_allocations(bill)
+            if to_date(row.payment.payment_date) <= day]
+
+
+def _settled_without_money(bill, other):
+    """
+    [(day, amount)]: what settled the bill other than money paid out, each
+    on the day of its own document: a debit note on its date, tax deducted
+    on the deduction's, a prepayment drawn down on the drawdown's, a
+    settlement discount on its entry's. Oldest first, and no more than
+    `other` in all, as amount_due() counts them (a note past what the bill
+    still owed is cash owed back, not settlement). A part settled wholly by
+    a debit note was paid on the note's day (O188), not never.
+    """
+    dated = [(to_date(note.bill_date), note.total()) for note in bill.debit_notes.all() if note.posted]
+    dated += [(to_date(row.date), row.amount) for row in bill.tds_deductions.all() if row.reversed_entry_id is None]
+    dated += [(to_date(row.date), row.amount) for row in bill.prepayment_applications.all()]
+    discount = (bill.settlement_discount_amount or Decimal("0")) - bill.settlement_discount_withdrawn
+    if discount > 0:
+        entry = bill.settlement_discount_entry
+        dated.append((to_date(entry.date) if entry else to_date(bill.bill_date), discount))
+    out, left = [], other
+    for day, amount in sorted(dated, key=lambda row: row[0]):
+        take = min(amount, left)
+        if take > 0:
+            out.append((day, take))
+            left -= take
+    if left > 0:
+        out.append((to_date(bill.bill_date), left))
+    return out
+
+
+class RateNotConfirmed(Exception):
+    """No confirmed bank rate covers a day interest runs over; str() says which, and where it is kept."""
+
+
+def _months_on(day, months):
+    """The same day `months` later, the month's last day where it has no such day (31 Jan, a month on: 28 Feb)."""
+    year, month = divmod(day.month - 1 + months, 12)
+    year, month = day.year + year, month + 1
+    return datetime.date(year, month, min(day.day, calendar.monthrange(year, month)[1]))
+
+
+def _rate_days(first, last, rates):
+    """
+    The sum, over the days `first` to `last`, of the bank rate standing each day, from `rates`
+    ([(applies_from, percent, confirmed)], oldest first): percent-days, so a rate changed inside the
+    span is charged each rate for its own days and no more (audit shape "a rate row paid for the whole
+    period"). The row standing on a day is the latest from that day or before; one not confirmed
+    is not read past.
+    """
+    total, day = Decimal("0"), first
+    while day <= last:
+        standing = [row for row in rates if row[0] <= day]
+        if not standing:
+            raise RateNotConfirmed(
+                f"no bank rate is kept from {day:%d %b %Y} or before: the accountant enters what the Reserve "
+                "Bank notified, and the day it applies from, under Settings > Bank rates")
+        applies_from, percent, confirmed = standing[-1]
+        if not confirmed:
+            raise RateNotConfirmed(
+                f"the bank rate of {percent.normalize():f}% from {applies_from:%d %b %Y} is not confirmed by the "
+                "accountant: confirm it, or correct it, under Settings > Bank rates")
+        later = [row[0] for row in rates if row[0] > day]
+        upto = min(last, later[0] - datetime.timedelta(days=1)) if later else last
+        total += percent * ((upto - day).days + 1)
+        day = upto + datetime.timedelta(days=1)
+    return total
+
+
+def interest_on(amount, due, upto, rates):
+    """
+    What the Act adds to `amount` due on `due` and still unpaid through `upto` (s.16), not rounded:
+    interest from the day after it was due (s.16: "from the appointed day or ... the date immediately
+    following the date agreed upon") to `upto`, each day at three times the bank rate standing that day
+    over 365, on the amount and the interest already added to it; a month's interest is added at the end
+    of each month counted from the first day of interest (monthly rests). Nothing by its due day.
+
+    10,000 due 1 July, the bank rate 6.50%: paid 15 July, 14 days at 19.5% is 74.79; unpaid at
+    30 September, 31 days, 31 days on 10,165.62 and 29 on 10,333.97 come to 494.08, where simple
+    interest is 486.16. Raises RateNotConfirmed where a day has no confirmed rate.
+    """
+    if due is None or upto is None or upto <= due or amount <= 0:
+        return Decimal("0")
+    start = due + datetime.timedelta(days=1)
+    balance, total, month = Decimal(amount), Decimal("0"), 0
+    while True:
+        first, rest = _months_on(start, month), _months_on(start, month + 1)
+        last = min(upto, rest - datetime.timedelta(days=1))
+        # Total first, divide last (never a rounded daily rate multiplied back up).
+        added = balance * TIMES_THE_BANK_RATE * _rate_days(first, last, rates) / 100 / 365
+        total += added
+        if upto < rest:
+            return total
+        balance, month = balance + added, month + 1
+
+
+def _parts(start, end, as_of, rates):
+    """
+    Each delivery's part of each micro or small vendor's bill dated `start` to `end`, as it stood on
+    `as_of`: the row msme_bills shows, with `slices`, [(paid on or None, amount, interest or None)] of the
+    part in the order it was settled, the unpaid remainder last (None for its day). Interest is each
+    slice's from the part's due day to the day it was settled, or `as_of`; None where no confirmed bank
+    rate covers it, and `interest_state` then says why.
+    """
+    from .models import BILL_FIGURES, Bill
+
+    # The category the bill was booked under, not the vendor's today (Bill.msme_category).
+    bills = Bill.objects.filter(
+        posted=True, debits__isnull=True, is_prepayment=False, bill_date__gte=to_date(start),
+        bill_date__lte=to_date(end), msme_category__in=COVERED,
+    ).select_related("vendor__tax_profile", "payment_terms").prefetch_related(*BILL_FIGURES).order_by(
+        "bill_date", "pk")
+    for bill in bills:
+        # What settles it other than money paid out (debit notes, tax
+        # deducted, a discount) is counted whenever it happened.
+        total = bill.total()
+        other = total - bill.amount_due() - bill.amount_paid()
+        udyam = getattr(getattr(bill.vendor, "tax_profile", None), "udyam_number", "")
+        # One row per delivery's part, each late from its own day (O180), the
+        # oldest settled first: 600 due 16 Jul and 400 due 4 Aug, paid together
+        # on 10 Aug, are 25 and 6 days late, not one bill 6 days late.
+        money = sorted((_settled_without_money(bill, other) if other > 0 else []) + _standing(bill, as_of),
+                       key=lambda row: row[0])
+        for due, amount in msme_schedule(bill):
+            left, paid_on, slices, state = amount, None, [], ""
+
+            def worked(principal, upto):
+                nonlocal state
+                try:
+                    return interest_on(principal, due, upto, rates)
+                except RateNotConfirmed as exc:
+                    state = f"Not worked: {exc}."
+                    return None
+
+            while left > 0 and money:
+                day, held = money[0]
+                take = min(left, held)
+                left -= take
+                if take > 0:
+                    paid_on = max(paid_on or day, day)
+                    slices.append((day, take, worked(take, day)))
+                if held - take > 0:
+                    money[0] = (day, held - take)
+                else:
+                    money.pop(0)
+            unpaid = max(left, Decimal("0"))
+            if unpaid > 0:
+                slices.append((None, unpaid, worked(unpaid, as_of)))
+            paid_on = paid_on if unpaid <= 0 else None
+            yield {
+                "bill": bill.pk, "number": bill.number, "vendor": bill.vendor.name,
+                "category": bill.msme_category, "udyam": udyam,
+                "bill_date": to_date(bill.bill_date), "accepted_on": to_date(bill.accepted_on),
+                "total": total, "amount": amount,
+                # An objection that stands: the Act's clock has not started for
+                # this delivery, so it is pending, not on time.
+                "due": due, "due_pending": due is None, "paid_on": paid_on,
+                "days_late": None if due is None else max(((paid_on or as_of) - due).days, 0),
+                "unpaid": unpaid,
+                "at_risk": unpaid if due is not None and as_of > due else Decimal("0"),
+                "slices": slices, "interest_state": state,
+            }
+
+
+def _paise(amounts):
+    """The sum of interest figures to the paisa, total first; None if any was not worked."""
+    amounts = list(amounts)
+    if any(amount is None for amount in amounts):
+        return None
+    return sum(amounts, Decimal("0")).quantize(PAISA) + 0
+
+
+def _row(part):
+    """A part as the list shows it: its slices folded into what was paid late and the interest on each side."""
+    slices, due = part.pop("slices"), part["due"]
+    late = [(day, amount, interest) for day, amount, interest in slices
+            if day is not None and due is not None and day > due]
+    part["paid_late"] = sum((amount for _, amount, _ in late), Decimal("0"))
+    # On what was paid after its day, to the day it was paid; and on what is unpaid, to the day asked.
+    part["interest_paid_late"] = _paise(interest for _, _, interest in late)
+    part["interest_unpaid"] = _paise(interest for day, _, interest in slices if day is None)
+    both = (part["interest_paid_late"], part["interest_unpaid"])
+    part["interest"] = None if None in both else both[0] + both[1]
+    return part
+
+
+def msme_bills(start, end, as_of=None, rates=None):
+    """
+    Bills dated `start` to `end` from micro and small vendors, a row for
+    each delivery's part of each: when it was due under the Act, when it was
+    paid, how late, and what was still unpaid on `as_of` past its date (the
+    year-end figure 43B(h) adds back). A part whose objection stands has no
+    due day yet: `due_pending`, and no days late.
+
+    And the interest the Act adds (s.16, interest_on): `interest_paid_late`
+    on what was paid after its day, `interest_unpaid` on what is unpaid on
+    `as_of`, `interest` both; None, with `interest_state` saying why, until
+    a confirmed bank rate covers the days. Shown, never posted.
+    """
+    from apps.accounting.bank_rate import bank_rates
+
+    as_of = to_date(as_of) or timezone.localdate()
+    rates = bank_rates() if rates is None else rates
+    return [_row(part) for part in _parts(start, end, as_of, rates)]
+
+
+TOTALLED = ("amount", "unpaid", "at_risk", "paid_late", "interest_paid_late", "interest_unpaid", "interest")
+
+
+def msme_statement(start, end, as_of=None):
+    """
+    The MSME list with its totals: {rows, totals, interest_state, bank_rates}.
+    A total is the sum of the rows shown, so the list foots; an interest
+    total is None while any row's interest is not worked, never a part sum
+    passed off as the whole.
+    """
+    from apps.accounting.bank_rate import bank_rates
+
+    as_of = to_date(as_of) or timezone.localdate()
+    rates = bank_rates()
+    rows = msme_bills(start, end, as_of=as_of, rates=rates)
+    totals = {}
+    for name in TOTALLED:
+        figures = [row[name] for row in rows]
+        totals[name] = None if any(figure is None for figure in figures) else sum(figures, Decimal("0"))
+    states = sorted({row["interest_state"] for row in rows if row["interest_state"]})
+    return {
+        "as_of": as_of, "rows": rows, "totals": totals, "interest_state": " ".join(states),
+        "bank_rates": [{"applies_from": day, "rate_percent": percent, "confirmed": confirmed,
+                        "interest_percent": percent * TIMES_THE_BANK_RATE} for day, percent, confirmed in rates],
+    }
+
+
+def msme_note(year_start, year_end):
+    """
+    What the year's accounts say of micro and small suppliers (MSMED Act
+    s.22), for the year `year_start` to `year_end`, from every bill dated by
+    its end: the figures the Act lists, each under the clause that asks it.
+
+      (i)   principal unpaid at the year's end, and the interest due on it;
+      (ii)  payments made in the year after their day (the interest paid
+            with them is not recorded here: interest is never posted);
+      (iii) the interest for the delay on those payments;
+      (iv)  interest accrued to the year's end on everything paid late or
+            still unpaid, taken as wholly unpaid (see (ii));
+      s.23  the interest that accrued inside the year: not deductible.
+
+    Clause (v), further interest in later years until the interest itself
+    is paid, is not worked: it turns on when interest is paid. Interest
+    figures are None, with `interest_state`, until the bank rate is confirmed.
+    """
+    from apps.accounting.bank_rate import bank_rates
+
+    year_start, year_end = to_date(year_start), to_date(year_end)
+    before = year_start - datetime.timedelta(days=1)
+    rates = bank_rates()
+    unpaid = overdue = paid_late = Decimal("0")
+    on_unpaid, on_paid_late, accrued, in_year, states = [], [], [], [], set()
+    for part in _parts(datetime.date.min, year_end, year_end, rates):
+        due = part["due"]
+        if part["interest_state"]:
+            states.add(part["interest_state"])
+        unpaid += part["unpaid"]
+        overdue += part["at_risk"]
+        for day, amount, interest in part["slices"]:
+            if due is None or (day is not None and day <= due):
+                continue
+            accrued.append(interest)
+            if day is None:
+                on_unpaid.append(interest)
+            elif day >= year_start:
+                paid_late += amount
+                on_paid_late.append(interest)
+            # What had accrued by the day before the year began is an earlier year's.
+            if interest is None:
+                in_year.append(None)
+            else:
+                try:
+                    earlier = interest_on(amount, due, min(day or before, before), rates)
+                except RateNotConfirmed:  # a rate before the year, not needed for the slice's own days
+                    earlier = None
+                in_year.append(None if earlier is None else interest - earlier)
+    return {
+        "year_start": year_start, "year_end": year_end,
+        "principal_unpaid": unpaid, "principal_unpaid_past_its_day": overdue,
+        "interest_on_unpaid": _paise(on_unpaid),
+        "paid_after_the_day": paid_late, "interest_paid": None,
+        "interest_on_paid_late": _paise(on_paid_late),
+        "interest_accrued_unpaid": _paise(accrued),
+        "interest_of_the_year": _paise(in_year),
+        "interest_state": " ".join(sorted(states)),
+    }

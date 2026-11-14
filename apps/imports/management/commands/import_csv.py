@@ -1,0 +1,110 @@
+"""
+python manage.py import_csv <kind> <file.csv> [--commit] [--date ...] [--reason ...] [--against ...]
+python manage.py import_csv <kind> <file.csv> --template
+
+A dry run unless told --commit: every problem is listed by row and
+column, and nothing is kept. --template writes a blank file of the kind,
+its columns in the header. docs/IMPORT.md gives each kind's columns.
+"""
+
+import csv
+import datetime
+import os
+
+from django.core.management.base import BaseCommand, CommandError
+
+from apps.imports.importer import KINDS, run
+from apps.imports.importer import template as blank_file
+
+
+def _date(value):
+    try:
+        return datetime.date.fromisoformat(value)
+    except ValueError:
+        raise CommandError(f"--date {value!r} is not YYYY-MM-DD.") from None
+
+
+class Command(BaseCommand):
+    help = "Bring the old system's records in from a CSV file: dry run unless --commit."
+
+    def add_arguments(self, parser):
+        parser.add_argument("kind", choices=KINDS)
+        parser.add_argument("path")
+        parser.add_argument("--commit", action="store_true", help="Keep it, if every row is clean.")
+        parser.add_argument("--date", type=_date, help="The opening position: the day the books opened. Not needed: Settings, Books opening "
+                                 "decides it, and any other day is refused.")
+        parser.add_argument("--reason", default="OPENING",
+                            help="Opening stock: the adjustment reason (its account is the other side).")
+        parser.add_argument("--against", default="",
+                            help="Open invoices and bills: the opening-balance account code. Not needed: "
+                                 "Settings, Books opening decides it, and any other account is refused.")
+        parser.add_argument("--memo", default="")
+        parser.add_argument("--template", action="store_true",
+                            help="Write a blank file of this kind to the path instead.")
+        parser.add_argument("--passwords-out", default="",
+                            help="Employees: where to write each new login's first password.")
+
+    def handle(self, *args, kind, path, commit, date, reason, against, memo, template: bool = False,
+               passwords_out="", **options):
+        if template:
+            if os.path.exists(path):
+                raise CommandError(f"{path} exists; a template is never written over a file.")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(blank_file(kind))
+            self.stdout.write(f"{kind}: a blank file is at {path}.")
+            return
+        if kind == "employees" and commit and not passwords_out:
+            raise CommandError("employees needs --passwords-out: the file each new login's first "
+                               "password is written to, to hand out and then destroy.")
+        # No --date and no --against is demanded here (O531): the books' setting decides both
+        # (importer.opening_position), and its refusals say where to set it. One given is a second
+        # look, refused if it disagrees.
+        try:
+            with open(path, encoding="utf-8") as handle:
+                text = handle.read()
+        except (OSError, UnicodeDecodeError) as error:
+            raise CommandError(f"Cannot read {path}: {error}") from None
+        # The passwords file is opened before anything is kept, readable by its owner only (O465): it was
+        # opened after the commit, and a folder the container could not write to left six new logins with
+        # first passwords nobody had, and a file that could not be brought in again.
+        handle = self._passwords_file(passwords_out) if kind == "employees" and commit else None
+        written = False
+        try:
+            report = run(kind, text, commit=commit, date=date, reason=reason, against=against, memo=memo)
+            for row, column, message in report.errors:
+                where = f"row {row}" if row else "file"
+                self.stdout.write(f"{where}{', ' + column if column else ''}: {message}")
+            if report.errors:
+                raise CommandError(f"{len(report.errors)} problem(s) in {report.rows} row(s); nothing was kept.")
+            if report.committed and report.passwords:
+                writer = csv.writer(handle)
+                writer.writerow(["username", "first_password"])
+                writer.writerows(report.passwords)
+                handle.close()
+                written = True
+                self.stdout.write(f"{len(report.passwords)} new login(s); their first passwords are in "
+                                  f"{passwords_out}. Hand them out, then delete the file.")
+        finally:
+            if handle is not None and not written:
+                handle.close()
+                os.unlink(passwords_out)
+        if report.committed:
+            self.stdout.write(self.style.SUCCESS(f"{kind}: {report.created} brought in from {report.rows} row(s)."))
+        else:
+            self.stdout.write(f"{kind}: {report.rows} row(s) are clean. Dry run: nothing was kept; "
+                              "run again with --commit.")
+
+    @staticmethod
+    def _passwords_file(path):
+        """Made new, readable by its owner only, or the import is refused before it starts."""
+        try:
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            raise CommandError(f"--passwords-out {path} exists; first passwords are never written over a "
+                               "file. Name a new one. Nothing was brought in.") from None
+        except OSError as error:
+            raise CommandError(
+                f"--passwords-out {path} cannot be made ({error.strerror}). Nothing was brought in. Under "
+                "Docker the application runs as its own user, who cannot write to imports/: run this one "
+                "command as `docker compose run --rm --user root web ...` (RUNBOOK.md).") from None
+        return os.fdopen(descriptor, "w", newline="", encoding="utf-8")

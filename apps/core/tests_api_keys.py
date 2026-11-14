@@ -1,0 +1,266 @@
+"""
+API keys for integrations (L12), as the people in their roles and as the
+scale bridge's own program.
+
+The HR Admin makes an integration (a login nobody signs in as) and issues
+it a key, shown once and kept as a digest. The key signs the integration
+in, every use recorded; revoked or expired, it signs nothing in; an
+integration holding a right that needs a second factor is refused one;
+whoever issues a key must be able to set the login's password.
+"""
+
+import datetime
+import importlib.util
+import pathlib
+
+from django.conf import settings
+from django.contrib.auth.models import Group, Permission, User
+from django.core.management import call_command
+from django.test import LiveServerTestCase, TestCase
+from django.utils import timezone
+from rest_framework.test import APIClient
+
+from .api_keys import ApiKey, ApiKeyUse, Integration
+
+INTEGRATIONS = "/api/core/integrations/"
+KEYS = "/api/core/api-keys/"
+ME = "/api/core/me/"
+
+
+def scale_permission():
+    return Permission.objects.get(content_type__app_label="manufacturing", codename="add_scalereading")
+
+
+class KeyCase(TestCase):
+    def setUp(self):
+        call_command("setup_roles", verbosity=0)
+        self.hr = User.objects.create_user("hr")
+        self.hr.groups.add(Group.objects.get(name="HR Admin"))
+        self.hrc = self.api(self.hr)
+
+    def api(self, user):
+        client = APIClient()
+        client.force_authenticate(User.objects.get(pk=user.pk))
+        return client
+
+    def integration(self, name="WhatsApp channel"):
+        made = self.hrc.post(INTEGRATIONS, {"name": name, "description": "Sends invoices"}, format="json")
+        self.assertEqual(made.status_code, 201, made.content)
+        return Integration.objects.get(pk=made.json()["id"])
+
+    def issue(self, client, integration, **body):
+        return client.post(f"{INTEGRATIONS}{integration.pk}/issue_key/", body, format="json")
+
+    def keyed(self, key):
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f"Api-Key {key}")
+        return client
+
+
+class AKeyIsShownOnceAndSignsInItsIntegrationTests(KeyCase):
+    def test_the_hr_admin_makes_an_integration_and_issues_its_key(self):
+        channel = self.integration()
+        self.assertEqual(channel.user.username, "integration-whatsapp-channel")
+        self.assertFalse(channel.user.has_usable_password(), "a person could sign in as an integration")
+        issued = self.issue(self.hrc, channel, label="Meta business account")
+        self.assertEqual(issued.status_code, 201, issued.content)
+        key = issued.json()["key"]
+        row = ApiKey.objects.get()
+        self.assertTrue(key.startswith(f"erp_{row.prefix}_"))
+        self.assertNotIn(key, (row.digest, row.prefix))
+        self.assertEqual(round((row.expires_at - timezone.now()) / datetime.timedelta(days=1)), 365)
+        listed = self.hrc.get(KEYS).json()
+        self.assertEqual([(r["prefix"], r["state"], "key" in r) for r in listed], [(row.prefix, "active", False)])
+
+        me = self.keyed(key).get(ME, REMOTE_ADDR="10.0.4.21")
+        self.assertEqual((me.status_code, me.json()["username"]), (200, "integration-whatsapp-channel"))
+        # Only the rights it was given: none here.
+        self.assertEqual(self.keyed(key).get("/api/accounting/payments/").status_code, 403)
+        uses = self.hrc.get(f"{KEYS}{row.pk}/uses/").json()
+        self.assertEqual([(u["method"], u["path"], u["address"]) for u in uses],
+                         [("GET", "/api/accounting/payments/", "127.0.0.1"), ("GET", ME, "10.0.4.21")])
+        self.assertIsNotNone(ApiKey.objects.get().last_used_at)
+
+    def test_revoked_or_expired_it_signs_nothing_in(self):
+        channel = self.integration()
+        key = self.issue(self.hrc, channel).json()["key"]
+        row = ApiKey.objects.get()
+        self.assertEqual(self.hrc.post(f"{KEYS}{row.pk}/revoke/", {}, format="json").status_code, 200)
+        refused = self.keyed(key).get(ME)
+        self.assertEqual(refused.status_code, 403)
+        self.assertIn("revoked", refused.json()["detail"])
+        self.assertEqual(self.hrc.post(f"{KEYS}{row.pk}/revoke/", {}, format="json").status_code, 400)
+
+        later = self.issue(self.hrc, channel, expires_on=str(timezone.localdate() + datetime.timedelta(days=30)))
+        ApiKey.objects.filter(pk=later.json()["id"]).update(expires_at=timezone.now() - datetime.timedelta(seconds=1))
+        refused = self.keyed(later.json()["key"]).get(ME)
+        self.assertEqual((refused.status_code, "expired" in refused.json()["detail"]), (403, True))
+        self.assertEqual(self.keyed("erp_00000000_not-a-key").get(ME).status_code, 403)
+        # Each refused attempt is kept, with what it claimed to be (review).
+        refused = [(use.key_id, use.prefix, use.refused[:12]) for use in ApiKeyUse.objects.order_by("pk")]
+        self.assertEqual(refused, [(row.pk, row.prefix, "This API key"), (later.json()["id"], later.json()["prefix"],
+                                   "This API key"), (None, "00000000", "No such API ")])
+
+    def test_every_key_expires_within_a_year(self):
+        channel = self.integration()
+        for day, status in ((timezone.localdate() + datetime.timedelta(days=400), 400),
+                            (timezone.localdate() - datetime.timedelta(days=1), 400)):
+            self.assertEqual(self.issue(self.hrc, channel, expires_on=str(day)).status_code, status)
+
+
+class WhoGetsAKeyTests(KeyCase):
+    def test_an_integration_holding_a_right_that_needs_a_second_factor_gets_none(self):
+        root = User.objects.create_superuser("root", password="x-root-pw-2026")
+        channel = self.integration()
+        key = self.issue(self.api(root), channel).json()["key"]
+        channel.user.user_permissions.add(Permission.objects.get(content_type__app_label="accounting",
+                                                                 codename="post_payment"))
+        refused = self.keyed(key).get(ME)
+        self.assertEqual(refused.status_code, 403)
+        self.assertIn("needs a second factor", refused.json()["detail"])
+        self.assertEqual(self.issue(self.api(root), channel).status_code, 400)
+
+    def test_whoever_issues_one_must_be_able_to_set_its_password(self):
+        bridge = self.integration("Scale SC-1")
+        bridge.user.user_permissions.add(scale_permission())
+        self.assertEqual(self.issue(self.hrc, bridge).status_code, 403)
+        root = User.objects.create_superuser("root", password="x-root-pw-2026")
+        self.assertEqual(self.issue(self.api(root), bridge).status_code, 201)
+
+    def test_a_bookkeeper_issues_none_and_reads_none(self):
+        bookkeeper = User.objects.create_user("bk")
+        bookkeeper.groups.add(Group.objects.get(name="Bookkeeper"))
+        channel = self.integration()
+        self.assertEqual(self.issue(self.api(bookkeeper), channel).status_code, 403)
+        self.assertEqual(self.api(bookkeeper).get(KEYS).status_code, 403)
+
+
+class TheScaleBridgePostsWithItsKeyTests(LiveServerTestCase):
+    """The bridge's own program (deploy/scale_bridge), posting a reading to this server with its key."""
+
+    def test_the_bridge_posts_a_settled_weight_with_its_key(self):
+        call_command("setup_roles", verbosity=0)
+        root = User.objects.create_superuser("root", password="x-root-pw-2026")
+        api = APIClient()
+        api.force_authenticate(root)
+        made = api.post(INTEGRATIONS, {"name": "Scale SC-1"}, format="json").json()
+        bridge = Integration.objects.get(pk=made["id"])
+        bridge.user.user_permissions.add(scale_permission())
+        key = api.post(f"{INTEGRATIONS}{bridge.pk}/issue_key/", {"label": "Station PC"}, format="json").json()["key"]
+
+        folder = pathlib.Path(settings.BASE_DIR) / "deploy" / "scale_bridge"
+        spec = importlib.util.spec_from_file_location("scale_bridge_under_test", folder / "scale_bridge.py")
+        program = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(program)
+        kept = pathlib.Path(self.id().replace(".", "_") + ".key")
+        kept.write_text(key + "\n")
+        kept.chmod(0o600)  # the bridge refuses a key file others can read (review F9)
+        try:
+            send = program.poster({**program.DEFAULTS, "server": self.live_server_url, "api_key_file": str(kept)})
+            send({"scale": "SC-1", "gross_kg": "106.8", "stable": True, "key": "SC-1:1:1:gross:106.8"})
+        finally:
+            kept.unlink()
+        from apps.manufacturing.station_scale import ScaleReading
+
+        reading = ScaleReading.objects.get()
+        self.assertEqual((reading.scale_code, str(reading.gross_kg), reading.key), ("SC-1", "106.800", "SC-1:1:1:gross:106.8"))
+        self.assertEqual(list(ApiKeyUse.objects.values_list("method", "path")),
+                         [("POST", "/api/manufacturing/scale-readings/")])
+
+
+class AKeyOutlivesItsIssuerAndTheAdministratorsAreToldTests(KeyCase):
+    """
+    Review F5 (the reviewer's p24, p25, p27, p39), as the integrator decided:
+    a key does not lapse with its issuer, since the plant's weighing must
+    not stop because an administrator left. The remaining administrators
+    get one to-do naming every key that issuer issued, and the list says
+    "issuer left". The integration's login is never given more than the
+    issuer could give when issuing, and takes its key only, never a password.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.root = User.objects.create_superuser("root", password="x-root-pw-2026")
+        self.rootc = self.api(self.root)
+        self.channel = self.integration()
+        self.key = self.issue(self.hrc, self.channel, label="Meta business account").json()["key"]
+
+    def told(self):
+        from .chatter import FollowUp
+
+        return [(row.assigned_to.username, row.object_id, "WhatsApp channel" in row.note)
+                for row in FollowUp.objects.order_by("pk")]
+
+    def test_p24_its_issuer_leaves_the_key_works_and_the_administrators_are_told_once(self):
+        self.assertEqual(self.rootc.post(f"/api/core/users/{self.hr.pk}/deactivate/", {}, format="json").status_code, 200)
+        self.assertEqual(self.keyed(self.key).get(ME).status_code, 200, "the weighing stopped because HR left")
+        self.assertEqual(self.told(), [("root", self.hr.pk, True)])
+        listed = self.rootc.get(KEYS).json()
+        self.assertEqual([(row["issuer"], row["issuer_left"], row["state"]) for row in listed], [("hr", True, "active")])
+        # Told once, not at every door the leaver passes again.
+        self.rootc.post(f"/api/core/users/{self.hr.pk}/reactivate/", {}, format="json")
+        self.rootc.post(f"/api/core/users/{self.hr.pk}/deactivate/", {}, format="json")
+        self.assertEqual(len(self.told()), 1)
+
+    def test_p25_and_when_the_issuer_loses_the_right_to_issue(self):
+        self.assertEqual(self.rootc.post(f"/api/core/users/{self.hr.pk}/revoke/", {"role": "HR Admin"},
+                                         format="json").status_code, 200)
+        self.assertEqual(self.keyed(self.key).get(ME).status_code, 200)
+        self.assertEqual(self.told(), [("root", self.hr.pk, True)])
+
+    def test_p27_its_login_is_given_nothing_the_issuer_could_not_give(self):
+        from django.core.exceptions import ValidationError
+
+        from django.db import transaction
+
+        with self.assertRaisesMessage(ValidationError, "who could not give manufacturing.add_scalereading"):
+            with transaction.atomic():
+                self.channel.user.user_permissions.add(scale_permission())
+        stores = Group.objects.get(name="Stores Manager")
+        refused = self.rootc.post(f"/api/core/users/{self.channel.user.pk}/grant/", {"role": "Stores Manager"},
+                                  format="json")
+        self.assertEqual(refused.status_code, 400, refused.content)
+        self.assertIn("Revoke that key", refused.content.decode())
+        self.assertFalse(self.channel.user.groups.filter(pk=stores.pk).exists())
+        login = User.objects.get(pk=self.channel.user.pk)
+        login.is_superuser = True
+        with self.assertRaisesMessage(ValidationError, "every right"):
+            with transaction.atomic():
+                login.save()
+        # Revoked, the key no longer stands in the way.
+        self.rootc.post(f"{KEYS}{ApiKey.objects.get().pk}/revoke/", {}, format="json")
+        self.channel.user.user_permissions.add(scale_permission())
+
+    def test_p39_an_integration_takes_its_key_only_never_a_password(self):
+        import base64
+
+        given = self.rootc.post(f"/api/core/users/{self.channel.user.pk}/set_password/",
+                                {"password": "Integration-Pw-2026-xq"}, format="json")
+        self.assertEqual(given.status_code, 400)
+        login = self.channel.user
+        login.set_password("Integration-Pw-2026-xq")
+        login.save()
+        basic = APIClient()
+        basic.credentials(HTTP_AUTHORIZATION="Basic " + base64.b64encode(
+            f"{login.username}:Integration-Pw-2026-xq".encode()).decode())
+        self.assertEqual(basic.get(ME).status_code, 403)
+        from django.test import Client
+
+        self.assertFalse(Client().login(username=login.username, password="Integration-Pw-2026-xq"))
+
+
+class WhatAKeyDidIsKeptEighteenMonthsTests(KeyCase):
+    def test_older_uses_are_pruned(self):
+        from io import StringIO
+
+        channel = self.integration()
+        key = self.issue(self.hrc, channel).json()["key"]
+        self.keyed(key).get(ME)
+        self.keyed(key).get(ME)
+        old, new = ApiKeyUse.objects.order_by("pk")
+        ApiKeyUse.objects.filter(pk=old.pk).update(at=timezone.now() - datetime.timedelta(days=549))
+        ApiKeyUse.objects.filter(pk=new.pk).update(at=timezone.now() - datetime.timedelta(days=546))
+        said = StringIO()
+        call_command("prune_api_key_uses", stdout=said)
+        self.assertEqual(list(ApiKeyUse.objects.values_list("pk", flat=True)), [new.pk])
+        self.assertIn("1 API key uses", said.getvalue())
