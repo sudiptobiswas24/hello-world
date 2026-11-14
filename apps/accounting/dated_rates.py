@@ -72,9 +72,16 @@ class DatedRate:
                 self.confirmed_by, self.confirmed_on = None, None
             return super().save(*args, **kwargs)
 
+    def kept_because(self):
+        """
+        Why the row may not be deleted, in words, or "" where it may. delete() refuses in these words and the
+        screen reads them to offer Delete or not (O556), so the two cannot disagree.
+        """
+        return f"{self.TAKEN_WORDS} at this rate; it stays." if self.taken() else ""
+
     def delete(self, *args, **kwargs):
-        if self.taken():
-            raise ValidationError(f"{self.TAKEN_WORDS} at this rate; it stays.")
+        if reason := self.kept_because():
+            raise ValidationError(reason)
         return super().delete(*args, **kwargs)
 
     def confirm(self, user, seen=None):

@@ -40,13 +40,15 @@ class TcsSectionViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 
 class TcsRateSerializer(serializers.ModelSerializer):
+    # Why it may not be deleted, or "": the screen offers Delete only where the server would take it (O556).
+    kept_because = serializers.CharField(read_only=True)
     section_code = serializers.CharField(source="section.code", read_only=True)
     law_section = serializers.CharField(source="section_code", required=False, allow_blank=True, max_length=16)
 
     class Meta:
         model = TcsRate
         fields = ["id", "section", "section_code", "applies_from", "rate_percent", "no_pan_rate_percent",
-                  "authority", "law_section", "confirmed_by", "confirmed_on"]
+                  "authority", "law_section", "confirmed_by", "confirmed_on", "kept_because"]
         read_only_fields = ["confirmed_by", "confirmed_on"]
 
 
@@ -79,12 +81,14 @@ class TcsRateViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 
 class TdsRateSerializer(serializers.ModelSerializer):
+    # Why it may not be deleted, or "": the screen offers Delete only where the server would take it (O556).
+    kept_because = serializers.CharField(read_only=True)
     section_code = serializers.CharField(source="section.code", read_only=True)
 
     class Meta:
         model = TdsRate
         fields = ["id", "section", "section_code", "applies_from", "rate_percent", "no_pan_rate_percent",
-                  "authority", "confirmed_by", "confirmed_on"]
+                  "authority", "confirmed_by", "confirmed_on", "kept_because"]
         read_only_fields = ["confirmed_by", "confirmed_on"]
 
 
@@ -97,9 +101,11 @@ class TdsRateViewSet(TcsRateViewSet):
 
 
 class BankRateSerializer(serializers.ModelSerializer):
+    # Why it may not be deleted, or "": the screen offers Delete only where the server would take it (O556).
+    kept_because = serializers.CharField(read_only=True)
     class Meta:
         model = BankRate
-        fields = ["id", "applies_from", "rate_percent", "authority", "confirmed_by", "confirmed_on"]
+        fields = ["id", "applies_from", "rate_percent", "authority", "confirmed_by", "confirmed_on", "kept_because"]
         read_only_fields = ["confirmed_by", "confirmed_on"]
 
 

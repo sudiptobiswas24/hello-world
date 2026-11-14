@@ -12,6 +12,9 @@ export default function TdsRateForm() {
       heading={(row) => `${String(row.section_code ?? "")} from ${String(row.applies_from ?? "")}`}
       state={(row) => (row.confirmed_on ? { label: "Confirmed", tone: "done" } : { label: "To confirm", tone: "draft" })}
       permissions={{ add: "accounting.add_tdsrate", change: "accounting.change_tdsrate", delete: "accounting.delete_tdsrate" }}
+      // Offered only where the server would take it, and why not where it would not (O556).
+      deletable={(row) => !row.kept_because}
+      note={(row) => (row?.kept_because ? <p className="muted">{String(row.kept_because)}</p> : null)}
       fields={[
         { key: "section", label: "Section", kind: "ref", ref: SECTION, show: (row) => String(row.section_code) },
         { key: "applies_from", label: "Applies from", kind: "date" },
