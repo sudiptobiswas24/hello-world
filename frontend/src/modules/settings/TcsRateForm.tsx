@@ -12,6 +12,9 @@ export default function TcsRateForm() {
       heading={(row) => `${String(row.section_code ?? "")} from ${String(row.applies_from ?? "")}`}
       state={(row) => (row.confirmed_on ? { label: "Confirmed", tone: "done" } : { label: "To confirm", tone: "draft" })}
       permissions={{ add: "accounting.add_tcsrate", change: "accounting.change_tcsrate", delete: "accounting.delete_tcsrate" }}
+      // Offered only where the server would take it, and why not where it would not (O556).
+      deletable={(row) => !row.kept_because}
+      note={(row) => (row?.kept_because ? <p className="muted">{String(row.kept_because)}</p> : null)}
       fields={[
         { key: "section", label: "Section", kind: "ref", ref: TCS_SECTION, show: (row) => String(row.section_code) },
         { key: "applies_from", label: "Applies from", kind: "date" },

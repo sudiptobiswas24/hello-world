@@ -11,6 +11,9 @@ export default function BankRateForm() {
       heading={(row) => `Bank rate from ${String(row.applies_from ?? "")}`}
       state={(row) => (row.confirmed_on ? { label: "Confirmed", tone: "done" } : { label: "To confirm", tone: "draft" })}
       permissions={{ add: "accounting.add_bankrate", change: "accounting.change_bankrate", delete: "accounting.delete_bankrate" }}
+      // Offered only where the server would take it, and why not where it would not (O556).
+      deletable={(row) => !row.kept_because}
+      note={(row) => (row?.kept_because ? <p className="muted">{String(row.kept_because)}</p> : null)}
       fields={[
         { key: "applies_from", label: "Applies from", kind: "date" },
         { key: "rate_percent", label: "Bank rate %", kind: "decimal", places: 4, hint: "As the Reserve Bank notified it, a year. MSME interest is three times this (MSMED Act s.16)" },
