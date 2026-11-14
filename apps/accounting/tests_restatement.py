@@ -319,6 +319,8 @@ NEED_NOT_ASK = {
     # g38: Delivery.invoice says which invoice a truck's goods travelled under, for its e-way bill. A delivery's entry is
     # cost of sales out of stock, in the base currency; nothing it books is against what the invoice has open.
     "sales.delivery": "its entry moves stock at cost; Delivery.invoice names the invoice its truck carried, and settles nothing",
+    # g39: a gratuity payout records which posted payment paid a leaver; it books no entry of its own.
+    "hr.gratuitypayout": "payroll, in the base currency (save() refuses any other); its payment asks at Payment.post, and its void voids that payment",
 }
 
 
