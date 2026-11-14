@@ -32,9 +32,11 @@ from django.test import TransactionTestCase, tag
 from apps.accounting.models import JournalEntry, JournalLine, Payment, PaymentDirection
 from apps.assets.models import FixedAsset
 from apps.assets import tests as assets_fixture
-from apps.hr.models import LeaveRequest, LeaveStatus, LeaveType
+from apps.hr.gratuity import GratuityPayout
+from apps.hr.models import Employee, LeaveRequest, LeaveStatus, LeaveType
 from apps.hr.payroll import PayRun, Payslip, StatutoryRemittance
 from apps.hr import tests_audit as hr_fixture
+from apps.hr import tests_gratuity as gratuity_fixture
 from apps.hr import tests_statutory as payroll_fixture
 from apps.inventory.models import StockAdjustment
 from apps.inventory import tests_adjustments as stock_fixture
@@ -707,6 +709,66 @@ class PayrollRaceTests(RaceCase):
                            period=payroll_fixture.JUNE[0], amount=Decimal("893"))))
         self.assertIn((PayRun.objects.get(pk=run.pk).is_voided(), StatutoryRemittance.objects.count()),
                       [(True, 0), (False, 1)])
+
+
+@tag("race")
+@unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
+class GratuityPayoutRaceTests(RaceCase):
+    """
+    The gratuity payout (known limit 19), missing since g39. Figures from apps/hr/tests_gratuity.py
+    (/home/user/work/calc_g39_grat/gratuity.py): L, hired 1 Jan 2020, resigned 30 Jun 2026, is owed 51,923.08;
+    past service booked at 51,201.58 and June's run 721.50 leave 51,923.08 in 2470, which one payout clears.
+    """
+
+    setUp = gratuity_fixture.GratuityTestCase.setUp
+    person, june, money, past_service, balance, pay = (
+        gratuity_fixture.GratuityTestCase.person, gratuity_fixture.GratuityTestCase.june,
+        gratuity_fixture.GratuityTestCase.money, gratuity_fixture.GratuityTestCase.past_service,
+        gratuity_fixture.GratuityTestCase.balance, gratuity_fixture.GratuityTestCase.pay)
+
+    def leaver(self):
+        leaver = self.person("L", datetime.date(2020, 1, 1), gratuity_fixture.LEFT)
+        self.past_service("51201.58")
+        self.june(leaver)
+        self.assertEqual(self.balance(self.provision), Decimal("-51923.08"))
+        return leaver
+
+    def test_a_leaver_is_paid_once_by_two_payouts_at_once(self):
+        """
+        Two clerks each pay L 51,923.08 against 2470 and record it at once. save() holds L (hold_the_employee)
+        before it asks whether a payout stands, so the second waits and then finds the first: one stands, of
+        51,923.08, and the other payment, voided as the refusal says, leaves 2470 at 0.00. Without the hold both
+        found none standing and both stood, the provision drawn down twice.
+        """
+        leaver = self.leaver()
+        payments = [self.money(leaver, "51923.08") for _ in range(2)]
+        outcomes = race(GratuityPayout, *[
+            lambda payment=payment: self.pay(Employee.objects.get(pk=leaver.pk), Payment.objects.get(pk=payment.pk))
+            for payment in payments])
+        self.once(outcomes)
+        self.assertIn("stands. Void it before paying L - L again", "".join(outcomes))
+        standing = [payout for payout in GratuityPayout.objects.all() if payout.stands()]
+        self.assertEqual([payout.amount for payout in standing], [Decimal("51923.08")])
+        stray = Payment.objects.exclude(pk=standing[0].payment_id).get(pk__in=[p.pk for p in payments])
+        stray.void(on_date=gratuity_fixture.LEFT)
+        self.assertEqual(self.balance(self.provision), Decimal("0.00"))
+
+    def test_a_payout_is_voided_once_by_two_voids_at_once(self):
+        """
+        Two voids of L's payout at once. void is serialised on voided_at, holding its payment and L first: the
+        second finds it voided and is refused, its payment voided once, 2470 back to 51,923.08 and L owed again.
+        Without the hold both read it standing and both said done.
+        """
+        leaver = self.leaver()
+        payout = self.pay(leaver, self.money(leaver, "51923.08"))
+        self.assertEqual(self.balance(self.provision), Decimal("0.00"))
+        outcomes = race(GratuityPayout, *[
+            lambda: GratuityPayout.objects.get(pk=payout.pk).void(on_date=gratuity_fixture.LEFT)] * 2)
+        self.once(outcomes)
+        self.assertIn("has already been voided", "".join(outcomes))
+        self.assertFalse(GratuityPayout.objects.get(pk=payout.pk).stands())
+        self.assertEqual(JournalEntry.objects.filter(reverses__isnull=False).count(), 1)
+        self.assertEqual(self.balance(self.provision), Decimal("-51923.08"))
 
 
 @tag("race")
