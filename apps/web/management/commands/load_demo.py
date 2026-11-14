@@ -1264,6 +1264,13 @@ class Command(BaseCommand):
                 for component, amount in ((basic, basic_pay), (hra, rent_allowance), (pf, "12"), (pt, "1"), (epf, "12")):
                     Pay.objects.create(employee=people[key], component=component, amount=D(amount),
                                        effective_from=datetime.date(2026, 4, 1))
+            # O560: the gratuity provision, 4.81% of basic and DA into 2470, given as setup_payroll gives it, from the
+            # day the salaries stand. The bonus accrual is not (O550): its ceiling reads Maharashtra's minimum wage,
+            # which the demo does not load, and giving it would refuse every run.
+            from apps.hr.bonus import give_gratuity_provision
+
+            if not give_gratuity_provision(datetime.date(2026, 4, 1)):
+                raise CommandError("The gratuity provision was given to nobody.")
             for offset, post in ((-2, True), (-1, False)):
                 start, end = s.month_span(2026, 10, offset)  # the story's last month is this one
                 run = PayRun.objects.create(name=f"{start:%B %Y}", period_start=start, period_end=end, pay_date=end)
