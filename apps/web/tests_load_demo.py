@@ -159,11 +159,39 @@ class WhatTheDemoShowsTests(TestCase):
         self.assertEqual(run.payslips.get(employee__employee_number="101").net(), Decimal("76800.00"))
         # The run's journal: wages 575,500 and the employer's 37,860 of PF with 667 of ESI, against what is owed.
         # Professional tax is 13 at 200, and February's band is 300 (the story's months move with today).
+        # The gratuity provision, 21,524.75 (O560), is the employer's own cost: net pay is as it was.
         tax = Decimal("3900") if run.period_start.month == 2 else Decimal("2600")
         booked = {row["account__code"]: row["debit"] - row["credit"] for row in run.journal_entry.lines.values(
             "account__code").annotate(debit=Sum("debit"), credit=Sum("credit"))}
         self.assertEqual(booked, {"6000": Decimal("575500"), "6100": Decimal("38527"), "2410": Decimal("-75720"),
-                                  "2420": Decimal("-821"), "2430": -tax, "2400": tax - Decimal("537486")})
+                                  "2420": Decimal("-821"), "2430": -tax, "2400": tax - Decimal("537486"),
+                                  "6120": Decimal("21524.75"), "2470": Decimal("-21524.75")})
+
+    def test_everyone_is_given_the_gratuity_provision_and_the_posted_run_accrues_it(self):
+        """
+        O560, worked in /home/user/work/calc_g40_people/o560.py. The demo seeded GRATUITY and gave it to nobody:
+        go_live_check's Gratuity line named all fourteen people and no run accrued a rupee. Given as setup_payroll
+        gives it, 4.81% of each basic (the demo pays no DA), at the paisa: 2,982.20 on Rohit's 62,000 and 856.18
+        on Lakshmi's 17,800; 4.81% of the 447,500 of basic is 21,524.75, into 2470 against 6120.
+        """
+        from django.db.models import Sum
+
+        from apps.hr.models import PayRun
+        from apps.hr.payroll import PayslipLine
+        from apps.imports.management.commands.go_live_check import OK, checks
+
+        run = PayRun.objects.get(status="posted")
+        accrued = {line.payslip.employee.employee_number: line.amount
+                   for line in PayslipLine.objects.filter(payslip__run=run, component__code="GRATUITY")}
+        self.assertEqual(len(accrued), 14)
+        self.assertEqual((accrued["101"], accrued["303"], accrued["302"]),
+                         (Decimal("2982.20"), Decimal("856.18"), Decimal("889.85")))
+        self.assertEqual(sum(accrued.values()), Decimal("21524.75"))
+        held = run.journal_entry.lines.filter(account__code="2470").aggregate(debit=Sum("debit"), credit=Sum("credit"))
+        self.assertEqual((held["debit"], held["credit"]), (Decimal("0"), Decimal("21524.75")))
+        # go_live_check's line, which named all fourteen.
+        lines = {what: (level, detail) for level, what, detail in checks()}
+        self.assertEqual(lines["Statutory: Gratuity"], (OK, "confirmed figures cover today"))
 
     def test_the_specifications_build_the_recipes_and_the_tapes_lots_are_inspected_and_released(self):
         from apps.manufacturing.models import BillOfMaterials
