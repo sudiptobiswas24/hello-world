@@ -50,6 +50,39 @@ pg_isready -q || service postgresql start                              # role er
 
 ## 2. Next steps, in order
 
+**g38 is pushed (8eff573, 14 November 2026), all seven lanes green on one tip (gated as 12a107c).** Fifteen
+commits: twelve from five agents deepening the trade, statutory and floor modules, then the register and two gate
+fixes. Fixed: O541 (an open invoice or bill
+raised after the books opened is refused), O542 (the opening-stock reason follows the account the books opened
+against), O543 (an empty date on the import screen is said beside the date box), O544 and O545 (where a sale's
+goods went is a fact the invoice keeps, an export of goods names its port, each truck has its own e-way bill), O546
+(a job-work e-way bill says where the lorry goes), O547 (each state's own labour welfare fund; Maharashtra's slabs),
+O457 (go_live_check counts and names the open to-dos from before the rule), O528 (the dispatch board loses no shift
+overlap). Limits reworded: 16 (the reverse-charge self-invoice is raised as the bill posts and printed; 3B's 6.1
+footed to the ledger), 17 (MSME days kept from the day of acceptance, the Act's interest shown), 19 (the statutory
+bonus seeded, given and worked out for the year: statement, declaration, payout), 20 (where goods went), 21 (the
+signed delivery copy kept as proof of delivery). Decision 24 records two choices taken for the owner: O541's opening
+day and O545's export port; confirm them. Register rows O548 to O559 are what the agents saw and did not fix.
+Counts: SQLite 8,786 (246 skipped), PostgreSQL 4,053 + 3,670 + 1,063 = 8,786, Asia/Kolkata 8,786,
+migration-tagged 53 and the one PostgreSQL-only, vitest 70.
+- The gate needed two fixture fixes and a test-helper fix before it went green, none of them product code: the
+  plant-month export names its port (O545's rule reached a fixture no agent ran), and the schema window
+  (apps/core/tests_schema_window.py) now adds every column today's models write at an old schema, not only
+  taxes_taken_under. The sales migration tests failed 21 times on the first tip because g38 added port_address;
+  they had not run in g37's gate since GATE_BASE skipped them.
+- Next: g39, already built: the gratuity provision and payout (/home/user/work/g39_grat, limit 19, register
+  O560-O563) and limit L5, an item's tracking fixed once its stock has moved, with the fixtures reworked
+  (/home/user/work/g39_l5, closes O548).
+- Waiting on people: the owner (O448, O494, O557, O558, O559, decision 24), the tax adviser (O449, O500, O534,
+  O559), the accountant (O536, O538, docs/STATUTORY_REVIEW.md section 14).
+- Gate lessons from g38: three tips before one went green, each a full seven-lane run. A test helper that
+  names one column breaks on the next one: make it general. Agent tests beside two lanes on four cores pushed the
+  sales migration step to 5,656 of 7,000 s; pausing the agents' tests (SIGSTOP, resumed after) saved it at 6,066 s.
+  Keep agents' tests to a free slot. A container restart leaves PostgreSQL replaying its log for a minute or two:
+  wait for it to accept connections before starting a pg lane. Two restarts in ninety minutes (23:38 and 01:10
+  UTC) each killed pg-c near its end; memory (0.8 of 16 GB) and disk were not the cause. A lane of ninety minutes
+  is the one most exposed: if restarts keep coming that often, split pg-c.
+
 **g37 is pushed (9386a9d, 11 November 2026), all seven lanes green on one tip (gated as 46d5aca).** Sixteen
 commits, the work an audit of the project itself asked for: the evidence so far is all the author's own, and the
 path to go-live is the plant's files, a narrower pilot and outside eyes on the statutory outputs, not more internal
