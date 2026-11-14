@@ -269,6 +269,16 @@ class TakesItsLinesMixin(serializers.Serializer):
 
     def validate(self, attrs):
         attrs = super().validate(attrs)
+        # What the document reads back is not what it takes (O555). DRF drops a read-only field it is sent
+        # without a word: a bill posted with `lines` was made with none, and refused only at posting for
+        # having no value. A read-only list sent is refused in words, beside it, on a new document or a saved one.
+        sent = getattr(self, "initial_data", None)
+        if hasattr(sent, "keys"):
+            for name, field in self.fields.items():
+                if name in sent and field.read_only and isinstance(field, serializers.ListSerializer):
+                    raise serializers.ValidationError({name: [
+                        f"`{name}` is what the document reads back, and nothing sent in it is kept. Send a new "
+                        "document's lines as `new_lines`; add one to a saved document on its own."]})
         if self.instance is not None and "new_lines" in attrs:
             raise serializers.ValidationError(
                 {"new_lines": ["Lines are sent with a new document only; add one to a saved document on its own."]})
