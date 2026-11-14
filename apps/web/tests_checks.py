@@ -21,7 +21,7 @@ from rest_framework.test import APIClient
 from apps.accounting.models import Account, AccountType, JournalEntry, JournalLine
 from apps.core.licences import Licence, LicenceKind
 from apps.imports.importer import run
-from apps.imports.tests import ImportTestCase
+from apps.imports.tests import ImportTestCase, TwoYearsOn
 from apps.purchasing.models import Bill
 
 from .checks import inbox
@@ -260,3 +260,7 @@ class IncompleteTests(ChecksTestCase):
         self.assertEqual([row["number"] for row in client.get("/api/sales/invoices/", {"without_irn": "true"}).json()], ["INV-B2B"])
         EInvoice.objects.create(invoice=invoice, payload={}, irn="a" * 64)
         self.assertNotIn("invoices_without_irn", self.keys(officer))
+
+
+class InboxTestsTwoYearsOn(TwoYearsOn, InboxTests):
+    """InboxTests again two years on (O549): ChecksTestCase opens the books on its old documents' day."""

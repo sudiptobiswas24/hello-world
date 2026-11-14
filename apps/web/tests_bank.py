@@ -21,7 +21,7 @@ from rest_framework.test import APIClient
 
 from apps.core.models import Party, PartyRole, PartyRoleAssignment
 from apps.imports.importer import run
-from apps.imports.tests import ImportTestCase
+from apps.imports.tests import ImportTestCase, TwoYearsOn
 from apps.inventory.models import AdjustmentReason
 
 from .bank import stock_statement
@@ -111,3 +111,7 @@ class StatementApiTests(BankStatementTestCase):
         self.assertEqual(controller.get("/api/web/bank-stock-statement/", {"stock_margin": "abc"}).status_code, 400)
         self.assertEqual(controller.get("/api/web/bank-stock-statement/", {"stock_margin": "120"}).status_code, 400)
         self.assertEqual(self.as_("Warehouse Staff").get("/api/web/bank-stock-statement/").status_code, 403)
+
+
+class StatementTestsTwoYearsOn(TwoYearsOn, StatementTests):
+    """StatementTests again two years on (O549): BankStatementTestCase opens the books on its old documents' day."""

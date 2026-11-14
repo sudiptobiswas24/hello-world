@@ -36,7 +36,7 @@ from apps.accounting.models import (
 )
 from apps.core.models import DocumentSequence, DocumentSequenceYear
 from apps.imports.importer import run
-from apps.imports.tests import ImportTestCase
+from apps.imports.tests import ImportTestCase, TwoYearsOn
 from apps.sales.models import Invoice, InvoicePayment
 
 from .checks import inbox
@@ -236,3 +236,7 @@ class ServerTests(HealthTestCase):
             call_command("check_health", stdout=out)
         self.assertIn("FAIL  Receivables agree with the invoices", out.getvalue())
         self.assertIn("difference 500.00", out.getvalue())
+
+
+class ProbeTestsTwoYearsOn(TwoYearsOn, ProbeTests):
+    """ProbeTests again two years on (O549): HealthTestCase opens the books on its old documents' day."""
