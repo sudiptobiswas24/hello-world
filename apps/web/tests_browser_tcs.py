@@ -44,8 +44,14 @@ class TcsInTheBrowserTests(BrowserMixin, TcsTestCase, StaticLiveServerTestCase):
         page.get_by_role("button", name="Confirm", exact=True).click()
         expect(page.get_by_role("button", name="Confirm", exact=True)).to_have_count(0)
         self.assertIsNotNone(TcsRate.objects.get().confirmed_on)
+        # Confirmed and nothing collected at it, it may still go (O556): the server takes it.
+        expect(page.get_by_role("button", name="Delete", exact=True)).to_have_count(1)
 
         invoice = self.t1()  # posted by sales, as the day's scrap sale is
+        # Collected at, it stays: no Delete the server would refuse, and the screen says why (O556).
+        page.goto(f"{self.live_server_url}/app/settings/tcs-rates/{TcsRate.objects.get().pk}")
+        expect(page.locator("main")).to_contain_text("Invoices collected at this rate; it stays.")
+        expect(page.get_by_role("button", name="Delete", exact=True)).to_have_count(0)
         page.goto(f"{self.live_server_url}/app/accounts/tcs-collected")
         row = page.locator("tbody tr", has_text=invoice.number)
         expect(row).to_contain_text("1,062.00")

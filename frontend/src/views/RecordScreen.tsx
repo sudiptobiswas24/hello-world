@@ -157,6 +157,12 @@ export interface RecordScreenProps {
   permissions: { add?: string; change?: string; delete?: string };
   /** Whether the record may still be edited in its present state. */
   editable?: (record: Row) => boolean;
+  /**
+   * Whether the record may still be deleted, where that is not the same as editable: a confirmed bank rate is
+   * corrected, not removed (O556). The server's own rule, read off the record, so Delete is offered only where
+   * the server would take it.
+   */
+  deletable?: (record: Row) => boolean;
   /** Where to go after a create (default: the new record). A delete always goes back to the list. */
   afterCreate?: (record: Row) => string;
   /** Where a new one is posted, when an action makes it rather than the collection. */
@@ -384,7 +390,7 @@ function ReadTable({ read, record, columns, href }: {
 }
 
 export function RecordScreen(props: RecordScreenProps) {
-  const { endpoint, back, backLabel, newTitle, heading, state, fields: declared, actions = [], links = [], trail, panels = [], permissions, editable, afterCreate, note, below, createUrl, extras, smart } = props;
+  const { endpoint, back, backLabel, newTitle, heading, state, fields: declared, actions = [], links = [], trail, panels = [], permissions, editable, deletable, afterCreate, note, below, createUrl, extras, smart } = props;
   const { id } = useParams();
   const isNew = id === "new";
   const navigate = useNavigate();
@@ -469,7 +475,7 @@ export function RecordScreen(props: RecordScreenProps) {
         {saved && links.filter((link) => !link.when || link.when(saved)).map((link) => link.same
           ? <Link key={link.label} className="btn" to={link.href(saved)}>{link.label}</Link>
           : <a key={link.label} className="btn" href={link.href(saved)} target="_blank" rel="noopener">{link.label}</a>)}
-        {saved && permissions.delete && can(permissions.delete) && (!editable || editable(saved)) && (
+        {saved && permissions.delete && can(permissions.delete) && (!editable || editable(saved)) && (!deletable || deletable(saved)) && (
           <ActionButton danger pending={act.pending} onClick={() => void remove()}>Delete</ActionButton>
         )}
       </DocHeader>
