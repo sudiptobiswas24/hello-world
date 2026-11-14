@@ -2565,7 +2565,40 @@ class Command(BaseCommand):
                                 f"{label}.{model.__name__} keeps its own {name}, but "
                                 f"`{code.splitlines()[line - 1].strip()[:90]}` reads its {relation}'s.",
                             ))
-        return findings + self._kept_read_through_a_name(labels, sources)
+        return findings + self._kept_read_through_a_name(labels, sources) + self._printed_from_live_settings(
+            labels, sources)
+
+    # The settings a page reads as they stand: the plant's GST registration and the company. The base currency is
+    # the books', not what the page was issued as.
+    LIVE_SETTINGS = re.compile(r"\bGstSettings\.active\(\)|\bCompany\.get\(\)(?!\.base_currency\b)")
+
+    def _printed_from_live_settings(self, labels, sources):
+        """
+        A printout of a record that keeps what it was issued as, reading the settings as they stand instead.
+
+        A self-invoice printed the plant's GSTIN from GstSettings.active() and the letterhead from the company
+        as they stood on the day it was printed: a GSTIN changed in 2027 reprinted SI-2026-00001 with the new
+        one (O552). No relation is read, so KEPT_FROM cannot name it; a record names the functions that print
+        it (`PRINTED_BY`), and any of them reading a live setting is reading what the next record gets.
+        """
+        findings = []
+        for label in labels:
+            printers = {name: model for model in django_apps.get_app_config(label).get_models()
+                        for name in getattr(model, "PRINTED_BY", ())}
+            if not printers:
+                continue
+            for path, text in sources[label].items():
+                if "test" in path.name or "migrations" in path.parts:
+                    continue
+                for fn in ast.walk(ast.parse(text)):
+                    if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) and fn.name in printers:
+                        for match in self.LIVE_SETTINGS.finditer(self._code(fn)):
+                            findings.append((
+                                "kept setting read live",
+                                f"{printers[fn.name]._meta.label} keeps what it was issued as, but "
+                                f"{label}.{path.stem}.{fn.name} prints `{match.group(0)}` as it stands.",
+                            ))
+        return findings
 
     def _kept_read_through_a_name(self, labels, sources):
         """

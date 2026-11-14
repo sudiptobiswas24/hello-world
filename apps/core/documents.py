@@ -339,12 +339,31 @@ def qr_drawing(text, size=38 * mm):
 
 def letterhead(company):
     """The company as the head of every page: name, then where it is and its GSTIN, where it has them."""
-    parts = [bold(company.name)]
-    if company.address_id:
-        parts.extend(company.address.formatted().splitlines())
-    if company.tax_id:
-        parts.append(f"GSTIN {company.tax_id}")
+    return printed_letterhead(issuer(company))
+
+
+def issuer(company):
+    """
+    The company as a page's head and foot print it, as plain values: what a document that prints what it was
+    issued as keeps at the event (O552), so a company renamed, moved or re-registered later does not reprint it.
+    printed_letterhead() and printed_footer() print it as letterhead() and render_document print the company.
+    """
+    return {"name": company.name, "legal_name": company.legal_name or "",
+            "address": company.address.formatted().splitlines() if company.address_id else [],
+            "tax_id": company.tax_id or ""}
+
+
+def printed_letterhead(kept):
+    """A letterhead from issuer()'s values, kept or as they stand."""
+    parts = [bold(kept.get("name", "")), *kept.get("address", [])]
+    if kept.get("tax_id"):
+        parts.append(f"GSTIN {kept['tax_id']}")
     return lines(parts)
+
+
+def printed_footer(kept):
+    """render_document's `footer` from issuer()'s values: who issued it, as the page's bottom line names them."""
+    return [kept.get("legal_name") or kept.get("name", "")] + ([f"Tax ID {kept['tax_id']}"] if kept.get("tax_id") else [])
 
 
 ONES = ["", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve",
