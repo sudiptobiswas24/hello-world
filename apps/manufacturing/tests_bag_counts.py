@@ -146,7 +146,9 @@ class WeighedBeforeBookedTests(ConversionTestCase):
             self.count(bags="0")
 
     def test_a_bundle_is_a_batch(self):
-        Item.objects.filter(pk=self.bag.pk).update(tracking="none")
+        self.bag.refresh_from_db()
+        self.bag.tracking = "none"
+        self.bag.save()
         with self.assertRaisesMessage(ValidationError, "not tracked by batch"):
             self.count()
 

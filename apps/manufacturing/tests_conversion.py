@@ -64,10 +64,9 @@ class ConversionTestCase(RunTestCase):
 
         # The base fixture stocks a 1,000 kg run; these are 4,000 kg
         # ones. Same prices, so the averages do not move.
-        self.stock(self.virgin, "8000", "100")
-        self.stock(self.regrind, "2000", "60")
-        self.stock(self.filler, "1200", "30")
-        self.stock(self.colour, "400", "200")
+        for item, quantity, cost in ((self.virgin, "8000", "100"), (self.regrind, "2000", "60"),
+                                     (self.filler, "1200", "30"), (self.colour, "400", "200")):
+            self.stock(item, quantity, cost, lot=self.opening_lots.get(item))  # its opening batch, if kept by one
 
         self.plan = Routing.objects.create(code="R-EXT", name="Extrude")
         RoutingOperation.objects.create(
@@ -563,10 +562,10 @@ class AMeasurementExplainsPolymerNotLoomTimeTests(ConversionTestCase):
     could account for.
     """
 
+    by_batch = ("tape",)
+
     def setUp(self):
         super().setUp()
-        self.tape.tracking = TrackingMode.LOT
-        self.tape.save()
         self.reel = Lot.objects.create(item=self.tape, code="T-001")
         gsm = Characteristic.objects.create(code="GSM", name="GSM", uom=self.kg)
         plan = InspectionPlan.objects.create(item=self.tape, is_mandatory=False)

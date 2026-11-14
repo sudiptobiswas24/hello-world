@@ -254,18 +254,20 @@ class APurchaseTests(LifecycleTestCase):
         # so polymer received over it could not be traced to its batch.
         from apps.inventory.models import Item, Lot
 
-        Item.objects.filter(pk=self.item.pk).update(tracking="lot")
+        # Kept by batch from the day it is made (tracking is fixed once stock has moved, L5): the fixture's
+        # widget holds 500 in no batch.
+        polymer = Item.objects.create(sku="PP-H030", name="PP granule", uom=self.uom, tracking="lot")
         clerk = self.as_("Purchasing Clerk")
         order = self.ok(clerk.post("/api/purchasing/purchase-orders/", {
             "vendor": self.vendor.pk, "order_date": "2026-03-01", "currency": self.usd.pk},
             format="json"), 201)
         self.ok(clerk.post("/api/purchasing/purchase-order-lines/", {
-            "order": order["id"], "item": self.item.pk, "uom": self.uom.pk, "quantity": "25",
+            "order": order["id"], "item": polymer.pk, "uom": self.uom.pk, "quantity": "25",
             "unit_price": "5.00"}, format="json"), 201)
         order = self.ok(clerk.post(f"/api/purchasing/purchase-orders/{order['id']}/confirm/"))
         store = self.as_("Warehouse Staff")
         lot = self.ok(store.post("/api/inventory/lots/", {
-            "item": self.item.pk, "code": "RIL-H030SG-2611"}, format="json"), 201)
+            "item": polymer.pk, "code": "RIL-H030SG-2611"}, format="json"), 201)
         receipt = self.ok(store.post("/api/purchasing/goods-receipts/", {
             "purchase_order": order["id"], "receipt_date": "2026-03-02"}, format="json"), 201)
         self.ok(store.post("/api/purchasing/goods-receipt-lines/", {

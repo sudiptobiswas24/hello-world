@@ -1271,6 +1271,8 @@ class PlantFloorTests(StationApiTestCase):
     specification-made inspection plans set advisory, and T-1's mandatory for its rejection.
     """
 
+    tape_by_batch = True  # the warp tape, before its stock is placed (L5)
+
     def setUp(self):
         # The fixture's opening stock on the floor's day, before anything the floor does: stamped by the
         # wall clock, it would replay after the day's issues and value them from an empty shelf.
@@ -1329,9 +1331,7 @@ class PlantFloorTests(StationApiTestCase):
         self.second_post = bridge.post("/api/manufacturing/scale-readings/", reading, format="json")
 
         # The weaver at the loom station.
-        warp = self.spec.warp_tape.tape_item
-        Item.objects.filter(pk=warp.pk).update(tracking="lot")
-        warp.refresh_from_db()
+        warp = self.spec.warp_tape.tape_item  # kept by batch from the start (tape_by_batch)
         self.t1 = Lot.objects.create(item=warp, code="T-1")
         self.stock(warp, "100", "120", lot=self.t1)
         self.shelf_before = sum((item.stock_value_at(self.plant) for item in self.items), D("0"))

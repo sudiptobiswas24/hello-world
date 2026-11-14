@@ -83,8 +83,9 @@ class BatchesGoHomeTests(SalesTestCase):
 
         from apps.inventory.models import Item, Lot, MovementType, StockMovement
 
-        Item.objects.filter(pk=self.item.pk).update(tracking="lot")
-        self.item.refresh_from_db()
+        # Kept by batch from the day it is made (tracking is fixed once stock has moved, L5): the fixture's
+        # widget holds 500 in no batch.
+        self.item = Item.objects.create(sku="WDG-LOT", name="Widget by batch", uom=self.uom, tracking="lot")
         a = Lot.objects.create(item=self.item, code="A")
         b = Lot.objects.create(item=self.item, code="B")
         for lot, quantity in ((a, "30"), (b, "20")):
@@ -116,8 +117,9 @@ class BatchesGoHomeTests(SalesTestCase):
 
         from .models import Delivery, DeliveryAllocation, DeliveryLine
 
-        Item.objects.filter(pk=self.item.pk).update(tracking="lot")
-        self.item.refresh_from_db()
+        # Kept by batch from the day it is made (tracking is fixed once stock has moved, L5): the fixture's
+        # widget holds 500 in no batch.
+        self.item = Item.objects.create(sku="WDG-LOT", name="Widget by batch", uom=self.uom, tracking="lot")
         lot = Lot.objects.create(item=self.item, code="A")
         StockMovement.objects.create(item=self.item, warehouse=self.warehouse, lot=lot,
                                      movement_type=MovementType.RECEIPT, uom=self.uom,

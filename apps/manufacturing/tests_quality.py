@@ -147,10 +147,10 @@ class ASpecificationWritesItsOwnInspectionPlanTests(WovenTestCase):
 
 
 class AHeldBatchGoesNowhereTests(RunTestCase):
+    by_batch = ("virgin",)
+
     def setUp(self):
         super().setUp()
-        self.virgin.tracking = TrackingMode.LOT
-        self.virgin.save()
         self.drum = Lot.objects.create(item=self.virgin, code="PP-A")
         self.stock(self.virgin, "3000", "100", lot=self.drum)
         self.gsm_unit = self.kg
@@ -430,10 +430,10 @@ class AHeldBatchGoesNowhereTests(RunTestCase):
 
 
 class TheMeasurementExplainsTheMoneyTests(RunTestCase):
+    by_batch = ("tape",)
+
     def setUp(self):
         super().setUp()
-        self.tape.tracking = TrackingMode.LOT
-        self.tape.save()
         self.reel = Lot.objects.create(item=self.tape, code="T-001")
         gsm = Characteristic.objects.create(
             code="GSM", name="Grammes per square metre", uom=self.kg

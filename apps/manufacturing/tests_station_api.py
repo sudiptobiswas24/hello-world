@@ -107,26 +107,6 @@ class StationApiTests(StationApiTestCase):
         self.assertIn("Sign in", str(response.content))
         self.assertEqual(self.client.get(self.base + "looms/L-17/").status_code, 400)
 
-    def test_the_loom_says_what_it_is_making(self):
-        tape = self.spec.warp_tape.tape_item
-        tape.tracking = "lot"
-        tape.save()
-        batch = Lot.objects.create(item=tape, code="TB-260601-D-03")
-        self.stock(tape, "500", "120", lot=batch)
-        issue = MaterialIssue.objects.create(work_order=self.run, issue_date=TODAY,
-                                             warehouse=self.plant)
-        MaterialIssueLine.objects.create(issue=issue, item=tape, quantity=Decimal("100"),
-                                         uom=self.kg, lot=batch, line_number=1)
-        issue.post()
-        self.sign_in()
-        self.roll()
-
-        body = self.client.get(self.base + "looms/L-17/").json()
-        self.assertEqual((body["run"], body["contractor"]), (self.run.number, "Contractor A"))
-        self.assertEqual(body["specification"]["code"], "F-60")
-        self.assertEqual(body["tape_batch"], "TB-260601-D-03")
-        self.assertEqual(body["previous_roll"]["code"], "FR-260601-D-L17-01")
-
     def test_a_loom_the_station_does_not_serve(self):
         self.sign_in()
         self.assertEqual(self.client.get(self.base + "looms/L-99/").status_code, 400)
@@ -214,6 +194,30 @@ class StationApiTests(StationApiTestCase):
         later = at(TODAY, 10, 42) + datetime.timedelta(hours=12, minutes=1)
         with patch("apps.manufacturing.station_views.timezone.now", return_value=later):
             self.assertIsNone(self.client.get(self.base).json()["operator"])
+
+
+class TheLoomSaysWhatItIsMakingTests(StationApiTestCase):
+    """Its tape batch among them: the tape kept by batch before its stock is placed (L5)."""
+
+    tape_by_batch = True
+
+    def test_the_loom_says_what_it_is_making(self):
+        tape = self.spec.warp_tape.tape_item
+        batch = Lot.objects.create(item=tape, code="TB-260601-D-03")
+        self.stock(tape, "500", "120", lot=batch)
+        issue = MaterialIssue.objects.create(work_order=self.run, issue_date=TODAY,
+                                             warehouse=self.plant)
+        MaterialIssueLine.objects.create(issue=issue, item=tape, quantity=Decimal("100"),
+                                         uom=self.kg, lot=batch, line_number=1)
+        issue.post()
+        self.sign_in()
+        self.roll()
+
+        body = self.client.get(self.base + "looms/L-17/").json()
+        self.assertEqual((body["run"], body["contractor"]), (self.run.number, "Contractor A"))
+        self.assertEqual(body["specification"]["code"], "F-60")
+        self.assertEqual(body["tape_batch"], "TB-260601-D-03")
+        self.assertEqual(body["previous_roll"]["code"], "FR-260601-D-L17-01")
 
 
 class AWeighedRollStandsAsWeighedTests(StationApiTestCase):

@@ -35,16 +35,22 @@ from .tests_lifecycle import PurchasingLifecycleTestCase
 
 
 class SubcontractTestCase(PurchasingLifecycleTestCase):
+    # Frames kept by batch from the day they are made, with none in stock until a test names its batch: tracking is
+    # fixed once stock has moved (docs/RISKS.md, L5). Otherwise 100 at 8, in no batch.
+    frames_by_batch = False
+
     def setUp(self):
         super().setUp()
         self.subcontractor = Warehouse.objects.create(code="SUB", name="Acme Assembly")
-        self.frame = Item.objects.create(sku="FRM", name="Frame", uom=self.uom)
+        self.frame = Item.objects.create(sku="FRM", name="Frame", uom=self.uom,
+                                         tracking="lot" if self.frames_by_batch else "none")
         self.motor = Item.objects.create(sku="MTR", name="Motor", uom=self.uom)
         self.assembly = Item.objects.create(sku="ASM", name="Assembly", uom=self.uom)
         company = Company.get()
         company.default_purchase_expense_account = self.expense
         company.save()
-        self.stock(self.frame, "100", "8")
+        if not self.frames_by_batch:
+            self.stock(self.frame, "100", "8")
         self.stock(self.motor, "100", "12")
 
     def stock(self, item, quantity, cost, warehouse=None):
@@ -354,13 +360,12 @@ class BatchKeptComponentsTests(SubcontractTestCase):
     batches go, are consumed and come back as a delivery picks them.
     """
 
+    frames_by_batch = True
+
     def setUp(self):
         super().setUp()
         from apps.inventory.models import Lot
 
-        Item.objects.filter(pk=self.frame.pk).update(tracking="lot")
-        self.frame.refresh_from_db()
-        StockMovement.objects.filter(item=self.frame).delete()
         self.lot_model = Lot
 
     def batch(self, code, quantity, expires=None):
@@ -425,13 +430,12 @@ class BatchKeptComponentsTests(SubcontractTestCase):
 class _SentBatches(SubcontractTestCase):
     """Frames kept by batch, 100 of F-1 at 8 in the store unless a test says otherwise."""
 
+    frames_by_batch = True
+
     def setUp(self):
         super().setUp()
         from apps.inventory.models import Lot
 
-        Item.objects.filter(pk=self.frame.pk).update(tracking="lot")
-        self.frame.refresh_from_db()
-        StockMovement.objects.filter(item=self.frame).delete()
         self.lot_model = Lot
 
     def batch(self, code, quantity, expires=None, warehouse=None):
@@ -490,8 +494,9 @@ class ComponentsNeverLeaveQuarantineTests(_SentBatches):
                          (Decimal("100"), Decimal("0")))
 
     def test_what_is_not_kept_by_batch_is_not_sent_either(self):
-        Item.objects.filter(pk=self.frame.pk).update(tracking="none")
         self.frame.refresh_from_db()
+        self.frame.tracking = "none"
+        self.frame.save()
         bay = Warehouse.objects.create(code="QA", name="Inspection bay", is_quarantine=True)
         self.stock(self.frame, "100", "8", warehouse=bay)
         self.stock(self.motor, "100", "12", warehouse=bay)
@@ -509,8 +514,9 @@ class AssembliesFromABatchHeldSinceTests(_SentBatches):
 
     def setUp(self):
         super().setUp()
-        Item.objects.filter(pk=self.assembly.pk).update(tracking="lot")
         self.assembly.refresh_from_db()
+        self.assembly.tracking = "lot"
+        self.assembly.save()
         self.made = self.lot_model.objects.create(item=self.assembly, code="A-1")
 
     def test_the_receipt_is_recorded_and_the_batch_consumed_where_it_lies(self):
@@ -636,8 +642,9 @@ class AssembliesAreNotPassedByTheirComponentsTests(_SentBatches):
         from apps.quality.models import Characteristic, InspectionPlan, PlanLine
         from apps.quality.release import check_released
 
-        Item.objects.filter(pk=self.assembly.pk).update(tracking="lot")
         self.assembly.refresh_from_db()
+        self.assembly.tracking = "lot"
+        self.assembly.save()
         made = self.lot_model.objects.create(item=self.assembly, code="A-2")
         self.mandatory_plan()
         sent = self.batch("F-1", "100")
@@ -663,8 +670,9 @@ class EachOrderConsumesWhatWasSentOnItTests(_SentBatches):
 
     def setUp(self):
         super().setUp()
-        Item.objects.filter(pk=self.assembly.pk).update(tracking="lot")
         self.assembly.refresh_from_db()
+        self.assembly.tracking = "lot"
+        self.assembly.save()
         self.mandatory_plan()
         self.f1 = self.batch("F-1", "10", datetime.date(2026, 12, 31))
         self.f2 = self.batch("F-2", "10", datetime.date(2027, 6, 30))
@@ -862,8 +870,9 @@ class HeldAssembliesKeepALotOfTheirOwnTests(_SentBatches):
     def test_held_assemblies_are_not_received_into_a_lot_already_inspected(self):
         from apps.quality.models import Characteristic, Inspection, InspectionPlan, PlanLine, Reading
 
-        Item.objects.filter(pk=self.assembly.pk).update(tracking="lot")
         self.assembly.refresh_from_db()
+        self.assembly.tracking = "lot"
+        self.assembly.save()
         self.mandatory_plan()
         torque = Characteristic.objects.create(code="TRQ", name="Torque", uom=self.uom)
         own = InspectionPlan.objects.create(item=self.assembly, is_mandatory=True)
@@ -899,8 +908,9 @@ class AssembliesFromAHeldBatchPassedWaitTests(_SentBatches):
         super().setUp()
         from apps.quality.models import Characteristic, InspectionPlan, PlanLine
 
-        Item.objects.filter(pk=self.assembly.pk).update(tracking="lot")
         self.assembly.refresh_from_db()
+        self.assembly.tracking = "lot"
+        self.assembly.save()
         _sent, order = self.sent_then_rejected()
         self.made = self.lot_model.objects.create(item=self.assembly, code="A-1")
         self.receive_into(order, "10", self.warehouse, lot=self.made)
@@ -976,8 +986,9 @@ class HeldAssembliesSayWhatIsStillHeldTests(_SentBatches):
     """Review F5 and F7: the receipt lists what still waits, at what still waits, and asks only subcontract lines."""
 
     def test_a_tracked_lot_sent_back_in_full_is_not_listed(self):
-        Item.objects.filter(pk=self.assembly.pk).update(tracking="lot")
         self.assembly.refresh_from_db()
+        self.assembly.tracking = "lot"
+        self.assembly.save()
         _sent, order = self.sent_then_rejected()
         made = self.lot_model.objects.create(item=self.assembly, code="A-1")
         receipt = self.receive_into(order, "10", self.warehouse, lot=made)
@@ -1030,8 +1041,9 @@ class TheQualityManagersToDoClosesWhenNothingIsHeldTests(_SentBatches):
         call_command("setup_roles", verbosity=0)
         self.manager = User.objects.create(username="qm")
         self.manager.groups.add(Group.objects.get(name="Quality Manager"))
-        Item.objects.filter(pk=self.assembly.pk).update(tracking="lot")
         self.assembly.refresh_from_db()
+        self.assembly.tracking = "lot"
+        self.assembly.save()
         self.sent, order = self.sent_then_rejected()
         self.made = self.lot_model.objects.create(item=self.assembly, code="A-1")
         self.receipt = self.receive_into(order, "10", self.warehouse, lot=self.made)
@@ -1101,6 +1113,8 @@ class FractionalReturnsBookTotalFirstTests(SubcontractTestCase):
     nothing. Each return rounded on its own left inventory +0.01 and PPV -0.01.
     """
 
+    frames_by_batch = True
+
     def batch(self, code, quantity, expires):
         from apps.inventory.models import Lot
 
@@ -1118,9 +1132,6 @@ class FractionalReturnsBookTotalFirstTests(SubcontractTestCase):
 
         from .models import SubcontractComponent
 
-        Item.objects.filter(pk=self.frame.pk).update(tracking="lot")
-        self.frame.refresh_from_db()
-        StockMovement.objects.filter(item=self.frame).delete()
         company = Company.get()
         ppv = Account.objects.create(code="5900", name="PPV", account_type=AccountType.EXPENSE)
         company.purchase_price_variance_account = ppv

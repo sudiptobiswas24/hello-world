@@ -459,21 +459,29 @@ class Item(Extensible, AuditModel):
     # on-hand and value are replayed under rules they never happened by.
     # The costing method too (O330): each movement keeps the money it moved, and a switch over stock held would
     # read that money under rules it was not booked by (to standard, a shelf that is not quantity x standard with
-    # no variance posted). Tracking belongs here and is not here yet (docs/RISKS.md, L5): lot trace switches it
-    # over stock already held, and is reworked first, or a step that switches it puts the stock into an opening
-    # batch.
+    # no variance posted). And tracking (L5): switched on over stock already held it strands that stock, since
+    # every movement of a tracked item names a batch and that stock is in none; switched off, the batches it is
+    # held in are lost to every movement after.
     COUNTED_AS = (("uom_id", "unit"), ("track_inventory", "whether stock is kept"),
-                  ("costing_method", "costing method"))
+                  ("costing_method", "costing method"), ("tracking", "tracking"))
+    # Why tracking in particular, and what is done instead (L5); said after the sentence every frozen field shares.
+    TRACKING_IS_FROZEN = (
+        " Stock already moved is in no batch if it was not tracked, and in batches every later movement would "
+        "drop if it was; the new item is made tracked as you mean, and the stock goes to it by a stock adjustment "
+        "off this item and on to that one, each batch named.")
 
-    def _check_counting_frozen(self):
+    def _check_counting_frozen(self, held=True):
+        """`held` False is the admin form's first look (clean(), outside any transaction): save() asks again, held."""
         if not self.pk:
             return
         # The row held before anything is asked (the review of O330): a first receipt inserting its movement
         # holds a key share on this row, which FOR UPDATE waits for, so the question below sees it; asked
         # unlocked, a switch to FIFO and the first receipt both went through, the receipt booked under average.
-        numbering_first()  # a raw row lock, after the company's numbering row (O257)
-        before = Item.objects.select_for_update(no_key=True).filter(pk=self.pk).values(
-            "inventory_account_id", *(name for name, _ in self.COUNTED_AS)).first()
+        rows = Item.objects.filter(pk=self.pk)
+        if held:
+            numbering_first()  # a raw row lock, after the company's numbering row (O257)
+            rows = rows.select_for_update(no_key=True)
+        before = rows.values("inventory_account_id", *(name for name, _ in self.COUNTED_AS)).first()
         if before is None:
             return
         changed = [words for name, words in self.COUNTED_AS if before[name] != getattr(self, name)]
@@ -492,6 +500,7 @@ class Item(Extensible, AuditModel):
             raise ValidationError(
                 f"{self.sku} has stock movements counted and valued as it stands, so its "
                 f"{' and '.join(changed)} cannot change. Make a new item and move the stock to it."
+                + (self.TRACKING_IS_FROZEN if "tracking" in changed else "")
             )
 
     def check_cogs_account_if_chosen(self):
@@ -504,11 +513,16 @@ class Item(Extensible, AuditModel):
         # The admin's form asks here, so an account the rule refuses is a field error there, not a 500 (O347):
         # the one question save() asks.
         self.check_cogs_account_if_chosen()
+        # And what is fixed once stock has moved (O330, L5): save() refuses it for everyone, and raised there
+        # alone the admin answered a server error, since Django's admin catches only what a form's clean() says.
+        self._check_counting_frozen(held=False)
 
     def save(self, *args, **kwargs):
         self.check_cogs_account_if_chosen()
-        # A save that locks opens its own transaction (_check_counting_frozen holds the row).
+        # A save that locks opens its own transaction, and holds the row before anything else is asked (O330):
+        # the frozen question here, where clean() asks it too (L5), so the admin's answer is save()'s.
         with transaction.atomic():
+            self._check_counting_frozen()
             self._save(*args, **kwargs)
 
     def _save(self, *args, **kwargs):
@@ -517,7 +531,6 @@ class Item(Extensible, AuditModel):
         self._check_costing_is_answerable()
         self._check_matches_template()
         self._check_variant_key_frozen()
-        self._check_counting_frozen()
         self._check_gtin()
         from .valuation import check_stock_account
 

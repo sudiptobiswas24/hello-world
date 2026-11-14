@@ -127,6 +127,85 @@ class StoresRoles(StoresFixture):
         response = client.patch(f"/api/inventory/items/{fresh.pk}/", {"costing_method": "fifo"}, format="json")
         self.assertEqual(response.status_code, 200, response.content)
 
+    def test_an_items_tracking_cannot_change_once_its_stock_has_moved(self):
+        """
+        L5, as the Stores Manager: lot tracking switched on over 10 kg held stranded them (every movement
+        after names a batch, and they are in none); switched off, the batches are lost. Refused both ways,
+        beside nothing else changed; an item nothing has moved is still free, and so is every other field.
+        """
+        from .tracking import Lot
+
+        client = self.as_("Stores Manager")
+        response = client.patch(f"/api/inventory/items/{self.item.pk}/", {"tracking": "lot"}, format="json")
+        self.assertEqual(response.status_code, 400, f"tracked by lot over 10 kg in no batch: {response.status_code}")
+        self.assertEqual(response.json(), [
+            "T has stock movements counted and valued as it stands, so its tracking cannot change. Make a new "
+            "item and move the stock to it. Stock already moved is in no batch if it was not tracked, and in "
+            "batches every later movement would drop if it was; the new item is made tracked as you mean, and "
+            "the stock goes to it by a stock adjustment off this item and on to that one, each batch named."])
+        self.item.refresh_from_db()
+        self.assertEqual(self.item.tracking, "none")
+        # The edit path: what is not frozen is still the item's to change.
+        self.assertEqual(client.patch(f"/api/inventory/items/{self.item.pk}/", {"name": "Tape, 900 denier"},
+                                      format="json").status_code, 200)
+        # The reverse: a tracked item with a batch on the shelf is not untracked, nor made serial.
+        batched = Item.objects.create(sku="B", name="Batched", uom=self.kg, tracking="lot")
+        StockMovement.objects.create(item=batched, warehouse=self.store, movement_type=MovementType.RECEIPT,
+                                     uom=self.kg, quantity=D("4"), unit_cost=D("5"), occurred_at=timezone.now(),
+                                     lot=Lot.objects.create(item=batched, code="B-1"))
+        for other in ("none", "serial"):
+            response = client.patch(f"/api/inventory/items/{batched.pk}/", {"tracking": other}, format="json")
+            self.assertEqual(response.status_code, 400, f"{other} over a batch of 4 kg: {response.status_code}")
+        batched.refresh_from_db()
+        self.assertEqual(batched.tracking, "lot")
+        # Gone from the shelf is still moved: the 10 kg issued, the item stays as its movements were written.
+        StockMovement.objects.create(item=self.item, warehouse=self.store, movement_type=MovementType.ISSUE,
+                                     uom=self.kg, quantity=D("-10"), occurred_at=timezone.now())
+        self.assertEqual(client.patch(f"/api/inventory/items/{self.item.pk}/", {"tracking": "lot"},
+                                      format="json").status_code, 400)
+        # Before anything has moved, it is still the item's to choose; and the model refuses whoever asks.
+        fresh = Item.objects.create(sku="F", name="Fresh", uom=self.kg)
+        self.assertEqual(client.patch(f"/api/inventory/items/{fresh.pk}/", {"tracking": "lot"},
+                                      format="json").status_code, 200)
+        self.item.tracking = "lot"
+        with self.assertRaisesMessage(ValidationError, "so its tracking cannot change"):
+            self.item.save()
+
+    def test_the_admin_is_told_in_words_that_tracking_is_fixed(self):
+        """L5 in the admin: the guard is save()'s, and the admin says it, not a server error."""
+        from django.contrib.auth.models import User
+        from django.test import Client
+
+        from apps.core.tests_second_factor import staff_session
+
+        admin = Client()
+        staff_session(admin, User.objects.create_superuser("root", "root@example.com", "x"))
+        url = f"/admin/inventory/item/{self.item.pk}/change/"
+        page = admin.get(url)
+        self.assertEqual(page.status_code, 200)
+        form = page.context["adminform"].form
+        data = {name: ("" if form[name].value() is None else form[name].value()) for name in form.fields}
+        data = {name: value for name, value in data.items() if value is not False}
+        for formset in page.context["inline_admin_formsets"]:
+            prefix = formset.formset.prefix
+            data.update({f"{prefix}-TOTAL_FORMS": 0, f"{prefix}-INITIAL_FORMS": 0})
+        data["tracking"] = "lot"
+        response = admin.post(url, data, follow=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("so its tracking cannot change", response.content.decode())
+        self.item.refresh_from_db()
+        self.assertEqual(self.item.tracking, "none")
+        # The costing method was refused by save() alone, and the admin answered a server error (O330's guard).
+        data.update(tracking="none", costing_method="fifo")
+        response = admin.post(url, data, follow=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("so its costing method cannot change", response.content.decode())
+        # What is not fixed still saves from the admin.
+        data.update(costing_method="average", name="Tape, 900 denier")
+        self.assertEqual(admin.post(url, data, follow=True).status_code, 200)
+        self.item.refresh_from_db()
+        self.assertEqual((self.item.name, self.item.costing_method), ("Tape, 900 denier", "average"))
+
     def test_warehouse_staff_do_not_read_what_stock_is_worth(self):
         for role in ("Warehouse Staff", "Quality Inspector"):
             client = self.as_(role)
@@ -444,6 +523,13 @@ class ATemplatesCostingMethodIsFrozenUnderItsVariantsStock(StoresFixture):
         template.refresh_from_db()
         self.assertEqual(template.costing_method, "average")
         self.assertEqual(stores.patch(f"/api/inventory/item-templates/{empty.pk}/", {"costing_method": "fifo"},
+                                      format="json").status_code, 200)
+        # And its tracking (L5): the variant's 10 kg are in no batch.
+        response = stores.patch(f"/api/inventory/item-templates/{template.pk}/", {"tracking": "lot"}, format="json")
+        self.assertEqual((response.status_code, list(response.json())), (400, ["tracking"]), response.content)
+        template.refresh_from_db()
+        self.assertEqual(template.tracking, "none")
+        self.assertEqual(stores.patch(f"/api/inventory/item-templates/{empty.pk}/", {"tracking": "lot"},
                                       format="json").status_code, 200)
 
 
