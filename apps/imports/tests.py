@@ -24,6 +24,30 @@ from .importer import run
 GO_LIVE = datetime.date(2026, 10, 1)
 
 
+class TwoYearsOn:
+    """
+    Mixed into a test case ahead of it: the case run again with the clock moved DAYS_ON days on (O549). A fixture
+    that dates its old documents relative to today against a fixed books-opening day (GO_LIVE above, once) passes
+    only until the calendar crosses that day: tests_health, tests_checks and tests_bank did until 10 November
+    (O541). Run here two years on, past every fixed day, such a fixture fails today, not on the day it crosses.
+    timezone.now moves, and localdate with it; time.time does not, so a file's age or a TOTP code is not for here.
+    """
+
+    DAYS_ON = 800
+
+    def setUp(self):
+        from unittest import mock
+
+        from django.utils import timezone
+
+        real = timezone.now
+        moved = mock.patch("django.utils.timezone.now",
+                           side_effect=lambda: real() + datetime.timedelta(days=self.DAYS_ON))
+        moved.start()
+        self.addCleanup(moved.stop)
+        super().setUp()
+
+
 class ImportTestCase(SalesTestCase):
     def setUp(self):
         super().setUp()
