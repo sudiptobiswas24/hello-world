@@ -2,17 +2,26 @@
 Reverse charge on paper: the self-invoice (CGST Act s.31(3)(f), Rule 46)
 and the payment voucher (s.31(3)(g), Rule 52), on the plant's shared layout.
 
-Each prints what it was issued as: the figures kept on the document, and
-the bill's lines with the tax recorded on them as the bill posted. Nothing
-is worked out again here. A cancelled document says so across its heading.
+Each prints what it was issued as: the figures kept on the document, the
+plant's GSTIN and letterhead as it was issued (O552), and the bill's lines
+with the tax recorded on them as the bill posted. Nothing is worked out
+again here, and no setting is read as it stands today. A cancelled document says so across its heading.
 """
 
 from decimal import Decimal
 
 from reportlab.lib.units import mm
 
-from apps.accounting.gst import GstSettings
-from apps.core.documents import address_block, bold, counted, lines, money, render_document
+from apps.core.documents import (
+    address_block,
+    bold,
+    counted,
+    lines,
+    money,
+    printed_footer,
+    printed_letterhead,
+    render_document,
+)
 from apps.core.models import Company
 
 from .reverse_charge import HEADS
@@ -58,15 +67,14 @@ def _tax_totals(document):
 
 def render_self_invoice_pdf(self_invoice):
     """The invoice the company issues itself for a reverse-charge supply from a supplier not registered."""
-    bill, currency = self_invoice.bill, Company.get().base_currency
-    settings = GstSettings.active()
+    bill, currency, document = self_invoice.bill, Company.get().base_currency, self_invoice
     meta = [
         ["Number", self_invoice.number],
         ["Date", self_invoice.date.strftime("%d %b %Y")],
         ["Supply received", self_invoice.received_on.strftime("%d %b %Y")],
         ["Place of supply", _place(self_invoice.place_of_supply)],
         ["Our bill", f"{bill.number}{f' ({bill.reference})' if bill.reference else ''}"],
-        ["Recipient's GSTIN", settings.gstin if settings else ""],
+        ["Recipient's GSTIN", document.recipient_gstin],
     ]
     if self_invoice.cancelled_on:
         meta.append(["Cancelled", f"{self_invoice.cancelled_on:%d %b %Y}: {self_invoice.cancellation_reason}"])
@@ -80,21 +88,21 @@ def render_self_invoice_pdf(self_invoice):
         totals=[["Taxable value", self_invoice.taxable]] + _tax_totals(self_invoice),
         table=(header, _supply_lines(bill, currency), widths), currency=currency,
         note="Tax on this supply is paid by the recipient under reverse charge and is not charged by the supplier.",
-        signatory=Company.get().name,
+        letterhead_text=printed_letterhead(document.letterhead), footer=printed_footer(document.letterhead),
+        signatory=document.letterhead.get("name", ""),
     )
 
 
 def render_payment_voucher_pdf(voucher):
     """The voucher issued at the time of paying the supplier of a reverse-charge supply."""
-    bill, payment, currency = voucher.bill, voucher.payment, Company.get().base_currency
-    settings = GstSettings.active()
+    bill, payment, currency, document = voucher.bill, voucher.payment, Company.get().base_currency, voucher
     meta = [
         ["Number", voucher.number],
         ["Date", voucher.date.strftime("%d %b %Y")],
         ["Payment", payment.number or ""],
         ["Our bill", f"{bill.number}{f' ({bill.reference})' if bill.reference else ''}"],
         ["Place of supply", _place(bill.place_of_supply)],
-        ["Recipient's GSTIN", settings.gstin if settings else ""],
+        ["Recipient's GSTIN", document.recipient_gstin],
     ]
     if voucher.cancelled_on:
         meta.append(["Cancelled", f"{voucher.cancelled_on:%d %b %Y}: the payment was voided"])
@@ -110,5 +118,6 @@ def render_payment_voucher_pdf(voucher):
         table=(header, _supply_lines(bill, currency), widths), currency=currency,
         note="Tax on this supply is paid by the recipient under reverse charge; the tax shown is the part of the "
              "bill's that goes with this payment.",
-        signatory=Company.get().name,
+        letterhead_text=printed_letterhead(document.letterhead), footer=printed_footer(document.letterhead),
+        signatory=document.letterhead.get("name", ""),
     )
