@@ -50,6 +50,10 @@ TODAY = datetime.date(2026, 6, 1)
 
 
 class RunTestCase(TestCase):
+    # The items a test case keeps by batch, by attribute: made tracked before any stock is placed, since tracking is
+    # fixed once stock has moved (docs/RISKS.md, L5), and their opening stock below goes into a batch named OPENING.
+    by_batch = ()
+
     def setUp(self):
         self.usd = Currency.objects.create(code="USD", name="USD", is_base=True)
         self.kg = UnitOfMeasure.objects.create(
@@ -82,14 +86,20 @@ class RunTestCase(TestCase):
         self.filler = make("CACO3", "Calcium carbonate")
         self.colour = make("MB-WHITE", "White masterbatch")
         self.tape = make("TAPE-1000", "PP tape, 1000 denier")
+        for name in self.by_batch:
+            getattr(self, name).tracking = TrackingMode.LOT
+            getattr(self, name).save()
 
+        self.opening_lots = {}
         for item, quantity, cost in (
             (self.virgin, "2000", "100"),
             (self.regrind, "500", "60"),
             (self.filler, "300", "30"),
             (self.colour, "100", "200"),
         ):
-            self.stock(item, quantity, cost)
+            if item.tracking == TrackingMode.LOT:
+                self.opening_lots[item] = Lot.objects.create(item=item, code="OPENING")
+            self.stock(item, quantity, cost, lot=self.opening_lots.get(item))
 
         self.bom = BillOfMaterials.objects.create(
             item=self.tape, name="Tape 1000 den",
@@ -638,9 +648,36 @@ class AReturnHandsBackWhatItsLineDrewTests(RunTestCase):
             self.back(line, "10", item=self.filler).post()
         self.assertEqual(self.filler.on_hand_at(self.plant), Decimal("300"))
 
+    def test_in_parts_up_to_what_it_drew(self):
+        line = self.drawn()
+        self.back(line, "40").post()
+        self.back(line, "60").post()
+        self.assertEqual(self.virgin.on_hand_at(self.plant), Decimal("2000"))
+        self.assertEqual(self.balance(self.wip), Decimal("0"))
+        self.assertEqual(self.job.material_cost(), Decimal("0"))
+
+    def test_a_voided_return_gives_its_kilos_back_to_the_line(self):
+        line = self.drawn()
+        mistaken = self.back(line, "100")
+        mistaken.post()
+        mistaken.void(TODAY)
+        self.back(line, "100").post()
+        self.assertEqual(self.virgin.on_hand_at(self.plant), Decimal("2000"))
+        self.assertEqual(self.balance(self.wip), Decimal("0"))
+
+
+
+class AReturnGoesBackToItsBatchTests(RunTestCase):
+    """The same rule for polymer kept by batch: made so before its stock is placed (L5), its 2,000 in OPENING."""
+
+    by_batch = ("virgin",)
+
+    def setUp(self):
+        super().setUp()
+        self.job = self.order()
+        self.job.release(TODAY)
+
     def test_not_out_of_another_batch(self):
-        Item.objects.filter(pk=self.virgin.pk).update(tracking=TrackingMode.LOT)
-        self.virgin.refresh_from_db()
         first, second = (Lot.objects.create(item=self.virgin, code=code)
                          for code in ("PP-A", "PP-B"))
         for lot in (first, second):
@@ -658,23 +695,6 @@ class AReturnHandsBackWhatItsLineDrewTests(RunTestCase):
         with self.assertRaisesMessage(ValidationError, "out of the batch it drew it from"):
             back.post()
         self.assertEqual(second.on_hand_at(self.plant), Decimal("100"))
-
-    def test_in_parts_up_to_what_it_drew(self):
-        line = self.drawn()
-        self.back(line, "40").post()
-        self.back(line, "60").post()
-        self.assertEqual(self.virgin.on_hand_at(self.plant), Decimal("2000"))
-        self.assertEqual(self.balance(self.wip), Decimal("0"))
-        self.assertEqual(self.job.material_cost(), Decimal("0"))
-
-    def test_a_voided_return_gives_its_kilos_back_to_the_line(self):
-        line = self.drawn()
-        mistaken = self.back(line, "100")
-        mistaken.post()
-        mistaken.void(TODAY)
-        self.back(line, "100").post()
-        self.assertEqual(self.virgin.on_hand_at(self.plant), Decimal("2000"))
-        self.assertEqual(self.balance(self.wip), Decimal("0"))
 
 
 class ATotalComesBackWholeTests(RunTestCase):

@@ -124,6 +124,7 @@ class Command(BaseCommand):
         findings += self.shelf_read_before_lock(labels, sources)
         findings += self.per_unit_withdrawal_rates(labels, sources)
         findings += self.movements_written_around_save(labels, sources)
+        findings += self.item_counting_changed_around_save(labels, sources)
         findings += self.arrivals_without_their_departure(labels, sources)
         findings += self.posted_admin_rule_copied(labels, sources)
         findings += self.release_past_the_gate(labels, sources)
@@ -1375,6 +1376,46 @@ class Command(BaseCommand):
                         f"{label}/{path.name}:{line} writes stock movements with {match.group(1)}(), "
                         "past the checks StockMovement.save() makes. Create them one by one.",
                     ))
+        return findings
+
+    # How an item's stock is counted and valued, fixed once it has moved (Item.COUNTED_AS, its inventory account;
+    # ItemTemplate.FROZEN_UNDER_STOCK): save() refuses the change, and a queryset update goes round the refusal.
+    COUNTED_AS_FIELDS = {"uom", "uom_id", "track_inventory", "costing_method", "tracking",
+                         "inventory_account", "inventory_account_id"}
+
+    def item_counting_changed_around_save(self, labels, sources):
+        """
+        An item's (or a product's) unit, costing method, tracking or inventory account set by a queryset update.
+
+        Item.save() refuses each once the item's stock has moved (O330, L5), since every movement was counted and
+        valued as it stood; an update() of the same field strands the stock as surely and asks nothing. Tracking
+        switched on that way over held stock was 35 test fixtures before L5. Set it on the item and save() it.
+        """
+        import ast
+
+        findings = []
+        for label in labels:
+            for path, text in sorted(sources[label].items()):
+                if "test" in path.name or "migrations" in path.parts or ".update(" not in text:
+                    continue
+                try:
+                    tree = ast.parse(text)
+                except SyntaxError:
+                    continue
+                for node in ast.walk(tree):
+                    if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                            and node.func.attr == "update"):
+                        continue
+                    receiver = ast.unparse(node.func.value)
+                    if not (re.match(r"(Item|ItemTemplate)\.objects\b", receiver) or receiver.endswith(".variants")):
+                        continue
+                    fields = sorted({keyword.arg for keyword in node.keywords} & self.COUNTED_AS_FIELDS)
+                    if fields:
+                        findings.append((
+                            "item counting changed around save",
+                            f"{label}/{path.name}:{node.lineno} sets {', '.join(fields)} by update(), past the "
+                            "refusal Item.save() makes once the stock has moved. Set it on the item and save() it.",
+                        ))
         return findings
 
     def posted_admin_rule_copied(self, labels, sources):

@@ -281,6 +281,8 @@ class TheColumn(Base):
 class ALoopThroughRuns(RunTestCase):
     """Regrind hoppers alternating: run A eats RG-1 and makes RG-2 as a by-product; run B eats RG-2 and makes RG-1."""
 
+    by_batch = ("regrind",)  # before its stock is placed (L5)
+
     def run_of(self, eats, makes):
         order = self.order()
         order.release(TODAY)
@@ -295,8 +297,6 @@ class ALoopThroughRuns(RunTestCase):
 
         from apps.inventory.models import Item
 
-        Item.objects.filter(pk=self.regrind.pk).update(tracking="lot")
-        self.regrind.refresh_from_db()
         rg1, rg2 = (Lot.objects.create(item=self.regrind, code=code) for code in ("RG-1", "RG-2"))
         for lot in (rg1, rg2):
             self.stock(self.regrind, "50", "60", lot=lot)
@@ -321,8 +321,6 @@ class ALoopOfThreeThroughRuns(ALoopThroughRuns):
 
         from .trace import descendants
 
-        Item.objects.filter(pk=self.regrind.pk).update(tracking="lot")
-        self.regrind.refresh_from_db()
         lots = [Lot.objects.create(item=self.regrind, code=f"RG-{n}") for n in (1, 2, 3)]
         for lot in lots:
             self.stock(self.regrind, "50", "60", lot=lot)

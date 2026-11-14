@@ -24,11 +24,10 @@ from .trace import descendants, held_by_customers, recall, runs_that_used
 
 
 class TraceTestCase(DemandTestCase):
+    by_batch = ("tape", "virgin", "regrind")
+
     def setUp(self):
         super().setUp()
-        for item in (self.tape, self.virgin, self.regrind):
-            item.tracking = TrackingMode.LOT
-            item.save()
         self.polymer_lot = Lot.objects.create(item=self.virgin, code="PP-2609")
         self.tape_lot = Lot.objects.create(item=self.tape, code="TAPE-A")
         self.grind = Lot.objects.create(item=self.regrind, code="RG-1")

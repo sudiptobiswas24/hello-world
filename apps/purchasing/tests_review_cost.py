@@ -607,15 +607,14 @@ from .tests_subcontract import SubcontractTestCase  # noqa: E402
 class SubcontractReturnProbes(SubcontractTestCase):
     """O206/O38 at every step, not only when everything is back: |ledger move - shelf move| <= 0.005 each time."""
 
+    frames_by_batch = True
+
     def lots(self):
         import datetime as dt
 
         from apps.inventory.models import Item, Lot, MovementType, StockMovement
         from django.utils import timezone
 
-        Item.objects.filter(pk=self.frame.pk).update(tracking="lot")
-        self.frame.refresh_from_db()
-        StockMovement.objects.filter(item=self.frame).delete()
         for code, quantity, expires in (("F-1", "1.11", dt.date(2026, 12, 31)), ("F-2", "98.89", dt.date(2027, 6, 30))):
             made = Lot.objects.create(item=self.frame, code=code, expires_on=expires)
             StockMovement.objects.create(item=self.frame, warehouse=self.warehouse, movement_type=MovementType.RECEIPT,

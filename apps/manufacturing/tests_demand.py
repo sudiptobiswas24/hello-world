@@ -27,11 +27,10 @@ class DemandTestCase(RunTestCase):
         self.customer = Party.objects.create(code="CEM", name="Deccan Cement")
         PartyRoleAssignment.objects.create(party=self.customer, role=PartyRole.CUSTOMER)
         # The base fixture stocks a 1,000 kg run; some of these are
-        # 4,000 kg ones. Same prices, so the averages do not move.
-        self.stock(self.virgin, "8000", "100")
-        self.stock(self.regrind, "2000", "60")
-        self.stock(self.filler, "1200", "30")
-        self.stock(self.colour, "400", "200")
+        # 4,000 kg ones. Same prices, so the averages do not move. An item kept by batch takes it in its opening one.
+        for item, quantity, cost in ((self.virgin, "8000", "100"), (self.regrind, "2000", "60"),
+                                     (self.filler, "1200", "30"), (self.colour, "400", "200")):
+            self.stock(item, quantity, cost, lot=self.opening_lots.get(item))
         self.sale = SalesOrder.objects.create(
             customer=self.customer, order_date=datetime.date(2026, 9, 1),
             currency=self.usd,
@@ -148,12 +147,10 @@ class FromASackBackToThePolymerTests(DemandTestCase):
     question a sack plant is asked most often.
     """
 
+    by_batch = ("tape", "virgin")
+
     def setUp(self):
         super().setUp()
-        self.tape.tracking = TrackingMode.LOT
-        self.tape.save()
-        self.virgin.tracking = TrackingMode.LOT
-        self.virgin.save()
         self.polymer_lot = Lot.objects.create(item=self.virgin, code="PP-2609")
         self.tape_lot = Lot.objects.create(item=self.tape, code="TAPE-A")
         self.stock(self.virgin, "3000", "100", lot=self.polymer_lot)
@@ -261,11 +258,10 @@ class AByProductHasAProvenanceTooTests(DemandTestCase):
     inherits its tests, and those issue regrind without a batch.
     """
 
+    by_batch = ("tape", "virgin", "regrind")
+
     def setUp(self):
         super().setUp()
-        for item in (self.tape, self.virgin, self.regrind):
-            item.tracking = TrackingMode.LOT
-            item.save()
         self.polymer_lot = Lot.objects.create(item=self.virgin, code="PP-2609")
         self.tape_lot = Lot.objects.create(item=self.tape, code="TAPE-A")
         self.grind = Lot.objects.create(item=self.regrind, code="RG-1")

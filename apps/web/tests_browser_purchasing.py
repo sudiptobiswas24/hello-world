@@ -16,6 +16,7 @@ except ImportError:  # pragma: no cover - the base class skips, saying why
 
 from apps.accounting.models import Account, AccountType, Payment
 from apps.core.models import Company, Party, PartyRole, PartyRoleAssignment
+from apps.inventory.models import Item
 from apps.inventory.tracking import Lot
 from apps.purchasing.models import (
     Bill,
@@ -42,14 +43,19 @@ class PurchasingInTheBrowserTests(BrowserTestCase):
     def url(self, path):
         return f"{self.live_server_url}/app{path}"
 
-    def raise_order(self, page, quantity, price=None):
+    def kept_by_batch(self):
+        """An item kept by batch from the day it is made: the widget has stock, and tracking is fixed once stock has
+        moved (L5)."""
+        return Item.objects.create(sku="PP-GRAN", name="PP granule", uom=self.uom, tracking="lot")
+
+    def raise_order(self, page, quantity, price=None, sku="WDG-1"):
         page.goto(self.url("/purchasing/orders/new"))
         page.get_by_role("combobox", name="Vendor").fill("Granule")
         page.get_by_role("option", name=re.compile("Granule House")).click()
         page.get_by_role("button", name="Create", exact=True).click()
         page.wait_for_url(re.compile(r"/purchasing/orders/\d+$"))
-        page.get_by_role("combobox", name="Item to add").fill("WDG")
-        page.get_by_role("option", name=re.compile("WDG-1")).click()
+        page.get_by_role("combobox", name="Item to add").fill(sku)
+        page.get_by_role("option", name=re.compile(sku)).click()
         page.get_by_label("Quantity to add").fill(quantity)
         if price:
             page.get_by_label("Unit price to add").fill(price)
@@ -89,14 +95,13 @@ class PurchasingInTheBrowserTests(BrowserTestCase):
         self.assertEqual(self.problems, [])
 
     def test_an_order_from_first_line_to_the_vendor_paid(self):
-        self.item.tracking = "lot"
-        self.item.save()
+        granule = self.kept_by_batch()
 
         # The buyer orders at the price agreed on the phone. They may not
         # take goods in.
         buyer = self.sign_in(self.person("Purchasing Clerk"), "/app/purchasing/orders")
-        order = self.raise_order(buyer, "100", price="4")
-        expect(buyer.locator(".lines tbody tr", has_text="Widget")).to_have_count(1)
+        order = self.raise_order(buyer, "100", price="4", sku="PP-GRAN")
+        expect(buyer.locator(".lines tbody tr", has_text="PP granule")).to_have_count(1)
         buyer.get_by_role("button", name="Confirm", exact=True).click()
         expect(buyer.locator(".pill", has_text="confirmed")).to_be_visible()
         order.refresh_from_db()
@@ -111,7 +116,7 @@ class PurchasingInTheBrowserTests(BrowserTestCase):
         store.wait_for_url(re.compile(r"/purchasing/goods-in/\d+$"))
         receipt = GoodsReceipt.objects.get(pk=int(store.url.rsplit("/", 1)[1]))
         expect(store.get_by_role("note")).to_contain_text("Name the batch")
-        batch = store.get_by_label("Batch of WDG-1 - Widget")
+        batch = store.get_by_label("Batch of PP-GRAN - PP granule")
         batch.fill("PP-2611-A")
         batch.press("Enter")
         expect(store.get_by_role("note")).to_have_count(0)
@@ -119,7 +124,7 @@ class PurchasingInTheBrowserTests(BrowserTestCase):
         expect(store.locator(".pill", has_text="Received")).to_be_visible()
         receipt.refresh_from_db()
         self.assertTrue(receipt.posted)
-        lot = Lot.objects.get(item=self.item, code="PP-2611-A")
+        lot = Lot.objects.get(item=granule, code="PP-2611-A")
         self.assertEqual(lot.on_hand_at(self.warehouse), Decimal("100"))
         self.assertEqual(self.balance(self.grni), Decimal("-400.00"))
 
@@ -183,10 +188,9 @@ class PurchasingInTheBrowserTests(BrowserTestCase):
         expect(buyer.locator(".pill", has_text="confirmed")).to_be_visible()
 
     def test_a_tracked_receipt_without_its_batch_is_refused_and_stays_a_draft(self):
-        self.item.tracking = "lot"
-        self.item.save()
+        granule = self.kept_by_batch()
         order = PurchaseOrder.objects.create(vendor=self.vendor, order_date="2026-03-01")
-        order.lines.create(item=self.item, uom=self.uom, quantity=Decimal("5"), unit_price=Decimal("4"))
+        order.lines.create(item=granule, uom=self.uom, quantity=Decimal("5"), unit_price=Decimal("4"))
         order.confirm()
         receipt = order.create_receipt(warehouse=self.warehouse)
         store = self.sign_in(self.person("Warehouse Staff"), f"/app/purchasing/goods-in/{receipt.pk}")

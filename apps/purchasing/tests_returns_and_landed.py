@@ -844,8 +844,9 @@ class LandedWhereTheGoodsAreTests(ThirdPartyLandedCostTests):
         from apps.inventory.reports import reconcile_to_ledger
         from apps.manufacturing.rebatch import rebatch
 
-        Item.objects.filter(pk=self.item.pk).update(tracking="lot")
         self.item.refresh_from_db()
+        self.item.tracking = "lot"
+        self.item.save()
         first = Lot.objects.create(item=self.item, code="L-1")
         order = self.make_order("10", "5")
         self.receipt = GoodsReceipt.objects.create(purchase_order=order, receipt_date=datetime.date(2026, 1, 5))
