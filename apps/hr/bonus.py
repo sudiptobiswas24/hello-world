@@ -246,17 +246,30 @@ def give_statutory_accruals(day=None):
         if given:
             said.append(f"{component.code} at {least.value.normalize():f}% given to {len(given)}: "
                         + ", ".join(person.employee_number for person in given))
+    return said + give_gratuity_provision(day)
+
+
+def give_gratuity_provision(day=None):
+    """
+    The gratuity half of give_statutory_accruals, on its own: GRATUITY at
+    4.81% to everyone in service paid its wages who does not have it, and a
+    sentence saying so. Nothing it reads can refuse it, unlike the bonus, whose
+    ceiling needs the state's minimum wage: the demo plant, which loads none
+    for Maharashtra, gives the provision through this alone (O560, O550).
+    """
     from .gratuity import PROVISION_CODE, PROVISION_PERCENT
     from .payroll import PayComponent
 
+    day = to_date(day) or timezone.localdate()
     provision = PayComponent.objects.filter(code=PROVISION_CODE, is_active=True).first()
-    if provision is not None:
-        given = give_to_everyone(provision, PROVISION_PERCENT, day,
-                                 "The gratuity provision, 15/26 of a month's basic and DA a year")
-        if given:
-            said.append(f"{provision.code} at {PROVISION_PERCENT}% given to {len(given)}: "
-                        + ", ".join(person.employee_number for person in given))
-    return said
+    if provision is None:
+        return []
+    given = give_to_everyone(provision, PROVISION_PERCENT, day,
+                             "The gratuity provision, 15/26 of a month's basic and DA a year")
+    if not given:
+        return []
+    return [f"{provision.code} at {PROVISION_PERCENT}% given to {len(given)}: "
+            + ", ".join(person.employee_number for person in given)]
 
 
 def refuse_a_run_of_a_declared_year(run, doing):
