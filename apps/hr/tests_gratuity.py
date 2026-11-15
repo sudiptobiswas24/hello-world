@@ -44,6 +44,17 @@ LEFT = D(2026, 6, 30)
 OWED_L, OWED_Q = Decimal("51923.08"), Decimal("25961.54")
 
 
+def confirmed_ceiling(value="2000000", since=D(2018, 3, 29)):
+    """The Act's ceiling from `since`, confirmed by the Controller (O551): S.O. 1420(E)'s 20,00,000 by default."""
+    from .statutory import FigureKind, StatutoryFigure
+
+    controller, _ = User.objects.get_or_create(username="gratuity-ceiling-controller")
+    figure = StatutoryFigure.objects.create(kind=FigureKind.GRATUITY_CEILING, effective_from=since,
+                                            value=Decimal(value), source="Payment of Gratuity Act s.4(3)")
+    figure.confirm(controller)
+    return figure
+
+
 class GratuityTestCase(TestCase):
     def setUp(self):
         call_command("setup_roles", verbosity=0)
@@ -65,6 +76,7 @@ class GratuityTestCase(TestCase):
             basis=ComponentBasis.PERCENT_OF_GROSS, expense_account=self.expense, liability_account=self.provision,
             sequence=120, rounding=Rounding.PAISA)
         self.gratuity.base_components.set([self.basic, self.da])
+        self.ceiling = confirmed_ceiling()
 
     def person(self, code, hired, left=None):
         party = Party.objects.create(code=f"P-{code}", name=code)
@@ -347,3 +359,98 @@ class SetupGivesTheGratuityProvisionTests(TestCase):
         # Run again, nobody is given it twice.
         self.assertNotIn("given: GRATUITY", self.said("setup_payroll"))
         self.assertEqual(EmployeeCompensation.objects.filter(component=gratuity).count(), 2)
+
+
+class TheCeilingIsTheConfirmedFigureOfTheLeavingDayTests(GratuityTestCase):
+    """
+    O551 (/home/user/work/calc_g43_people/calc.py). Basic 1,20,000 and DA 30,000, 1,50,000 of wages; 30 years
+    counted at 15/26 are 25,96,153.85 uncapped. X, hired 1 Jan 1996, left 30 Jun 2026 (30 years 5 months): capped
+    at S.O. 1420(E)'s 20,00,000 from 29 Mar 2018. Y, hired 1 Mar 1996, left 31 Jul 2026 (30 years 4 months):
+    capped at a raised 25,00,000 from 1 Jul 2026 (a notification for the test, not the law). The ceiling was the
+    constant 20,00,000, so the raise would have answered X too, and a payout kept no figure to show.
+    """
+
+    UNCAPPED = Decimal("2596153.85")
+
+    def senior(self, code, hired, left):
+        party = Party.objects.create(code=f"P-{code}", name=code)
+        PartyRoleAssignment.objects.create(party=party, role=PartyRole.EMPLOYEE)
+        employee = Employee.objects.create(party=party, employee_number=code, hire_date=hired)
+        for component, amount in ((self.basic, "120000"), (self.da, "30000"), (self.gratuity, "4.81")):
+            EmployeeCompensation.objects.create(employee=employee, component=component, amount=Decimal(amount),
+                                                effective_from=hired)
+        employee.terminate(left)
+        return employee
+
+    def owed(self, day, code):
+        from .gratuity import gratuity_due, wage_components
+
+        return next(row["owed"] for row in gratuity_due(day, wage_components())["rows"] if row["number"] == code)
+
+    def test_no_confirmed_ceiling_on_the_leaving_day_refuses_the_calculation_in_words(self):
+        from .gratuity import gratuity_due, wage_components
+        from .statutory import FigureKind, StatutoryFigure
+
+        x = self.senior("X", D(1996, 1, 1), LEFT)
+        self.june(x)
+        self.ceiling.delete()
+        with self.assertRaisesMessage(ValidationError, "Gratuity, the most paid to one person has no figure from "
+                                                       "30 Jun 2026 or before"):
+            gratuity_due(LEFT, wage_components())
+        self.refused("has no figure from 30 Jun 2026 or before", x, self.money(x, "2000000.00"))
+        # Loaded and not yet confirmed: refused until the Controller confirms it, never paid at a default.
+        StatutoryFigure.objects.create(kind=FigureKind.GRATUITY_CEILING, effective_from=D(2018, 3, 29),
+                                       value=Decimal("2000000"), source="S.O. 1420(E)")
+        self.refused("from 29 Mar 2018 is not confirmed", x, self.money(x, "2000000.00"))
+        # Through the API, as the Controller: a 400 in the same words, nothing paid.
+        controller = User.objects.create_user("ceiling-api-controller")
+        controller.groups.add(Group.objects.get(name="Controller"))
+        client = APIClient()
+        client.force_authenticate(controller)
+        said = client.post("/api/hr/gratuity-payouts/", {"employee": x.pk, "reason": "superannuation",
+                                                         "payment": self.money(x, "2000000.00").pk}, format="json")
+        self.assertEqual(said.status_code, 400, said.content)
+        self.assertIn("is not confirmed", str(said.json()))
+        self.assertFalse(GratuityPayout.objects.exists())
+
+    def test_a_leaver_before_and_after_a_raised_ceiling_each_at_its_own_figure_and_a_payout_keeps_its_own(self):
+        from .statutory import FigureKind, StatutoryFigure
+
+        x = self.senior("X", D(1996, 1, 1), LEFT)
+        y = self.senior("Y", D(1996, 3, 1), D(2026, 7, 31))
+        self.june(x, y)
+        self.assertEqual(self.owed(LEFT, "X"), Decimal("2000000.00"))
+        paid_x = self.pay(x, self.money(x, "2000000.00"), LeavingReason.SUPERANNUATION)
+        self.assertEqual((paid_x.amount, paid_x.ceiling_figure), (Decimal("2000000.00"), self.ceiling))
+        # A later notification raises it from 1 Jul 2026: Y, leaving after, is owed at it; X's answer stands.
+        raised = confirmed_ceiling("2500000", D(2026, 7, 1))
+        self.assertEqual(self.owed(LEFT, "X"), Decimal("2000000.00"))
+        self.assertEqual(self.owed(D(2026, 7, 31), "Y"), Decimal("2500000.00"))
+        self.refused("at most the Act's ceiling of 2500000.00 from 2026-07-01. The payment is 2000000.00", y,
+                     self.money(y, "2000000.00", day=D(2026, 7, 31)), LeavingReason.SUPERANNUATION)
+        paid_y = self.pay(y, self.money(y, "2500000.00", day=D(2026, 7, 31)), LeavingReason.SUPERANNUATION)
+        self.assertEqual((paid_y.amount, paid_y.ceiling_figure), (Decimal("2500000.00"), raised))
+        paid_x = GratuityPayout.objects.get(pk=paid_x.pk)
+        self.assertEqual((paid_x.amount, paid_x.ceiling_figure_id), (Decimal("2000000.00"), self.ceiling.pk))
+        # The row X was capped at is X's figure: not changed or deleted while the payout stands.
+        kept = StatutoryFigure.objects.get(pk=self.ceiling.pk)
+        kept.value = Decimal("2500000")
+        with self.assertRaisesMessage(ValidationError, f"is what {paid_x} was paid at; it is not changed. Void that "
+                                                       "payout first"):
+            kept.save()
+        with self.assertRaisesMessage(ValidationError, "it is not deleted. Void that payout first"):
+            StatutoryFigure.objects.get(pk=self.ceiling.pk).delete()
+        # The list says so of each row in its one query, as delete() does (O567).
+        controller = User.objects.create_user("ceiling-list-controller")
+        controller.groups.add(Group.objects.get(name="Controller"))
+        client = APIClient()
+        client.force_authenticate(controller)
+        listed = client.get("/api/hr/statutory-figures/", {"kind": FigureKind.GRATUITY_CEILING})
+        self.assertEqual(listed.status_code, 200, listed.content)
+        rows = {r["id"]: r["kept_because"] for r in (listed.json().get("results", listed.json())
+                                                     if isinstance(listed.json(), dict) else listed.json())}
+        self.assertIn(f"is what the gratuity paid by {paid_x.payment.number} was paid at", rows[self.ceiling.pk])
+        self.assertIn(f"the gratuity paid by {paid_y.payment.number}", rows[raised.pk])
+        # Voided, X's payout keeps nothing: the row may be corrected again.
+        paid_x.void(on_date=LEFT)
+        self.assertEqual(StatutoryFigure.objects.get(pk=self.ceiling.pk).kept_because(), "")

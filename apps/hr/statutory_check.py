@@ -144,5 +144,7 @@ def statutory_gaps(day):
     from .gratuity import PROVISION_CODE
 
     provision = list(active.filter(code=PROVISION_CODE))
-    found.append(("Gratuity", bool(provision), _not_given(provision, day)))
+    # The ceiling the payout and the report read (O551), asked as every engine's figures are.
+    found.append(("Gratuity", bool(provision), _figures(ENGINE_FIGURES["Gratuity"], day, states)
+                  + _not_given(provision, day)))
     return found
