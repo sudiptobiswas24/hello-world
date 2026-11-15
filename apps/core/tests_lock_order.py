@@ -384,6 +384,25 @@ class APlainForUpdateIsReportedTests(TestCase):
         self.assertEqual(len(found), 1, found)
         self.assertIn("planted.py:2 record() takes update_or_create(), whose lock is FOR UPDATE", found[0])
 
+    def test_the_held_update_or_create_takes_the_numbering_row_with_no_transaction_open(self):
+        """
+        Called with no block of the code's own open, the numbering row is still held, inside the helper's own
+        block and before the row is looked for. Taken before that block, numbering_first() held nothing here.
+        """
+        from unittest import mock
+
+        from apps.core.models import in_a_transaction_it_opened, update_or_create_held
+        from apps.planning.history import ShipmentHistory
+
+        order = []
+        self.assertFalse(in_a_transaction_it_opened())
+        with mock.patch.object(DocumentNumbering, "hold", side_effect=lambda *a, **k: order.append("numbering")), \
+                mock.patch("django.db.models.query.QuerySet.get_or_create",
+                           side_effect=lambda *a, **k: order.append("row") or (_ for _ in ()).throw(LookupError)):
+            with self.assertRaises(LookupError):
+                update_or_create_held(ShipmentHistory, month="2026-01-01", defaults={})
+        self.assertEqual(order, ["numbering", "row"])
+
     def test_lock_rows_takes_for_no_key_update_and_for_update_only_to_delete(self):
         from .models import row_lock_query
 
