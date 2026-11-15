@@ -480,8 +480,7 @@ class PayComponentSlab(Confirmed, AuditModel):
         self.refuse_delete_if_kept()
         return super().delete(*args, **kwargs)
 
-    def kept_under(self):
-        return "slab"
+    KEPT_UNDER = "slab"
 
     def schedule(self):
         """Every band of the schedule this band is of: its component, state and day."""
