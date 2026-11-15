@@ -190,10 +190,18 @@ const OWN_DATE = new Set([
   "received_on", "spent_on", "reported_on", "inspected_on", "worked_on", "visit_date", "claim_date",
 ]);
 
-function blank(fields: FieldDef[]): Row {
+/**
+ * What a new record starts as. A field the server sets (readOnly) is left out, unless it says what it starts at
+ * (`initial`): then it is shown with that value and never sent (O588: a new lead read "New", not nothing).
+ */
+export function blank(fields: FieldDef[]): Row {
   const row: Row = { id: 0 };
   for (const field of fields) {
-    if (field.readOnly || field.existingOnly) continue;
+    if (field.existingOnly) continue;
+    if (field.readOnly) {
+      if (field.initial !== undefined) row[field.key] = field.initial;
+      continue;
+    }
     row[field.key] = field.initial !== undefined ? field.initial
       : field.kind === "bool" ? false
       : field.kind === "date" && field.initial === undefined ? (OWN_DATE.has(field.key) ? today() : null)
@@ -203,6 +211,21 @@ function blank(fields: FieldDef[]): Row {
       : "";
   }
   return row;
+}
+
+/** Whether a new record's sheet shows a field: not one for saved records only, nor one the server sets unless it says what it starts at. */
+export function onNewSheet(field: FieldDef): boolean {
+  return !field.existingOnly && !(field.readOnly && field.initial === undefined);
+}
+
+/** What a save sends: the fields a person fills in from `source`, never one the server sets or a saved record's own. */
+export function bodyFor(fields: FieldDef[], source: Record<string, unknown>, isNew: boolean): Record<string, unknown> {
+  const body: Record<string, unknown> = {};
+  for (const field of fields) {
+    if (field.readOnly || (isNew && field.existingOnly)) continue;
+    if (field.key in source) body[field.key] = source[field.key];
+  }
+  return body;
 }
 
 /** A record's value as words, when it cannot be changed. */
@@ -436,12 +459,8 @@ export function RecordScreen(props: RecordScreenProps) {
   const anyOpen = mayEdit || fields.some(open);
 
   const save = async () => {
-    const body: Record<string, unknown> = {};
     const source = isNew ? value : draft.changes;
-    for (const field of fields) {
-      if (field.readOnly || (isNew && field.existingOnly)) continue;
-      if (field.key in source) body[field.key] = source[field.key];
-    }
+    const body = bodyFor(fields, source, isNew);
     if (extras && "extra" in source) body.extra = source.extra;
     const outcome = isNew
       ? await act.run("POST", createUrl ?? endpoint, body, { done: "Saved" })
@@ -489,7 +508,7 @@ export function RecordScreen(props: RecordScreenProps) {
       )}
       <Sheet>
         <div className="field-grid">
-          {fields.filter((field) => !(isNew && (field.existingOnly || field.readOnly)) && !(!isNew && field.newOnly)).map((field) => (
+          {fields.filter((field) => !(isNew && !onNewSheet(field)) && !(!isNew && field.newOnly)).map((field) => (
             <Field key={field.key} label={field.label} hint={open(field) ? field.hint : undefined}
               errors={draft.errors[field.key]} wide={field.wide || field.kind === "textarea"}>
               {(fid) => open(field)
