@@ -75,6 +75,31 @@ class PayComponentSerializer(serializers.ModelSerializer):
         return attrs
 
 
+class SlabListSerializer(serializers.ListSerializer):
+    """
+    The slab panel's bands, each band's schedule read once for the whole page, not once a band (O591): every
+    band of the page's components, states and days in one query, in the order PayComponentSlab.schedule()
+    reads them, kept on each band for get_schedule_bands.
+    """
+
+    def to_representation(self, data):
+        from collections import defaultdict
+
+        bands = list(data.all() if hasattr(data, "all") else data)
+        keys = {(band.component_id, band.state, band.effective_from) for band in bands}
+        schedules = defaultdict(list)
+        if keys:
+            for other in PayComponentSlab.objects.filter(
+                    component_id__in={key[0] for key in keys}, state__in={key[1] for key in keys},
+                    effective_from__in={key[2] for key in keys}).order_by("for_women", "month", "above", "pk"):
+                key = (other.component_id, other.state, other.effective_from)
+                if key in keys:
+                    schedules[key].append(other)
+        for band in bands:
+            band.schedule_read = schedules[(band.component_id, band.state, band.effective_from)]
+        return super().to_representation(bands)
+
+
 class SlabSerializer(serializers.ModelSerializer):
     # Every band of the schedule this band is of, as this response read them: the screen's Confirm sends them back,
     # so a band changed since is refused (confirm_schedule), and no screen could confirm a schedule before (O468).
@@ -88,13 +113,18 @@ class SlabSerializer(serializers.ModelSerializer):
         fields = ["id", "component", "above", "up_to", "month", "amount", "state", "effective_from", "for_women",
                   "confirmed_by", "confirmed_on", "schedule_bands", "kept_because"]
         read_only_fields = ["confirmed_by", "confirmed_on"]
+        list_serializer_class = SlabListSerializer
 
     def get_kept_because(self, band) -> str:
         return band.kept_because(run=band.kept_by_run) if hasattr(band, "kept_by_run") else band.kept_because()
 
     def get_schedule_bands(self, band):
+        # As the list read them for its whole page (SlabListSerializer, O591); asked here for one band alone.
+        schedule = getattr(band, "schedule_read", None)
+        if schedule is None:
+            schedule = band.schedule()
         return [{"id": other.pk, **{name: getattr(other, name) for name in PayComponentSlab.BAND_FIGURES}}
-                for other in band.schedule()]
+                for other in schedule]
 
 
 class RemittanceSerializer(serializers.ModelSerializer):

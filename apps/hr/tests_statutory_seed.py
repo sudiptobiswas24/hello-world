@@ -504,6 +504,32 @@ class TheListsAskWhichRunKeptEachRowOnceTests(LoadedTestCase):
         # A delete asks fresh, under the row's lock, whatever a list said.
         self.assertEqual(self.officer.delete(f"/api/hr/pay-component-slabs/{high.pk}/").status_code, 400)
 
+    def test_the_slab_panel_reads_each_schedule_once_for_the_page(self):
+        """
+        O591: each band's schedule_bands (what Confirm schedule sends back, O468) was read once a band. Now the
+        page's schedules are read in one query: the same count at 2 bands and at 5, two schedules among them,
+        and each band carries exactly its own schedule's bands, in the order schedule() reads them.
+        """
+        url, params = "/api/hr/pay-component-slabs/", {"component": self.wb.pk}
+
+        def band(day, above, up_to):
+            return PayComponentSlab.objects.create(component=self.wb, state="WB", effective_from=day,
+                                                   above=Decimal(above), up_to=up_to and Decimal(up_to),
+                                                   amount=Decimal("0"))
+
+        first = [band(D(2026, 4, 1), "0", "10000"), band(D(2026, 4, 1), "10000", None)]
+        asked, rows = self.counted(url, params)
+        for month, above, up_to in ((4, "0", "10000"), (4, "10000", "20000"), (4, "20000", None)):
+            band(D(2027, month, 1), above, up_to)
+        with self.assertNumQueries(len(asked)):
+            rows = self.officer.get(url, params).json()
+        self.assertEqual(len(rows), 5)
+        for row in rows:
+            own = PayComponentSlab.objects.get(pk=row["id"]).schedule()
+            self.assertEqual([other["id"] for other in row["schedule_bands"]], [other.pk for other in own])
+        self.assertEqual([other["id"] for other in next(r for r in rows if r["id"] == first[0].pk)["schedule_bands"]],
+                         [first[0].pk, first[1].pk])
+
 
 class EsiReadsTheDatedRatesTests(LoadedTestCase):
     """
