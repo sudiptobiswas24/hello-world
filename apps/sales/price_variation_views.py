@@ -19,7 +19,7 @@ from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.response import Response
 
 from apps.accounting.models import Account
-from apps.core.api import number
+from apps.core.api import number, takes_only
 from apps.core.audit import AuditableViewSetMixin
 
 from .models import SalesOrder
@@ -141,6 +141,7 @@ class PriceVariationBillViewSet(CustomerScopedMixin, AuditableViewSetMixin, view
 
     def create(self, request):
         data = request.data
+        takes_only(data, "order", "receivable_account", "start", "end", "invoice_date")
         order = self._order(data.get("order"))
         account = get_object_or_404(Account, pk=data.get("receivable_account"))
         start, end = _dates(data)

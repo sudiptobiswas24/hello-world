@@ -22,7 +22,7 @@ from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.permissions import BasePermission, IsAuthenticated
 from rest_framework.response import Response
 
-from apps.core.api import ANY_SIGN, number
+from apps.core.api import ANY_SIGN, number, takes_only
 
 from apps.core import barcode
 from .rolls import FabricRoll
@@ -937,6 +937,7 @@ class ScaleReadingViewSet(viewsets.GenericViewSet):
         from .station_scale import post_reading
 
         data = request.data
+        takes_only(data, "scale", "gross_kg", "net_kg", "stable", "key")
         reading = _run(post_reading, data.get("scale"), data.get("gross_kg"), data.get("stable"),
                        net_kg=data.get("net_kg"), key=data.get("key"))
         # A key posted before is answered as the first time, with the first reading (review F8).
