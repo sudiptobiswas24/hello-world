@@ -704,6 +704,26 @@ class DatedRateTests(TdsTestCase):
         self.assertIsNotNone(TdsRate.objects.get(pk=made.json()["id"]).confirmed_on)
 
 
+class ADeductionsCoveredBillsSentAreRefusedTests(TdsTestCase):
+    """
+    O575. A related list read back only (many=True, read_only) was dropped without a word, as a nested one was
+    before O565: a deduction's covered bills, sent, kept nothing and said nothing. The shared base refuses it
+    beside the field; the deduction's own fields read back only are ignored, as DRF ignores them.
+    """
+
+    def test_covered_bills_sent_are_refused_beside_the_field(self):
+        from .tds_api import TdsDeductionSerializer
+
+        party = self.contractor(pan="AAAPL1234C")
+        deduction = self.bill("40000", vendor=party).deduct_tds()
+        other = self.bill("25000", vendor=party)
+        sent = TdsDeductionSerializer(deduction, data={"covered_bills": [other.pk], "amount": "1.00"}, partial=True)
+        self.assertFalse(sent.is_valid())
+        self.assertEqual(sent.errors, {"covered_bills": [
+            "`covered_bills` is what the record reads back, and nothing sent in it is kept: leave it out."]})
+        self.assertEqual((deduction.amount, list(deduction.covered_bills.all())), (Decimal("800.00"), [deduction.bill]))
+
+
 class TheRateListAsksWhetherEachWasTakenOnceTests(TdsTestCase):
     """
     O568. The list said why each rate stays (kept_because, O556) by asking one EXISTS a row. 194C at 2% has a

@@ -568,7 +568,8 @@ class RefusesWhatItReadsBackOnly(serializers.Serializer):
     the base every ModelSerializer in this codebase is written on, so a serializer written tomorrow cannot drop
     its lines either: audit_invariants (serializers_off_the_shared_base) reports one that is not on it.
 
-    Only a list: a nested serializer with many=True, a ListField, or a method field under a name lines go by.
+    Only a list: a nested serializer with many=True, a related field with many=True (O575), a ListField, or a
+    method field under a name lines go by.
     Any other read-only field (an id, a total, a status) keeps DRF's behaviour and is ignored, so a screen or an
     integration that sends back what it read is not refused for it.
 
@@ -590,7 +591,7 @@ class RefusesWhatItReadsBackOnly(serializers.Serializer):
     @staticmethod
     def a_list(name, field):
         """Whether a read-only field is a list the record reads back: its lines, or anything like them."""
-        if isinstance(field, (serializers.ListSerializer, serializers.ListField)):
+        if isinstance(field, (serializers.ListSerializer, serializers.ManyRelatedField, serializers.ListField)):
             return True
         return isinstance(field, serializers.SerializerMethodField) and (name == "lines" or name.endswith("_lines"))
 
@@ -598,10 +599,13 @@ class RefusesWhatItReadsBackOnly(serializers.Serializer):
         """Each read-only list `data` names, with the words it is refused in."""
         if not hasattr(data, "keys"):
             return {}
-        return {name: [self.read_back_words(name)] for name, field in self.fields.items()
+        return {name: [self.read_back_words(name, field)] for name, field in self.fields.items()
                 if field.read_only and name in data and self.a_list(name, field)}
 
-    def read_back_words(self, name):
+    def read_back_words(self, name, field):
+        if isinstance(field, serializers.ManyRelatedField):
+            # Records it points at (a deduction's covered bills), not lines added to it one by one.
+            return f"`{name}` is what the record reads back, and nothing sent in it is kept: leave it out."
         if "new_lines" in self.fields and not self.fields["new_lines"].read_only:
             return (f"`{name}` is what the document reads back, and nothing sent in it is kept. Send a new "
                     "document's lines as `new_lines`; add one to a saved document on its own.")
