@@ -316,6 +316,26 @@ class ThirdPartyLandedCostTests(ReturnTestCase):
         self.assertEqual(self.balance(self.freight_expense), Decimal("80"))
         self.assertEqual(charge.landed_cost_unallocated(), Decimal("80"))
 
+    def test_not_landed_before_its_goods_arrived_or_its_bill(self):
+        """
+        O583 (probe /home/user/work/calc_g41_kept/probes/probe_o58x.py): goods received 5 January, the freight
+        billed 1 February, landed on 1 December: the shelf carried freight before the goods or the charge
+        existed. Refused before either; on the bill's day it lands, and its release is refused before that.
+        """
+        order, receipt = self.goods_received("10", "5")
+        bill, charge = self.carrier_bill("80")
+        for day in (datetime.date(2025, 12, 1), datetime.date(2026, 1, 20)):
+            with self.subTest(day=day), self.assertRaisesMessage(
+                    ValidationError, f"is not landed on {day}: the last of its goods arrived or its bill is dated on "
+                                     "2026-02-01."):
+                charge.allocate_landed_cost([receipt.lines.get()], on_date=day)
+        self.assertEqual(self.balance(self.freight_expense), Decimal("80"))
+        [landed] = charge.allocate_landed_cost([receipt.lines.get()], on_date=datetime.date(2026, 2, 1))
+        self.assertEqual((landed.date, landed.journal_entry.date), (datetime.date(2026, 2, 1),) * 2)
+        self.assertEqual(self.balance(self.freight_expense), Decimal("0"))
+        with self.assertRaisesMessage(ValidationError, "is not released on 2026-01-31"):
+            landed.release(on_date=datetime.date(2026, 1, 31))
+
     def test_allocating_moves_it_into_stock(self):
         order, receipt = self.goods_received("10", "5")
         bill, charge = self.carrier_bill("80")

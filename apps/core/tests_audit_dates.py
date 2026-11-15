@@ -17,7 +17,6 @@ class EveryCorrectionAsksTheRuleTests(SimpleTestCase):
             # Found by following helpers (O580), each left for a fix of its own.
             "manufacturing.CostVersion.publish",
             "manufacturing.WorkOrder.close",
-            "purchasing.BillLine.allocate_landed_cost",
         ])
 
 
