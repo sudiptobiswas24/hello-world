@@ -129,8 +129,11 @@ export interface PanelDef {
     body: (values: Row, record: Row) => unknown;
     when?: (record: Row) => boolean;
   };
-  /** A line taken off, while the record allows it. */
-  remover?: { permission: string; url: (row: Row) => string; when?: (record: Row) => boolean };
+  /**
+   * A line taken off, while the record allows it. `refused` is why the server would not take this line off, in its
+   * own words, or "" where it would: the line then shows why in place of the button (O570).
+   */
+  remover?: { permission: string; url: (row: Row) => string; when?: (record: Row) => boolean; refused?: (row: Row) => string };
 }
 
 export interface RecordScreenProps {
@@ -541,11 +544,14 @@ export function RecordPanel({ panel, record }: { panel: PanelDef; record: Row })
   }
   if (remover) {
     extra.push({
-      key: "_remove", label: "", width: "3rem",
-      render: (row) => (
-        <button type="button" className="icon-btn" aria-label="Remove the line" disabled={act.pending}
-          onClick={() => void act.run("DELETE", remover.url(row), undefined, { done: "Removed" })}>×</button>
-      ),
+      key: "_remove", label: "", width: remover.refused ? "18rem" : "3rem",
+      render: (row) => {
+        const why = remover.refused ? remover.refused(row) : "";
+        return why
+          ? <span className="muted">{why}</span>
+          : <button type="button" className="icon-btn" aria-label="Remove the line" disabled={act.pending}
+              onClick={() => void act.run("DELETE", remover.url(row), undefined, { done: "Removed" })}>×</button>;
+      },
     });
   }
   const columns = [...panel.columns, ...extra];
