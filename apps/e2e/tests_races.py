@@ -2534,6 +2534,31 @@ class BlanketCallOffRaceTests(RaceCase):
         self.assertEqual(sum(outcome == "done" for outcome in outcomes), 1, outcomes)
         self.assertLessEqual(BlanketOrderLine.objects.get(pk=agreed.pk).quantity_released(), Decimal("100"))
 
+    def test_a_line_made_in_code_and_a_release_at_once_call_off_no_more_than_agreed(self):
+        # O249: a line made naming the agreement asks it under the agreement's lock, as the raise does. 100
+        # agreed, 40 released on PO-1; 40 more made on PO-1 in code and 40 released at once: one is refused.
+        from apps.purchasing.models import BlanketOrder, BlanketOrderLine, PurchaseOrderLine
+
+        blanket = BlanketOrder.objects.create(vendor=self.vendor, start_date=datetime.date(2026, 1, 1),
+                                              end_date=datetime.date(2026, 12, 31), currency=self.usd)
+        agreed = BlanketOrderLine.objects.create(blanket=blanket, item=self.item, uom=self.uom,
+                                                 quantity=Decimal("100"), unit_price=Decimal("5"))
+        blanket.confirm()
+        first = blanket.release({agreed: Decimal("40")}, order_date=datetime.date(2026, 2, 1))
+
+        def make_one():
+            PurchaseOrderLine.objects.create(
+                order=PurchaseOrder.objects.get(pk=first.pk), blanket_line=BlanketOrderLine.objects.get(pk=agreed.pk),
+                item=self.item, uom=self.uom, quantity=Decimal("40"), unit_price=Decimal("5"))
+
+        def release_more():
+            BlanketOrder.objects.get(pk=blanket.pk).release(
+                {BlanketOrderLine.objects.get(pk=agreed.pk): Decimal("40")}, order_date=datetime.date(2026, 2, 2))
+
+        outcomes = race((PurchaseOrderLine, PurchaseOrder), make_one, release_more)
+        self.assertEqual(sum(outcome == "done" for outcome in outcomes), 1, outcomes)
+        self.assertLessEqual(BlanketOrderLine.objects.get(pk=agreed.pk).quantity_released(), Decimal("100"))
+
 
 @tag("race")
 @unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
