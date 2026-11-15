@@ -46,8 +46,9 @@ describe("A job-work delivery's e-way bill from the screen (O578)", () => {
     fireEvent.change(box, { target: { value: "250000" } });
     await act(async () => { fireEvent.click(page.getByText("Create")); });
     expect(sent).toHaveLength(1);
-    expect(sent[0].method).toBe("POST");
-    expect(sent[0].path).toBe("/api/gst/eway-bills/");
-    expect(String(sent[0].body.declared_value)).toMatch(/^250000(\.00)?$/);
+    const [post] = sent;
+    expect(post?.method).toBe("POST");
+    expect(post?.path).toBe("/api/gst/eway-bills/");
+    expect(String(post?.body.declared_value)).toMatch(/^250000(\.00)?$/);
   });
 });
