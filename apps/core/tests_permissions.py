@@ -428,6 +428,7 @@ class EverySerializerRefusesWhatItReadsBackOnlyTests(TestCase):
             class Meta:
                 model = Account
                 fields = ["id", "code", "name", "lines", "entry_lines", "balance"]
+                read_back_lists = ["entry_lines"]
 
         return Dropping, Refusing
 
@@ -443,6 +444,69 @@ class EverySerializerRefusesWhatItReadsBackOnlyTests(TestCase):
         self.assertEqual(sent.errors["lines"], ["`lines` is what the record reads back, and nothing sent in it is "
                                                 "kept: make the record, then add each one to it on its own."])
         self.assertTrue(refusing(data={"id": 5, "code": "1010", "name": "Bank", "balance": "7.00"}).is_valid())
+
+    def test_a_method_field_returning_a_list_under_any_name_is_refused_once_named_and_reported_until_then(self):
+        # O587: by name alone (`lines`, `*_lines`) a method field returning a list under another name was dropped.
+        from rest_framework import serializers
+
+        from apps.core.api import ModelSerializer
+        from apps.core.management.commands.audit_invariants import Command
+
+        class Unnamed(ModelSerializer):
+            codes = serializers.SerializerMethodField()
+
+            class Meta:
+                model = Account
+                fields = ["id", "code", "name", "codes"]
+
+            def get_codes(self, account):
+                return [account.code]
+
+        class Named(Unnamed):
+            class Meta(Unnamed.Meta):
+                read_back_lists = ["codes"]
+
+        sent = {"code": "1010", "name": "Bank", "codes": ["1010"]}
+        self.assertTrue(Unnamed(data=sent).is_valid())
+        named = Named(data=sent)
+        self.assertFalse(named.is_valid())
+        self.assertEqual(named.errors, {"codes": [
+            "`codes` is what the record reads back, and nothing sent in it is kept: leave it out."]})
+        found = Command().list_method_fields_undeclared(["core"], [Unnamed, Named])
+        self.assertEqual([detail.split(" returns")[0] for _shape, detail in found],
+                         ["apps.core.tests_permissions.Unnamed.codes"])
+
+    def test_every_method_field_returning_a_list_today_is_named(self):
+        # Read off the demo plant's records and the getters' source (calc_g41_lines/probes/probe_o587.py): the 18
+        # method fields in apps/ that return a list. A real one sent is refused: a party's roles.
+        import importlib
+
+        from apps.core.management.commands.audit_invariants import OUR_APPS, Command
+        from apps.core.serializers import PartySerializer
+
+        today = {
+            "apps.accounting.charges_api.ChargeTypeSerializer": ["tax_rows"],
+            "apps.core.history_api.EditLogSerializer": ["changes"],
+            "apps.core.serializers.PartySerializer": ["roles"],
+            "apps.core.customfields.CustomFieldSerializer": ["choice_list"],
+            "apps.gst.serializers.EInvoiceSerializer": ["warnings"],
+            "apps.hr.payroll_views.SlabSerializer": ["schedule_bands"],
+            "apps.inventory.gate_api.GateVisitSerializer": ["passes"],
+            "apps.manufacturing.complaint_views.ComplaintSerializer": ["lots", "settled"],
+            "apps.manufacturing.serializers.MaintenanceJobDetailSerializer": ["labour", "spares"],
+            "apps.planning.serializers.PlanningRunSerializer": ["late", "lapsed", "overloaded"],
+            "apps.purchasing.serializers.BillSerializer": ["carried"],
+            "apps.quality.serializers.CalibrationSerializer": ["suspects"],
+            "apps.sales.serializers.DeliveryLineSerializer": ["lots_shipped"],
+            "apps.sales.serializers.SalesOrderSerializer": ["supplied_items"],
+        }
+        for path, names in today.items():
+            module, name = path.rsplit(".", 1)
+            self.assertEqual(list(getattr(importlib.import_module(module), name).Meta.read_back_lists), names, path)
+        self.assertEqual(Command().list_method_fields_undeclared(list(OUR_APPS)), [])
+        sent = PartySerializer(data={"code": "C-1", "name": "Buyer", "roles": ["customer"]})
+        self.assertFalse(sent.is_valid())
+        self.assertEqual(list(sent.errors), ["roles"])
 
     def test_a_planted_serializer_off_the_base_is_reported_and_one_on_it_is_not(self):
         from apps.core.management.commands.audit_invariants import Command
