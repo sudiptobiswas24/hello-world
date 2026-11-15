@@ -18,6 +18,7 @@ from decimal import Decimal, InvalidOperation
 
 from django.core.exceptions import ValidationError
 from django.db import transaction
+from django.db.models import Exists, OuterRef
 from django.utils import timezone
 from django.utils.dateparse import parse_date
 
@@ -55,6 +56,18 @@ class DatedRate:
     def taken(self):
         return getattr(self, self.TAKEN_BY).exists()
 
+    @classmethod
+    def with_taken(cls, queryset):
+        """
+        The rows, each with `was_taken` asked in the one query: a list read `taken()` once a row, an EXISTS for
+        each (O568). Only for what is shown; delete() asks again, as it is refused.
+        """
+        if not cls.TAKEN_BY:
+            return queryset
+        relation = cls._meta.get_field(cls.TAKEN_BY)
+        return queryset.annotate(was_taken=Exists(
+            relation.related_model._default_manager.filter(**{relation.field.name: OuterRef("pk")})))
+
     def save(self, *args, **kwargs):
         if self._state.adding:
             return super().save(*args, **kwargs)
@@ -72,12 +85,15 @@ class DatedRate:
                 self.confirmed_by, self.confirmed_on = None, None
             return super().save(*args, **kwargs)
 
-    def kept_because(self):
+    def kept_because(self, taken=None):
         """
         Why the row may not be deleted, in words, or "" where it may. delete() refuses in these words and the
-        screen reads them to offer Delete or not (O556), so the two cannot disagree.
+        screen reads them to offer Delete or not (O556), so the two cannot disagree. `taken` is whether it was
+        taken, where a list asked it of every row at once (with_taken); asked here otherwise.
         """
-        return f"{self.TAKEN_WORDS} at this rate; it stays." if self.taken() else ""
+        if taken is None:
+            taken = self.taken()
+        return f"{self.TAKEN_WORDS} at this rate; it stays." if taken else ""
 
     def delete(self, *args, **kwargs):
         if reason := self.kept_because():

@@ -263,6 +263,35 @@ class ThroughTheApiTests(TcsTestCase):
         self.assertEqual((quarter.json()["form"], quarter.json()["tan"]), ("Form 143", "CALA12345B"))
 
 
+class TheRateListAsksWhetherEachWasTakenOnceTests(TcsTestCase):
+    """
+    O568, on TCS: the list asked one EXISTS a row for why each rate stays. 206C(1) at 1% collected 1,062 on T1;
+    a rate from 2027 has collected nothing. The same 2 queries (the count and the page) at 2 rows as at 4.
+    """
+
+    def test_the_list_asks_the_same_at_two_rows_and_at_four(self):
+        call_command("setup_roles", verbosity=0)
+        client = ThroughTheApiTests.client_as(self, "Controller", "controller")
+        self.assertEqual(self.t1().tcs_amount, D("1062.00"))
+        TcsRate.objects.create(section=self.section, applies_from=datetime.date(2027, 4, 1), rate_percent=D("1"),
+                               no_pan_rate_percent=D("5"))
+        stays = "Invoices collected at this rate; it stays."
+        client.get("/api/accounting/tcs-rates/")  # who is asking and what they may do, read once a session
+        with self.assertNumQueries(2):
+            listed = client.get("/api/accounting/tcs-rates/")
+        self.assertEqual(sorted((row["applies_from"], row["kept_because"]) for row in listed.json()),
+                         [("2026-04-01", stays), ("2027-04-01", "")])
+        for year in (2028, 2029):
+            TcsRate.objects.create(section=self.section, applies_from=datetime.date(year, 4, 1), rate_percent=D("1"),
+                                   no_pan_rate_percent=D("5"))
+        with self.assertNumQueries(2):
+            listed = client.get("/api/accounting/tcs-rates/")
+        self.assertEqual(sorted((row["applies_from"], row["kept_because"]) for row in listed.json()),
+                         [("2026-04-01", stays), ("2027-04-01", ""), ("2028-04-01", ""), ("2029-04-01", "")])
+        refused = client.delete(f"/api/accounting/tcs-rates/{self.rate.pk}/")
+        self.assertEqual((refused.status_code, refused.json()), (400, [stays]))
+
+
 class TheAuditSeesAPayableAccountReadLiveTests(TcsTestCase):
     """Review F3: a payable account a collection or deduction keeps, read again through its section."""
 
