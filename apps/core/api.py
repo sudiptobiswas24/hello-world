@@ -569,7 +569,9 @@ class RefusesWhatItReadsBackOnly(serializers.Serializer):
     its lines either: audit_invariants (serializers_off_the_shared_base) reports one that is not on it.
 
     Only a list: a nested serializer with many=True, a related field with many=True (O575), a ListField, or a
-    method field under a name lines go by.
+    method field the serializer names in Meta.read_back_lists as returning one (O587: by name alone, `lines` or
+    `*_lines`, a method field returning a list under any other name was dropped). audit_invariants
+    (list_method_fields_undeclared) reports a method field whose getter plainly returns a list and is not named.
     Any other read-only field (an id, a total, a status) keeps DRF's behaviour and is ignored, so a screen or an
     integration that sends back what it read is not refused for it.
 
@@ -588,12 +590,15 @@ class RefusesWhatItReadsBackOnly(serializers.Serializer):
             raise DRFValidationError(refused)
         return value
 
-    @staticmethod
-    def a_list(name, field):
+    def read_back_lists(self):
+        """The method fields this serializer names as returning a list (Meta.read_back_lists)."""
+        return tuple(getattr(getattr(self, "Meta", None), "read_back_lists", ()))
+
+    def a_list(self, name, field):
         """Whether a read-only field is a list the record reads back: its lines, or anything like them."""
         if isinstance(field, (serializers.ListSerializer, serializers.ManyRelatedField, serializers.ListField)):
             return True
-        return isinstance(field, serializers.SerializerMethodField) and (name == "lines" or name.endswith("_lines"))
+        return isinstance(field, serializers.SerializerMethodField) and name in self.read_back_lists()
 
     def read_back_only(self, data):
         """Each read-only list `data` names, with the words it is refused in."""
@@ -603,7 +608,7 @@ class RefusesWhatItReadsBackOnly(serializers.Serializer):
                 if field.read_only and name in data and self.a_list(name, field)}
 
     def read_back_words(self, name, field):
-        if isinstance(field, serializers.ManyRelatedField):
+        if isinstance(field, (serializers.ManyRelatedField, serializers.SerializerMethodField)):
             # Records it points at (a deduction's covered bills), not lines added to it one by one.
             return f"`{name}` is what the record reads back, and nothing sent in it is kept: leave it out."
         if "new_lines" in self.fields and not self.fields["new_lines"].read_only:

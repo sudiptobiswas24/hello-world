@@ -108,6 +108,8 @@ class PartySerializer(ExtensibleSerializerMixin, ModelSerializer):
     parent_name = serializers.CharField(source="parent.name", read_only=True, default="")
 
     class Meta:
+        # Method fields that return a list: sent, refused beside the field (apps.core.api, O587).
+        read_back_lists = ["roles"]
         model = Party
         fields = [
             "id", "code", "name", "legal_name", "email", "phone", "tax_id",

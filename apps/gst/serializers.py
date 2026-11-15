@@ -12,6 +12,8 @@ class EInvoiceSerializer(ModelSerializer):
     warnings = serializers.SerializerMethodField()
 
     class Meta:
+        # Method fields that return a list: sent, refused beside the field (apps.core.api, O587).
+        read_back_lists = ["warnings"]
         model = EInvoice
         fields = ["id", "invoice", "invoice_number", "payload", "irn", "ack_number",
                   "ack_date", "signed_qr", "cancel_reason", "cancel_remarks", "cancel_payload",

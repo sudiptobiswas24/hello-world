@@ -203,6 +203,8 @@ class CustomFieldSerializer(ModelSerializer):
     choice_list = serializers.SerializerMethodField()
 
     class Meta:
+        # Method fields that return a list: sent, refused beside the field (apps.core.api, O587).
+        read_back_lists = ["choice_list"]
         model = CustomField
         fields = ["id", "kind", "kind_label", "key", "label", "field_type", "choices", "choice_list", "required",
                   "hint", "position", "is_active"]

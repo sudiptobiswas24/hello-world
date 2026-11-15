@@ -147,6 +147,8 @@ class CalibrationSerializer(ModelSerializer):
     suspects = serializers.SerializerMethodField()
 
     class Meta:
+        # Method fields that return a list: sent, refused beside the field (apps.core.api, O587).
+        read_back_lists = ["suspects"]
         model = Calibration
         fields = ["id", "number", "instrument", "instrument_code", "calibrated_on", "due_on",
                   "result", "performed_by", "certificate_reference", "traceable_to", "notes",

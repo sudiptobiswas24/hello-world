@@ -54,6 +54,8 @@ class ComplaintSerializer(ModelSerializer):
     actions = CorrectiveActionSerializer(many=True, read_only=True)
 
     class Meta:
+        # Method fields that return a list: sent, refused beside the field (apps.core.api, O587).
+        read_back_lists = ["lots", "settled"]
         model = Complaint
         fields = ["id", "number", "customer", "received_on", "category", "description",
                   "quantity_affected", "status", "root_cause", "decided_on", "decided_by",
