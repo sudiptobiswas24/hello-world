@@ -15,7 +15,6 @@ class EveryCorrectionAsksTheRuleTests(SimpleTestCase):
             "accounting.RealisedOnItsOwnDay.release_exchange_difference",
             "gst.SelfInvoice.issue",
             # Found by following helpers (O580), each left for a fix of its own.
-            "manufacturing.CostVersion.publish",
             "manufacturing.WorkOrder.close",
         ])
 
