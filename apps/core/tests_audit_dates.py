@@ -18,7 +18,6 @@ class EveryCorrectionAsksTheRuleTests(SimpleTestCase):
             "manufacturing.CostVersion.publish",
             "manufacturing.WorkOrder.close",
             "purchasing.BillLine.allocate_landed_cost",
-            "sales.Invoice.record_tds",
         ])
 
 

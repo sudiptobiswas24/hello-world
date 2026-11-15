@@ -2752,8 +2752,6 @@ class Command(BaseCommand):
             "was received is refused in words (Rule 47A); take_credit() posts on that day",
         # Seen when the check learned to follow a helper (O580), and left for their own fixes: each posts through
         # a helper on whatever day it is handed, today by default, with no rule. To be registered.
-        "sales.Invoice.record_tds":
-            "O580, to be registered: sales.tds.record() books the customer's TDS on any day, before the invoice too",
         "purchasing.BillLine.allocate_landed_cost":
             "O580, to be registered: land_on_receipts() lands the cost on any day, before the goods arrived too",
         "manufacturing.CostVersion.publish":
