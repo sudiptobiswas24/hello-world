@@ -382,6 +382,24 @@ class APlainForUpdateIsReportedTests(TestCase):
         self.assertFalse(row_lock_query(Party, 1, no_key=False).query.select_for_no_key_update)
 
 
+class AnEmployeeIsRankedBetweenAPaymentAndAnAccountTests(TestCase):
+    """
+    O374: hr.employee was ranked nowhere, though a receipt from a person holds them after its payment
+    (hold_the_payer) and an expense claim paid holds the claimant before the bank account. Unranked, a path
+    taking the person after an account passed unseen.
+    """
+
+    def test_a_person_after_an_account_is_refused_and_between_a_payment_and_an_account_passes(self):
+        with self.assertRaisesMessage(LockOrderViolation, "hr.employee 5 locked after accounting.account 2"):
+            with transaction.atomic():
+                taken(connection, "accounting.account", [2])
+                taken(connection, "hr.employee", [5])
+        with transaction.atomic():
+            taken(connection, "accounting.payment", [9])
+            taken(connection, "hr.employee", [5])
+            taken(connection, "accounting.account", [2])
+
+
 class TheSurveyRecordsEverySiteOfAPairTests(TestCase):
     """
     O373: the survey (LOCK_ORDER_SURVEY) kept each pair once per process with the first site to take it, so a

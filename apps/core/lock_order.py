@@ -58,6 +58,11 @@ LOCK_ORDER = (
     #    bill it settles (every path the survey of 14 October saw)
     "core.party",
     "accounting.payment",
+    # 3c. an employee, after a payment received from them (hr.shortfalls.hold_the_payer: a receipt holds the
+    #     person as it posts) and before an account (ExpenseClaim.pay holds the claimant, then moves money out of
+    #     a bank). Unranked, a path taking the person after an account would have passed unseen (O374). A pay run
+    #     holds its people before it pays (hold_the_employee), so before the slips and the bank file below.
+    "hr.employee",
     # 3b. an account, after the payment that moves money through it (O258, the survey of 24 October
     #     over accounting, sales, purchasing, hr, inventory and e2e on PostgreSQL): a payment posting
     #     holds itself, then shares its bank account (accounting.money.hold_money_account), and the
