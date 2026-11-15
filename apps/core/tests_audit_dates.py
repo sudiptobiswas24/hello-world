@@ -13,7 +13,68 @@ class EveryCorrectionAsksTheRuleTests(SimpleTestCase):
         self.assertEqual(Command().corrections_dated_without_the_rule(list(OUR_APPS), app_sources()), [])
         self.assertEqual(sorted(Command.DATED_ELSEWHERE), [
             "accounting.RealisedOnItsOwnDay.release_exchange_difference",
+            "gst.SelfInvoice.issue",
+            # Found by following helpers (O580), each left for a fix of its own.
+            "manufacturing.CostVersion.publish",
+            "manufacturing.WorkOrder.close",
+            "purchasing.BillLine.allocate_landed_cost",
+            "sales.Invoice.record_tds",
         ])
+
+
+class ACorrectionPostedThroughAHelperIsSeenTests(SimpleTestCase):
+    """
+    O580: corrections_dated_without_the_rule read a step alone, so a step that posted through a shared helper
+    (Invoice.withdraw_unearned_discount through settlement.withdraw_discount) was never seen, and the
+    withdrawal stood dated before the discount it took back (O256). It follows the helper now.
+    """
+
+    HELPER = ("def give_back(document, amount, on_date):\n"
+              "    entry = JournalEntry.objects.create(date=on_date, memo='back')\n"
+              "    entry.post()\n"
+              "    return entry\n")
+    DATED_HELPER = ("def give_back(document, amount, on_date):\n"
+                    "    on_date = correction_date(on_date, document.taken_on, 'not on', 'taken')\n"
+                    "    entry = JournalEntry.objects.create(date=on_date, memo='back')\n"
+                    "    entry.post()\n"
+                    "    return entry\n")
+    STEP = ("from .settlement import give_back\n\n"
+            "class Invoice:\n"
+            "    def withdraw(self, on_date=None):\n"
+            "        return give_back(self, self.discount, on_date or today())\n")
+
+    def findings(self, helper, step=STEP):
+        from pathlib import Path
+
+        from apps.core.management.commands.audit_invariants import Command
+
+        sources = {"accounting": {Path("apps/accounting/settlement.py"): helper},
+                   "sales": {Path("apps/sales/models.py"): step}}
+        # The real tree's exemptions read stale against two planted files; only the step is asked about here.
+        return [detail.split(" ")[0] for shape, detail in Command().corrections_dated_without_the_rule(
+            ["accounting", "sales"], sources) if shape == "correction dated anywhere"]
+
+    def test_a_step_posting_through_an_undated_helper_is_reported(self):
+        self.assertEqual(self.findings(self.HELPER), ["sales.Invoice.withdraw"])
+
+    def test_one_through_a_helper_that_asks_the_rule_is_not(self):
+        self.assertEqual(self.findings(self.DATED_HELPER), [])
+
+    def test_nor_one_asking_it_through_another_function(self):
+        asks = ("def due_on(document, on_date):\n"
+                "    return correction_date(on_date, document.taken_on, 'not on', 'taken')\n\n")
+        step = self.STEP.replace("on_date or today())", "due_on(self, on_date))")
+        self.assertEqual(self.findings(asks + self.HELPER, step), [])
+
+    def test_the_fixed_withdraw_discount_is_no_helper_and_its_callers_are_not_reported(self):
+        from apps.core.management.commands.audit_invariants import OUR_APPS, Command, app_sources
+
+        sources = app_sources()
+        self.assertNotIn("withdraw_discount", Command()._posting_helpers(sources))
+        self.assertIn("withdraw_discount", Command()._rule_askers(sources))
+        found = " ".join(detail for _shape, detail in Command().corrections_dated_without_the_rule(
+            list(OUR_APPS), sources))
+        self.assertNotIn("withdraw_unearned_discount", found)
 
 
 class TheAuditSeesTheUtcDayOfAnyMomentTests(SimpleTestCase):

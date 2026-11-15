@@ -2675,6 +2675,70 @@ class Command(BaseCommand):
                         ))
         return sorted(findings)
 
+    # The parameters a helper is handed its day in.
+    DAY_PARAMETERS = {"on_date", "day", "date", "entry_date", "when"}
+
+    def _posting_helpers(self, sources):
+        """
+        {name: module} of the module-level functions that reverse or post an entry on a day they are handed and
+        do not ask correction_date() themselves, or call one that does so (O580). A step that takes `on_date` and
+        calls one posts through it: withdrawing a discount went through settlement.withdraw_discount, and
+        corrections_dated_without_the_rule, reading the step alone, never saw it post (O256). A helper that asks
+        the rule itself dates its callers' entries, and is not one.
+        """
+        functions = []
+        for files in sources.values():
+            for path, text in files.items():
+                if "test" in path.name or "migrations" in path.parts or "management" in path.parts:
+                    continue
+                functions += [(fn.name, path.stem, self._code(fn), {arg.arg for arg in fn.args.args + fn.args.kwonlyargs})
+                              for fn in ast.parse(text).body if isinstance(fn, ast.FunctionDef)]
+        askers = self._rule_askers(sources)
+        asks = self._calls_to(askers)
+        dated = [(name, stem, code) for name, stem, code, args in functions
+                 if self.DAY_PARAMETERS & args and not self._asks_the_rule(code, asks)]
+        helpers = {name: stem for name, stem, code in dated if self.REVERSES.search(code) or self.POSTS.search(code)}
+        while True:  # a helper that posts only through another helper is one too
+            calls = self._calls_to(helpers)
+            more = {name: stem for name, stem, code in dated
+                    if name not in helpers and calls is not None and calls.search(code)}
+            if not more:
+                return helpers
+            helpers.update(more)
+
+    @staticmethod
+    def _calls_to(functions):
+        """A pattern matching a call to any of {name: module}, bare or through its module."""
+        return re.compile("|".join(rf"(?<![\w.])(?:{re.escape(stem)}\.)?{re.escape(name)}\("
+                                   for name, stem in sorted(functions.items()))) if functions else None
+
+    @staticmethod
+    def _asks_the_rule(code, asks):
+        """Whether code asks correction_date(), itself or through a module function that does (asks)."""
+        return "correction_date(" in code or "run_date(" in code or bool(asks and asks.search(code))
+
+    def _rule_askers(self, sources):
+        """
+        {name: module} of the module-level functions that ask correction_date() (or run_date()), themselves or
+        through another that does: purchasing.tds.deduct dates its entry by due_on(), which asks it, and
+        challans.void_challan asks it for GstCashPayment.void (O580).
+        """
+        functions = []
+        for files in sources.values():
+            for path, text in files.items():
+                if "test" in path.name or "migrations" in path.parts or "management" in path.parts:
+                    continue
+                functions += [(fn.name, path.stem, self._code(fn)) for fn in ast.parse(text).body
+                              if isinstance(fn, ast.FunctionDef)]
+        askers = {name: stem for name, stem, code in functions if self._asks_the_rule(code, None)}
+        while True:
+            calls = self._calls_to(askers)
+            more = {name: stem for name, stem, code in functions
+                    if name not in askers and calls is not None and calls.search(code)}
+            if not more:
+                return askers
+            askers.update(more)
+
     # -- shape 1: a correction dated before what it corrects, or ahead ------
     # Steps that reverse an entry on a day they are given and do not yet ask
     # correction_date(), with why. Each is a step another fix owns; the list
@@ -2683,6 +2747,19 @@ class Command(BaseCommand):
         "accounting.RealisedOnItsOwnDay.release_exchange_difference":
             "dated on the payment's void, which Payment.void asked of both refusals, or on the day the "
             "difference was realised when that came later: a void is never refused for it",
+        "gst.SelfInvoice.issue":
+            "an issue, not a correction: day_that_has_come() refuses a day to come, and a day before the supply "
+            "was received is refused in words (Rule 47A); take_credit() posts on that day",
+        # Seen when the check learned to follow a helper (O580), and left for their own fixes: each posts through
+        # a helper on whatever day it is handed, today by default, with no rule. To be registered.
+        "sales.Invoice.record_tds":
+            "O580, to be registered: sales.tds.record() books the customer's TDS on any day, before the invoice too",
+        "purchasing.BillLine.allocate_landed_cost":
+            "O580, to be registered: land_on_receipts() lands the cost on any day, before the goods arrived too",
+        "manufacturing.CostVersion.publish":
+            "O580, to be registered: _revalue_shelves() revalues the shelves through _post_entry() on any day",
+        "manufacturing.WorkOrder.close":
+            "O580, to be registered: the close's variances post through _post_entry() on any day",
     }
 
     # An entry is taken back by create_reversal(), or written by hand
@@ -2954,6 +3031,8 @@ class Command(BaseCommand):
         31 August, and the check, looking only for reversals, could not see it.
         """
         findings, exempted = [], set()
+        calls = self._calls_to(self._posting_helpers(sources))
+        asks = self._calls_to(self._rule_askers(sources))
         for label in labels:
             for path, text in sorted(sources[label].items()):
                 if "test" in path.name or "migrations" in path.parts or "management" in path.parts:
@@ -2962,19 +3041,23 @@ class Command(BaseCommand):
                     for fn in (node for node in cls.body if isinstance(node, ast.FunctionDef)):
                         code = self._code(fn)
                         reverses = self.REVERSES.search(code)
+                        helper = calls.search(code) if calls and not reverses and not self.POSTS.search(code) \
+                            else None
                         if "on_date" not in {arg.arg for arg in fn.args.args + fn.args.kwonlyargs} \
-                                or not (reverses or self.POSTS.search(code)) or "correction_date(" in code \
-                                or "run_date(" in code:  # a schedule's run asks the rule through run_date()
+                                or not (reverses or self.POSTS.search(code) or helper) \
+                                or self._asks_the_rule(code, asks):  # run_date(): a schedule's run asks it there
                             continue
                         key = f"{label}.{cls.name}.{fn.name}"
                         if key in self.DATED_ELSEWHERE:
                             exempted.add(key)
                             continue
+                        how = ("reverses an entry" if reverses else
+                               f"posts an entry through {helper.group(0).rstrip('(')}()" if helper else "posts an entry")
                         findings.append((
                             "correction dated anywhere",
-                            f"{key} ({path.name}:{fn.lineno}) {'reverses' if reverses else 'posts'} an entry on "
-                            "the day it is given and never asks correction_date(): before what it corrects, or "
-                            "on a day to come, the document and the books disagree.",
+                            f"{key} ({path.name}:{fn.lineno}) {how} on the day it is given and never asks "
+                            "correction_date(): before what it corrects, or on a day to come, the document and "
+                            "the books disagree.",
                         ))
         findings += [("stale exemption", f"{key} is exempted from correction_date() but is no longer a step "
                                          "that needs it.")
