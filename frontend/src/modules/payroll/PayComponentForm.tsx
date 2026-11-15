@@ -64,7 +64,9 @@ export default function PayComponentForm() {
             { key: "amount", label: "Amount", kind: "money" },
           ],
           body: (values, component) => ({ ...values, component: component.id }) },
-        remover: { permission: "hr.delete_paycomponentslab", url: (row) => `/api/hr/pay-component-slabs/${String(row.id)}/` },
+        // Offered only on a band no posted run was paid at; on one it was, why not, in the server's words (O570).
+        remover: { permission: "hr.delete_paycomponentslab", url: (row) => `/api/hr/pay-component-slabs/${String(row.id)}/`,
+          refused: (row) => String(row.kept_because ?? "") },
         // The law's schedule, confirmed whole as the Controller read it here (O468): every band this list showed.
         rowAction: { label: "Confirm schedule", permission: "hr.confirm_statutoryfigure",
           when: (row) => !row.confirmed_on, done: "Confirmed: runs deduct at this schedule from its day",

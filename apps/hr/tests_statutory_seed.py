@@ -391,6 +391,47 @@ class BonusRuleTests(LoadedTestCase):
         self.assertEqual(officer.get(f"/api/hr/minimum-wages/{self.wage.pk}/").json()["kept_because"], "")
 
 
+class AKeptSlabStaysTests(LoadedTestCase):
+    def test_a_slab_a_posted_run_kept_says_why_it_stays_and_the_delete_says_the_same(self):
+        """
+        O570: the slab list offered to remove a band a posted run was paid at, and the server refused it. The band
+        now says why (kept_because, Confirmed's rule from O567) in the words the delete refuses in; a band the run
+        did not read says nothing and goes, and once the run is voided the kept band may go too.
+        """
+        bands = [PayComponentSlab.objects.create(component=self.wb, state="WB", effective_from=D(2026, 4, 1),
+                                                 above=Decimal(above), up_to=up_to and Decimal(up_to),
+                                                 amount=Decimal(amount), confirmed_on=D(2026, 3, 31))
+                 for above, up_to, amount in (("0", "10000", "0"), ("10000", None, "110"))]
+        low, high = bands
+        person = self.worker("S1", work_state="WB")
+        self.paid(person, self.basic, "12000")
+        self.paid(person, self.wb, "1")
+        officer = self.in_role("Payroll Officer")
+        for band in bands:
+            self.assertEqual(officer.get(f"/api/hr/pay-component-slabs/{band.pk}/").json()["kept_because"], "")
+
+        october = self.month_run(2026, 10, employees=[person])
+        line = self.line(october, person, self.wb)
+        self.assertEqual((line.amount, line.kept_terms["slab"][0]), (Decimal("110.00"), high.pk))
+        why = officer.get(f"/api/hr/pay-component-slabs/{high.pk}/").json()["kept_because"]
+        high.refresh_from_db()  # the band as stored, 10000.00 and 110.00, as the server words it
+        self.assertEqual(why, f"{high} is what {october} was paid at; it is not deleted. Void that run first, or give "
+                              "the new figure a row of its own from the day it applies.")
+        refused = officer.delete(f"/api/hr/pay-component-slabs/{high.pk}/")
+        self.assertEqual(refused.status_code, 400)
+        self.assertIn(why, str(refused.json()))
+        # The list the screen reads says it of every band: the one the run read, and not the one it did not.
+        said = {row["id"]: row["kept_because"] for row in officer.get(
+            "/api/hr/pay-component-slabs/", {"component": self.wb.pk}).json()}
+        self.assertEqual(said, {low.pk: "", high.pk: why})
+        self.assertEqual(officer.delete(f"/api/hr/pay-component-slabs/{low.pk}/").status_code, 204)
+
+        # Voided, the run keeps nothing: the band may go, as the server allows.
+        october.void(on_date=october.period_end)
+        self.assertEqual(officer.get(f"/api/hr/pay-component-slabs/{high.pk}/").json()["kept_because"], "")
+        self.assertEqual(officer.delete(f"/api/hr/pay-component-slabs/{high.pk}/").status_code, 204)
+
+
 class EsiReadsTheDatedRatesTests(LoadedTestCase):
     """
     ESI at the dated rates: 0.75% and 3.25% (test rows from 2000), the employee's share 1% from

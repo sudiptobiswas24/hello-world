@@ -79,11 +79,13 @@ class SlabSerializer(serializers.ModelSerializer):
     # Every band of the schedule this band is of, as this response read them: the screen's Confirm sends them back,
     # so a band changed since is refused (confirm_schedule), and no screen could confirm a schedule before (O468).
     schedule_bands = serializers.SerializerMethodField()
+    # Why it may not be deleted, or "": the slab list offers removal only where the server would take it (O570).
+    kept_because = serializers.CharField(read_only=True)
 
     class Meta:
         model = PayComponentSlab
         fields = ["id", "component", "above", "up_to", "month", "amount", "state", "effective_from", "for_women",
-                  "confirmed_by", "confirmed_on", "schedule_bands"]
+                  "confirmed_by", "confirmed_on", "schedule_bands", "kept_because"]
         read_only_fields = ["confirmed_by", "confirmed_on"]
 
     def get_schedule_bands(self, band):
