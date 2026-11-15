@@ -10,7 +10,8 @@ from django.core.exceptions import ValidationError
 from reportlab.lib.units import mm
 
 from apps.accounting.trade_terms import freight_meta
-from apps.core.documents import bold, counted, lines, money, render_document, rupees_in_words
+from apps.core.documents import (
+    bold, contacts, counted, lines, money, printed_footer, render_document, rupees_in_words)
 from apps.core.models import Company, to_date
 
 
@@ -91,6 +92,8 @@ def issued_particulars(invoice, posting=False):
             "gstin": registration.gstin if registration else "",
             "state": registration.state if registration else _state_of(company.address),
             "tax_id": company.tax_id,
+            # Kept with the rest, so the foot of a reprint is what was issued, not today's phone (O566).
+            "contacts": contacts(company),
         },
         "recipient": {
             "name": customer.legal_name or customer.name,
@@ -374,8 +377,7 @@ def render_invoice_pdf(invoice, copy="original"):
         party_text=_party_text(printed["recipient"]),
         meta=meta, totals=totals, note=note, qr=qr, table=table, currency=currency,
         blocks=blocks, signatory=printed["signatory"],
-        footer=[printed["supplier"]["name"]] + ([f"Tax ID {printed['supplier']['tax_id']}"]
-                                                if printed["supplier"].get("tax_id") else []),
+        footer=printed_footer(printed["supplier"]),
     )
 
 

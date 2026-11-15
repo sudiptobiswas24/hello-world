@@ -296,7 +296,8 @@ class IssuedThenMoved(ReverseChargeCashTestCase):
 
     def issued(self):
         Company.objects.update(legal_name="Deccan Polysacks Private Limited", tax_id=self.settings.gstin,
-                               address=Address.objects.create(line1="Plot 14, MIDC", city="Aurangabad"))
+                               address=Address.objects.create(line1="Plot 14, MIDC", city="Aurangabad"),
+                               phone="0240 248 1100")
         made = SelfInvoice.issue(self.freight_bill(), on_date=DAY)
         [voucher] = PaymentVoucher.issue_for(self.paid_supplier(self.freight_bill(vendor=self.gta), "4000"))
         return made, voucher
@@ -305,7 +306,8 @@ class IssuedThenMoved(ReverseChargeCashTestCase):
         """Renamed, moved and re-registered after both were issued."""
         new = gstin("27AABCD9999E1Z")
         Company.objects.update(name="Deccan Packaging", legal_name="Deccan Packaging Limited", tax_id=new,
-                               address=Address.objects.create(line1="Gut 210, Waluj", city="Aurangabad"))
+                               address=Address.objects.create(line1="Gut 210, Waluj", city="Aurangabad"),
+                               phone="0240 255 0000")
         GstSettings.objects.update(gstin=new)
         return new
 
@@ -321,7 +323,7 @@ class WhatWasIssuedIsWhatReprints(IssuedThenMoved):
         made, voucher = self.issued()
         old = self.settings.gstin
         letterhead = {"name": "Deccan Polysacks", "legal_name": "Deccan Polysacks Private Limited",
-                      "address": ["Plot 14, MIDC", "Aurangabad"], "tax_id": old}
+                      "address": ["Plot 14, MIDC", "Aurangabad"], "tax_id": old, "contacts": ["0240 248 1100"]}
         for document in (made, voucher):
             document.refresh_from_db()
             self.assertEqual((document.recipient_gstin, document.letterhead), (old, letterhead))
@@ -335,6 +337,9 @@ class WhatWasIssuedIsWhatReprints(IssuedThenMoved):
                 self.assertNotIn(new, printed)
                 self.assertNotIn("Deccan Packaging", printed)
                 self.assertNotIn("Waluj", printed)
+                # The foot closes with the phone it was issued with, not today's (O566).
+                self.assertIn("0240 248 1100", printed)
+                self.assertNotIn("0240 255 0000", printed)
         # Kept, it is fixed with the rest of what was issued.
         made.recipient_gstin = new
         with self.assertRaisesMessage(ValidationError, "cancel it and issue another"):
