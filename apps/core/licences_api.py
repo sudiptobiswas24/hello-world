@@ -1,6 +1,8 @@
 """The plant's licences through the API: kept, renewed, and the ones to start renewing now."""
 
 from rest_framework import serializers, viewsets
+
+from apps.core.api import ModelSerializer
 from rest_framework.decorators import action
 
 from apps.core.api import required
@@ -10,7 +12,7 @@ from .audit import AuditableViewSetMixin
 from .licences import Licence, licences_due
 
 
-class LicenceSerializer(serializers.ModelSerializer):
+class LicenceSerializer(ModelSerializer):
     kind_label = serializers.CharField(source="get_kind_display", read_only=True)
     status = serializers.SerializerMethodField()
     renew_from = serializers.DateField(read_only=True)

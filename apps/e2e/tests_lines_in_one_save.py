@@ -23,7 +23,7 @@ from apps.accounting.models import Tax
 from apps.core.models import Party
 from apps.inventory.models import Item
 from apps.purchasing.models import Bill, BillLine, GoodsReceiptLine, PurchaseOrder, PurchaseOrderLine
-from apps.sales.models import Invoice, InvoiceLine, SalesOrder, SalesOrderLine
+from apps.sales.models import Delivery, Invoice, InvoiceLine, Quotation, RecurringInvoice, SalesOrder, SalesOrderLine
 from apps.web.tests_load_demo import load
 
 D = Decimal
@@ -221,3 +221,65 @@ class ARefusedLineMakesNothing(LinesInOneSaveTestCase):
             "new_lines": [{"item": self.item("SACK-RICE25"), "quantity": "10"}]}, format="json")
         self.assertEqual(refused.status_code, 400, refused.content)
         self.assertEqual(SalesOrderLine.objects.filter(order_id=made.json()["id"]).count(), 0)
+
+
+class NothingSentIsDroppedWithoutAWord(LinesInOneSaveTestCase):
+    """
+    O565: O555's shape on every other serializer. A quotation posted with one line of 100 x 11.20 was made with
+    none, 201; a delivery and a recurring invoice the same. A read-only list sent is refused now beside it, by the
+    one base every ModelSerializer here is written on (apps.core.api.ModelSerializer), made or saved, and nothing
+    is made. Any other read-only field is ignored, as DRF ignores it.
+    """
+
+    def who_may(self, permission):
+        for user in User.objects.filter(is_superuser=False, is_active=True).order_by("username"):
+            if user.has_perm(permission):
+                client = APIClient()
+                client.force_authenticate(user)
+                return client
+        self.fail(f"Nobody on the demo plant may {permission}.")
+
+    def test_a_quotation_sent_its_lines_is_refused_beside_them_and_nothing_is_made(self):
+        imran = self.as_("imran")
+        header = {"customer": Party.objects.get(code="C-KONK").pk, "quotation_date": TODAY()}
+        line = {"item": self.item("SACK-RICE25"), "quantity": "100", "unit_price": "11.20"}
+        before = Quotation.objects.count()
+        refused = imran.post("/api/sales/quotations/", {**header, "lines": [line]}, format="json")
+        self.assertEqual((refused.status_code, list(refused.json())), (400, ["lines"]), refused.content)
+        self.assertIn("add each one to it on its own", refused.json()["lines"][0])
+        self.assertEqual(Quotation.objects.count(), before)
+        made = imran.post("/api/sales/quotations/", header, format="json")
+        self.assertEqual(made.status_code, 201, made.content)
+        again = imran.patch(f"/api/sales/quotations/{made.json()['id']}/", {"lines": [line]}, format="json")
+        self.assertEqual((again.status_code, list(again.json())), (400, ["lines"]), again.content)
+        # The way a line is added: on its own, to the saved quotation. 100 x 11.20 = 1,120.00.
+        added = imran.post("/api/sales/quotation-lines/", {**line, "quotation": made.json()["id"]}, format="json")
+        self.assertEqual((added.status_code, added.json()["net_amount"]), (201, "1120.00"), added.content)
+
+    def test_a_delivery_and_a_recurring_invoice_sent_their_lines_are_refused_beside_them(self):
+        for documents, permission, model in (("/api/sales/deliveries/", "sales.add_delivery", Delivery),
+                                             ("/api/sales/recurring-invoices/", "sales.add_recurringinvoice",
+                                              RecurringInvoice)):
+            with self.subTest(documents):
+                before = model.objects.count()
+                line = {"item": self.item("SACK-RICE25"), "quantity": "100", "unit_price": "11.20"}
+                refused = self.who_may(permission).post(documents, {"lines": [line]}, format="json")
+                self.assertEqual(refused.status_code, 400, refused.content)
+                self.assertIn("nothing sent in it is kept", refused.json()["lines"][0])
+                self.assertEqual(model.objects.count(), before)
+
+    def test_lines_are_refused_beside_the_other_fields_and_any_other_read_only_field_is_ignored(self):
+        imran = self.as_("imran")
+        customer = Party.objects.get(code="C-KONK").pk
+        line = {"item": self.item("SACK-RICE25"), "quantity": "100", "unit_price": "11.20"}
+        before = Quotation.objects.count()
+        # Beside the other fields' refusals, not after them.
+        both = imran.post("/api/sales/quotations/", {"quotation_date": TODAY(), "lines": [line]}, format="json")
+        self.assertEqual((both.status_code, sorted(both.json())), (400, ["customer", "lines"]), both.content)
+        self.assertEqual(Quotation.objects.count(), before)
+        # A field read back only that is not a list (a status, a total) is ignored as DRF ignores it: a screen or
+        # an integration sending back what it read is not refused for it.
+        made = imran.post("/api/sales/quotations/", {"customer": customer, "quotation_date": TODAY(),
+                                                     "status": "accepted", "total": "1.00"}, format="json")
+        self.assertEqual((made.status_code, made.json()["status"], made.json()["total"]), (201, "draft", "0.00"),
+                         made.content)

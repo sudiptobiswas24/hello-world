@@ -3,6 +3,8 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, transaction
 from django.contrib.auth.models import Group
 from rest_framework import serializers, viewsets
+
+from apps.core.api import ModelSerializer
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.exceptions import ValidationError as DRFValidationError
@@ -401,7 +403,7 @@ class MeView(APIView):
         return Response(answer)
 
 
-class RoleSerializer(serializers.ModelSerializer):
+class RoleSerializer(ModelSerializer):
     class Meta:
         model = Group
         fields = ["id", "name"]

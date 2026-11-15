@@ -2,12 +2,14 @@
 
 from rest_framework import serializers, viewsets
 
+from apps.core.api import ModelSerializer
+
 from apps.core.audit import AuditableViewSetMixin
 
 from .packing import PackingLine
 
 
-class PackingLineSerializer(serializers.ModelSerializer):
+class PackingLineSerializer(ModelSerializer):
     item_sku = serializers.CharField(source="item.sku", read_only=True)
     packing_item_sku = serializers.CharField(source="packing_item.sku", read_only=True)
     packing_item_name = serializers.CharField(source="packing_item.name", read_only=True)

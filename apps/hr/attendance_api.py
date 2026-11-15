@@ -2,6 +2,8 @@
 
 
 from rest_framework import serializers, viewsets
+
+from apps.core.api import ModelSerializer
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
@@ -13,7 +15,7 @@ from apps.core.audit import AuditableViewSetMixin
 from .attendance import AttendanceDay, import_punches, unmarked_report
 
 
-class AttendanceDaySerializer(serializers.ModelSerializer):
+class AttendanceDaySerializer(ModelSerializer):
     employee_number = serializers.CharField(source="employee.employee_number", read_only=True)
     employee_name = serializers.CharField(source="employee.party.name", read_only=True)
 

@@ -32,7 +32,8 @@ export default function LeadForm() {
         { key: "campaign", label: "Campaign", kind: "ref", ref: CAMPAIGN_REF },
         { key: "interest", label: "What they asked for", wide: true, hint: "50 kg cement sacks, twenty thousand a month" },
         { key: "owner", label: "Rep", kind: "pick", pick: REP_PICK, hint: "A rep's leads are their own; empty, any rep may take it", show: (row) => String(row.owner_name || "Nobody yet") },
-        { key: "status", label: "Status", kind: "choice", choices: [["new", "New"], ["working", "Being worked"]], initial: "new" },
+        // The server keeps the state and moves it by Take it, Convert and Lost: sent, it was dropped (O565).
+        { key: "status", label: "Status", kind: "choice", choices: [["new", "New"], ["working", "Being worked"]], readOnly: true },
         { key: "score_summary", label: "How warm", readOnly: true, existingOnly: true, wide: true,
           show: (row) => (open(row) ? `${String(row.score ?? "")} of 100: ${String(row.score_summary ?? "")}` : String(row.score_summary ?? "")) },
         { key: "converted_party_name", label: "Became", readOnly: true, existingOnly: true },

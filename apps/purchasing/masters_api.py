@@ -6,6 +6,8 @@ planning, and kept only in the Django admin.
 """
 
 from rest_framework import serializers, viewsets
+
+from apps.core.api import ModelSerializer
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
@@ -14,7 +16,7 @@ from apps.core.audit import AuditableViewSetMixin
 from .models import ApprovalTier, Budget, PurchaseApprovalPolicy, ReorderRule, VendorPrice
 
 
-class VendorPriceSerializer(serializers.ModelSerializer):
+class VendorPriceSerializer(ModelSerializer):
     vendor_name = serializers.CharField(source="vendor.name", read_only=True)
     item_label = serializers.SerializerMethodField()
     currency_code = serializers.CharField(source="currency.code", read_only=True, default="")
@@ -40,7 +42,7 @@ class VendorPriceViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     ordering_fields = ["valid_from", "unit_price"]
 
 
-class ReorderRuleSerializer(serializers.ModelSerializer):
+class ReorderRuleSerializer(ModelSerializer):
     item_label = serializers.SerializerMethodField()
     warehouse_name = serializers.CharField(source="warehouse.name", read_only=True)
     vendor_name = serializers.CharField(source="vendor.name", read_only=True, default="")
@@ -64,7 +66,7 @@ class ReorderRuleViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     search_fields = ["item__sku", "item__name"]
 
 
-class BudgetSerializer(serializers.ModelSerializer):
+class BudgetSerializer(ModelSerializer):
     account_label = serializers.SerializerMethodField()
 
     class Meta:
@@ -99,7 +101,7 @@ class BudgetViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         })
 
 
-class ApprovalTierSerializer(serializers.ModelSerializer):
+class ApprovalTierSerializer(ModelSerializer):
     group_name = serializers.CharField(source="group.name", read_only=True)
 
     class Meta:
@@ -107,7 +109,7 @@ class ApprovalTierSerializer(serializers.ModelSerializer):
         fields = ["id", "policy", "group", "up_to_amount", "group_name"]
 
 
-class PurchaseApprovalPolicySerializer(serializers.ModelSerializer):
+class PurchaseApprovalPolicySerializer(ModelSerializer):
     tiers = ApprovalTierSerializer(many=True, read_only=True)
 
     class Meta:

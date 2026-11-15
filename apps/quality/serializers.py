@@ -1,5 +1,7 @@
 from rest_framework import serializers
 
+from apps.core.api import ModelSerializer
+
 from .calibration import Calibration, Instrument
 from .models import (
     Characteristic,
@@ -12,7 +14,7 @@ from .certificates import SupplierCertificate, SupplierCertificateLine
 from .release import release_status
 
 
-class CharacteristicSerializer(serializers.ModelSerializer):
+class CharacteristicSerializer(ModelSerializer):
     uom_code = serializers.CharField(source="uom.code", read_only=True, default="")
 
     class Meta:
@@ -21,7 +23,7 @@ class CharacteristicSerializer(serializers.ModelSerializer):
                   "is_active", "needs_calibrated_instrument"]
 
 
-class PlanLineSerializer(serializers.ModelSerializer):
+class PlanLineSerializer(ModelSerializer):
     characteristic_label = serializers.SerializerMethodField()
 
     class Meta:
@@ -35,7 +37,7 @@ class PlanLineSerializer(serializers.ModelSerializer):
         read_only_fields = ["derived_from"]
 
 
-class InspectionPlanSerializer(serializers.ModelSerializer):
+class InspectionPlanSerializer(ModelSerializer):
     lines = PlanLineSerializer(many=True, read_only=True)
     item_label = serializers.SerializerMethodField()
     lines_count = serializers.SerializerMethodField()
@@ -56,7 +58,7 @@ class InspectionPlanSerializer(serializers.ModelSerializer):
         read_only_fields = ["is_computed"]
 
 
-class ReadingSerializer(serializers.ModelSerializer):
+class ReadingSerializer(ModelSerializer):
     characteristic = serializers.SerializerMethodField()
 
     def get_characteristic(self, reading):
@@ -70,7 +72,7 @@ class ReadingSerializer(serializers.ModelSerializer):
         read_only_fields = ["lower_limit", "upper_limit", "passed", "calibration"]
 
 
-class InspectionSerializer(serializers.ModelSerializer):
+class InspectionSerializer(ModelSerializer):
     readings = ReadingSerializer(many=True, read_only=True)
     lot_code = serializers.CharField(source="lot.code", read_only=True)
     item_label = serializers.SerializerMethodField()
@@ -132,7 +134,7 @@ class InspectionSerializer(serializers.ModelSerializer):
         return release_status(obj.lot)
 
 
-class InstrumentSerializer(serializers.ModelSerializer):
+class InstrumentSerializer(ModelSerializer):
     class Meta:
         model = Instrument
         fields = ["id", "code", "name", "serial_number", "location", "interval_days",
@@ -140,7 +142,7 @@ class InstrumentSerializer(serializers.ModelSerializer):
         read_only_fields = ["is_weighbridge"]
 
 
-class CalibrationSerializer(serializers.ModelSerializer):
+class CalibrationSerializer(ModelSerializer):
     instrument_code = serializers.CharField(source="instrument.code", read_only=True)
     suspects = serializers.SerializerMethodField()
 
@@ -161,7 +163,7 @@ class CalibrationSerializer(serializers.ModelSerializer):
         read_only_fields = ["number", "posted", "posted_at", "voided_at", "voided_reason"]
 
 
-class SupplierCertificateLineSerializer(serializers.ModelSerializer):
+class SupplierCertificateLineSerializer(ModelSerializer):
     characteristic_label = serializers.SerializerMethodField()
     missing = serializers.SerializerMethodField()
 
@@ -188,7 +190,7 @@ class SupplierCertificateLineSerializer(serializers.ModelSerializer):
         read_only_fields = ["lower_limit", "upper_limit", "within"]
 
 
-class SupplierCertificateSerializer(serializers.ModelSerializer):
+class SupplierCertificateSerializer(ModelSerializer):
     lines = SupplierCertificateLineSerializer(many=True, read_only=True)
     lot_code = serializers.CharField(source="lot.code", read_only=True)
     item_label = serializers.SerializerMethodField()

@@ -5,13 +5,15 @@ sales-order-lines/{id}/schedule/ for what is still owed and by when.
 
 from rest_framework import serializers, viewsets
 
+from apps.core.api import ModelSerializer
+
 from apps.core.audit import AuditableViewSetMixin
 
 from .call_offs import CallOff
 from .scoping import CustomerScopedMixin
 
 
-class CallOffSerializer(serializers.ModelSerializer):
+class CallOffSerializer(ModelSerializer):
     line_label = serializers.SerializerMethodField()
 
     def get_line_label(self, row):

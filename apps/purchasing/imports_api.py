@@ -1,6 +1,8 @@
 """The bill of entry (L21), rate contracts and rate-difference notes (L16), over the API."""
 
 from rest_framework import serializers, viewsets
+
+from apps.core.api import ModelSerializer
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
@@ -12,7 +14,7 @@ from .models import Bill, GoodsReceipt
 from .rate_contracts import PurchaseRateContract, RateContractLine, RateDifferenceLine, RateDifferenceNote
 
 
-class BillOfEntryLineSerializer(serializers.ModelSerializer):
+class BillOfEntryLineSerializer(ModelSerializer):
     receipt_number = serializers.CharField(source="receipt_line.receipt.number", read_only=True)
     item_name = serializers.CharField(source="receipt_line.order_line.item.name", read_only=True)
     bill_number = serializers.CharField(source="bill_line.bill.number", read_only=True)
@@ -25,7 +27,7 @@ class BillOfEntryLineSerializer(serializers.ModelSerializer):
                             "sws", "igst"]
 
 
-class BillOfEntrySerializer(serializers.ModelSerializer):
+class BillOfEntrySerializer(ModelSerializer):
     customs_party_name = serializers.CharField(source="customs_party.name", read_only=True)
     currency_code = serializers.CharField(source="currency.code", read_only=True)
     duty_bill_number = serializers.CharField(source="duty_bill.number", read_only=True, default="")
@@ -138,7 +140,7 @@ class BillOfEntryLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     ordering_fields = ["id"]
 
 
-class CustomsValuationDefaultSerializer(serializers.ModelSerializer):
+class CustomsValuationDefaultSerializer(ModelSerializer):
     class Meta:
         model = CustomsValuationDefault
         fields = ["id", "valid_from", "freight_percent", "insurance_percent", "citation", "confirmed"]
@@ -152,7 +154,7 @@ class CustomsValuationDefaultViewSet(AuditableViewSetMixin, viewsets.ModelViewSe
     ordering_fields = ["valid_from"]
 
 
-class RateContractLineSerializer(serializers.ModelSerializer):
+class RateContractLineSerializer(ModelSerializer):
     item_name = serializers.CharField(source="item.name", read_only=True)
     ordered_kg = serializers.SerializerMethodField()
 
@@ -164,7 +166,7 @@ class RateContractLineSerializer(serializers.ModelSerializer):
         return line.ordered_kg()
 
 
-class PurchaseRateContractSerializer(serializers.ModelSerializer):
+class PurchaseRateContractSerializer(ModelSerializer):
     vendor_name = serializers.CharField(source="vendor.name", read_only=True)
     index_code = serializers.CharField(source="index.code", read_only=True)
     index_today = serializers.SerializerMethodField()
@@ -204,7 +206,7 @@ class RateContractLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     ordering_fields = ["id"]
 
 
-class RateDifferenceLineSerializer(serializers.ModelSerializer):
+class RateDifferenceLineSerializer(ModelSerializer):
     receipt_number = serializers.CharField(source="receipt_line.receipt.number", read_only=True)
     receipt_date = serializers.DateField(source="receipt_line.receipt.receipt_date", read_only=True)
     item_name = serializers.CharField(source="order_line.item.name", read_only=True)
@@ -216,7 +218,7 @@ class RateDifferenceLineSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
-class RateDifferenceNoteSerializer(serializers.ModelSerializer):
+class RateDifferenceNoteSerializer(ModelSerializer):
     contract_number = serializers.CharField(source="contract.number", read_only=True)
     vendor_name = serializers.CharField(source="contract.vendor.name", read_only=True)
     bill_number = serializers.CharField(source="bill.__str__", read_only=True, default="")

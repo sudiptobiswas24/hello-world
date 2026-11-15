@@ -2,12 +2,14 @@
 
 from rest_framework import serializers, viewsets
 
+from apps.core.api import ModelSerializer
+
 from apps.core.audit import AuditableViewSetMixin
 
 from .orders import ManufacturingSettings
 
 
-class ManufacturingSettingsSerializer(serializers.ModelSerializer):
+class ManufacturingSettingsSerializer(ModelSerializer):
     class Meta:
         model = ManufacturingSettings
         exclude = ["created_at", "updated_at", "created_by", "updated_by"]

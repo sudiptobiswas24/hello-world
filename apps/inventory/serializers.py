@@ -3,6 +3,8 @@ from decimal import Decimal
 from django.db.models import Sum
 from rest_framework import serializers
 
+from apps.core.api import ModelSerializer
+
 from .adjustments import offset_account_refusal
 from .models import (
     AdjustmentReason,
@@ -26,7 +28,7 @@ from .models import (
 from apps.core.customfields import ExtensibleSerializerMixin
 
 
-class WarehouseSerializer(serializers.ModelSerializer):
+class WarehouseSerializer(ModelSerializer):
     class Meta:
         model = Warehouse
         # Everything that decides how a warehouse behaves, not just its
@@ -53,7 +55,7 @@ class WarehouseSerializer(serializers.ModelSerializer):
         return data
 
 
-class ItemUnitSerializer(serializers.ModelSerializer):
+class ItemUnitSerializer(ModelSerializer):
     uom_code = serializers.CharField(source="uom.code", read_only=True)
 
     class Meta:
@@ -127,7 +129,7 @@ def validate_cogs_account(serializer, account):
     return validate_kept_account(serializer, account, "cogs_account", cogs_account_refusal, "cost of sales")
 
 
-class ItemSerializer(HidesStockMoney, ExtensibleSerializerMixin, serializers.ModelSerializer):
+class ItemSerializer(HidesStockMoney, ExtensibleSerializerMixin, ModelSerializer):
     stock_money = ITEM_MONEY
 
     def validate_inventory_account(self, account):
@@ -174,7 +176,7 @@ class ItemSerializer(HidesStockMoney, ExtensibleSerializerMixin, serializers.Mod
         return attrs
 
 
-class StockMovementSerializer(HidesStockMoney, serializers.ModelSerializer):
+class StockMovementSerializer(HidesStockMoney, ModelSerializer):
     stock_money = MOVEMENT_MONEY
 
     # Named, so the stock ledger reads without a call per row.
@@ -206,7 +208,7 @@ class StockMovementSerializer(HidesStockMoney, serializers.ModelSerializer):
 # machine.
 
 
-class LotSerializer(serializers.ModelSerializer):
+class LotSerializer(ModelSerializer):
     on_hand = serializers.SerializerMethodField()
     has_expired = serializers.SerializerMethodField()
     item_label = serializers.SerializerMethodField()
@@ -262,7 +264,7 @@ class LotListSerializer(serializers.ListSerializer):
         return super().to_representation(lots)
 
 
-class StorageBinSerializer(serializers.ModelSerializer):
+class StorageBinSerializer(ModelSerializer):
     warehouse_name = serializers.CharField(source="warehouse.name", read_only=True)
 
     class Meta:
@@ -273,7 +275,7 @@ class StorageBinSerializer(serializers.ModelSerializer):
         ]
 
 
-class AdjustmentReasonSerializer(serializers.ModelSerializer):
+class AdjustmentReasonSerializer(ModelSerializer):
     account_label = serializers.SerializerMethodField()
 
     class Meta:
@@ -313,7 +315,7 @@ class AdjustmentReasonSerializer(serializers.ModelSerializer):
         return f"{reason.account.code} · {reason.account.name}" if reason.account_id else ""
 
 
-class StockAdjustmentLineSerializer(HidesStockMoney, serializers.ModelSerializer):
+class StockAdjustmentLineSerializer(HidesStockMoney, ModelSerializer):
     stock_money = ("revaluation", "unit_cost")
     item_label = serializers.SerializerMethodField()
     lot_code = serializers.CharField(source="lot.code", read_only=True, default="")
@@ -335,7 +337,7 @@ class StockAdjustmentLineSerializer(HidesStockMoney, serializers.ModelSerializer
         extra_kwargs = {"uom": {"required": False}}
 
 
-class StockAdjustmentSerializer(HidesStockMoney, serializers.ModelSerializer):
+class StockAdjustmentSerializer(HidesStockMoney, ModelSerializer):
     stock_money = ("total_value",)
     lines = StockAdjustmentLineSerializer(many=True, read_only=True)
     warehouse_name = serializers.CharField(source="warehouse.name", read_only=True, default="")
@@ -362,7 +364,7 @@ class StockAdjustmentSerializer(HidesStockMoney, serializers.ModelSerializer):
         return adjustment.is_voided()
 
 
-class StockCountLineSerializer(serializers.ModelSerializer):
+class StockCountLineSerializer(ModelSerializer):
     item_label = serializers.SerializerMethodField()
     lot_code = serializers.CharField(source="lot.code", read_only=True, default="")
 
@@ -383,7 +385,7 @@ class StockCountLineSerializer(serializers.ModelSerializer):
         return line.variance()
 
 
-class StockCountSerializer(serializers.ModelSerializer):
+class StockCountSerializer(ModelSerializer):
     lines = StockCountLineSerializer(many=True, read_only=True)
     warehouse_name = serializers.CharField(source="warehouse.name", read_only=True, default="")
     reason_name = serializers.CharField(source="reason.name", read_only=True, default="")
@@ -402,7 +404,7 @@ class StockCountSerializer(serializers.ModelSerializer):
         read_only_fields = ["number", "posted", "posted_at"]
 
 
-class StockTransferLineSerializer(serializers.ModelSerializer):
+class StockTransferLineSerializer(ModelSerializer):
     item_label = serializers.SerializerMethodField()
     lot_code = serializers.CharField(source="lot.code", read_only=True, default="")
 
@@ -424,7 +426,7 @@ class StockTransferLineSerializer(serializers.ModelSerializer):
         return line.quantity_outstanding()
 
 
-class StockTransferSerializer(serializers.ModelSerializer):
+class StockTransferSerializer(ModelSerializer):
     lines = StockTransferLineSerializer(many=True, read_only=True)
     from_name = serializers.CharField(source="from_warehouse.name", read_only=True, default="")
     to_name = serializers.CharField(source="to_warehouse.name", read_only=True, default="")
@@ -441,7 +443,7 @@ class StockTransferSerializer(serializers.ModelSerializer):
         ]
 
 
-class StockReservationSerializer(serializers.ModelSerializer):
+class StockReservationSerializer(ModelSerializer):
     remaining = serializers.SerializerMethodField()
     item_label = serializers.SerializerMethodField()
     warehouse_name = serializers.CharField(source="warehouse.name", read_only=True, default="")
@@ -465,13 +467,13 @@ class StockReservationSerializer(serializers.ModelSerializer):
         return reservation.remaining()
 
 
-class ItemAttributeValueSerializer(serializers.ModelSerializer):
+class ItemAttributeValueSerializer(ModelSerializer):
     class Meta:
         model = ItemAttributeValue
         fields = ["id", "attribute", "code", "name", "sequence", "is_active"]
 
 
-class ItemAttributeSerializer(serializers.ModelSerializer):
+class ItemAttributeSerializer(ModelSerializer):
     values = ItemAttributeValueSerializer(many=True, read_only=True)
 
     class Meta:
@@ -479,7 +481,7 @@ class ItemAttributeSerializer(serializers.ModelSerializer):
         fields = ["id", "code", "name", "sequence", "is_active", "values"]
 
 
-class ItemTemplateSerializer(serializers.ModelSerializer):
+class ItemTemplateSerializer(ModelSerializer):
     variant_count = serializers.SerializerMethodField()
 
     def validate_inventory_account(self, account):

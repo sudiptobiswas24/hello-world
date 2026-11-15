@@ -2,6 +2,8 @@ from decimal import Decimal
 
 from rest_framework import serializers
 
+from apps.core.api import ModelSerializer
+
 from apps.inventory.serializers import HidesStockMoney
 
 from .bom import BillOfMaterials, BomByproduct, BomComponent
@@ -49,7 +51,7 @@ from .woven import (
 from apps.core.customfields import ExtensibleSerializerMixin
 
 
-class TapeSpecificationSerializer(serializers.ModelSerializer):
+class TapeSpecificationSerializer(ModelSerializer):
     virgin_percent = serializers.SerializerMethodField()
     metres_per_kg = serializers.SerializerMethodField()
 
@@ -75,7 +77,7 @@ class TapeSpecificationSerializer(serializers.ModelSerializer):
         return round(obj.metres_per_kg(), 2)
 
 
-class FilmSpecificationSerializer(serializers.ModelSerializer):
+class FilmSpecificationSerializer(ModelSerializer):
     grams_per_metre = serializers.SerializerMethodField()
 
     class Meta:
@@ -93,7 +95,7 @@ class FilmSpecificationSerializer(serializers.ModelSerializer):
         return str(obj.grams_per_metre().quantize(Decimal("0.001")))
 
 
-class LinerSpecificationSerializer(serializers.ModelSerializer):
+class LinerSpecificationSerializer(ModelSerializer):
     liner_grams = serializers.SerializerMethodField()
 
     class Meta:
@@ -109,7 +111,7 @@ class LinerSpecificationSerializer(serializers.ModelSerializer):
         return str(obj.liner_grams().quantize(Decimal("0.001")))
 
 
-class FabricSpecificationSerializer(serializers.ModelSerializer):
+class FabricSpecificationSerializer(ModelSerializer):
     gsm = serializers.SerializerMethodField()
     gsm_deviation_percent = serializers.SerializerMethodField()
     grams_per_metre = serializers.SerializerMethodField()
@@ -165,7 +167,7 @@ class CoatingLineSerializer(serializers.Serializer):
         return f"{line.item.sku} · {line.item.name}"
 
 
-class BagSpecificationSerializer(FoldAllowanceDefault, serializers.ModelSerializer):
+class BagSpecificationSerializer(FoldAllowanceDefault, ModelSerializer):
     # Written through the specification, never line by line, so that
     # the blend is checked and the bill rebuilt in the same save.
     coating = CoatingLineSerializer(many=True, required=False, source="coating_lines")
@@ -238,7 +240,7 @@ class BagSpecificationSerializer(FoldAllowanceDefault, serializers.ModelSerializ
         return self._save(instance, validated_data)
 
 
-class BagSolveSerializer(FoldAllowanceDefault, serializers.ModelSerializer):
+class BagSolveSerializer(FoldAllowanceDefault, ModelSerializer):
     """
     A sack described before any fabric exists for it: the construction,
     the contracted weight and the loom's mesh, and nothing saved.
@@ -272,7 +274,7 @@ class BagSolveSerializer(FoldAllowanceDefault, serializers.ModelSerializer):
         ]
 
 
-class TestCertificateSerializer(serializers.ModelSerializer):
+class TestCertificateSerializer(ModelSerializer):
     delivery_number = serializers.CharField(source="delivery.number", read_only=True)
     customer_name = serializers.CharField(source="delivery.sales_order.customer.name", read_only=True)
 
@@ -283,7 +285,7 @@ class TestCertificateSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
-class MaterialRateSerializer(serializers.ModelSerializer):
+class MaterialRateSerializer(ModelSerializer):
     item_label = serializers.SerializerMethodField()
 
     def get_item_label(self, row):
@@ -294,7 +296,7 @@ class MaterialRateSerializer(serializers.ModelSerializer):
         fields = ["id", "item", "rate", "valid_from", "note", "item_label"]
 
 
-class CustomerMaterialReceiptLineSerializer(serializers.ModelSerializer):
+class CustomerMaterialReceiptLineSerializer(ModelSerializer):
     lot_code = serializers.CharField(source="lot.code", read_only=True, default="")
     item_label = serializers.SerializerMethodField()
 
@@ -306,7 +308,7 @@ class CustomerMaterialReceiptLineSerializer(serializers.ModelSerializer):
         fields = ["id", "receipt", "item", "lot", "quantity", "declared_value", "item_label", "lot_code"]
 
 
-class CustomerMaterialReceiptSerializer(serializers.ModelSerializer):
+class CustomerMaterialReceiptSerializer(ModelSerializer):
     customer_name = serializers.CharField(source="customer.name", read_only=True)
     warehouse_name = serializers.CharField(source="warehouse.name", read_only=True)
     lines = CustomerMaterialReceiptLineSerializer(many=True, read_only=True)
@@ -320,7 +322,7 @@ class CustomerMaterialReceiptSerializer(serializers.ModelSerializer):
         validators = []
 
 
-class CustomerMaterialReturnLineSerializer(serializers.ModelSerializer):
+class CustomerMaterialReturnLineSerializer(ModelSerializer):
     lot_code = serializers.CharField(source="lot.code", read_only=True, default="")
     item_label = serializers.SerializerMethodField()
 
@@ -334,7 +336,7 @@ class CustomerMaterialReturnLineSerializer(serializers.ModelSerializer):
         extra_kwargs = {"item": {"required": False}}
 
 
-class CustomerMaterialReturnSerializer(serializers.ModelSerializer):
+class CustomerMaterialReturnSerializer(ModelSerializer):
     customer_name = serializers.CharField(source="customer.name", read_only=True)
     warehouse_name = serializers.CharField(source="warehouse.name", read_only=True)
     lines = CustomerMaterialReturnLineSerializer(many=True, read_only=True)
@@ -346,7 +348,7 @@ class CustomerMaterialReturnSerializer(serializers.ModelSerializer):
         read_only_fields = ["number", "posted", "posted_at", "voided_at", "voided_reason"]
 
 
-class EnergyMeterSerializer(serializers.ModelSerializer):
+class EnergyMeterSerializer(ModelSerializer):
     serves = serializers.SerializerMethodField()
 
     class Meta:
@@ -361,7 +363,7 @@ class EnergyMeterSerializer(serializers.ModelSerializer):
         validators = []
 
 
-class MeterReadingSerializer(serializers.ModelSerializer):
+class MeterReadingSerializer(ModelSerializer):
     meter_code = serializers.CharField(source="meter.code", read_only=True)
     shift_name = serializers.CharField(source="shift.name", read_only=True, default="")
     read_by_name = serializers.CharField(source="read_by.party.name", read_only=True, default="")
@@ -374,13 +376,13 @@ class MeterReadingSerializer(serializers.ModelSerializer):
         validators = []
 
 
-class EnergyTariffSerializer(serializers.ModelSerializer):
+class EnergyTariffSerializer(ModelSerializer):
     class Meta:
         model = EnergyTariff
         fields = ["id", "rate", "valid_from", "note"]
 
 
-class StageRateSerializer(serializers.ModelSerializer):
+class StageRateSerializer(ModelSerializer):
     work_centre_name = serializers.CharField(source="work_centre.name", read_only=True, default="")
 
     class Meta:
@@ -390,20 +392,20 @@ class StageRateSerializer(serializers.ModelSerializer):
         ]
 
 
-class QuotePolicySerializer(serializers.ModelSerializer):
+class QuotePolicySerializer(ModelSerializer):
     class Meta:
         model = QuotePolicy
         fields = ["id", "overhead_percent", "margin_percent", "valid_from", "note"]
 
 
-class CostSheetLineSerializer(serializers.ModelSerializer):
+class CostSheetLineSerializer(ModelSerializer):
     class Meta:
         model = CostSheetLine
         fields = ["kind", "stage", "item", "description", "quantity", "rate", "amount",
                   "last_receipt_cost"]
 
 
-class CostSheetSerializer(serializers.ModelSerializer):
+class CostSheetSerializer(ModelSerializer):
     lines = CostSheetLineSerializer(many=True, read_only=True)
     specification_code = serializers.CharField(source="specification.code", read_only=True)
     per_kg = serializers.SerializerMethodField()
@@ -451,7 +453,7 @@ class QuoteRequestSerializer(serializers.Serializer):
                                                allow_empty=True)
 
 
-class BomSubstituteSerializer(serializers.ModelSerializer):
+class BomSubstituteSerializer(ModelSerializer):
     item_label = serializers.SerializerMethodField()
     instead_of = serializers.SerializerMethodField()
 
@@ -467,7 +469,7 @@ class BomSubstituteSerializer(serializers.ModelSerializer):
                   "is_active", "notes", "item_label", "instead_of"]
 
 
-class BomComponentSerializer(serializers.ModelSerializer):
+class BomComponentSerializer(ModelSerializer):
     gross_quantity = serializers.SerializerMethodField()
     substitutes = BomSubstituteSerializer(many=True, read_only=True)
     item_label = serializers.SerializerMethodField()
@@ -486,7 +488,7 @@ class BomComponentSerializer(serializers.ModelSerializer):
         return round(obj.gross_quantity(), 6)
 
 
-class BomByproductSerializer(serializers.ModelSerializer):
+class BomByproductSerializer(ModelSerializer):
     item_label = serializers.SerializerMethodField()
     uom_code = serializers.CharField(source="uom.code", read_only=True)
 
@@ -499,7 +501,7 @@ class BomByproductSerializer(serializers.ModelSerializer):
                   "cost_share_percent", "line_number", "item_label", "uom_code"]
 
 
-class BillOfMaterialsSerializer(serializers.ModelSerializer):
+class BillOfMaterialsSerializer(ModelSerializer):
     components = BomComponentSerializer(many=True, read_only=True)
     byproducts = BomByproductSerializer(many=True, read_only=True)
     routing_name = serializers.CharField(source="routing.name", read_only=True, default="")
@@ -522,7 +524,7 @@ class BillOfMaterialsSerializer(serializers.ModelSerializer):
         read_only_fields = ["is_computed"]
 
 
-class StandardCostSerializer(serializers.ModelSerializer):
+class StandardCostSerializer(ModelSerializer):
     item_label = serializers.SerializerMethodField()
 
     def get_item_label(self, row):
@@ -535,7 +537,7 @@ class StandardCostSerializer(serializers.ModelSerializer):
         read_only_fields = ["total", "is_rolled", "bom"]
 
 
-class CostVersionSerializer(serializers.ModelSerializer):
+class CostVersionSerializer(ModelSerializer):
     is_published = serializers.BooleanField(read_only=True)
     items = serializers.SerializerMethodField()
 
@@ -551,7 +553,7 @@ class CostVersionSerializer(serializers.ModelSerializer):
         return obj.costs.count()
 
 
-class MaintenanceScheduleSerializer(serializers.ModelSerializer):
+class MaintenanceScheduleSerializer(ModelSerializer):
     hours_remaining = serializers.SerializerMethodField()
     due_on = serializers.SerializerMethodField()
     is_due = serializers.SerializerMethodField()
@@ -577,7 +579,7 @@ class MaintenanceScheduleSerializer(serializers.ModelSerializer):
         return obj.is_due()
 
 
-class MaintenanceJobSerializer(serializers.ModelSerializer):
+class MaintenanceJobSerializer(ModelSerializer):
     serves = serializers.SerializerMethodField()
     title = serializers.SerializerMethodField()
     status = serializers.SerializerMethodField()
@@ -641,7 +643,7 @@ class MaintenanceJobDetailSerializer(MaintenanceJobSerializer):
         return str(obj.spares_value())
 
 
-class PrintDesignSerializer(serializers.ModelSerializer):
+class PrintDesignSerializer(ModelSerializer):
     is_approved = serializers.BooleanField(read_only=True)
     customer_name = serializers.CharField(source="customer.name", read_only=True, default="")
     cylinders_short_by = serializers.SerializerMethodField()
@@ -663,7 +665,7 @@ class PrintDesignSerializer(serializers.ModelSerializer):
         return obj.cylinder_set()["short_by"]
 
 
-class ToolSerializer(serializers.ModelSerializer):
+class ToolSerializer(ModelSerializer):
     work_centre_name = serializers.CharField(source="work_centre.name", read_only=True, default="")
     used = serializers.SerializerMethodField()
     remaining = serializers.SerializerMethodField()
@@ -690,13 +692,13 @@ class ToolSerializer(serializers.ModelSerializer):
         return obj.is_worn()
 
 
-class ToolUsageSerializer(serializers.ModelSerializer):
+class ToolUsageSerializer(ModelSerializer):
     class Meta:
         model = ToolUsage
         fields = ["id", "tool", "entry", "quantity"]
 
 
-class FabricRollSerializer(serializers.ModelSerializer):
+class FabricRollSerializer(ModelSerializer):
     implied_gsm = serializers.SerializerMethodField()
     metres_per_kg = serializers.SerializerMethodField()
     gsm_deviation_percent = serializers.SerializerMethodField()
@@ -728,7 +730,7 @@ class FabricRollSerializer(serializers.ModelSerializer):
         return obj.is_within_tolerance()
 
 
-class RoutingOperationSerializer(serializers.ModelSerializer):
+class RoutingOperationSerializer(ModelSerializer):
     work_centre_name = serializers.CharField(source="work_centre.name", read_only=True, default="")
 
     class Meta:
@@ -738,7 +740,7 @@ class RoutingOperationSerializer(serializers.ModelSerializer):
                   "setup_minutes", "units_per_hour", "rate_uom", "notes", "work_centre_name"]
 
 
-class CrewAssignmentSerializer(serializers.ModelSerializer):
+class CrewAssignmentSerializer(ModelSerializer):
     employee_name = serializers.CharField(source="employee.party.name", read_only=True)
     work_centre_name = serializers.CharField(source="work_centre.name", read_only=True)
     shift_name = serializers.CharField(source="shift.name", read_only=True)
@@ -749,7 +751,7 @@ class CrewAssignmentSerializer(serializers.ModelSerializer):
                   "employee_name", "work_centre_name", "shift_name"]
 
 
-class AlternateRoutingSerializer(serializers.ModelSerializer):
+class AlternateRoutingSerializer(ModelSerializer):
     routing_name = serializers.CharField(source="routing.name", read_only=True)
 
     class Meta:
@@ -757,7 +759,7 @@ class AlternateRoutingSerializer(serializers.ModelSerializer):
         fields = ["id", "bom", "routing", "priority", "notes", "routing_name"]
 
 
-class RoutingSerializer(serializers.ModelSerializer):
+class RoutingSerializer(ModelSerializer):
     operations = RoutingOperationSerializer(many=True, read_only=True)
 
     class Meta:
@@ -765,7 +767,7 @@ class RoutingSerializer(serializers.ModelSerializer):
         fields = ["id", "code", "name", "description", "is_active", "operations"]
 
 
-class SetupFamilySerializer(serializers.ModelSerializer):
+class SetupFamilySerializer(ModelSerializer):
     item_label = serializers.SerializerMethodField()
     work_centre_name = serializers.CharField(source="work_centre.name", read_only=True)
 
@@ -777,7 +779,7 @@ class SetupFamilySerializer(serializers.ModelSerializer):
         fields = ["id", "item", "work_centre", "family", "item_label", "work_centre_name"]
 
 
-class ChangeoverRuleSerializer(serializers.ModelSerializer):
+class ChangeoverRuleSerializer(ModelSerializer):
     work_centre_name = serializers.CharField(source="work_centre.name", read_only=True)
 
     class Meta:
@@ -786,7 +788,7 @@ class ChangeoverRuleSerializer(serializers.ModelSerializer):
                   "purge_kg", "notes", "work_centre_name"]
 
 
-class MachineSerializer(ExtensibleSerializerMixin, serializers.ModelSerializer):
+class MachineSerializer(ExtensibleSerializerMixin, ModelSerializer):
     work_centre_name = serializers.CharField(source="work_centre.name", read_only=True)
 
     class Meta:
@@ -810,7 +812,7 @@ class MachineSerializer(ExtensibleSerializerMixin, serializers.ModelSerializer):
         return obj.days_pattern()
 
 
-class WorkCentreSerializer(serializers.ModelSerializer):
+class WorkCentreSerializer(ModelSerializer):
     class Meta:
         model = WorkCentre
         fields = ["id", "code", "name", "description", "capacity_per_hour",
@@ -828,7 +830,7 @@ class WorkCentreSerializer(serializers.ModelSerializer):
         return obj.conversion_rate_per_hour()
 
 
-class OperationChoiceSerializer(serializers.ModelSerializer):
+class OperationChoiceSerializer(ModelSerializer):
     """A run's step, named the way a person picks it: which run, which step, making what."""
 
     label = serializers.SerializerMethodField()
@@ -849,7 +851,7 @@ WORK_ORDER_MONEY = ("planned_unit_cost", "planned_material_cost", "planned_conve
 OPERATION_MONEY = ("planned_outside_cost",)
 
 
-class WorkOrderOperationSerializer(HidesStockMoney, serializers.ModelSerializer):
+class WorkOrderOperationSerializer(HidesStockMoney, ModelSerializer):
     stock_money = OPERATION_MONEY
     planned_hours = serializers.SerializerMethodField()
 
@@ -873,7 +875,7 @@ class WorkOrderOperationSerializer(HidesStockMoney, serializers.ModelSerializer)
         return obj.quantity_completed()
 
 
-class WorkOrderComponentSerializer(serializers.ModelSerializer):
+class WorkOrderComponentSerializer(ModelSerializer):
     quantity_issued = serializers.SerializerMethodField()
     item_sku = serializers.CharField(source="item.sku", read_only=True)
     item_name = serializers.CharField(source="item.name", read_only=True)
@@ -887,7 +889,7 @@ class WorkOrderComponentSerializer(serializers.ModelSerializer):
         return round(obj.quantity_issued(), 4)
 
 
-class WorkOrderListSerializer(serializers.ModelSerializer):
+class WorkOrderListSerializer(ModelSerializer):
     """
     A run as a list shows it: what, how many, where, when, and its state.
     What it booked and cost is for the run's own page; working that out
@@ -906,7 +908,7 @@ class WorkOrderListSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
-class WorkOrderSerializer(HidesStockMoney, serializers.ModelSerializer):
+class WorkOrderSerializer(HidesStockMoney, ModelSerializer):
     stock_money = WORK_ORDER_MONEY
     item_sku = serializers.CharField(source="item.sku", read_only=True)
     item_name = serializers.CharField(source="item.name", read_only=True)
@@ -962,7 +964,7 @@ class WorkOrderSerializer(HidesStockMoney, serializers.ModelSerializer):
         return round(obj.unaccounted(), 2)
 
 
-class MaterialIssueLineSerializer(serializers.ModelSerializer):
+class MaterialIssueLineSerializer(ModelSerializer):
     item_label = serializers.SerializerMethodField()
     uom_code = serializers.CharField(source="uom.code", read_only=True)
     lot_code = serializers.CharField(source="lot.code", read_only=True, default="")
@@ -978,7 +980,7 @@ class MaterialIssueLineSerializer(serializers.ModelSerializer):
         read_only_fields = ["unit_cost", "stock_movement"]
 
 
-class MaterialIssueSerializer(serializers.ModelSerializer):
+class MaterialIssueSerializer(ModelSerializer):
     lines = MaterialIssueLineSerializer(many=True, read_only=True)
     work_order_number = serializers.CharField(source="work_order.number", read_only=True)
     makes = serializers.SerializerMethodField()
@@ -998,7 +1000,7 @@ class MaterialIssueSerializer(serializers.ModelSerializer):
                             "journal_entry", "voided_entry", "voided_at"]
 
 
-class ProductionByproductSerializer(serializers.ModelSerializer):
+class ProductionByproductSerializer(ModelSerializer):
     item_label = serializers.SerializerMethodField()
     uom_code = serializers.CharField(source="uom.code", read_only=True)
     lot_code = serializers.CharField(source="lot.code", read_only=True, default="")
@@ -1013,7 +1015,7 @@ class ProductionByproductSerializer(serializers.ModelSerializer):
         read_only_fields = ["unit_value", "stock_movement"]
 
 
-class ProductionEntrySerializer(HidesStockMoney, serializers.ModelSerializer):
+class ProductionEntrySerializer(HidesStockMoney, ModelSerializer):
     # What the output was booked at is what the stock is worth: the floor (a Quality Inspector) reads the
     # quantities only (O331, decided with the review).
     stock_money = ("posted_value", "unit_cost")
@@ -1041,7 +1043,7 @@ class ProductionEntrySerializer(HidesStockMoney, serializers.ModelSerializer):
                             "voided_entry", "voided_at"]
 
 
-class TimeBookingSerializer(serializers.ModelSerializer):
+class TimeBookingSerializer(ModelSerializer):
     hours = serializers.SerializerMethodField()
     work_order_number = serializers.CharField(source="work_order.number", read_only=True)
     operation_name = serializers.SerializerMethodField()
@@ -1075,7 +1077,7 @@ class TimeBookingSerializer(serializers.ModelSerializer):
         return round(obj.hours(), 3)
 
 
-class ShiftSerializer(serializers.ModelSerializer):
+class ShiftSerializer(ModelSerializer):
     ends_at = serializers.SerializerMethodField()
     crosses_midnight = serializers.SerializerMethodField()
 
@@ -1091,13 +1093,13 @@ class ShiftSerializer(serializers.ModelSerializer):
         return obj.crosses_midnight()
 
 
-class DowntimeReasonSerializer(serializers.ModelSerializer):
+class DowntimeReasonSerializer(ModelSerializer):
     class Meta:
         model = DowntimeReason
         fields = ["id", "code", "name", "is_planned", "is_active"]
 
 
-class DowntimeSerializer(serializers.ModelSerializer):
+class DowntimeSerializer(ModelSerializer):
     hours = serializers.SerializerMethodField()
     serves = serializers.SerializerMethodField()
     reason_name = serializers.CharField(source="reason.name", read_only=True, default="")
@@ -1119,7 +1121,7 @@ class DowntimeSerializer(serializers.ModelSerializer):
         return round(obj.hours(), 3)
 
 
-class JobWorkLineSerializer(serializers.ModelSerializer):
+class JobWorkLineSerializer(ModelSerializer):
     operation_label = serializers.SerializerMethodField()
 
     def get_operation_label(self, row):
@@ -1131,7 +1133,7 @@ class JobWorkLineSerializer(serializers.ModelSerializer):
                   "value", "tax_rate", "is_capital_goods", "operation_label"]
 
 
-class JobWorkChallanSerializer(serializers.ModelSerializer):
+class JobWorkChallanSerializer(ModelSerializer):
     lines = JobWorkLineSerializer(many=True, read_only=True)
     job_worker_name = serializers.CharField(source="job_worker.name", read_only=True)
 
@@ -1144,7 +1146,7 @@ class JobWorkChallanSerializer(serializers.ModelSerializer):
                             "posted_at", "voided_at"]
 
 
-class JobWorkLossSerializer(serializers.ModelSerializer):
+class JobWorkLossSerializer(ModelSerializer):
     line_description = serializers.CharField(source="line.description", read_only=True)
 
     class Meta:
@@ -1152,13 +1154,13 @@ class JobWorkLossSerializer(serializers.ModelSerializer):
         fields = ["id", "line", "loss_date", "quantity", "note", "voided_at", "line_description"]
 
 
-class ScrapReasonSerializer(serializers.ModelSerializer):
+class ScrapReasonSerializer(ModelSerializer):
     class Meta:
         model = ScrapReason
         fields = ["id", "code", "name", "is_active"]
 
 
-class ProductionScrapSerializer(serializers.ModelSerializer):
+class ProductionScrapSerializer(ModelSerializer):
     reason_name = serializers.CharField(source="reason.name", read_only=True)
 
     class Meta:
@@ -1166,7 +1168,7 @@ class ProductionScrapSerializer(serializers.ModelSerializer):
         fields = ["id", "entry", "reason", "operation", "quantity", "reason_name"]
 
 
-class OperationReportSerializer(serializers.ModelSerializer):
+class OperationReportSerializer(ModelSerializer):
     step = serializers.SerializerMethodField()
 
     def get_step(self, row):
@@ -1179,7 +1181,7 @@ class OperationReportSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
-class RebatchLineSerializer(serializers.ModelSerializer):
+class RebatchLineSerializer(ModelSerializer):
     lot_code = serializers.CharField(source="lot.code", read_only=True)
 
     class Meta:
@@ -1187,7 +1189,7 @@ class RebatchLineSerializer(serializers.ModelSerializer):
         fields = ["id", "side", "lot", "lot_code", "quantity"]
 
 
-class RebatchSerializer(serializers.ModelSerializer):
+class RebatchSerializer(ModelSerializer):
     lines = RebatchLineSerializer(many=True, read_only=True)
     item_label = serializers.SerializerMethodField()
     warehouse_name = serializers.CharField(source="warehouse.name", read_only=True)

@@ -1,10 +1,12 @@
 from rest_framework import serializers
 
+from apps.core.api import ModelSerializer
+
 from .models import AssetCategory, DepreciationEntry, FixedAsset
 from apps.core.customfields import ExtensibleSerializerMixin
 
 
-class AssetCategorySerializer(serializers.ModelSerializer):
+class AssetCategorySerializer(ModelSerializer):
     class Meta:
         model = AssetCategory
         fields = ["id", "code", "name", "asset_account", "accumulated_account",
@@ -12,14 +14,14 @@ class AssetCategorySerializer(serializers.ModelSerializer):
                   "method", "is_active", "tax_block"]
 
 
-class DepreciationEntrySerializer(serializers.ModelSerializer):
+class DepreciationEntrySerializer(ModelSerializer):
     class Meta:
         model = DepreciationEntry
         fields = ["id", "asset", "period_end", "amount", "journal_entry", "reversal"]
         read_only_fields = fields
 
 
-class FixedAssetSerializer(ExtensibleSerializerMixin, serializers.ModelSerializer):
+class FixedAssetSerializer(ExtensibleSerializerMixin, ModelSerializer):
     category_name = serializers.CharField(source="category.name", read_only=True)
     vendor_name = serializers.CharField(source="vendor.name", read_only=True, default="")
     accumulated = serializers.SerializerMethodField()

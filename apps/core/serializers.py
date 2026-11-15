@@ -1,5 +1,7 @@
 from rest_framework import serializers
 
+from apps.core.api import ModelSerializer
+
 from .models import (
     Address,
     Company,
@@ -17,19 +19,19 @@ from .models import (
 from apps.core.customfields import ExtensibleSerializerMixin
 
 
-class CountrySerializer(serializers.ModelSerializer):
+class CountrySerializer(ModelSerializer):
     class Meta:
         model = Country
         fields = ["id", "code", "name"]
 
 
-class CurrencySerializer(serializers.ModelSerializer):
+class CurrencySerializer(ModelSerializer):
     class Meta:
         model = Currency
         fields = ["id", "code", "name", "symbol", "decimal_places", "is_base"]
 
 
-class ExchangeRateSerializer(serializers.ModelSerializer):
+class ExchangeRateSerializer(ModelSerializer):
     currency_code = serializers.CharField(source="currency.code", read_only=True)
 
     class Meta:
@@ -37,7 +39,7 @@ class ExchangeRateSerializer(serializers.ModelSerializer):
         fields = ["id", "currency", "rate", "valid_from", "currency_code"]
 
 
-class UnitOfMeasureSerializer(serializers.ModelSerializer):
+class UnitOfMeasureSerializer(ModelSerializer):
     base_unit_code = serializers.CharField(source="base_unit.code", read_only=True, default="")
 
     class Meta:
@@ -45,7 +47,7 @@ class UnitOfMeasureSerializer(serializers.ModelSerializer):
         fields = ["id", "code", "name", "category", "base_unit", "conversion_factor", "base_unit_code"]
 
 
-class AddressSerializer(serializers.ModelSerializer):
+class AddressSerializer(ModelSerializer):
     one_line = serializers.CharField(read_only=True)
 
     class Meta:
@@ -56,7 +58,7 @@ class AddressSerializer(serializers.ModelSerializer):
         ]
 
 
-class ContactSerializer(serializers.ModelSerializer):
+class ContactSerializer(ModelSerializer):
     full_name = serializers.CharField(read_only=True)
 
     class Meta:
@@ -67,7 +69,7 @@ class ContactSerializer(serializers.ModelSerializer):
         ]
 
 
-class PartyBankAccountSerializer(serializers.ModelSerializer):
+class PartyBankAccountSerializer(ModelSerializer):
     currency_code = serializers.CharField(source="currency.code", read_only=True, default="")
 
     class Meta:
@@ -78,13 +80,13 @@ class PartyBankAccountSerializer(serializers.ModelSerializer):
         ]
 
 
-class PartyTagSerializer(serializers.ModelSerializer):
+class PartyTagSerializer(ModelSerializer):
     class Meta:
         model = PartyTag
         fields = ["id", "name", "description"]
 
 
-class PaymentTermsSerializer(serializers.ModelSerializer):
+class PaymentTermsSerializer(ModelSerializer):
     class Meta:
         model = PaymentTerms
         fields = [
@@ -93,13 +95,13 @@ class PaymentTermsSerializer(serializers.ModelSerializer):
         ]
 
 
-class PartyRoleAssignmentSerializer(serializers.ModelSerializer):
+class PartyRoleAssignmentSerializer(ModelSerializer):
     class Meta:
         model = PartyRoleAssignment
         fields = ["id", "party", "role"]
 
 
-class PartySerializer(ExtensibleSerializerMixin, serializers.ModelSerializer):
+class PartySerializer(ExtensibleSerializerMixin, ModelSerializer):
     roles = serializers.SerializerMethodField()
     addresses = AddressSerializer(many=True, read_only=True)
     contacts = ContactSerializer(many=True, read_only=True)
@@ -118,7 +120,7 @@ class PartySerializer(ExtensibleSerializerMixin, serializers.ModelSerializer):
         return [row.role for row in obj.role_assignments.all()]
 
 
-class CompanySerializer(serializers.ModelSerializer):
+class CompanySerializer(ModelSerializer):
     class Meta:
         model = Company
         fields = [

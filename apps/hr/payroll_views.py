@@ -18,6 +18,8 @@ from django.db import IntegrityError
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from rest_framework import serializers, viewsets
+
+from apps.core.api import ModelSerializer
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.permissions import IsAuthenticated
@@ -47,7 +49,7 @@ def _run(callable_, *args, **kwargs):
         raise DRFValidationError(exc.messages)
 
 
-class PayComponentSerializer(serializers.ModelSerializer):
+class PayComponentSerializer(ModelSerializer):
     class Meta:
         model = PayComponent
         fields = ["id", "code", "name", "kind", "basis", "expense_account",
@@ -75,7 +77,7 @@ class PayComponentSerializer(serializers.ModelSerializer):
         return attrs
 
 
-class SlabSerializer(serializers.ModelSerializer):
+class SlabSerializer(ModelSerializer):
     # Every band of the schedule this band is of, as this response read them: the screen's Confirm sends them back,
     # so a band changed since is refused (confirm_schedule), and no screen could confirm a schedule before (O468).
     schedule_bands = serializers.SerializerMethodField()
@@ -91,7 +93,7 @@ class SlabSerializer(serializers.ModelSerializer):
                 for other in band.schedule()]
 
 
-class RemittanceSerializer(serializers.ModelSerializer):
+class RemittanceSerializer(ModelSerializer):
     payment_number = serializers.CharField(source="payment.number", read_only=True)
     account_name = serializers.CharField(source="liability_account.name", read_only=True)
 
@@ -100,7 +102,7 @@ class RemittanceSerializer(serializers.ModelSerializer):
         fields = ["id", "payment", "liability_account", "period", "amount", "payment_number", "account_name"]
 
 
-class CompensationSerializer(serializers.ModelSerializer):
+class CompensationSerializer(ModelSerializer):
     component_name = serializers.CharField(source="component.name", read_only=True)
 
     class Meta:
@@ -109,7 +111,7 @@ class CompensationSerializer(serializers.ModelSerializer):
                   "note", "component_name"]
 
 
-class PayRunSerializer(serializers.ModelSerializer):
+class PayRunSerializer(ModelSerializer):
     gross = serializers.SerializerMethodField()
     net = serializers.SerializerMethodField()
     employer_cost = serializers.SerializerMethodField()

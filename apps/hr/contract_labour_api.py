@@ -2,12 +2,14 @@
 
 from rest_framework import serializers, viewsets
 
+from apps.core.api import ModelSerializer
+
 from apps.core.audit import AuditableViewSetMixin
 
 from .contract_labour import ContractWorker, LabourContractor
 
 
-class LabourContractorSerializer(serializers.ModelSerializer):
+class LabourContractorSerializer(ModelSerializer):
     party_name = serializers.CharField(source="party.name", read_only=True)
 
     class Meta:
@@ -25,7 +27,7 @@ class LabourContractorViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     http_method_names = ["get", "post", "patch", "put", "head", "options"]
 
 
-class ContractWorkerSerializer(serializers.ModelSerializer):
+class ContractWorkerSerializer(ModelSerializer):
     class Meta:
         model = ContractWorker
         fields = ["id", "contractor", "name", "gender", "designation", "daily_wage", "joined_on", "left_on"]

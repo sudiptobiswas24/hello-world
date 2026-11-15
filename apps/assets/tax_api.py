@@ -2,6 +2,8 @@
 
 from django.utils.dateparse import parse_date
 from rest_framework import serializers, viewsets
+
+from apps.core.api import ModelSerializer
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
@@ -10,13 +12,13 @@ from apps.core.audit import AuditableViewSetMixin
 from .tax import TaxBlock, TaxBlockOpening, TaxBlockRate, TaxDepreciationYear, schedule, tax_year_of, year_end
 
 
-class TaxBlockSerializer(serializers.ModelSerializer):
+class TaxBlockSerializer(ModelSerializer):
     class Meta:
         model = TaxBlock
         fields = ["id", "code", "name"]
 
 
-class TaxBlockRateSerializer(serializers.ModelSerializer):
+class TaxBlockRateSerializer(ModelSerializer):
     section_code = serializers.CharField(source="section.code", read_only=True)
 
     class Meta:
@@ -26,7 +28,7 @@ class TaxBlockRateSerializer(serializers.ModelSerializer):
         read_only_fields = ["confirmed_by", "confirmed_on"]
 
 
-class TaxBlockOpeningSerializer(serializers.ModelSerializer):
+class TaxBlockOpeningSerializer(ModelSerializer):
     block_code = serializers.CharField(source="block.code", read_only=True)
 
     class Meta:
@@ -34,7 +36,7 @@ class TaxBlockOpeningSerializer(serializers.ModelSerializer):
         fields = ["id", "block", "block_code", "year_start", "written_down_value"]
 
 
-class TaxDepreciationYearSerializer(serializers.ModelSerializer):
+class TaxDepreciationYearSerializer(ModelSerializer):
     class Meta:
         model = TaxDepreciationYear
         fields = ["id", "year_start", "filed_on", "filed_by", "withdrawn_on", "withdrawn_by", "note"]

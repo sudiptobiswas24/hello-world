@@ -7,6 +7,8 @@ opens an opportunity only on a customer they carry.
 
 from django.db.models import Count
 from rest_framework import serializers, viewsets
+
+from apps.core.api import ModelSerializer
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.exceptions import ValidationError as DRFValidationError
@@ -40,7 +42,7 @@ class OwnedMixin:
         super().perform_update(serializer, owner=self._owner(serializer, serializer.instance.owner))
 
 
-class CampaignSerializer(serializers.ModelSerializer):
+class CampaignSerializer(ModelSerializer):
     class Meta:
         model = Campaign
         fields = ["id", "code", "name", "channel", "starts_on", "ends_on", "budget", "note"]
@@ -60,7 +62,7 @@ class CampaignViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         return Response(self.get_object().results())
 
 
-class LeadSerializer(serializers.ModelSerializer):
+class LeadSerializer(ModelSerializer):
     owner_name = serializers.CharField(source="owner.name", read_only=True, default="")
     campaign_name = serializers.CharField(source="campaign.name", read_only=True, default="")
     converted_party_name = serializers.CharField(source="converted_party.name", read_only=True, default="")
@@ -146,7 +148,7 @@ class LeadViewSet(OwnedMixin, AuditableViewSetMixin, viewsets.ModelViewSet):
         return Response(self.get_serializer(lead).data)
 
 
-class OpportunitySerializer(serializers.ModelSerializer):
+class OpportunitySerializer(ModelSerializer):
     customer_name = serializers.CharField(source="customer.name", read_only=True)
     owner_name = serializers.CharField(source="owner.name", read_only=True, default="")
     campaign_name = serializers.CharField(source="campaign.name", read_only=True, default="")
@@ -239,7 +241,7 @@ class OpportunityViewSet(OwnedMixin, AuditableViewSetMixin, viewsets.ModelViewSe
         return Response(pipeline(request.user))
 
 
-class ActivitySerializer(serializers.ModelSerializer):
+class ActivitySerializer(ModelSerializer):
     owner_name = serializers.CharField(source="owner.name", read_only=True, default="")
     about = serializers.SerializerMethodField()
 

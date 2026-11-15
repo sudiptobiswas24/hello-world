@@ -9,6 +9,8 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.db.models import Q
 from rest_framework import serializers, viewsets
+
+from apps.core.api import ModelSerializer
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.response import Response
@@ -22,7 +24,7 @@ def _who(user):
     return (user.get_full_name() or user.get_username()) if user else ""
 
 
-class RoleProposalSerializer(serializers.ModelSerializer):
+class RoleProposalSerializer(ModelSerializer):
     username = serializers.CharField(source="user.username", read_only=True)
     role = serializers.CharField(source="group.name", read_only=True)
     proposed_by_name = serializers.SerializerMethodField()

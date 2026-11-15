@@ -2,11 +2,13 @@
 
 from rest_framework import serializers, viewsets
 
+from apps.core.api import ModelSerializer
+
 from .audit import AuditableViewSetMixin
 from .models import DocumentSequence
 
 
-class DocumentSequenceSerializer(serializers.ModelSerializer):
+class DocumentSequenceSerializer(ModelSerializer):
     # What the next document will be called, worked out and not consumed.
     next_value = serializers.SerializerMethodField()
 

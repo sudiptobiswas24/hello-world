@@ -9,6 +9,8 @@ applicants are the personnel office's.
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import Q
 from rest_framework import serializers, viewsets
+
+from apps.core.api import ModelSerializer
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.response import Response
@@ -71,7 +73,7 @@ def check_own_parent(request, serializer, field, refusal):
 
 # --- expense claims
 
-class ExpenseLineSerializer(serializers.ModelSerializer):
+class ExpenseLineSerializer(ModelSerializer):
     expense_account_name = serializers.CharField(source="expense_account.name", read_only=True)
 
     class Meta:
@@ -80,7 +82,7 @@ class ExpenseLineSerializer(serializers.ModelSerializer):
                   "receipt_reference"]
 
 
-class ExpenseClaimSerializer(serializers.ModelSerializer):
+class ExpenseClaimSerializer(ModelSerializer):
     lines = ExpenseLineSerializer(many=True, read_only=True)
     employee_name = serializers.CharField(source="employee.party.name", read_only=True)
     decided_by_name = serializers.CharField(source="decided_by.party.name", read_only=True, default="")
@@ -213,7 +215,7 @@ class ExpenseLineViewSet(OwnOrReportsMixin, AuditableViewSetMixin, viewsets.Mode
 
 # --- timesheets
 
-class TimesheetEntrySerializer(serializers.ModelSerializer):
+class TimesheetEntrySerializer(ModelSerializer):
     account_name = serializers.CharField(source="account.name", read_only=True, default="")
 
     class Meta:
@@ -221,7 +223,7 @@ class TimesheetEntrySerializer(serializers.ModelSerializer):
         fields = ["id", "timesheet", "date", "hours", "account", "account_name", "reference", "is_billable", "note"]
 
 
-class TimesheetSerializer(serializers.ModelSerializer):
+class TimesheetSerializer(ModelSerializer):
     entries = TimesheetEntrySerializer(many=True, read_only=True)
     employee_name = serializers.CharField(source="employee.party.name", read_only=True)
     decided_by_name = serializers.CharField(source="decided_by.party.name", read_only=True, default="")
@@ -344,7 +346,7 @@ class TimesheetEntryViewSet(OwnOrReportsMixin, AuditableViewSetMixin, viewsets.M
 
 # --- appraisals
 
-class AppraisalSerializer(serializers.ModelSerializer):
+class AppraisalSerializer(ModelSerializer):
     employee_name = serializers.CharField(source="employee.party.name", read_only=True)
     reviewer_name = serializers.CharField(source="reviewer.party.name", read_only=True)
 
@@ -427,7 +429,7 @@ class AppraisalViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 # --- recruitment
 
-class JobOpeningSerializer(serializers.ModelSerializer):
+class JobOpeningSerializer(ModelSerializer):
     department_name = serializers.CharField(source="department.name", read_only=True, default="")
     hired = serializers.SerializerMethodField()
     applicant_count = serializers.SerializerMethodField()
@@ -446,7 +448,7 @@ class JobOpeningSerializer(serializers.ModelSerializer):
         return opening.applicants.count()
 
 
-class ApplicantSerializer(serializers.ModelSerializer):
+class ApplicantSerializer(ModelSerializer):
     opening_title = serializers.CharField(source="opening.title", read_only=True)
     employee_number = serializers.CharField(source="employee.employee_number", read_only=True, default="")
 

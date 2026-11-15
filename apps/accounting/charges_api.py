@@ -1,6 +1,8 @@
 """Charge types: freight, handling, a rush surcharge. A line on a document that is not stock."""
 
 from rest_framework import serializers, viewsets
+
+from apps.core.api import ModelSerializer
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.response import Response
@@ -11,7 +13,7 @@ from apps.core.audit import AuditableViewSetMixin
 from .models import ChargeType, Tax
 
 
-class ChargeTypeSerializer(serializers.ModelSerializer):
+class ChargeTypeSerializer(ModelSerializer):
     tax_rows = serializers.SerializerMethodField()
 
     class Meta:

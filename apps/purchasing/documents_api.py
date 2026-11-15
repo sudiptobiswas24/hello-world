@@ -12,6 +12,8 @@ from decimal import Decimal
 
 from django.shortcuts import get_object_or_404
 from rest_framework import serializers, viewsets
+
+from apps.core.api import ModelSerializer
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.response import Response
@@ -67,7 +69,7 @@ def _named_lines(requisition, data):
 
 # --- requisitions
 
-class PurchaseRequisitionLineSerializer(serializers.ModelSerializer):
+class PurchaseRequisitionLineSerializer(ModelSerializer):
     item_label = serializers.SerializerMethodField()
     quantity_ordered = serializers.SerializerMethodField()
     quantity_quoting = serializers.SerializerMethodField()
@@ -96,7 +98,7 @@ class PurchaseRequisitionLineSerializer(serializers.ModelSerializer):
         return obj.estimated_value()
 
 
-class PurchaseRequisitionSerializer(serializers.ModelSerializer):
+class PurchaseRequisitionSerializer(ModelSerializer):
     lines = PurchaseRequisitionLineSerializer(many=True, read_only=True)
     requested_by_name = serializers.CharField(source="requested_by.name", read_only=True)
     estimated_total = serializers.SerializerMethodField()
@@ -194,7 +196,7 @@ class PurchaseRequisitionLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSe
 
 # --- requests for quotation
 
-class RfqLineSerializer(serializers.ModelSerializer):
+class RfqLineSerializer(ModelSerializer):
     item_label = serializers.SerializerMethodField()
     requisition_number = serializers.CharField(source="requisition_line.requisition.number", read_only=True, default="")
 
@@ -206,13 +208,13 @@ class RfqLineSerializer(serializers.ModelSerializer):
         return _item_label(obj.item)
 
 
-class RfqQuoteSerializer(serializers.ModelSerializer):
+class RfqQuoteSerializer(ModelSerializer):
     class Meta:
         model = RfqQuote
         fields = ["id", "line", "unit_price", "lead_time_days", "notes"]
 
 
-class RfqInvitationSerializer(serializers.ModelSerializer):
+class RfqInvitationSerializer(ModelSerializer):
     vendor_name = serializers.CharField(source="vendor.name", read_only=True)
     quotes = RfqQuoteSerializer(many=True, read_only=True)
 
@@ -223,7 +225,7 @@ class RfqInvitationSerializer(serializers.ModelSerializer):
         read_only_fields = ["responded_at", "declined", "awarded"]
 
 
-class RequestForQuotationSerializer(serializers.ModelSerializer):
+class RequestForQuotationSerializer(ModelSerializer):
     lines = RfqLineSerializer(many=True, read_only=True)
     invited = RfqInvitationSerializer(many=True, read_only=True)
     requisition_number = serializers.CharField(source="requisition.number", read_only=True, default="")
@@ -327,7 +329,7 @@ class RfqInvitationViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 # --- blanket orders
 
-class BlanketOrderLineSerializer(MoneyLineSerializerMixin, serializers.ModelSerializer):
+class BlanketOrderLineSerializer(MoneyLineSerializerMixin, ModelSerializer):
     item_label = serializers.SerializerMethodField()
     quantity_released = serializers.SerializerMethodField()
     quantity_remaining = serializers.SerializerMethodField()
@@ -348,7 +350,7 @@ class BlanketOrderLineSerializer(MoneyLineSerializerMixin, serializers.ModelSeri
         return _quantity(obj.quantity_remaining())
 
 
-class BlanketOrderSerializer(serializers.ModelSerializer):
+class BlanketOrderSerializer(ModelSerializer):
     lines = BlanketOrderLineSerializer(many=True, read_only=True)
     vendor_name = serializers.CharField(source="vendor.name", read_only=True)
     total = serializers.SerializerMethodField()

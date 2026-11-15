@@ -1,13 +1,15 @@
 from django.db import transaction
 from rest_framework import serializers
 
+from apps.core.api import ModelSerializer
+
 from apps.core.models import Party, PartyRole, PartyRoleAssignment
 
 from .models import Department, Employee, LeavePolicy, LeaveRequest
 from apps.core.customfields import ExtensibleSerializerMixin
 
 
-class DepartmentSerializer(serializers.ModelSerializer):
+class DepartmentSerializer(ModelSerializer):
     class Meta:
         model = Department
         fields = ["id", "code", "name", "manager",
@@ -15,7 +17,7 @@ class DepartmentSerializer(serializers.ModelSerializer):
         ]
 
 
-class EmployeeSerializer(ExtensibleSerializerMixin, serializers.ModelSerializer):
+class EmployeeSerializer(ExtensibleSerializerMixin, ModelSerializer):
     name = serializers.CharField(source="party.name", read_only=True)
     department_name = serializers.CharField(source="department.name", read_only=True, default="")
     # HR makes the person with the employee: whoever keeps employees need
@@ -77,13 +79,13 @@ class EmployeeSerializer(ExtensibleSerializerMixin, serializers.ModelSerializer)
         extra_kwargs = {"party": {"required": False}}
 
 
-class LeavePolicySerializer(serializers.ModelSerializer):
+class LeavePolicySerializer(ModelSerializer):
     class Meta:
         model = LeavePolicy
         fields = ["id", "code", "name", "leave_type", "annual_days"]
 
 
-class LeaveRequestSerializer(serializers.ModelSerializer):
+class LeaveRequestSerializer(ModelSerializer):
     # Names, so a list says whose and who decided without asking again.
     employee_name = serializers.CharField(source="employee.party.name", read_only=True)
     decided_by_name = serializers.CharField(source="decided_by.party.name", read_only=True, default="")
