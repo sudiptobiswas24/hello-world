@@ -949,6 +949,9 @@ def withdraw_discount(document, control_account, party, amount, on_date, memo):
     from .restatement import refuse_behind_a_restatement
 
     taken = document.settlement_discount_entry
+    if taken is None:
+        # The callers ask what stands first; this says so where one did not, rather than an AttributeError below.
+        raise ValidationError(f"{document.number} has no settlement discount taken to withdraw.")
     # Not before the discount it takes back (O256). A cheque of the 8th returned on the 9th, its discount taken on
     # the 11th: withdrawn on the 9th, the discount account read -20 and receivables 1,020 against 1,000 owed until
     # the 11th. Then it is withdrawn on the discount's own day, where the two cancel; the void is not refused.
