@@ -337,7 +337,6 @@ missing), **minor**.
 | O566 | core | render_document appends the company's email, phone and website as they stand to every page's footer (apps/core/documents.py ~313), even when the document passes a kept footer: the tax invoice, and now the self-invoice and payment voucher, reprint today's contact details. Not Rule 46 particulars (seen 2026-11-14, g40_trade) | rule | minor |
 | O567 | web, hr | StatutoryFigureForm and MinimumWageForm (frontend/src/modules/payroll) offer Delete on a figure a pay run kept; the server refuses (refuse_if_kept, apps/hr/statutory.py). O556's shape; needs a kept_because from hr's serializers (seen 2026-11-14, g40_trade) | rule | minor |
 | O568 | accounting | `kept_because` on the TDS and TCS rate lists asks one EXISTS per row (taken()) (seen 2026-11-14, g40_trade) | perf | minor |
-| O569 | web (demo) | The demo's letter of undertaking keeps a fixed financial year "2026-27" while its dates move with the story (load_demo.py:287-289): from October 2027 every demo load, and so every demo test, fails (seen 2026-11-14, g40_people) | rule | minor |
 
 Upgrade notes, true of data made before the 8 October fixes:
 - Landed cost allocated before the stores fix releases to cost of sales, and old inventory differences stay where they were.

@@ -17,6 +17,7 @@ from django.core.management.base import CommandError
 from django.test import TestCase
 
 from apps.core.models import Party, PartyRole, PartyRoleAssignment
+from apps.imports.tests import TwoYearsOn
 from apps.web.health import integrity
 
 
@@ -45,6 +46,7 @@ class LoadDemoTests(TestCase):
         self.assertIn("The demo plant is loaded.", out.getvalue())
         self.assertEqual([finding["label"] for finding in integrity(fresh=True)["findings"] if finding["ok"] is False], [])
         self.assert_the_agings_foot_with_a_foreign_document_open()
+        self.assert_every_export_went_under_the_undertaking_for_its_year()
 
         # A freight charge to put on a document from its add row (O495), taxed and booked on both sides.
         from apps.accounting.models import ChargeType
@@ -91,6 +93,35 @@ class LoadDemoTests(TestCase):
             self.assertTrue(foreign, rows)
             self.assertEqual(sum(bucket["total"] for bucket in report.values()), sign * held(accounts), rows)
 
+    def assert_every_export_went_under_the_undertaking_for_its_year(self):
+        """
+        O569: one LUT for each financial year from the story's first month to today, each for the whole year its
+        dates fall in and filed before it opens, and each export under the one for its own day's year.
+        """
+        from django.utils import timezone
+
+        from apps.accounting.gst import LetterOfUndertaking
+        from apps.accounting.tds import financial_year
+        from apps.sales.models import Invoice
+        from apps.web.management.commands.load_demo import Story
+
+        today = timezone.localdate()
+        years, opens = [], financial_year(Story(today).on(2026, 7, 1))[0]
+        while opens <= today:
+            years.append(financial_year(opens))
+            opens = years[-1][1] + datetime.timedelta(days=1)
+        luts = LetterOfUndertaking.objects.order_by("valid_from")
+        self.assertEqual([(lut.valid_from, lut.valid_to) for lut in luts], years)
+        for lut in luts:
+            self.assertEqual(lut.financial_year, f"{lut.valid_from.year}-{str(lut.valid_to.year)[2:]}")
+            self.assertLess(lut.filed_on, lut.valid_from)
+        exports = Invoice.objects.filter(customer__code="C-GULF", posted=True)
+        self.assertEqual(exports.count(), 2)
+        for export in exports:
+            under = LetterOfUndertaking.in_force(export.invoice_date)
+            self.assertEqual(financial_year(export.invoice_date), (under.valid_from, under.valid_to))
+            self.assertEqual(export.issued_as["lut"]["arn"], under.arn)
+
     def test_a_database_with_anything_in_it_is_refused(self):
         customer = Party.objects.create(code="C-1", name="A real customer")
         PartyRoleAssignment.objects.create(party=customer, role=PartyRole.CUSTOMER)
@@ -105,6 +136,20 @@ class LoadDemoTests(TestCase):
             with self.assertRaisesMessage(CommandError, "still being built: 1 migration(s) to go"):
                 call_command("load_demo", stdout=StringIO())
         self.assertFalse(Party.objects.exists())
+
+
+class LoadDemoTestsTwoYearsOn(TwoYearsOn, LoadDemoTests):
+    """
+    The plant loaded two years on (O569). The story's dates move with the calendar; anything in it written down
+    as a year does not. Its letter of undertaking kept "2026-27" while its dates moved, and every load from April
+    2027 was refused: worked month by month in /home/user/work/calc_g41_kept/o569_lut.py.
+    """
+
+
+class LoadDemoTestsInMay(LoadDemoTestsTwoYearsOn):
+    """Loaded on 15 May two calendar years on: the story's two exports fall either side of 1 April (O569)."""
+
+    DAYS_ON = (datetime.date(datetime.date.today().year + 2, 5, 15) - datetime.date.today()).days
 
 
 class WhatTheDemoShowsTests(TestCase):
