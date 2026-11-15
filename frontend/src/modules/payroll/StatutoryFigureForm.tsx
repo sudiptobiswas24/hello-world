@@ -18,7 +18,7 @@ export default function StatutoryFigureForm() {
           ["epf_ceiling", "EPF wage ceiling"], ["eps_ceiling", "EPS wage ceiling"], ["overtime_multiplier", "Overtime multiple"],
           ["esi_employee_rate", "ESI, employee's share %"], ["esi_employer_rate", "ESI, employer's share %"], ["esi_ceiling", "ESI coverage ceiling"],
           ["bonus_minimum_percent", "Bonus, least %"], ["bonus_maximum_percent", "Bonus, most %"], ["bonus_floor", "Bonus calculation floor"],
-          ["bonus_eligibility", "Bonus eligibility ceiling"],
+          ["bonus_eligibility", "Bonus eligibility ceiling"], ["gratuity_ceiling", "Gratuity ceiling"],
         ] },
         { key: "state", label: "State", hint: "Blank applies in every state" },
         { key: "effective_from", label: "Applies from", kind: "date" },

@@ -55,6 +55,7 @@ class FigureKind(models.TextChoices):
     BONUS_MAXIMUM_PERCENT = "bonus_maximum_percent", "Bonus, the most per cent of wages"
     BONUS_FLOOR = "bonus_floor", "Bonus calculation ceiling, the floor below the minimum wage"
     BONUS_ELIGIBILITY = "bonus_eligibility", "Bonus eligibility, a month's wages at most"
+    GRATUITY_CEILING = "gratuity_ceiling", "Gratuity, the most paid to one person"
 
 
 # What the code used before these were data: EPS_CEILING and the PF component's 15,000, and the
@@ -72,7 +73,10 @@ ESI_FIGURES = (FigureKind.ESI_EMPLOYEE_RATE, FigureKind.ESI_EMPLOYER_RATE, Figur
 BONUS_FIGURES = (FigureKind.BONUS_FLOOR, FigureKind.BONUS_ELIGIBILITY, FigureKind.BONUS_MINIMUM_PERCENT,
                  FigureKind.BONUS_MAXIMUM_PERCENT)
 OVERTIME_FIGURES = (FigureKind.OVERTIME_MULTIPLIER,)
-ENGINE_FIGURES = {"PF": PF_FIGURES, "ESI": ESI_FIGURES, "Bonus": BONUS_FIGURES, "Overtime": OVERTIME_FIGURES}
+# Payment of Gratuity Act s.4(3): the ceiling the Central Government notifies (O551), read at the leaving day.
+GRATUITY_FIGURES = (FigureKind.GRATUITY_CEILING,)
+ENGINE_FIGURES = {"PF": PF_FIGURES, "ESI": ESI_FIGURES, "Bonus": BONUS_FIGURES, "Overtime": OVERTIME_FIGURES,
+                  "Gratuity": GRATUITY_FIGURES}
 assert {kind for kinds in ENGINE_FIGURES.values() for kind in kinds} == set(FigureKind), \
     "every statutory figure belongs to the engine that reads it (ENGINE_FIGURES)"
 
@@ -218,12 +222,21 @@ class StatutoryFigure(Confirmed, AuditModel):
     def kept_under(self):
         return self.kind
 
+    def kept_because(self, run=ASK):
+        """A gratuity ceiling is kept by the payout capped at it, not by a run (O551); the rest as Confirmed's."""
+        if self.kind != FigureKind.GRATUITY_CEILING or self.pk is None:
+            return super().kept_because(run)
+        if run is ASK:
+            return kept_words(self.kind, self.pk, f"{self}", "deleted")
+        return kept_sentence(f"{self}", f"the gratuity paid by {run}", "deleted", PAYOUT_FIRST) if run else ""
+
     @classmethod
     def kept_run_expression(cls):
-        """Kept under its kind: one subquery a kind, chosen by the row's own (O586)."""
+        """Kept under its kind: one subquery a kind, chosen by the row's own (O586); a ceiling by its payout."""
         from django.db.models import Case, CharField, Value, When
 
-        return Case(*[When(kind=kind, then=kept_run_of(kind)) for kind in FigureKind.values],
+        return Case(*[When(kind=kind, then=kept_payout_of() if kind == FigureKind.GRATUITY_CEILING
+                           else kept_run_of(kind)) for kind in FigureKind.values],
                     default=Value(None), output_field=CharField())
 
     @transaction.atomic
@@ -416,13 +429,39 @@ def kept_run_of(key):
     return Subquery(lines.values("payslip__run__number")[:1])
 
 
-def kept_sentence(what, run, doing):
-    return (f"{what} is what {run} was paid at; it is not {doing}. Void that run first, or give the new figure a "
+def kept_payout_of():
+    """
+    For an annotation: the payment number of a gratuity payout standing at the outer ceiling row, or None (O551).
+    A payout keeps the row it was capped at (GratuityPayout.ceiling_figure), as a slip line keeps its terms.
+    """
+    from django.db.models import OuterRef, Subquery
+
+    from .gratuity import GratuityPayout
+
+    return Subquery(GratuityPayout.objects.filter(ceiling_figure=OuterRef("pk"), voided_at=None).order_by("pk")
+                    .values("payment__number")[:1])
+
+
+def payout_keeping(pk):
+    """The gratuity payout standing at the ceiling row `pk`, or None: the row it was capped at (O551)."""
+    from .gratuity import GratuityPayout
+
+    return GratuityPayout.objects.filter(ceiling_figure_id=pk, voided_at=None).order_by("pk").first()
+
+
+RUN_FIRST, PAYOUT_FIRST = "that run", "that payout"
+
+
+def kept_sentence(what, run, doing, first=RUN_FIRST):
+    return (f"{what} is what {run} was paid at; it is not {doing}. Void {first} first, or give the new figure a "
             "row of its own from the day it applies.")
 
 
 def kept_words(key, pk, what, doing):
     """Why `what` may not be `doing` ("changed", "deleted"), in words, or "" where it may."""
+    if key == FigureKind.GRATUITY_CEILING:
+        payout = payout_keeping(pk)
+        return kept_sentence(what, payout, doing, PAYOUT_FIRST) if payout is not None else ""
     run = kept_by(key, pk)
     return kept_sentence(what, run, doing) if run is not None else ""
 

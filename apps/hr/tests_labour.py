@@ -26,6 +26,9 @@ from .tests_statutory import JUNE, StatutoryTestCase
 class BonusAndGratuityTests(StatutoryTestCase):
     def setUp(self):
         super().setUp()
+        from .tests_gratuity import confirmed_ceiling
+
+        confirmed_ceiling()  # the Act's 20,00,000 the report caps at (O551)
         self.bonus_payable = Account.objects.create(code="2340", name="Bonus payable",
                                                     account_type=AccountType.LIABILITY)
         self.gratuity_provision = Account.objects.create(code="2350", name="Gratuity provision",

@@ -476,13 +476,16 @@ class BonusStatementView(viewsets.ViewSet):
 class GratuityPayoutSerializer(ModelSerializer):
     number = serializers.CharField(source="employee.employee_number", read_only=True)
     stands = serializers.SerializerMethodField()
+    # The ceiling it was capped at, as kept (O551): blank before the ceiling was dated.
+    ceiling = serializers.DecimalField(source="ceiling_figure.value", max_digits=18, decimal_places=2,
+                                       read_only=True, default=None)
 
     class Meta:
         from .gratuity import GratuityPayout
 
         model = GratuityPayout
         fields = ["id", "employee", "number", "reason", "payment", "left_on", "years", "wages", "amount",
-                  "provision_account", "voided_at", "stands"]
+                  "provision_account", "ceiling_figure", "ceiling", "voided_at", "stands"]
 
     def get_stands(self, obj):
         return obj.stands()
@@ -493,7 +496,7 @@ class GratuityPayoutViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     from .gratuity import GratuityPayout
 
-    queryset = GratuityPayout.objects.select_related("employee", "payment")
+    queryset = GratuityPayout.objects.select_related("employee", "payment", "ceiling_figure")
     serializer_class = GratuityPayoutSerializer
     filter_fields = ["employee"]
     date_field = "left_on"
