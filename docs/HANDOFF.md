@@ -50,6 +50,33 @@ pg_isready -q || service postgresql start                              # role er
 
 ## 2. Next steps, in order
 
+**g40 is pushed (c2b00a8, 15 November 2026), all seven lanes green on one tip (gated as 7556815).** Six commits, all register
+rows that waited on nobody: O555 (a document's lines sent as `lines` instead of `new_lines` are refused with a 400
+beside the field, on a new or saved document, in the shared TakesItsLinesMixin, so bill, invoice, sales order and
+purchase order alike), O556 (the bank, TDS and TCS rate screens offer Delete only where the server takes it and say
+why not, one shared `kept_because`; TDS and TCS follow the server: deletable until something was deducted or collected
+at the rate), O552 (a self-invoice and a payment voucher keep `recipient_gstin` and `letterhead` as issued and print
+only those; gst 0012 fills old rows from the settings of the day it ran, and says so; `kept_settings_read_live` now
+reports a printout reading today's GST registration or company), O560 (the demo gives everyone the gratuity provision
+through `give_gratuity_provision()`, which setup_payroll shares; BONUS still goes to nobody, O550), O549 (no fixture
+was left that crosses the books' opening day; a shared `TwoYearsOn` mixin runs one class of each such fixture again
+with the clock 800 days on), and the gratuity payout's race tests (two payouts at once, two voids at once; each fails
+without the locks). Counts: SQLite 8,825 (248 skipped), PostgreSQL 4,059 + 3,685 + 1,081 = 8,825, Asia/Kolkata 8,825 (248
+skipped), migration-tagged 54 and the one PostgreSQL-only, vitest 73.
+- Register rows O565 to O569 are what g40 saw and did not fix: other serializers still drop `lines` without a word
+  (quotation, delivery, recurring invoice and more: O555's shape), every printout's footer reprints today's company
+  email, phone and website, two payroll forms offer Delete on a figure a pay run kept (O556's shape), one EXISTS per
+  row on the TDS and TCS rate lists, and the demo's letter of undertaking keeps a fixed "2026-27" while its dates
+  move, so every demo load fails from October 2027.
+- O564 (the demo failure only g39's whole pg-c lane showed) did not recur in g40's pg-c either; it stays open until a failure names its cause.
+- Waiting on people, unchanged: the owner (O448, O494, O557, O558, O559, decision 24; O550 needs the Maharashtra
+  minimum wage notification before the demo can give BONUS), the tax adviser (O449, O500, O534, O559, O561), the
+  accountant (O536, O538, O563, docs/STATUTORY_REVIEW.md section 14).
+- Gate lessons from g40: built beside g39's gate by two agents whose tests took turns through
+  /home/user/work/agent_tests.lock; based on the g39 handoff commit, so it fast-forwards. A change to a module the
+  migrations import (apps/accounting/dated_rates.py) makes the mig lane run nearly every app, about five and a half
+  hours: the long pole. Lanes went pg-c first so the PostgreSQL-only demo and race tests answered early.
+
 **g39 is pushed (c198aba, 14 November 2026), all seven lanes green on one tip (gated as ee143c4).** Five commits
 finishing the two pieces g38 left uncommitted. Limit 19: the gratuity provision is seeded (GRATUITY, 4.81% of basic
 and DA a month into 2470, charged to 6120) and given to everyone by `give_statutory_accruals`; go_live_check names
