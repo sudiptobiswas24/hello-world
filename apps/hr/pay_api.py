@@ -57,9 +57,13 @@ class PayDetailsViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 
 class FigureSerializer(serializers.ModelSerializer):
+    # Why it may not be deleted, or "": the screen offers Delete only where the server would take it (O567).
+    kept_because = serializers.CharField(read_only=True)
+
     class Meta:
         model = StatutoryFigure
-        fields = ["id", "kind", "state", "effective_from", "value", "source", "confirmed_by", "confirmed_on"]
+        fields = ["id", "kind", "state", "effective_from", "value", "source", "confirmed_by", "confirmed_on",
+                  "kept_because"]
         read_only_fields = ["confirmed_by", "confirmed_on"]
 
 
@@ -99,11 +103,13 @@ class FigureViewSet(ConfirmAction, AuditableViewSetMixin, viewsets.ModelViewSet)
 
 class MinimumWageSerializer(serializers.ModelSerializer):
     monthly = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
+    # Why it may not be deleted, or "": the screen offers Delete only where the server would take it (O567).
+    kept_because = serializers.CharField(read_only=True)
 
     class Meta:
         model = MinimumWage
         fields = ["id", "state", "employment", "zone", "skill", "effective_from", "basic", "vda", "monthly",
-                  "source", "confirmed_by", "confirmed_on"]
+                  "source", "confirmed_by", "confirmed_on", "kept_because"]
         read_only_fields = ["confirmed_by", "confirmed_on"]
 
 

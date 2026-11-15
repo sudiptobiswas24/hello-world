@@ -477,8 +477,11 @@ class PayComponentSlab(Confirmed, AuditModel):
     def delete(self, *args, **kwargs):
         # FOR UPDATE: the row is deleted, and a row being inserted that names it must wait (O257).
         lock_rows(self, refresh=False, deleting=True)
-        refuse_if_kept("slab", self.pk, str(self), "deleted")
+        self.refuse_delete_if_kept()
         return super().delete(*args, **kwargs)
+
+    def kept_under(self):
+        return "slab"
 
     def schedule(self):
         """Every band of the schedule this band is of: its component, state and day."""
