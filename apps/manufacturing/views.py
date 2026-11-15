@@ -15,7 +15,7 @@ from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from apps.core.api import NOT_NEGATIVE, number, plain, record_or_404
+from apps.core.api import NOT_NEGATIVE, number, plain, record_or_404, takes_only
 from apps.core.audit import AuditableViewSetMixin
 from apps.core.models import Party, to_date
 from apps.core.scoping import scoped
@@ -679,6 +679,9 @@ class CostSheetViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     def create(self, request, *args, **kwargs):
         request_data = CostSheetRequestSerializer(data=request.data)
+        # A plain Serializer drops a key it has no field for (a `margin` for `margin_percent` costed at the
+        # policy's margin): refused beside it instead (O574).
+        takes_only(request.data, *request_data.fields)
         request_data.is_valid(raise_exception=True)
         data = request_data.validated_data
         sheet = quoting.cost(
@@ -715,6 +718,7 @@ class TestCertificateViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     def create(self, request, *args, **kwargs):
         from apps.sales.models import Delivery
 
+        takes_only(request.data, "delivery")
         delivery = get_object_or_404(Delivery, pk=request.data.get("delivery"))
         certificate = certificates.issue(delivery, by=request.user)
         return Response(TestCertificateSerializer(certificate).data, status=201)

@@ -14,7 +14,7 @@ from rest_framework.views import APIView
 
 from django.db.models import Count
 
-from apps.core.api import flag
+from apps.core.api import flag, takes_only
 
 from . import einvoice, ewaybill
 from .gstr2b import Gstr2bStatement, keep, reconcile
@@ -161,6 +161,7 @@ class EInvoiceViewSet(RowHeldViewSetMixin, mixins.ListModelMixin, mixins.Retriev
     def create(self, request):
         from apps.sales.models import Invoice
 
+        takes_only(request.data, "invoice")
         invoice = get_object_or_404(Invoice, pk=request.data.get("invoice"))
         return Response(EInvoiceSerializer(einvoice.prepare(invoice)).data, status=201)
 
@@ -199,12 +200,18 @@ class EInvoiceViewSet(RowHeldViewSetMixin, mixins.ListModelMixin, mixins.Retriev
         return Response(EInvoiceSerializer(record).data)
 
 
+# What an e-way bill is drafted from (POST), every key create() reads (O574).
+EWAY_BILL_TAKES = ("invoice", "challan", "delivery", "carried_on", "declared_value", "mode", "distance_km",
+                   "transporter_id", "transporter_name", "vehicle_number", "vehicle_type", "transport_doc_number",
+                   "transport_doc_date")
+
+
 class EwayBillViewSet(RowHeldViewSetMixin, mixins.ListModelMixin, mixins.RetrieveModelMixin,
                       mixins.DestroyModelMixin, viewsets.GenericViewSet):
     """
-    POST {invoice | challan | delivery (with declared_value), mode, distance_km, transporter_id,
+    POST {invoice | challan | delivery (with declared_value), carried_on, mode, distance_km, transporter_id,
     transporter_name, vehicle_number, vehicle_type, transport_doc_number,
-    transport_doc_date} builds the payload; record/ keeps the number the
+    transport_doc_date} builds the payload, and refuses any other key; record/ keeps the number the
     portal gave; cancel/ within 24 hours of it.
     """
 
@@ -223,6 +230,7 @@ class EwayBillViewSet(RowHeldViewSetMixin, mixins.ListModelMixin, mixins.Retriev
         from apps.sales.models import Delivery, Invoice
 
         data = request.data
+        takes_only(data, *EWAY_BILL_TAKES)
         named = [key for key in ("invoice", "challan", "delivery") if data.get(key)]
         if len(named) != 1:
             raise DRFValidationError(["Name an invoice, a challan or a delivery: one of them."])
@@ -343,6 +351,7 @@ class SelfInvoiceViewSet(viewsets.ReadOnlyModelViewSet):
     action_permission_map = {"cancel": "gst.change_selfinvoice", "awaiting": "gst.view_selfinvoice"}
 
     def create(self, request):
+        takes_only(request.data, "bill", "date")
         bill = record_or_404(Bill, request.data.get("bill"), "bill")
         made = reverse_charge.SelfInvoice.issue(bill, on_date=request.data.get("date") or None)
         return Response(SelfInvoiceSerializer(made).data, status=201)
@@ -404,6 +413,7 @@ class PaymentVoucherViewSet(viewsets.ReadOnlyModelViewSet):
                          for row in reverse_charge.awaiting_payment_voucher()])
 
     def create(self, request):
+        takes_only(request.data, "payment")
         payment = record_or_404(Payment, request.data.get("payment"), "payment")
         made = reverse_charge.PaymentVoucher.issue_for(payment)
         # The first made, as a record screen opens what it created; the rest are listed by number with it.

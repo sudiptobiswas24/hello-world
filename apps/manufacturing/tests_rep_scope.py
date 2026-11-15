@@ -89,6 +89,28 @@ class CostSheetTests(RepScopeTestCase):
         self.assertEqual(made.json()["quoted_price"], "15.37")
         self.assertEqual(self.rep.post("/api/manufacturing/cost-sheets/", body, format="json").status_code, 403)
 
+    def test_a_key_the_cost_sheet_does_not_take_is_refused_beside_it(self):
+        """
+        O574: the request serializer dropped a key it has no field for: `margin` for `margin_percent` costed the
+        sack at the quotation policy's margin, 201. As the sales manager it is refused beside the key; nothing is
+        costed.
+        """
+        from .quoting import CostSheet
+
+        manager = User.objects.create_user("meena")
+        manager.groups.add(Group.objects.get(name="AR Manager"))
+        client = APIClient()
+        client.force_authenticate(manager)
+        body = {"specification": self.sack.pk, "quantity": "50000", "costed_on": DAY.isoformat()}
+        before = CostSheet.objects.count()
+        refused = client.post("/api/manufacturing/cost-sheets/", {**body, "margin": "30"}, format="json")
+        self.assertEqual((refused.status_code, list(refused.json())), (400, ["margin"]), refused.content)
+        self.assertEqual(refused.json()["margin"], [
+            "This does not take `margin`, and would drop it without a word; it takes `specification`, `quantity`, "
+            "`costed_on`, `margin_percent`."])
+        self.assertEqual(CostSheet.objects.count(), before)
+        self.assertEqual(client.post("/api/manufacturing/cost-sheets/", body, format="json").status_code, 201)
+
 
 class ProfitabilityTests(RepScopeTestCase):
     def order_for(self, customer):
