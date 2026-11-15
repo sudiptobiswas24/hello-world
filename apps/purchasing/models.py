@@ -47,7 +47,7 @@ from apps.core.approvals import (
     check_not_raised_by,
 )
 from apps.core.models import (
-    numbering_first,
+    update_or_create_held,
     check_login_acts,
     BILLED,
     CONFIRMED,
@@ -673,8 +673,8 @@ class RfqInvitation(AuditModel):
             raise ValidationError("This vendor declined to quote.")
         if line.rfq_id != self.rfq_id:
             raise ValidationError("That line belongs to a different RFQ.")
-        numbering_first()  # update_or_create() locks the row it finds: after the numbering row (O257)
-        quote, _ = RfqQuote.objects.update_or_create(
+        quote, _ = update_or_create_held(
+            RfqQuote,
             invitation=self, line=line,
             defaults={
                 "unit_price": Decimal(unit_price),

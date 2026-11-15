@@ -373,6 +373,17 @@ class APlainForUpdateIsReportedTests(TestCase):
         self.assertIn("planted.py:2 decide() takes select_for_update() without no_key=True", found[0])
         self.assertIn("planted.py:4 decide() takes lock_rows(..., deleting=True)", found[1])
 
+    def test_a_planted_update_or_create_is_reported_and_the_held_one_is_not(self):
+        # O379: Django's update_or_create() takes select_for_update() inside, which a search for the word missed.
+        planted = (
+            "def record(user):\n"
+            "    Kept.objects.update_or_create(user=user, defaults={'value': 1})\n"
+            "    update_or_create_held(Kept, user=user, defaults={'value': 1})\n"
+        )
+        found = self.found(planted)
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("planted.py:2 record() takes update_or_create(), whose lock is FOR UPDATE", found[0])
+
     def test_lock_rows_takes_for_no_key_update_and_for_update_only_to_delete(self):
         from .models import row_lock_query
 
