@@ -4,6 +4,7 @@ from rest_framework import serializers, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
+from apps.core.api import takes_only
 from apps.core.audit import AuditableViewSetMixin
 
 from .changes import BomChangeOrder, raise_change
@@ -56,6 +57,7 @@ class BomChangeOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         from .bom import BillOfMaterials
         from apps.core.api import record_or_404
 
+        takes_only(request.data, "supersedes", "effective_from", "reason")
         bom = record_or_404(BillOfMaterials, request.data.get("supersedes"), "supersedes")
         order = raise_change(bom, request.data.get("effective_from"), str(request.data.get("reason", "")),
                              by=request.user)
@@ -66,12 +68,14 @@ class BomChangeOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def apply(self, request, pk=None):
+        takes_only(request.data, "note")
         order = self.get_object()
         order.apply(by=request.user, note=str(request.data.get("note", "")))
         return self._answer(order)
 
     @action(detail=True, methods=["post"])
     def reject(self, request, pk=None):
+        takes_only(request.data, "note")
         order = self.get_object()
         order.reject(by=request.user, note=str(request.data.get("note", "")))
         return self._answer(order)

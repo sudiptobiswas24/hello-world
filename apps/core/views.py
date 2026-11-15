@@ -11,7 +11,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from . import second_factor, session_limits
-from .api import refused_by_database
+from .api import refused_by_database, takes_only
 from .audit import AuditableViewSetMixin, RowHeldViewSetMixin
 from .scoping import created, refuse_change, refuse_create, refuse_write, scoped
 from .models import (
@@ -133,6 +133,7 @@ class NewPartyViewSet(AuditableViewSetMixin, viewsets.GenericViewSet):
 
     def create(self, request):
         user, data = request.user, request.data
+        takes_only(data, "party", *(name for name, *_ in self.LISTS + self.ONES))
         for name, _, needed, *_ in self.LISTS + self.ONES:
             if data.get(name) and not user.has_perm(needed):
                 raise PermissionDenied(f"Filling in {name} is not yours to do; leave it empty, and whoever "
