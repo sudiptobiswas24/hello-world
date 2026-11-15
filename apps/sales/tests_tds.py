@@ -53,6 +53,28 @@ class CustomerTdsTests(SalesTestCase):
         with self.assertRaisesMessage(ValidationError, "already been reversed"):
             tds.reverse()
 
+    def test_not_booked_before_its_invoice_nor_on_a_day_to_come(self):
+        """
+        O582 (probe /home/user/work/calc_g41_kept/probes/probe_o58x.py): booked on 20 February against the
+        invoice of 1 March, the receivable read -100 on the 25th, before anything was owed. Refused; on the
+        invoice's own day it is booked, and its reversal is refused before it, as before.
+        """
+        from django.utils import timezone
+
+        with self.assertRaisesMessage(ValidationError, "is not booked on 2026-02-20: the invoice is dated on "
+                                                       "2026-03-01."):
+            self.invoice.record_tds(self.goods, "100", on_date=datetime.date(2026, 2, 20))
+        with self.assertRaisesMessage(ValidationError, "that day has not come"):
+            self.invoice.record_tds(self.goods, "100", on_date=timezone.localdate() + datetime.timedelta(days=1))
+        self.assertEqual((self.balance(self.ar), self.balance(self.tds_receivable)),
+                         (self.invoice.total(), Decimal("0")))
+        tds = self.invoice.record_tds(self.goods, "100", on_date=datetime.date(2026, 3, 1))
+        self.assertEqual(tds.journal_entry.date, datetime.date(2026, 3, 1))
+        self.assertEqual((self.balance(self.ar), self.balance(self.tds_receivable)),
+                         (self.invoice.total() - Decimal("100.00"), Decimal("100.00")))
+        with self.assertRaisesMessage(ValidationError, "is not reversed on 2026-02-28"):
+            tds.reverse(on_date=datetime.date(2026, 2, 28))
+
     def test_once_in_form_26as_it_stays(self):
         tds = self.invoice.record_tds(self.goods, "100", on_date=DAY)
         tds.confirm(on_date=datetime.date(2026, 7, 15), certificate="16A-77")

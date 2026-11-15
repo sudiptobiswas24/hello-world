@@ -91,7 +91,11 @@ def record(invoice, section, amount, on_date=None, certificate=""):
         if amount > due:
             raise ValidationError(f"Only {due} is left owing on {invoice.number}; the customer cannot have "
                                   f"deducted {amount} from it.")
-        day = to_date(on_date) or timezone.localdate()
+        # Deducted from paying the invoice, so never before it, nor on a day to come (O582): booked on 20 February
+        # against an invoice of 1 March, the receivable read -100 in between.
+        day = correction_date(on_date, invoice.invoice_date,
+                              f"TDS deducted by {invoice.customer} on {invoice.number} is not booked on",
+                              "the invoice is dated")
         memo = f"TDS {section.code} deducted by {invoice.customer} on {invoice.number}"
         entry = JournalEntry.objects.create(date=day, reference=invoice.number, memo=memo)
         JournalLine.objects.create(entry=entry, account=section.receivable_account, party=invoice.customer,
