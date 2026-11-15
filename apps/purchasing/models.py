@@ -5547,7 +5547,6 @@ class BillLine(PostedLineMixin, TaxedLineMixin, AuditModel):
         # One allocation at a time per charge, each reading what the last left: two at once both
         # read the whole charge as unallocated and put it into stock twice.
         lock_rows(self)
-        on_date = to_date(on_date) or timezone.localdate()
         if not self.bill.posted:
             raise ValidationError("Only a posted bill can be allocated.")
         if not (self.is_charge() and self.charge.capitalise_into_inventory):
@@ -5570,6 +5569,14 @@ class BillLine(PostedLineMixin, TaxedLineMixin, AuditModel):
             )
 
         receipt_lines = goods_to_land_on(receipt_lines)
+        # Never before the goods it lands on arrived, nor before its own bill brought the cost in, nor on a day to
+        # come (O583): landed on 1 December on goods received on 5 January, by a bill of 1 February, the shelf
+        # carried freight for a month before the goods or the charge existed. The release asks the same rule of
+        # the allocation's day.
+        arrived = max(to_date(line.receipt.receipt_date) for line in receipt_lines)
+        on_date = correction_date(on_date, max(arrived, to_date(self.bill.bill_date)),
+                                  f"'{self.label()}' is not landed on",
+                                  "the last of its goods arrived or its bill is dated")
         # In base, and net of what debit notes gave back: what the freight account still holds.
         total = self.landed_cost_unallocated()
         if total <= 0:
