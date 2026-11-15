@@ -39,9 +39,16 @@ class TcsSectionViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     search_fields = ["code", "name"]
 
 
-class TcsRateSerializer(serializers.ModelSerializer):
+class KeptBecauseMixin(serializers.Serializer):
     # Why it may not be deleted, or "": the screen offers Delete only where the server would take it (O556).
-    kept_because = serializers.CharField(read_only=True)
+    # Read from what the list asked of every row at once (DatedRate.with_taken, O568), not one EXISTS a row.
+    kept_because = serializers.SerializerMethodField()
+
+    def get_kept_because(self, rate) -> str:
+        return rate.kept_because(taken=getattr(rate, "was_taken", None))
+
+
+class TcsRateSerializer(KeptBecauseMixin, serializers.ModelSerializer):
     section_code = serializers.CharField(source="section.code", read_only=True)
     law_section = serializers.CharField(source="section_code", required=False, allow_blank=True, max_length=16)
 
@@ -65,6 +72,10 @@ class TcsRateViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     # The request's names for the figures a confirmation vouches for (DatedRate.FIGURES).
     READ_AS = {"section_id": "section", "section_code": "law_section"}
 
+    def get_queryset(self):
+        # Whether each row was taken, in the list's one query (O568).
+        return self.queryset.model.with_taken(super().get_queryset())
+
     @action(detail=True, methods=["post"])
     def confirm(self, request, pk=None):
         """{section, applies_from, rate_percent, no_pan_rate_percent[, law_section]}: the figures read."""
@@ -80,9 +91,7 @@ class TcsRateViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         return Response(self.get_serializer(type(rate).objects.get(pk=rate.pk)).data)
 
 
-class TdsRateSerializer(serializers.ModelSerializer):
-    # Why it may not be deleted, or "": the screen offers Delete only where the server would take it (O556).
-    kept_because = serializers.CharField(read_only=True)
+class TdsRateSerializer(KeptBecauseMixin, serializers.ModelSerializer):
     section_code = serializers.CharField(source="section.code", read_only=True)
 
     class Meta:

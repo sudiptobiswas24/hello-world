@@ -55,7 +55,7 @@ class BankRate(DatedRate, AuditModel):
             raise ValidationError({"rate_percent": ["A bank rate is not negative."]})
         return super().save(*args, **kwargs)
 
-    def kept_because(self):
+    def kept_because(self, taken=None):
         # Nothing is taken at it, but a confirmed rate is what the MSME interest shown since was worked at:
         # DatedRate.delete refuses in these words, and the screen offers no Delete (O556).
         if self.confirmed_on is not None:
