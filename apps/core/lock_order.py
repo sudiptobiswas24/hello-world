@@ -153,13 +153,20 @@ _survey_lock = threading.Lock()
 
 
 def _survey(kind, *key):
-    """Record a pair once per process (settings LOCK_ORDER_SURVEY=dir): what the ranks are decided from."""
+    """
+    Record a pair once per process and site (settings LOCK_ORDER_SURVEY=dir): what the ranks are decided from.
+
+    Per site, not per pair: kept once per pair, the first path to take it was the only one written down, and a
+    second path taking the same two models (another caller, perhaps the other way round) was never seen (O373).
+    A rank is decided from every path that takes the pair.
+    """
+    where = _where()
     with _survey_lock:
-        if (kind,) + key in _seen:
+        if (kind, *key, where) in _seen:
             return
-        _seen.add((kind,) + key)
+        _seen.add((kind, *key, where))
         with open(os.path.join(_SURVEY, f"{os.getpid()}.jsonl"), "a") as out:
-            out.write(json.dumps([kind, *key, _where()]) + "\n")
+            out.write(json.dumps([kind, *key, where]) + "\n")
 
 
 # The models whose locks by update(), save(), delete() or a join, and, for

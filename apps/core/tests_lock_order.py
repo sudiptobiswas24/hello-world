@@ -382,6 +382,32 @@ class APlainForUpdateIsReportedTests(TestCase):
         self.assertFalse(row_lock_query(Party, 1, no_key=False).query.select_for_no_key_update)
 
 
+class TheSurveyRecordsEverySiteOfAPairTests(TestCase):
+    """
+    O373: the survey (LOCK_ORDER_SURVEY) kept each pair once per process with the first site to take it, so a
+    second path taking the same two models was never written down. Every site is recorded, each once.
+    """
+
+    def test_two_sites_of_one_pair_are_both_recorded_and_a_site_again_is_not(self):
+        import json
+        import os
+        import tempfile
+        from unittest import mock
+
+        from . import lock_order
+
+        sites = iter(["sales/models.py:10 post", "sales/returns.py:20 credit", "sales/models.py:10 post"])
+        with tempfile.TemporaryDirectory() as folder, mock.patch.object(lock_order, "_SURVEY", folder), \
+                mock.patch.object(lock_order, "_seen", set()), \
+                mock.patch.object(lock_order, "_where", side_effect=lambda: next(sites)):
+            for _ in range(3):
+                lock_order._survey("pair", "sales.invoice", "sales.salesorder")
+            with open(os.path.join(folder, f"{os.getpid()}.jsonl")) as kept:
+                rows = [json.loads(line) for line in kept]
+        self.assertEqual(rows, [["pair", "sales.invoice", "sales.salesorder", "sales/models.py:10 post"],
+                                ["pair", "sales.invoice", "sales.salesorder", "sales/returns.py:20 credit"]])
+
+
 class TheNumberingRowIsTheFirstLockTests(TestCase):
     """O257: the numbering row comes before every row, a model ranked nowhere included."""
 
