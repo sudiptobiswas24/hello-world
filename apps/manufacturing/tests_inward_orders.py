@@ -208,6 +208,31 @@ class GoingBackTests(JobWorkOrderTestCase):
                          (54041900, 900.0, 128000.0))
         self.assertTrue(bill.required)
 
+    def test_the_screens_body_makes_one_as_the_gst_officer(self):
+        """
+        O578: the e-way bill screen sent a job-work delivery with no value going back, and was refused for want
+        of it. What the screen sends now (EwayBillForm's new form, every key it has), as the GST Officer: made.
+        """
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        call_command("setup_roles", verbosity=0)
+        officer = User.objects.create_user("gst_officer")
+        officer.groups.add(Group.objects.get(name="GST Officer"))
+        client = APIClient()
+        client.force_authenticate(officer)
+        screen = {"invoice": None, "carried_on": None, "delivery": self.delivery.pk, "challan": None, "mode": "1",
+                  "distance_km": 120, "transporter_id": "", "transporter_name": "", "vehicle_number": "MH13AB1234",
+                  "vehicle_type": "R", "transport_doc_number": "", "transport_doc_date": None}
+        before = client.post("/api/gst/eway-bills/", screen, format="json")
+        self.assertEqual(before.status_code, 400)
+        self.assertIn("State the goods' value going back", str(before.json()))
+        made = client.post("/api/gst/eway-bills/", {**screen, "declared_value": "128000"}, format="json")
+        self.assertEqual(made.status_code, 201, made.content)
+        self.assertEqual((made.json()["payload"]["docNo"], made.json()["payload"]["totInvValue"]),
+                         (self.delivery.number, 128000.0))
+
     def test_the_value_is_stated_and_at_least_the_conversion(self):
         with self.assertRaisesMessage(ValidationError, "State the goods' value"):
             self.prepare()

@@ -38,6 +38,10 @@ export default function EwayBillForm() {
         { key: "carried_on", label: "Which truck", kind: "pick", pick: DELIVERY, newOnly: true,
           hint: "Only where the invoice went on several deliveries: the one this bill is for" },
         { key: "delivery", label: "Or job-work delivery", kind: "pick", pick: DELIVERY, newOnly: true },
+        // The server refuses a job-work delivery's bill without it (O578): what goes back is the customer's material
+        // and the conversion together, which no document of ours prices.
+        { key: "declared_value", label: "Value going back", kind: "money", newOnly: true,
+          hint: "For a job-work delivery only: the customer's material and the conversion together" },
         { key: "challan", label: "Or job-work challan", kind: "pick", pick: CHALLAN, newOnly: true },
         { key: "mode", label: "Mode", kind: "choice", choices: [["1", "Road"], ["2", "Rail"], ["3", "Air"], ["4", "Ship"]], initial: "1", createOnly: true },
         { key: "distance_km", label: "Distance (km)", kind: "integer", createOnly: true },
