@@ -2843,6 +2843,26 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
         self._hold_with_its_orders()
         return PurchaseOrder.objects.get(pk=self.order_id).policy_figures()
 
+    def _call_off_within_the_agreement(self, previous=None):
+        """
+        What this line calls off its agreement's line, made (`previous` None) or edited: more called off is
+        asked under the agreement's lock, as a release asks it, and only while the agreement stands; and never
+        past what it commits. One check for both paths (O249).
+        """
+        same = previous is not None and previous.blanket_line_id == self.blanket_line_id
+        before = previous.volume_called_off() if same else Decimal("0")
+        if self.volume_called_off() > before:
+            lock_rows(self.blanket_line.blanket)
+            self.blanket_line.blanket.refuse_calling_off_more()
+        # quantity_released() counts this line as stored, so it is weighed net of what it called off before.
+        others = self.blanket_line.quantity_released() - before
+        if others + self.volume_called_off() > self.blanket_line.quantity:
+            from apps.core.api import plain
+
+            raise ValidationError(
+                f"The agreement commits {plain(self.blanket_line.quantity)} of {self.item}; releasing "
+                f"{plain(others + self.volume_called_off())} would exceed it.")
+
     @transaction.atomic
     def save(self, *args, **kwargs):
         # A line naming an item and no unit is in the item's own unit, said here as it is saved: left empty, it
@@ -2890,20 +2910,7 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
             previous = PurchaseOrderLine.objects.filter(pk=self.pk).first()
             if previous is not None:
                 if self.blanket_line_id:
-                    if self.volume_called_off() > previous.volume_called_off():
-                        # More called off, as a release calls it off: under the agreement's
-                        # lock, and only while it stands.
-                        lock_rows(self.blanket_line.blanket)
-                        self.blanket_line.blanket.refuse_calling_off_more()
-                    # quantity_released() already counts this line as stored,
-                    # so compare against the agreement net of it.
-                    others = self.blanket_line.quantity_released() - previous.volume_called_off()
-                    if others + self.volume_called_off() > self.blanket_line.quantity:
-                        raise ValidationError(
-                            f"The agreement commits {self.blanket_line.quantity} of "
-                            f"{self.item}; releasing {others + self.volume_called_off()} would "
-                            "exceed it."
-                        )
+                    self._call_off_within_the_agreement(previous)
                 committed = max(self.quantity_received(), self.quantity_billed())
                 if self.quantity < committed:
                     raise ValidationError(
@@ -2923,6 +2930,10 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
                 # Its price and discount once billed: rule A, asked first thing above. The agreed
                 # price is what the three-way match checks against, so moving it would
                 # retrospectively approve whatever was billed.
+        elif self.blanket_line_id:
+            # Made naming an agreement's line, by release() or in code on an order that exists: the same
+            # check as an edit (O249). Only the edit asked it, and a line made in code took 1,100 of 1,000.
+            self._call_off_within_the_agreement()
         # A line added to an approved draft changes the thing that was
         # approved just as surely as re-pricing one. Nothing caught this
         # because a new line has no previous version to compare against.

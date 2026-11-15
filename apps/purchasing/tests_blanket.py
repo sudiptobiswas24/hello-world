@@ -255,3 +255,45 @@ class WhatAShortReleaseGivesBackTests(BlanketTestCase):
         _, line = self.short_release()
         line.reopen()
         self.assertEqual(self.line.quantity_remaining(), Decimal("900"))
+
+
+class ALineMadeInCodeIsAReleaseTooTests(BlanketTestCase):
+    """
+    O249. A purchase order line naming an agreement's line, made in code on an order that exists rather than by
+    release(), was asked nothing: 1,000 @ 4 committed, 900 released, and a line of 200 made beside it took the
+    agreement to 1,100 of 1,000, or called off a closed agreement. The edit was asked; the make now asks the same
+    check (calc_g41_lines/o249_o357.py).
+    """
+
+    def made(self, order, quantity):
+        from .models import PurchaseOrderLine
+
+        return PurchaseOrderLine.objects.create(order=order, blanket_line=self.line, item=self.item, uom=self.uom,
+                                                quantity=Decimal(quantity), unit_price=Decimal("4"))
+
+    def test_past_what_the_agreement_commits_it_is_refused_and_within_it_made_and_given_back(self):
+        blanket = self.agreement("1000", "4")
+        order = blanket.release({self.line: Decimal("900")}, order_date=datetime.date(2026, 2, 1))
+        with self.assertRaisesMessage(ValidationError, "The agreement commits 1000 of WDG-1 - Widget; "
+                                                       "releasing 1100 would exceed it."):
+            self.made(order, "200")
+        self.assertEqual((order.lines.count(), self.line.quantity_remaining()), (1, Decimal("100")))
+        last = self.made(order, "100")
+        self.assertEqual(self.line.quantity_remaining(), Decimal("0"))
+        # Its reverse: deleted from the draft, the 100 is the agreement's to call off again.
+        last.delete()
+        self.assertEqual(self.line.quantity_remaining(), Decimal("100"))
+        # And the edit, the same check: 900 raised to 1,100.
+        first = order.lines.get()
+        first.quantity = Decimal("1100")
+        with self.assertRaisesMessage(ValidationError, "releasing 1100 would exceed it"):
+            first.save()
+
+    def test_a_closed_agreement_is_not_called_off_by_a_line_made_in_code(self):
+        blanket = self.agreement("1000", "4")
+        order = blanket.release({self.line: Decimal("100")}, order_date=datetime.date(2026, 2, 1))
+        blanket.close()
+        with self.assertRaisesMessage(ValidationError, "Only a confirmed agreement can be released against"):
+            self.made(order, "10")
+        self.assertEqual(self.line.quantity_released(), Decimal("100"))
+
