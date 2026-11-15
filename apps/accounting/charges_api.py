@@ -17,6 +17,8 @@ class ChargeTypeSerializer(ModelSerializer):
     tax_rows = serializers.SerializerMethodField()
 
     class Meta:
+        # Method fields that return a list: sent, refused beside the field (apps.core.api, O587).
+        read_back_lists = ["tax_rows"]
         model = ChargeType
         fields = ["id", "code", "name", "revenue_account", "expense_account", "taxes", "tax_rows",
                   "capitalise_into_inventory", "hsn_code", "is_active"]

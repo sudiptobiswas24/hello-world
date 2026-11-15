@@ -68,6 +68,8 @@ class GateVisitSerializer(ModelSerializer):
     hours_in = serializers.SerializerMethodField()
 
     class Meta:
+        # Method fields that return a list: sent, refused beside the field (apps.core.api, O587).
+        read_back_lists = ["passes"]
         model = GateVisit
         fields = ["id", "number", "vehicle_number", "driver_name", "driver_mobile", "transporter_name", "purpose",
                   "reference", "carried", "status", "in_at", "out_at", "cancelled_at", "cancel_reason",

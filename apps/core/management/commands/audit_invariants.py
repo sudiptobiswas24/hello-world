@@ -108,6 +108,7 @@ class Command(BaseCommand):
         findings += self.undeclared_actions(labels)
         findings += self.writes_around_the_mixin(labels)
         findings += self.serializers_off_the_shared_base(labels)
+        findings += self.list_method_fields_undeclared(labels)
         findings += self.unscoped_party_reads(labels)
         findings += self.bodies_read_past_the_object_parser(labels)
         findings += self.actions_named_after_a_verb(labels)
@@ -860,6 +861,60 @@ class Command(BaseCommand):
         "manufacturing.TestCertificateViewSet.create": "certificates.issue() is its own transaction; it stamps created_by from by= (O202)",
     }
     MIXIN_WRITES = ("create", "update", "destroy", "perform_create", "perform_update", "perform_destroy")
+
+    def list_method_fields_undeclared(self, labels, serializers=None):
+        """
+        A method field whose getter plainly returns a list (a list or list comprehension, list(...), sorted(...))
+        that its serializer does not name in Meta.read_back_lists (O587): sent, the shared base would drop it
+        without a word. A getter returning a list through a call cannot be read here: those found by reading
+        the demo plant's records are named, and a test pins them (apps/core/tests_permissions.py).
+        """
+        import ast
+        import inspect
+        import textwrap
+
+        from rest_framework.serializers import SerializerMethodField
+
+        from apps.core.api import ModelSerializer
+
+        def every(cls):
+            for sub in cls.__subclasses__():
+                yield sub
+                yield from every(sub)
+
+        def returns_a_list(function):
+            try:
+                tree = ast.parse(textwrap.dedent(inspect.getsource(function)))
+            except (OSError, TypeError, SyntaxError):
+                return False
+            return any(isinstance(node, ast.Return) and (
+                isinstance(node.value, (ast.List, ast.ListComp)) or (
+                    isinstance(node.value, ast.Call) and getattr(node.value.func, "id", "") in ("list", "sorted")))
+                for node in ast.walk(tree))
+
+        scanned = serializers is None
+        if scanned:
+            self._routed_viewsets()
+            serializers = set(every(ModelSerializer))
+        findings = []
+        for cls in sorted(serializers, key=lambda each: (each.__module__, each.__name__)):
+            parts = cls.__module__.split(".")
+            if parts[0] != "apps" or len(parts) < 2 or parts[1] not in labels:
+                continue
+            if scanned and any(part.startswith("tests") for part in parts):
+                continue
+            named = set(getattr(getattr(cls, "Meta", None), "read_back_lists", ()))
+            for name, field in getattr(cls, "_declared_fields", {}).items():
+                if not isinstance(field, SerializerMethodField) or name in named:
+                    continue
+                getter = getattr(cls, field.method_name or f"get_{name}", None)
+                if getter is not None and returns_a_list(getter):
+                    findings.append((
+                        "list method field undeclared",
+                        f"{cls.__module__}.{cls.__name__}.{name} returns a list and is not in Meta.read_back_lists: "
+                        "sent, it is dropped without a word. Name it there.",
+                    ))
+        return findings
 
     def serializers_off_the_shared_base(self, labels, serializers=None):
         """

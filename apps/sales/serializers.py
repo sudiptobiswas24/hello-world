@@ -70,6 +70,8 @@ class SalesOrderSerializer(TakesItsLinesMixin, ExtensibleSerializerMixin, ModelS
     total = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
 
     class Meta:
+        # Method fields that return a list: sent, refused beside the field (apps.core.api, O587).
+        read_back_lists = ["supplied_items"]
         model = SalesOrder
         fields = [
             "id", "number", "customer", "customer_name", "order_date", "reference", "status", "currency",
@@ -208,6 +210,8 @@ class DeliveryLineSerializer(ModelSerializer):
     lots_shipped = serializers.SerializerMethodField()
 
     class Meta:
+        # Method fields that return a list: sent, refused beside the field (apps.core.api, O587).
+        read_back_lists = ["lots_shipped"]
         model = DeliveryLine
         fields = ["id", "delivery", "order_line", "description", "warehouse", "quantity_shipped",
             "bin", "lot", "lot_code", "lots_shipped",

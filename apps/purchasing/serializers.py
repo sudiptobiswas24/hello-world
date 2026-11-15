@@ -153,6 +153,8 @@ class BillSerializer(TakesItsLinesMixin, ExtensibleSerializerMixin, ModelSeriali
                 for row in bill.carried.all()]
 
     class Meta:
+        # Method fields that return a list: sent, refused beside the field (apps.core.api, O587).
+        read_back_lists = ["carried"]
         model = Bill
         list_serializer_class = BillListSerializer
         fields = [
