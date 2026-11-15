@@ -39,7 +39,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from apps.accounting.models import round_money
-from apps.core.models import AuditModel, correction_date, lock_rows, numbering_first, serialised, to_date
+from apps.core.models import AuditModel, correction_date, lock_rows, serialised, to_date, update_or_create_held
 
 ZERO = Decimal("0")
 RATE = Decimal("0.000001")
@@ -204,8 +204,8 @@ class CostVersion(AuditModel):
             raise ValidationError(
                 f"{bom} says it makes nothing, so nothing it makes has a cost."
             )
-        numbering_first()  # update_or_create() locks the row it finds: after the numbering row (O257)
-        row, _created = StandardCost.objects.update_or_create(
+        row, _created = update_or_create_held(
+            StandardCost,
             version=self, item=item,
             defaults={
                 "material": (material / made).quantize(RATE),
