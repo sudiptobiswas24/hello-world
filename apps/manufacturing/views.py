@@ -693,6 +693,7 @@ class CostSheetViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def quote(self, request, pk=None):
         request_data = QuoteRequestSerializer(data=request.data, context={"request": request})
+        takes_only(request.data, *request_data.fields)
         request_data.is_valid(raise_exception=True)
         line = quoting.quote(self.get_object(), request_data.validated_data["quotation"],
                              request_data.validated_data["taxes"])
@@ -725,6 +726,7 @@ class TestCertificateViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def void(self, request, pk=None):
+        takes_only(request.data, "reason")
         certificate = self.get_object()
         certificate.void(str(request.data.get("reason", "")))
         return Response(TestCertificateSerializer(certificate).data)
