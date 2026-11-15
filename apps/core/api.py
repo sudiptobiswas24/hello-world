@@ -137,6 +137,25 @@ def required(data, *names, message="This field is required."):
         raise DRFValidationError({name: [message] for name in missing})
 
 
+def takes_only(data, *names):
+    """
+    Refuse, beside each one, a key the request sent that a view reading its body by hand does not take (O574).
+
+    A create that reads request.data itself, rather than through a serializer, reads the keys it knows and
+    drops the rest without a word: a payment voucher sent a `date` was made, 201, and the date lost. Such
+    a view names every key it reads here, before it reads one. Not the same as the shared ModelSerializer's rule
+    (O565), which refuses only a read-only list sent to it and lets a record's other read-back fields be sent
+    back: a body read by hand reads nothing back, so any key it does not name is one it would lose.
+    """
+    if not hasattr(data, "keys"):
+        return
+    unknown = sorted(set(data.keys()) - set(names))
+    if unknown:
+        taken = ", ".join(f"`{name}`" for name in names) or "nothing"
+        raise DRFValidationError({key: [f"This does not take `{key}`, and would drop it without a word; it takes "
+                                        f"{taken}."] for key in unknown})
+
+
 def plain(value):
     """A quantity as people write it: 1000, not 1E+3 (normalize() alone) or 1000.0000; None stays None."""
     return None if value is None else format(Decimal(value).normalize(), "f")

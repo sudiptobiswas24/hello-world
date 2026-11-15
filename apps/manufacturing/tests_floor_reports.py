@@ -41,6 +41,28 @@ class CertificateListTests(CertificateTestCase):
                                        {"voided_at__isnull": "false"}).json(), [])
 
 
+class NothingSentIsDroppedTests(CertificateTestCase):
+    def test_a_key_the_certificate_does_not_take_is_refused_beside_it(self):
+        """
+        O574: the certificate's create read request.data itself and dropped a key it does not take: an
+        `issued_on` sent was lost, the certificate issued today, 201. As the inspector it is refused beside it.
+        """
+        from apps.manufacturing.certificates import TestCertificate
+
+        call_command("setup_roles", verbosity=0)
+        self.inspect(self.tape_plan, self.tape_lot, ["1000", "1010", "990"])  # passed: it may ship
+        delivery = self.shipped()
+        inspector = as_("Quality Inspector")
+        refused = inspector.post("/api/manufacturing/test-certificates/",
+                                 {"delivery": delivery.pk, "issued_on": "2026-09-01"}, format="json")
+        self.assertEqual((refused.status_code, list(refused.json())), (400, ["issued_on"]), refused.content)
+        self.assertEqual(refused.json()["issued_on"], ["This does not take `issued_on`, and would drop it without a "
+                                                       "word; it takes `delivery`."])
+        self.assertFalse(TestCertificate.objects.exists())
+        made = inspector.post("/api/manufacturing/test-certificates/", {"delivery": delivery.pk}, format="json")
+        self.assertEqual(made.status_code, 201, made.content)
+
+
 class ReleaseListTests(InspectedTestCase):
     def test_the_list_names_the_customer_agency_and_batches(self):
         call_command("setup_roles", verbosity=0)

@@ -432,6 +432,35 @@ class ReverseChargeApiTests(ReverseChargeCashTestCase):
         self.assertEqual((voided.status_code, voided.data["voided"]), (200, True))
 
 
+class NothingSentIsDroppedTests(ReverseChargeApiTests):
+    """
+    O574: the self-invoice and payment voucher creates read request.data themselves and dropped a key they do
+    not take. Asked as the people who issue each, a key it does not take is refused beside it, and nothing is made.
+    """
+
+    def test_the_self_invoice_refuses_a_key_it_does_not_take(self):
+        bill = self.freight_bill()
+        officer = self.as_("GST Officer")
+        # `issued_on` for `date`: dropped, the self-invoice dated today, and refused as late under Rule 47A.
+        refused = officer.post("/api/gst/self-invoices/", {"bill": bill.pk, "issued_on": "2026-09-10"}, format="json")
+        self.assertEqual((refused.status_code, list(refused.data)), (400, ["issued_on"]), refused.content)
+        self.assertEqual([str(words) for words in refused.data["issued_on"]],
+                         ["This does not take `issued_on`, and would drop it without a word; it takes `bill`, `date`."])
+        self.assertFalse(SelfInvoice.objects.exists())
+        made = officer.post("/api/gst/self-invoices/", {"bill": bill.pk, "date": "2026-09-10"}, format="json")
+        self.assertEqual((made.status_code, made.data["date"]), (201, "2026-09-10"))
+
+    def test_the_payment_voucher_refuses_a_key_it_does_not_take(self):
+        payment = self.paid_supplier(self.freight_bill(vendor=self.gta), "4000")
+        ap = self.as_("AP Manager")
+        # A voucher is dated by its payment; a `date` sent was dropped, and the voucher dated otherwise.
+        refused = ap.post("/api/gst/payment-vouchers/", {"payment": payment.pk, "date": "2026-09-20"}, format="json")
+        self.assertEqual((refused.status_code, list(refused.data)), (400, ["date"]), refused.content)
+        self.assertIn("it takes `payment`.", str(refused.data["date"][0]))
+        self.assertFalse(PaymentVoucher.objects.exists())
+        self.assertEqual(ap.post("/api/gst/payment-vouchers/", {"payment": payment.pk}, format="json").status_code, 201)
+
+
 class KeptAccountAndRoundingTests(ReverseChargeCashTestCase):
     """
     The debit note gives back into the account its bill owed into, and every side books each tax in base,
