@@ -36,12 +36,14 @@ import re
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
-from django.db import models, transaction
+from django.db import models
 from django.db.models import Q
 from django.db.models.functions import Lower
 from django.utils import timezone
 
-from apps.core.models import AuditModel, DocumentSequence, lock_rows, serialised, to_date
+from apps.core.models import (
+    AuditModel, DocumentSequence, lock_rows, numbered_in_one_transaction, serialised, to_date,
+)
 
 MINUTES_PER_HOUR = Decimal("60")
 # What a shift code may hold (O345): ASCII letters, digits and hyphens.
@@ -461,7 +463,7 @@ class Downtime(AuditModel):
             raise ValidationError(f"{job} is a breakdown raised on this stoppage, and {self.reason} is "
                                   "planned; cancel the job if the machine did not fail.")
 
-    @transaction.atomic
+    @numbered_in_one_transaction  # a number taken and rolled back is given back on the stoppage too (O380)
     def save(self, *args, **kwargs):
         self.shift_date = to_date(self.shift_date)
         if self.pk and Downtime.objects.filter(pk=self.pk, voided_at__isnull=False).exists():

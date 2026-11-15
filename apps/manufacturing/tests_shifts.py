@@ -218,6 +218,28 @@ class DowntimeTests(ShiftTestCase):
             )
         self.assertIn("never goes near", str(caught.exception))
 
+    def test_a_stoppage_whose_save_failed_takes_a_fresh_number_when_saved_again(self):
+        # O380: the save numbered it and then failed, so the sequence rolled back and the next stoppage took the
+        # number. Saved again, the first kept the number in hand: two stoppages carried DT-2026-00001.
+        from django.db.models.signals import pre_save
+
+        stop = Downtime(work_centre=self.loom, shift_date=DAY, shift=self.night, reason=self.breakdown,
+                        minutes=Decimal("30"))
+
+        def refuse(**kwargs):
+            raise ValidationError("the save failed after the number was taken")
+
+        pre_save.connect(refuse, sender=Downtime, weak=False, dispatch_uid="o380")
+        try:
+            with self.assertRaisesMessage(ValidationError, "after the number was taken"):
+                stop.save()
+        finally:
+            pre_save.disconnect(sender=Downtime, dispatch_uid="o380")
+        self.assertEqual(stop.number, "")
+        other = self.stop("20")
+        stop.save()
+        self.assertEqual((other.number, stop.number), ("DT-2026-00001", "DT-2026-00002"))
+
     def test_a_changeover_belongs_to_no_run_at_all(self):
         stop = self.stop("45", reason=self.changeover)
         self.assertIsNone(stop.work_order)

@@ -419,6 +419,51 @@ class TheSurveyRecordsEverySiteOfAPairTests(TestCase):
                                 ["pair", "sales.invoice", "sales.salesorder", "sales/returns.py:20 credit"]])
 
 
+class ANumberKeptPastARollbackIsReportedTests(TestCase):
+    """
+    O380: a number taken onto the object in hand is given back when the step rolls back only through @serialised
+    or @numbered_in_one_transaction; audit_invariants reports a numbering method with neither.
+    """
+
+    def found(self, text):
+        from pathlib import Path
+
+        from apps.core.management.commands.audit_invariants import Command
+
+        return [detail for _kind, detail in Command().numbers_kept_past_a_rollback(
+            ["core"], {"core": {Path("apps/core/planted.py"): text}})]
+
+    def test_a_bare_atomic_save_and_a_helper_called_from_one_are_reported_and_the_rest_are_not(self):
+        planted = (
+            "class Stoppage:\n"
+            "    @transaction.atomic\n"
+            "    def save(self):\n"
+            "        if not self.number:\n"
+            "            self.number = DocumentSequence.next_for('x', day)\n"
+            "    @numbered_in_one_transaction\n"
+            "    def keep(self):\n"
+            "        self.number = DocumentSequence.next_for('x', day)\n"
+            "    @serialised('status')\n"
+            "    def post(self):\n"
+            "        self._assign()\n"
+            "    def _assign(self):\n"
+            "        self.number = DocumentSequence.next_for('x', day)\n"
+            "    def issue(self):\n"
+            "        self._stamp()\n"
+            "    def _stamp(self):\n"
+            "        self.number = DocumentSequence.next_for('x', day)\n"
+            "    def given_back(self):\n"
+            "        with gives_back_its_number(self):\n"
+            "            self.number = DocumentSequence.next_for('x', day)\n"
+            "def make(day):\n"
+            "    return Thing.objects.create(number=DocumentSequence.next_for('x', day))\n"
+        )
+        found = sorted(self.found(planted))
+        self.assertEqual(len(found), 2, found)
+        self.assertIn("planted.py:17 _stamp() numbers the object in hand outside @serialised", found[0])
+        self.assertIn("planted.py:5 save() numbers the object in hand outside @serialised", found[1])
+
+
 class TheNumberingRowIsTheFirstLockTests(TestCase):
     """O257: the numbering row comes before every row, a model ranked nowhere included."""
 
