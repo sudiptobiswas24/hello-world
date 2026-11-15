@@ -733,6 +733,19 @@ def register_allocation_model(model):
         ALLOCATION_MODELS.append(model)
 
 
+# What takes a payment whole with no allocation row: a document whose `field` names the payment (hr registers
+# the slip, the bank file, a returned transfer's receipt, an advance, a remittance, a gratuity payout, a
+# shortfall's receipt in its apps.py). unapplied() asked only the allocation rows, so every salary payment read as
+# money applied to nothing, and the one a refused application left standing on net pay payable could not be told
+# from the rest (O383).
+TAKING_FIELDS = []
+
+
+def register_taking_field(model, field="payment"):
+    if (model, field) not in TAKING_FIELDS:
+        TAKING_FIELDS.append((model, field))
+
+
 def allocations_of(payment, excluding=None):
     """Every allocation of `payment`, on either side, less `excluding`."""
     rows = []
@@ -760,7 +773,7 @@ def allocated_on(payment, excluding=None):
 def unapplied(payments):
     """
     The `payments` with money applied to nothing yet, each annotated with
-    `unallocated`. Asked in the database, through the allocation models
+    `unallocated`; a payment a document takes whole (TAKING_FIELDS) is not. Asked in the database, through the allocation models
     each trading side registered, so a list over a year does not build
     every payment to find the few still open.
     """
@@ -768,6 +781,8 @@ def unapplied(payments):
     from django.db.models.functions import Coalesce
 
     money = DecimalField(max_digits=18, decimal_places=2)
+    for model, field in TAKING_FIELDS:
+        payments = payments.exclude(pk__in=model.objects.filter(**{f"{field}__isnull": False}).values(field))
     applied = Value(Decimal("0"), output_field=money)
     for model in ALLOCATION_MODELS:
         total = (model.objects.filter(payment=OuterRef("pk")).order_by().values("payment")
