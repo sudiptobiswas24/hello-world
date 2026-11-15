@@ -4,7 +4,11 @@ Gratuity owed under the Payment of Gratuity Act, worked out each time.
 Fifteen days' wages for every year of service, a month's wages counted
 as 26 days, on the wages last drawn; a part year of more than six months
 counts as a year; paid after five years' continuous service, never more
-than the ceiling. A provision built up month by month from past wages
+than the ceiling standing on the day it is worked out for (s.4(3)): a dated
+figure the Controller confirms (statutory.FigureKind.GRATUITY_CEILING,
+O551), refused in words while none is confirmed for that day, and kept on
+the payout it capped, so a later notification answers only later leavers.
+A provision built up month by month from past wages
 understates it once wages rise, so this is what the provision is checked
 against, not a replacement for it.
 """
@@ -22,9 +26,6 @@ from apps.accounting.models import JournalLine, round_money
 from apps.core.models import (AuditModel, Company, correction_date, documents_it_answers_to, lock_rows, serialised,
                               takes_back, to_date)
 
-# Payment of Gratuity Act 1972 s.4(3), as notified by S.O. 1420(E) of 29 March 2018: 20 lakh rupees at most.
-# A notified figure, held here as it always was; for the accountant to confirm and make dated (report).
-CEILING = Decimal("2000000")
 # s.4(1): payable on leaving after five years' continuous service, or on death or disablement whatever the service.
 PAYABLE_AFTER_YEARS = 5
 # s.4(2): fifteen days' wages a year, a month counted as 26 days: 15/26 of a month's wages a year, 15/26/12 =
@@ -86,17 +87,30 @@ def wage_components():
                                             basis=ComponentBasis.FIXED).order_by("code"))
 
 
+def ceiling_on(day):
+    """
+    (the Act's ceiling on `day`, kept term) from the confirmed row standing that day (s.4(3), O551); refused in
+    words with none, or while it waits for the Controller. No default: the figure is the Central Government's.
+    """
+    from .statutory import FigureKind, read_figure
+
+    value, term = read_figure("Gratuity", FigureKind.GRATUITY_CEILING, day)
+    return round_money(value), term
+
+
 def gratuity_due(on_date, components, provision_account=None):
     """
     Each employee in service on `on_date`: years counted, wages last drawn
     (the fixed amounts of `components` in force that day), gratuity owed
     and whether it is yet payable; with the provision's balance to set the
-    total against.
+    total against. Capped at the ceiling standing on `on_date` (ceiling_on).
     """
     from .models import Employee
     from .payroll import EmployeeCompensation
 
     on_date = to_date(on_date)
+    # Refusal first: nothing is owed at a ceiling nobody has confirmed for the day.
+    ceiling, ceiling_term = ceiling_on(on_date)
     people = [employee for employee in Employee.objects.filter(hire_date__lte=on_date).select_related("party")
               .order_by("employee_number") if employee.is_employed_on(on_date)]
     wages_of = defaultdict(lambda: Decimal("0"))
@@ -109,7 +123,7 @@ def gratuity_due(on_date, components, provision_account=None):
         wages = wages_of[employee.pk]
         hired = to_date(employee.hire_date)
         years = counted_years(hired, on_date)
-        owed = min(round_money(wages * 15 / 26 * years), CEILING)
+        owed = min(round_money(wages * 15 / 26 * years), ceiling)
         completed, _months = service(hired, on_date)
         rows.append({"employee": employee.pk, "number": employee.employee_number, "name": employee.party.name,
                      "hired": hired, "years": years, "wages": wages, "owed": owed,
@@ -121,7 +135,8 @@ def gratuity_due(on_date, components, provision_account=None):
                                           entry__date__lte=on_date).aggregate(d=Sum("debit"), c=Sum("credit"))
         provided = round_money((sums["c"] or Decimal("0")) - (sums["d"] or Decimal("0")))
     return {"rows": rows, "total": total, "provided": provided,
-            "short": (total - provided) if provided is not None else None}
+            "short": (total - provided) if provided is not None else None,
+            "ceiling": ceiling, "ceiling_from": ceiling_term[1], "ceiling_figure": ceiling_term[0]}
 
 
 def standing_payout(employee_id):
@@ -151,6 +166,11 @@ class GratuityPayout(AuditModel):
     amount = models.DecimalField(max_digits=18, decimal_places=2, editable=False)
     provision_account = models.ForeignKey("accounting.Account", on_delete=models.PROTECT, related_name="+",
                                           editable=False)
+    ceiling_figure = models.ForeignKey(
+        "hr.StatutoryFigure", null=True, blank=True, on_delete=models.PROTECT, related_name="+", editable=False,
+        help_text="The Act's ceiling standing on the leaving day, as the Controller confirmed it (O551): kept, so a "
+                  "later notification does not change what was paid. Blank: paid before the ceiling was dated, at "
+                  "the 20,00,000 the code then held.")
     voided_at = models.DateTimeField(null=True, blank=True, editable=False)
 
     class Meta:
@@ -205,7 +225,8 @@ class GratuityPayout(AuditModel):
         standing = standing_payout(employee.pk)
         if standing is not None:
             raise ValidationError({"employee": f"{standing} stands. Void it before paying {employee} again."})
-        found = [r for r in gratuity_due(left, wage_components())["rows"] if r["employee"] == employee.pk]
+        due = gratuity_due(left, wage_components())
+        found = [r for r in due["rows"] if r["employee"] == employee.pk]
         row = found[0] if found else None
         if row is None or row["owed"] <= 0:
             raise ValidationError({"employee": f"No basic or dearness allowance was in force for {employee} on {left}: "
@@ -231,11 +252,13 @@ class GratuityPayout(AuditModel):
         wages = round_money(row["wages"])
         if payment.amount != row["owed"]:
             raise ValidationError({"payment": (
-                f"{employee} is owed {row['owed']}: {row['years']} year(s) at 15/26 of {wages}. The payment "
-                f"is {payment.amount}.")})
+                f"{employee} is owed {row['owed']}: {row['years']} year(s) at 15/26 of {wages}"
+                + (f", at most the Act's ceiling of {due['ceiling']} from {due['ceiling_from']}"
+                   if row["owed"] == due["ceiling"] else "") + f". The payment is {payment.amount}.")})
         correction_date(payment.payment_date, left, f"{employee}'s gratuity is not paid on", "they left")
         self.left_on, self.years, self.wages, self.amount = left, row["years"], wages, row["owed"]
         self.provision_account_id = payment.counterpart_account_id
+        self.ceiling_figure_id = due["ceiling_figure"]
         super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):
