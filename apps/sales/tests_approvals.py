@@ -545,6 +545,39 @@ class AForeignOrderIsWeighedInTheBaseTests(ApprovalTestCase):
         second.confirm()
         self.assertEqual(committed_in_base(self.customer), Decimal("9600.00"))
 
+    def test_an_old_order_with_no_rate_on_its_date_is_named_and_listed_until_it_has_one(self):
+        # O357: 10 x 10 EUR confirmed on 1 March at 90 (9,000), its rate row then removed and only 120 from 1 April
+        # left. A new order of 1 x 5 EUR on 2 April (600) is refused naming the old order, not only its day, and
+        # Health lists it. The accountant enters 90 from 1 March: 9,000 + 600 = 9,600 against 10,000, confirmed
+        # (calc_g41_lines/o249_o357.py).
+        from apps.core.models import ExchangeRate
+        from apps.web.health import _orders_without_their_rate
+        from .models import CustomerProfile, SalesOrder, committed_in_base
+
+        CustomerProfile.objects.update_or_create(party=self.customer, defaults={"credit_limit": Decimal("10000")})
+        old = self.eur_order("10", "10")
+        old.confirm()
+        ExchangeRate.objects.filter(currency=old.currency).delete()
+        ExchangeRate.objects.create(currency=old.currency, rate=Decimal("120"), valid_from=datetime.date(2026, 4, 1))
+        new = SalesOrder.objects.create(customer=self.customer, order_date=datetime.date(2026, 4, 2),
+                                        currency=old.currency)
+        SalesOrderLine.objects.create(order=new, item=self.item, uom=self.uom, quantity=Decimal("1"),
+                                      unit_price=Decimal("5"), revenue_account=self.revenue)
+        named = f"No exchange rate for EUR on 01-03-2026, the date of {old.number}"
+        with self.assertRaisesMessage(ValidationError, named):
+            new.credit_limit_breach()
+        with self.assertRaisesMessage(ValidationError, named):
+            new.confirm()
+        listed = _orders_without_their_rate(datetime.date(2026, 4, 2))
+        self.assertEqual((listed["ok"], listed["count"], [row["label"] for row in listed["rows"]]),
+                         (False, 1, [f"{old.number} for {self.customer}: no EUR rate on 01 Mar 2026"]))
+        # Its way out: the rate the old order was confirmed at, entered for its day.
+        ExchangeRate.objects.create(currency=old.currency, rate=Decimal("90"), valid_from=datetime.date(2026, 3, 1))
+        self.assertIsNone(new.credit_limit_breach())
+        new.confirm()
+        self.assertEqual(committed_in_base(self.customer), Decimal("9600.00"))
+        self.assertEqual(_orders_without_their_rate(datetime.date(2026, 4, 2))["count"], 0)
+
     def test_the_credit_limit_weighs_the_order_at_its_own_date(self):
         # O334: 10 x 10 EUR on 1 March at 90 is 9,000 against a 10,000 limit; at April's 120 it would read 12,000.
         from apps.core.models import ExchangeRate
