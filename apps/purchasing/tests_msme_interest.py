@@ -307,6 +307,27 @@ class AsThePeopleWhoDoItTests(MsmeTestCase):
             self.clients[role] = APIClient()
             self.clients[role].force_authenticate(user)
 
+    def test_the_bank_rate_list_says_why_each_stays_in_the_same_queries_at_two_rows_and_five(self):
+        # O589: kept_because comes from the dated rates' one mixin now. A bank rate is taken by nothing, so the list
+        # asks as it did: the count and the page, 2 queries at 2 rows and at 5. A confirmed rate stays; one
+        # waiting for the accountant may go.
+        rates, ap = "/api/accounting/bank-rates/", self.clients["AP Manager"]
+        confirmed = BankRate.objects.create(applies_from=day(2026, 1, 1), rate_percent=Decimal("6.5"),
+                                            confirmed_on=day(2026, 1, 2))
+        BankRate.objects.create(applies_from=day(2026, 2, 1), rate_percent=Decimal("6.25"))
+        stays = confirmed.kept_because()
+        self.assertTrue(stays.startswith("Bank rate 6.5% from 2026-01-01 is confirmed"), stays)
+        ap.get(rates)  # who is asking and what they may do, read once a session
+        with self.assertNumQueries(2):
+            listed = ap.get(rates)
+        self.assertEqual(sorted((row["applies_from"], row["kept_because"]) for row in listed.json()),
+                         [("2026-01-01", stays), ("2026-02-01", "")])
+        for month in (3, 4, 5):
+            BankRate.objects.create(applies_from=day(2026, month, 1), rate_percent=Decimal("6.25"))
+        with self.assertNumQueries(2):
+            listed = ap.get(rates)
+        self.assertEqual([row["kept_because"] for row in listed.json()].count(""), 4)
+
     def test_the_controller_keeps_and_confirms_the_rate_and_the_list_then_shows_interest(self):
         rates, controller, ap = "/api/accounting/bank-rates/", self.clients["Controller"], self.clients["AP Manager"]
         bill = self.bill(terms=self.net30)
