@@ -300,6 +300,24 @@ def _passes_not_out(day):
                     rows, "/stores/gate-passes")
 
 
+def _orders_without_their_rate(day):
+    """
+    A confirmed sales order with something still to bill and no exchange rate on its own date: its customer's
+    credit check cannot be read until it has one, and refuses naming it (O357). Listed here for the accountant.
+    """
+    from apps.sales.models import OrderStatus, SalesOrder, unweighed_orders, with_what_is_left_to_bill
+
+    orders = unweighed_orders(with_what_is_left_to_bill(SalesOrder.objects.filter(
+        status=OrderStatus.CONFIRMED).exclude(currency__is_base=True).exclude(currency=None).order_by("order_date", "pk")))
+    rows = [{"label": f"{order.number} for {order.customer}: no {order.currency.code} rate on "
+                      f"{order.order_date:%d %b %Y}", "href": f"/sales/orders/{order.pk}"} for order in orders[:SHOW]]
+    return _finding(not orders, len(orders),
+                    "Every confirmed order has an exchange rate on its own date." if not orders
+                    else f"{len(orders)} confirmed order(s) have no exchange rate on their own date: their customers' "
+                         "credit checks are refused until each has one.",
+                    rows, "/settings/exchange-rates")
+
+
 def _closed_periods(day):
     from apps.accounting.models import AccountingPeriod, JournalEntry
 
@@ -435,6 +453,7 @@ PROBES = [
     Probe("fixed_assets", "Fixed assets agree with the ledger", _fixed_assets),
     Probe("vehicles_in", "No vehicle left without an out-entry", _vehicles_in_too_long),
     Probe("passes_not_out", "No approved pass went without its check-out", _passes_not_out),
+    Probe("orders_rate", "Confirmed orders have their exchange rate", _orders_without_their_rate),
     Probe("closed_periods", "Closed months stayed closed", _closed_periods),
     Probe("invoice_numbers", "Invoice numbers run without a gap", _invoice_numbers),
     Probe("self_invoices", "Reverse-charge supplies have their self-invoices", _self_invoices),
