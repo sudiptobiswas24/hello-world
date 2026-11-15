@@ -59,8 +59,12 @@ class PayDetailsViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 
 class FigureSerializer(ModelSerializer):
-    # Why it may not be deleted, or "": the screen offers Delete only where the server would take it (O567).
-    kept_because = serializers.CharField(read_only=True)
+    # Why it may not be deleted, or "": the screen offers Delete only where the server would take it (O567), read
+    # from what the list asked of every row at once (with_kept, O586).
+    kept_because = serializers.SerializerMethodField()
+
+    def get_kept_because(self, row) -> str:
+        return row.kept_because(run=row.kept_by_run) if hasattr(row, "kept_by_run") else row.kept_because()
 
     class Meta:
         model = StatutoryFigure
@@ -93,6 +97,10 @@ class FigureViewSet(ConfirmAction, AuditableViewSetMixin, viewsets.ModelViewSet)
     date_field = "effective_from"
     action_permission_map = {"confirm": "hr.confirm_statutoryfigure"}
 
+    def get_queryset(self):
+        # Which run kept each row, in the list's one query (O586).
+        return StatutoryFigure.with_kept(super().get_queryset())
+
     def perform_create(self, serializer):
         _run(super().perform_create, serializer)
 
@@ -105,8 +113,12 @@ class FigureViewSet(ConfirmAction, AuditableViewSetMixin, viewsets.ModelViewSet)
 
 class MinimumWageSerializer(ModelSerializer):
     monthly = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
-    # Why it may not be deleted, or "": the screen offers Delete only where the server would take it (O567).
-    kept_because = serializers.CharField(read_only=True)
+    # Why it may not be deleted, or "": the screen offers Delete only where the server would take it (O567), read
+    # from what the list asked of every row at once (with_kept, O586).
+    kept_because = serializers.SerializerMethodField()
+
+    def get_kept_because(self, row) -> str:
+        return row.kept_because(run=row.kept_by_run) if hasattr(row, "kept_by_run") else row.kept_because()
 
     class Meta:
         model = MinimumWage
@@ -122,6 +134,10 @@ class MinimumWageViewSet(ConfirmAction, AuditableViewSetMixin, viewsets.ModelVie
     search_fields = ["employment", "zone"]
     date_field = "effective_from"
     action_permission_map = {"confirm": "hr.confirm_minimumwage"}
+
+    def get_queryset(self):
+        # Which run kept each row, in the list's one query (O586).
+        return MinimumWage.with_kept(super().get_queryset())
 
     def perform_create(self, serializer):
         _run(super().perform_create, serializer)

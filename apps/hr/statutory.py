@@ -99,6 +99,10 @@ def refuse_unconfirmed(what, since, screen):
         f"confirms it, or corrects it, under {screen}.")
 
 
+# kept_because() asks for itself unless a list handed it the run (with_kept).
+ASK = object()
+
+
 class Confirmed(models.Model):
     """
     The Controller's word that a figure is the law's, with who and when.
@@ -118,17 +122,39 @@ class Confirmed(models.Model):
     def figures(self):
         return {name: getattr(self, name) for name in self.FIGURES}
 
+    # The name a payslip line keeps this row's term under (PayslipLine.kept_terms), where it is one name.
+    KEPT_UNDER = None
+
     def kept_under(self):
         """The name a payslip line keeps this row's term under (PayslipLine.kept_terms)."""
-        raise NotImplementedError
+        return self.KEPT_UNDER
 
-    def kept_because(self):
+    @classmethod
+    def kept_run_expression(cls):
+        """The number of a posted run that kept the row, for an annotation (kept_run_of)."""
+        return kept_run_of(cls.KEPT_UNDER)
+
+    @classmethod
+    def with_kept(cls, queryset):
+        """
+        The rows, each with `kept_by_run`, the number of a posted run that kept it or None, asked in the list's
+        one query (O586). A list read kept_by() once a row, a query for each: the shape O568 took off the rate
+        lists. Only for what is shown; delete() asks again, as it is refused.
+        """
+        return queryset.annotate(kept_by_run=cls.kept_run_expression())
+
+    def kept_because(self, run=ASK):
         """
         Why the row may not be deleted, in words, or "" where it may: a posted run was paid at it. delete()
         refuses in these words and the screen reads them to offer Delete or not (O567; the dated rates' O556), so
-        the two cannot disagree.
+        the two cannot disagree. `run` is the run a list asked of every row at once (with_kept); asked here
+        otherwise.
         """
-        return kept_words(self.kept_under(), self.pk, f"{self}", "deleted") if self.pk is not None else ""
+        if self.pk is None:
+            return ""
+        if run is ASK:
+            return kept_words(self.kept_under(), self.pk, f"{self}", "deleted")
+        return kept_sentence(f"{self}", run, "deleted") if run else ""
 
     def refuse_delete_if_kept(self):
         if reason := self.kept_because():
@@ -191,6 +217,14 @@ class StatutoryFigure(Confirmed, AuditModel):
 
     def kept_under(self):
         return self.kind
+
+    @classmethod
+    def kept_run_expression(cls):
+        """Kept under its kind: one subquery a kind, chosen by the row's own (O586)."""
+        from django.db.models import Case, CharField, Value, When
+
+        return Case(*[When(kind=kind, then=kept_run_of(kind)) for kind in FigureKind.values],
+                    default=Value(None), output_field=CharField())
 
     @transaction.atomic
     def save(self, *args, **kwargs):
@@ -300,8 +334,7 @@ class MinimumWage(Confirmed, AuditModel):
     def term(self):
         return [self.pk, self.effective_from.isoformat(), f"{self.monthly.normalize():f}"]
 
-    def kept_under(self):
-        return "minimum_wage"
+    KEPT_UNDER = "minimum_wage"
 
     @transaction.atomic
     def save(self, *args, **kwargs):
@@ -365,13 +398,33 @@ def kept_by(key, pk):
     return line.payslip.run if line is not None else None
 
 
+def kept_run_of(key):
+    """
+    For an annotation: the number of a posted run a payslip line of which kept the outer row under `key` (the
+    term's first place is the row's pk), or None. Compared as text, so the one expression reads the same on
+    SQLite and PostgreSQL (O586).
+    """
+    from django.db.models import OuterRef, Subquery, TextField
+    from django.db.models.fields.json import KeyTextTransform, KeyTransform
+    from django.db.models.functions import Cast
+
+    from .payroll import PayRunStatus, PayslipLine
+
+    lines = PayslipLine.objects.filter(payslip__run__status=PayRunStatus.POSTED).annotate(
+        kept_row=KeyTextTransform("0", KeyTransform(key, "kept_terms"))).filter(
+        kept_row=Cast(OuterRef("pk"), TextField())).order_by("pk")
+    return Subquery(lines.values("payslip__run__number")[:1])
+
+
+def kept_sentence(what, run, doing):
+    return (f"{what} is what {run} was paid at; it is not {doing}. Void that run first, or give the new figure a "
+            "row of its own from the day it applies.")
+
+
 def kept_words(key, pk, what, doing):
     """Why `what` may not be `doing` ("changed", "deleted"), in words, or "" where it may."""
     run = kept_by(key, pk)
-    if run is None:
-        return ""
-    return (f"{what} is what {run} was paid at; it is not {doing}. Void that run first, or give the new figure a "
-            "row of its own from the day it applies.")
+    return kept_sentence(what, run, doing) if run is not None else ""
 
 
 def refuse_if_kept(key, pk, what, doing):
