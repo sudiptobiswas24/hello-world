@@ -17,7 +17,7 @@ from rest_framework.exceptions import NotFound, PermissionDenied, ValidationErro
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from .api import record_or_404
+from .api import record_or_404, takes_only
 from .attachments import Attachment, attach, attachments_of, detach, purpose_label, purpose_of
 from .endpoints import may_read
 from django.db import transaction
@@ -71,6 +71,7 @@ class AttachmentViewSet(viewsets.ViewSet):
     def create(self, request):
         if not request.user.has_perm("core.add_attachment"):
             raise PermissionDenied("Attaching files is not yours.")
+        takes_only(request.data, "model", "id", "file", "purpose")
         kept = _record(request, request.data)
         uploaded = request.FILES.get("file")
         if uploaded is None:

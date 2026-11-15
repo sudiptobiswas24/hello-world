@@ -29,7 +29,7 @@ from rest_framework.exceptions import NotFound, PermissionDenied, ValidationErro
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from .api import flag, record_or_404
+from .api import flag, record_or_404, takes_only
 from .chatter import FollowUp, FollowUpKind, Note
 from .endpoints import may_read, model_named
 
@@ -113,6 +113,7 @@ class NoteViewSet(viewsets.ViewSet):
     def create(self, request):
         if not request.user.has_perm("core.add_note"):
             raise PermissionDenied("Writing notes is not yours.")
+        takes_only(request.data, "model", "id", "body")
         model, pk = _record(request, request.data)
         row = Note.objects.create(content_type=ContentType.objects.get_for_model(model), object_id=pk,
                                   body=str(request.data.get("body", "")), created_by=request.user,

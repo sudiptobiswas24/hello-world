@@ -167,6 +167,7 @@ class EInvoiceViewSet(RowHeldViewSetMixin, mixins.ListModelMixin, mixins.Retriev
 
     @action(detail=True, methods=["post"])
     def record(self, request, pk=None):
+        takes_only(request.data, "irn", "ack_number", "ack_date", "signed_qr")
         record = self.get_object()
         record.record(
             irn=request.data.get("irn"), ack_number=request.data.get("ack_number"),
@@ -178,6 +179,7 @@ class EInvoiceViewSet(RowHeldViewSetMixin, mixins.ListModelMixin, mixins.Retriev
     @action(detail=True, methods=["post"])
     def cancel(self, request, pk=None):
         """{reason (1 duplicate, 2 data entry mistake, 3 order cancelled, 4 others), remarks}: the request to send."""
+        takes_only(request.data, "reason", "remarks")
         record = self.get_object()
         record.cancellation(str(request.data.get("reason", "")), str(request.data.get("remarks", "")))
         return Response(EInvoiceSerializer(record).data)
@@ -190,6 +192,7 @@ class EInvoiceViewSet(RowHeldViewSetMixin, mixins.ListModelMixin, mixins.Retriev
         """
         if not request.user.has_perm("gst.view_einvoice"):
             raise PermissionDenied("Recording a cancellation needs the e-invoices as well as the right to post.")
+        takes_only(request.data, "irn", "cancelled_at")
         record = self.get_object()
         answered = str(request.data.get("irn") or "").strip().lower()
         if answered != record.irn:
@@ -292,6 +295,7 @@ class EwayBillViewSet(RowHeldViewSetMixin, mixins.ListModelMixin, mixins.Retriev
         from apps.core.models import Address
         from apps.sales.models import Invoice
 
+        takes_only(request.data, "invoice", "state", "port_address")
         invoice = get_object_or_404(Invoice, pk=request.data.get("invoice") or 0)
         port = (get_object_or_404(Address, pk=request.data["port_address"])
                 if request.data.get("port_address") else None)
@@ -302,12 +306,14 @@ class EwayBillViewSet(RowHeldViewSetMixin, mixins.ListModelMixin, mixins.Retriev
     def withdraw_where_it_went(self, request):
         from apps.sales.models import Invoice
 
+        takes_only(request.data, "invoice")
         invoice = get_object_or_404(Invoice, pk=request.data.get("invoice") or 0)
         invoice.withdraw_where_it_went()
         return Response(_where_it_went(invoice))
 
     @action(detail=True, methods=["post"])
     def record(self, request, pk=None):
+        takes_only(request.data, "number", "generated_at", "valid_until")
         bill = self.get_object()
         bill.record(
             number=request.data.get("number"),
@@ -318,6 +324,7 @@ class EwayBillViewSet(RowHeldViewSetMixin, mixins.ListModelMixin, mixins.Retriev
 
     @action(detail=True, methods=["post"])
     def cancel(self, request, pk=None):
+        takes_only(request.data, "reason", "remarks")
         bill = self.get_object()
         bill.cancel(str(request.data.get("reason", "")), str(request.data.get("remarks", "")))
         return Response(EwayBillSerializer(bill).data)
@@ -358,6 +365,7 @@ class SelfInvoiceViewSet(viewsets.ReadOnlyModelViewSet):
 
     @action(detail=True, methods=["post"])
     def cancel(self, request, pk=None):
+        takes_only(request.data, "reason", "date")
         record = self.get_object()
         record.cancel(str(request.data.get("reason", "")), on_date=request.data.get("date") or None)
         return Response(SelfInvoiceSerializer(record).data)

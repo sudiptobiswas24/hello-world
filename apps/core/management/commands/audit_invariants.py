@@ -111,6 +111,7 @@ class Command(BaseCommand):
         findings += self.list_method_fields_undeclared(labels)
         findings += self.unscoped_party_reads(labels)
         findings += self.bodies_read_past_the_object_parser(labels)
+        findings += self.creates_reading_the_body_by_hand(labels)
         findings += self.actions_named_after_a_verb(labels)
         findings += self.admin_only_rules(labels)
         findings += self.dead_class_attributes(labels, sources)
@@ -1086,6 +1087,34 @@ class Command(BaseCommand):
                 f"{view.__module__.split('.')[1]}.{view.__name__} reads request.data and parses JSON with "
                 f"{', '.join(past)}, which hands it a list or a bare value: request.data.get answers 500. "
                 "Keep apps.core.api.ObjectJSONParser among its parser_classes.",
+            ))
+        return findings
+
+    def creates_reading_the_body_by_hand(self, labels, viewsets=None):
+        """
+        A create that reads request.data itself without apps.core.api.takes_only, and hands it to no
+        serializer: it reads the keys it knows and drops any other without a word (O574, O577). A self-invoice
+        sent `issued_on` was dated today and refused as late; a payment voucher sent a `date` was made, the date
+        lost. Only creates: the actions that read their body by hand are many still (O577's report lists them).
+        """
+        import inspect
+
+        findings, seen = [], set()
+        for view in self._routed_viewsets() if viewsets is None else viewsets:
+            if view.__module__.split(".")[0] != "apps" or view.__module__.split(".")[1] not in labels:
+                continue
+            owner = next((cls for cls in view.__mro__ if "create" in vars(cls)), None)
+            if owner is None or not owner.__module__.startswith("apps.") or owner in seen:
+                continue
+            seen.add(owner)
+            source = inspect.getsource(vars(owner)["create"])
+            if "request.data" not in source or "takes_only(" in source or "data=request.data" in source:
+                continue
+            findings.append((
+                "create reading its body by hand",
+                f"{owner.__module__.split('.')[1]}.{owner.__name__}.create reads request.data itself and drops a "
+                "key it does not read without a word. Name every key it takes with apps.core.api.takes_only "
+                "before reading one, or read the body through a serializer.",
             ))
         return findings
 
