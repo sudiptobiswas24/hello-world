@@ -432,6 +432,79 @@ class AKeptSlabStaysTests(LoadedTestCase):
         self.assertEqual(officer.delete(f"/api/hr/pay-component-slabs/{high.pk}/").status_code, 204)
 
 
+class TheListsAskWhichRunKeptEachRowOnceTests(LoadedTestCase):
+    """
+    O586: the statutory-figure list, the minimum-wage list and the slab panel said why each row stays
+    (kept_because, O567, O570) by asking kept_by() of every row: a query a row, the shape O568 took off the rate
+    lists. Now each viewset asks it of the whole page in its one query (with_kept), and a delete still asks fresh.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.officer = self.in_role("Payroll Officer")
+
+    def counted(self, url, params):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        self.officer.get(url, params)  # the login's rights, read once
+        with CaptureQueriesContext(connection) as asked:
+            answer = self.officer.get(url, params)
+        self.assertEqual(answer.status_code, 200, answer.content)
+        return asked, answer.json()
+
+    def test_the_figure_and_wage_lists_ask_the_same_at_two_rows_and_at_five(self):
+        def figure(day):
+            StatutoryFigure.objects.create(kind=FigureKind.BONUS_FLOOR, state="WB", effective_from=day,
+                                           value=Decimal("7000"), source="test row")
+
+        def wage(day):
+            MinimumWage.objects.create(state="WB", employment="Bottling and packaging", zone="A",
+                                       skill=Skill.UNSKILLED, effective_from=day, basic=Decimal("9500"),
+                                       vda=Decimal("1058"), source="test row")
+
+        for make, url, params in ((figure, "/api/hr/statutory-figures/", {"kind": FigureKind.BONUS_FLOOR,
+                                                                          "state": "WB"}),
+                                  (wage, "/api/hr/minimum-wages/", {"state": "WB"})):
+            with self.subTest(url=url):
+                for month in (1, 2):
+                    make(D(2026, month, 1))
+                asked, rows = self.counted(url, params)
+                self.assertEqual([row["kept_because"] for row in rows], ["", ""])
+                for month in (3, 4, 5):
+                    make(D(2026, month, 1))
+                with self.assertNumQueries(len(asked)):
+                    rows = self.officer.get(url, params).json()
+                self.assertEqual(len(rows), 5)
+
+    def test_the_slab_panel_asks_which_run_kept_its_bands_once_and_says_so(self):
+        bands = [PayComponentSlab.objects.create(component=self.wb, state="WB", effective_from=D(2026, 4, 1),
+                                                 above=Decimal(above), up_to=up_to and Decimal(up_to),
+                                                 amount=Decimal(amount), confirmed_on=D(2026, 3, 31))
+                 for above, up_to, amount in (("0", "10000", "0"), ("10000", None, "110"))]
+        person = self.worker("S1", work_state="WB")
+        self.paid(person, self.basic, "12000")
+        self.paid(person, self.wb, "1")
+        october = self.month_run(2026, 10, employees=[person])
+        high = PayComponentSlab.objects.get(pk=bands[1].pk)
+
+        def kept_asked(asked):
+            return sum("hr_payslipline" in query["sql"] for query in asked.captured_queries)
+
+        asked, rows = self.counted("/api/hr/pay-component-slabs/", {"component": self.wb.pk})
+        self.assertEqual(kept_asked(asked), 1)
+        self.assertEqual({row["id"]: row["kept_because"] for row in rows},
+                         {bands[0].pk: "", high.pk: high.kept_because()})
+        self.assertIn(f"is what {october} was paid at", high.kept_because())
+        for above, up_to in (("0", "10000"), ("10000", "20000"), ("20000", None)):
+            PayComponentSlab.objects.create(component=self.wb, state="WB", effective_from=D(2027, 4, 1),
+                                            above=Decimal(above), up_to=up_to and Decimal(up_to), amount=Decimal("0"))
+        asked, rows = self.counted("/api/hr/pay-component-slabs/", {"component": self.wb.pk})
+        self.assertEqual((len(rows), kept_asked(asked)), (5, 1))
+        # A delete asks fresh, under the row's lock, whatever a list said.
+        self.assertEqual(self.officer.delete(f"/api/hr/pay-component-slabs/{high.pk}/").status_code, 400)
+
+
 class EsiReadsTheDatedRatesTests(LoadedTestCase):
     """
     ESI at the dated rates: 0.75% and 3.25% (test rows from 2000), the employee's share 1% from
