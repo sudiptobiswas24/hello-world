@@ -962,3 +962,46 @@ class ALeaverNoRunPaidSettlesTheirAdvanceTests(ALeaversAdvanceLeftIsSettledTests
                 build()
         self.assertEqual(self.owing.balance(), Decimal("5000.00"))
 
+
+class AStrandedSalaryPaymentTests(OutputsTestCase):
+    """
+    O383, ThePayrollLocks' void-first order in sequence (/home/user/work/calc_g43_people/calc.py): June's net
+    23,825.50 paid by the bank file; E2's 8,450.50 comes back (receipt R), E2 is paid 8,450.50 again (own), R is
+    voided (the transfer went through after all, the slip is paid by the file), and own's application is refused:
+    own stands on net pay payable, Dr 8,450.50. The Controller, who pays the pay, finds it among the payments
+    applied to nothing, and only it, and voids it: 0.00. Before, every salary payment read as applied to nothing.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.people = [self.employee(code) for code in ("E1", "E2", "E3")]
+        for person, amount in zip(self.people, ("12000", "8450.50", "3375")):
+            self.pay(person, self.salary, amount)
+            self.banked(person)
+        self.paid_run = self.june()
+
+    def test_the_controller_finds_the_payment_a_refused_application_left_and_voids_it(self):
+        made = SalaryTransferFile.prepare(self.paid_run)
+        made.mark_paid(self.money(self.people[0].party, "23825.50"))
+        row = made.rows.get(payslip__employee=self.people[1])
+        receipt = self.money(self.people[1].party, "8450.50", direction=PaymentDirection.RECEIPT)
+        row.return_transfer(receipt)
+        own = self.money(self.people[1].party, "8450.50")
+        slip = self.paid_run.payslips.get(employee=self.people[1])
+        receipt.void(on_date=D(2026, 7, 1))
+        with self.assertRaisesMessage(ValidationError, "already been paid"):
+            slip.pay(own)
+        self.assertEqual((self.paid_run.unpaid_net(), self.balance(self.net_pay)), (Decimal("0"), Decimal("8450.50")))
+        controller = self.as_role("Controller")
+        listed = controller.get("/api/accounting/payments/", {"unapplied": "true"})
+        self.assertEqual(listed.status_code, 200, listed.content)
+        rows = listed.json()["results"] if isinstance(listed.json(), dict) else listed.json()
+        # The file's 23,825.50 settles the run: not applied to nothing. Only own is.
+        self.assertEqual([(r["id"], r["amount"]) for r in rows], [(own.pk, "8450.50")])
+        voided = controller.post(f"/api/accounting/payments/{own.pk}/void/", {"date": "2026-07-01"}, format="json")
+        self.assertEqual(voided.status_code, 200, voided.content)
+        self.assertEqual((self.paid_run.unpaid_net(), self.balance(self.net_pay)), (Decimal("0"), Decimal("0.00")))
+        listed = controller.get("/api/accounting/payments/", {"unapplied": "true"}).json()
+        self.assertEqual(listed["results"] if isinstance(listed, dict) else listed, [])
+        # The Payroll Officer works the pay out and neither reads nor voids the ledger's payments.
+        self.assertEqual(self.as_role("Payroll Officer").get("/api/accounting/payments/").status_code, 403)
