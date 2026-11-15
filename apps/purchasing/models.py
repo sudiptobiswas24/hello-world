@@ -1333,6 +1333,28 @@ class BlanketOrder(TaxesTakenUnder, AuditModel):
         on_date = to_date(on_date)
         return self.start_date <= on_date <= self.end_date
 
+    def refuse_a_call_off(self, line, vendor, item, order_date, more=True):
+        """
+        What every call-off of `line` must be, asked by release() of each line it releases, by a purchase order
+        line's save() of the agreement line it names, made or moved, and by an order whose vendor or date changes
+        (O581): one function, so the paths cannot drift apart again. Calling off more, the agreement is
+        confirmed; always, the order is dated within the agreement, to its vendor, and the line is of its item.
+        """
+        if more:
+            self.refuse_calling_off_more()
+        order_date = to_date(order_date)
+        if not self.covers(order_date):
+            raise ValidationError(
+                f"This agreement runs {self.start_date:%d %b %Y} to {self.end_date:%d %b %Y}; "
+                f"{order_date:%d %b %Y} is outside it."
+            )
+        if getattr(vendor, "pk", vendor) != self.vendor_id:
+            raise ValidationError(f"{self.number or self} is an agreement with {self.vendor}; an order to {vendor} "
+                                  "does not call it off.")
+        if getattr(item, "pk", item) != line.item_id:
+            raise ValidationError(f"{self.number or self} agrees {line.item} on this line; a line of {item} does "
+                                  "not call it off.")
+
     def refuse_calling_off_more(self):
         """
         Asked by release(), and by a release raised or reopened, which call off more just the
@@ -1379,13 +1401,6 @@ class BlanketOrder(TaxesTakenUnder, AuditModel):
         committing to a volume is that the price is fixed for it.
         """
         order_date = to_date(order_date) or timezone.localdate()
-        self.refuse_calling_off_more()
-        if not self.covers(order_date):
-            raise ValidationError(
-                f"This agreement runs {self.start_date:%d %b %Y} to {self.end_date:%d %b %Y}; "
-                f"{order_date:%d %b %Y} is outside it."
-            )
-
         selected = [(line, Decimal(quantity)) for line, quantity in quantities.items()
                     if Decimal(quantity) > 0]
         if not selected:
@@ -1393,6 +1408,8 @@ class BlanketOrder(TaxesTakenUnder, AuditModel):
         for line, quantity in selected:
             if line.blanket_id != self.pk:
                 raise ValidationError("That line belongs to a different agreement.")
+            # What any call-off asks, the one function a purchase order line's save() asks too (O581).
+            self.refuse_a_call_off(line, self.vendor, line.item, order_date)
             if quantity > line.quantity_remaining():
                 raise ValidationError(
                     f"Only {line.quantity_remaining()} of {line.item} is left on this "
@@ -2048,7 +2065,14 @@ class PurchaseOrder(Extensible, TaxesTakenUnder, TaxedDocumentMixin, ChangesWith
         elif self.pk:
             # Under its own lock: receipts and bills post under it.
             refuse_changing_what_moved(self, lambda: lock_rows(self, refresh=False))
-            before = PurchaseOrder.objects.filter(pk=self.pk).values("freight_terms", "incoterm").first()
+            before = PurchaseOrder.objects.filter(pk=self.pk).values(
+                "freight_terms", "incoterm", "vendor_id", "order_date").first()
+            if before and (before["vendor_id"], before["order_date"]) != (self.vendor_id, to_date(self.order_date)):
+                # Its call-offs, to another vendor or on another day: what release() asks of each (O581).
+                for line in self.lines.filter(blanket_line__isnull=False).select_related(
+                        "blanket_line__blanket__vendor", "blanket_line__item", "item"):
+                    line.blanket_line.blanket.refuse_a_call_off(line.blanket_line, self.vendor, line.item,
+                                                                self.order_date, more=False)
             if (before and (before["freight_terms"], before["incoterm"]) != (self.freight_terms, self.incoterm)
                     and GoodsReceipt.objects.filter(purchase_order=self, posted=True).exists()):
                 # Goods have travelled, and been paid for in the freight, on the terms the order printed.
@@ -2851,9 +2875,16 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
         """
         same = previous is not None and previous.blanket_line_id == self.blanket_line_id
         before = previous.volume_called_off() if same else Decimal("0")
-        if self.volume_called_off() > before:
-            lock_rows(self.blanket_line.blanket)
-            self.blanket_line.blanket.refuse_calling_off_more()
+        more = self.volume_called_off() > before
+        blanket = self.blanket_line.blanket
+        if more:
+            lock_rows(blanket)
+        # Made, or moved to another agreement line, item or order: what release() asks of a call-off (O581). Only
+        # calling off more asks that the agreement still stands.
+        moved = not same or previous.item_id != self.item_id or previous.order_id != self.order_id
+        if more or moved:
+            blanket.refuse_a_call_off(self.blanket_line, self.order.vendor, self.item, self.order.order_date,
+                                      more=more)
         # quantity_released() counts this line as stored, so it is weighed net of what it called off before.
         others = self.blanket_line.quantity_released() - before
         if others + self.volume_called_off() > self.blanket_line.quantity:
