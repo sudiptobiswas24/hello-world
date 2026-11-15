@@ -332,8 +332,16 @@ class FirmedMeansFixedTests(PlanningTestCase):
         self.assertIn("firmed into", str(moved.data))
 
     def test_what_it_was_not_made_from_still_changes(self):
-        noted = self.client.patch(self.url, {"waits_for": "Cylinders from the engraver"}, format="json")
+        # O572: this PATCHed `waits_for`, which the plan writes and the API reads back only: 200, and nothing
+        # changed. The stand-in note is writable and no part of what the run was made from (FIXED_WHILE_FIRMED):
+        # it changes while the run stands, and what the run was made from does not move with it.
+        said = "Cylinders from the engraver"
+        noted = self.client.patch(self.url, {"stand_in_note": said}, format="json")
         self.assertEqual(noted.status_code, 200, noted.data)
+        self.assertEqual(noted.data["stand_in_note"], said)
+        self.order.refresh_from_db()
+        self.assertEqual((self.order.stand_in_note, self.order.status, self.order.quantity),
+                         (said, PlannedOrderStatus.FIRMED, Decimal("1000")))
 
     def test_the_plan_holding_it_is_not_deleted_either(self):
         with self.assertRaises(ValidationError):
