@@ -356,6 +356,40 @@ class BonusRuleTests(LoadedTestCase):
                                                        "to 20% of wages"):
             self.month_run(2026, 10, post=False, employees=[high])
 
+    def test_a_figure_a_posted_run_kept_says_why_it_stays_and_the_delete_says_the_same(self):
+        """
+        O567: the screens offered Delete on a minimum wage or a figure a posted run was paid at, and the server
+        refused it. The record now says why (kept_because) in the words the delete refuses in; a row the run did
+        not read, or one whose run is voided, says nothing and goes.
+        """
+        person = self.worker_on("K1", "12000")
+        officer = self.in_role("Payroll Officer")
+        floor = StatutoryFigure.objects.get(kind=FigureKind.BONUS_FLOOR)
+        rows = {f"/api/hr/minimum-wages/{self.wage.pk}/": self.wage, f"/api/hr/statutory-figures/{floor.pk}/": floor}
+        for url in rows:
+            self.assertEqual(officer.get(url).json()["kept_because"], "", url)
+
+        october = self.month_run(2026, 10, employees=[person])
+        for url, row in rows.items():
+            why = officer.get(url).json()["kept_because"]
+            self.assertEqual(why, f"{row} is what {october} was paid at; it is not deleted. Void that run first, or "
+                                  "give the new figure a row of its own from the day it applies.")
+            refused = officer.delete(url)
+            self.assertEqual(refused.status_code, 400, url)
+            self.assertIn(why, str(refused.json()))
+        # A list says it of every row: the floor the run read, and not a later one it did not.
+        later = StatutoryFigure.objects.create(kind=FigureKind.BONUS_FLOOR, effective_from=D(2026, 11, 1),
+                                               value=Decimal("7500"), source="test row")
+        said = {row["id"]: row["kept_because"] for row in officer.get(
+            "/api/hr/statutory-figures/", {"kind": FigureKind.BONUS_FLOOR, "page_size": 50}).json()}
+        self.assertTrue(said[floor.pk])
+        self.assertEqual(said[later.pk], "")
+        self.assertEqual(officer.delete(f"/api/hr/statutory-figures/{later.pk}/").status_code, 204)
+
+        # Voided, the run keeps nothing: the figure may go, as the server allows.
+        october.void(on_date=october.period_end)
+        self.assertEqual(officer.get(f"/api/hr/minimum-wages/{self.wage.pk}/").json()["kept_because"], "")
+
 
 class EsiReadsTheDatedRatesTests(LoadedTestCase):
     """

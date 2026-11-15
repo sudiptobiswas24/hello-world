@@ -13,6 +13,9 @@ export default function MinimumWageForm() {
       heading={(row) => `${String(row.employment ?? "")} from ${String(row.effective_from ?? "")}`}
       state={(row) => (row.confirmed_on ? { label: "Confirmed", tone: "done" } : { label: "To confirm", tone: "draft" })}
       permissions={{ add: "hr.add_minimumwage", change: "hr.change_minimumwage", delete: "hr.delete_minimumwage" }}
+      // Offered only where the server would take it, and why not where it would not: a run was paid at it (O567).
+      deletable={(row) => !row.kept_because}
+      note={(row) => (row?.kept_because ? <p className="muted">{String(row.kept_because)}</p> : null)}
       fields={[
         { key: "state", label: "State", hint: "As the person's work state names it: WB" },
         { key: "employment", label: "Scheduled employment", hint: "As the notification names it" },
