@@ -423,15 +423,30 @@ class EveryEventAsksTheRestatementTests(RestatementTestCase):
                 record.save()
 
     def test_a_settlement_discount_and_its_withdrawal(self):
+        """
+        Taking one on the day is refused; so is withdrawing, on the day, one taken before it. The withdrawal
+        withdraws a discount that was taken: with none (the first form of this test) it is refused for that.
+        """
+        from apps.core.models import PaymentTerms
+
         from .settlement import take_settlement_discount, withdraw_discount
 
+        def take(document, on_date):
+            return take_settlement_discount(document, control_account=self.ar, party=self.customer,
+                                            discount_account=self.loss, account_label="discount",
+                                            is_receivable=True, on_date=on_date, force=True)
+
+        self.inv.payment_terms = PaymentTerms.objects.create(code="2-10", name="2/10 net 30", net_days=30,
+                                                             discount_percent=Decimal("2"), discount_days=10)
+        with self.assertRaisesMessage(ValidationError, "has no settlement discount taken to withdraw"):
+            withdraw_discount(self.inv, self.ar, self.customer, Decimal("20"), D(2026, 3, 10), "withdrawn")
+        take(self.inv, D(2026, 3, 10))
+        other = self.invoice()
         self.restate()
         with self.assertRaisesMessage(ValidationError, self.REFUSED):
-            take_settlement_discount(self.inv, control_account=self.ar, party=self.customer,
-                                     discount_account=self.loss, account_label="discount", is_receivable=True,
-                                     on_date=YEAR_END, force=True)
+            take(other, YEAR_END)
         with self.assertRaisesMessage(ValidationError, self.REFUSED):
-            withdraw_discount(self.inv, self.ar, self.customer, Decimal("10"), YEAR_END, "withdrawn")
+            withdraw_discount(self.inv, self.ar, self.customer, Decimal("20"), YEAR_END, "withdrawn")
 
     def test_every_path_that_settles_a_document_asks_it(self):
         models = [model for model in settling_models() if model._meta.label_lower not in NEED_NOT_ASK]
