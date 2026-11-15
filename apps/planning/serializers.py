@@ -121,6 +121,8 @@ class PlanningRunSerializer(ModelSerializer):
     overloaded = serializers.SerializerMethodField()
 
     class Meta:
+        # Method fields that return a list: sent, refused beside the field (apps.core.api, O587).
+        read_back_lists = ["late", "lapsed", "overloaded"]
         model = PlanningRun
         fields = ["id", "warehouse", "warehouse_code", "planned_on", "horizon_end", "ran_at",
                   "cut_links", "deferred_demand", "fence_ends", "unforecast",

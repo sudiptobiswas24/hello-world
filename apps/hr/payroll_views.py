@@ -85,6 +85,8 @@ class SlabSerializer(ModelSerializer):
     kept_because = serializers.CharField(read_only=True)
 
     class Meta:
+        # Method fields that return a list: sent, refused beside the field (apps.core.api, O587).
+        read_back_lists = ["schedule_bands"]
         model = PayComponentSlab
         fields = ["id", "component", "above", "up_to", "month", "amount", "state", "effective_from", "for_women",
                   "confirmed_by", "confirmed_on", "schedule_bands", "kept_because"]

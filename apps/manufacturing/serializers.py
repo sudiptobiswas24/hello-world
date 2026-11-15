@@ -621,6 +621,8 @@ class MaintenanceJobDetailSerializer(MaintenanceJobSerializer):
     spares_value = serializers.SerializerMethodField()
 
     class Meta(MaintenanceJobSerializer.Meta):
+        # Method fields that return a list: sent, refused beside the field (apps.core.api, O587).
+        read_back_lists = ["labour", "spares"]
         fields = MaintenanceJobSerializer.Meta.fields + ["labour", "spares", "spares_value"]
 
     def get_labour(self, obj):

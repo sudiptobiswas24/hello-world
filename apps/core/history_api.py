@@ -49,6 +49,8 @@ class EditLogSerializer(ModelSerializer):
     changes = serializers.SerializerMethodField()
 
     class Meta:
+        # Method fields that return a list: sent, refused beside the field (apps.core.api, O587).
+        read_back_lists = ["changes"]
         model = RecordEvent
         fields = ["id", "at", "who", "who_name", "through", "kind", "label", "action", "model", "object_id", "record",
                   "summary", "changes"]
