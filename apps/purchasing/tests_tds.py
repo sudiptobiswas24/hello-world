@@ -704,6 +704,50 @@ class DatedRateTests(TdsTestCase):
         self.assertIsNotNone(TdsRate.objects.get(pk=made.json()["id"]).confirmed_on)
 
 
+class TheRateListAsksWhetherEachWasTakenOnceTests(TdsTestCase):
+    """
+    O568. The list said why each rate stays (kept_because, O556) by asking one EXISTS a row. 194C at 2% has a
+    deduction (a bill of 40,000 to a contractor with a PAN: 800); 194Q at 0.1% has none. The list asks the same
+    number of queries at 2 rows as at 5, and still says which one stays: the count and the page, where it asked
+    4 and 7.
+    """
+
+    QUERIES = 2
+
+    def test_the_list_asks_the_same_at_two_rows_and_at_five(self):
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        from apps.accounting.models import TdsRate
+
+        call_command("setup_roles", verbosity=0)
+        user = User.objects.create_user("apmanager")
+        user.groups.add(Group.objects.get(name="AP Manager"))
+        client = APIClient()
+        client.force_authenticate(user)
+        party = self.contractor(pan="AAAPL1234C")
+        self.assertEqual(self.bill("40000", vendor=party).deduct_tds().amount, Decimal("800.00"))
+        stays = "Bills were deducted at this rate; it stays."
+        client.get("/api/accounting/tds-rates/")  # who is asking and what they may do, read once a session
+        with self.assertNumQueries(self.QUERIES):
+            listed = client.get("/api/accounting/tds-rates/")
+        self.assertEqual(sorted((row["section_code"], row["kept_because"]) for row in listed.json()),
+                         [("194C", stays), ("194Q", "")])
+        for month in (7, 8, 9):
+            TdsRate.objects.create(section=self.goods, applies_from=datetime.date(2026, month, 1),
+                                   rate_percent=Decimal("0.1"), no_pan_rate_percent=Decimal("5"))
+        with self.assertNumQueries(self.QUERIES):
+            listed = client.get("/api/accounting/tds-rates/")
+        self.assertEqual(sorted((row["section_code"], row["applies_from"], row["kept_because"]) for row in listed.json()),
+                         [("194C", "2000-04-01", stays), ("194Q", "2000-04-01", ""), ("194Q", "2026-07-01", ""),
+                          ("194Q", "2026-08-01", ""), ("194Q", "2026-09-01", "")])
+        # What a delete is refused in is asked again as it is refused, not read off a list.
+        self.assertEqual(client.get(f"/api/accounting/tds-rates/{self.contract_rate.pk}/").json()["kept_because"], stays)
+        with self.assertRaisesMessage(ValidationError, stays):
+            TdsRate.objects.get(pk=self.contract_rate.pk).delete()
+
+
 
 @tag("migration")
 class TdsRatesByDateMigrationTests(TransactionTestCase):
