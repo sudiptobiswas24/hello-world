@@ -95,6 +95,36 @@ class PaymentOfTaxWorkingTests(ReverseChargeCashTestCase):
         [warning] = [w for w in gstr3b(*SEPTEMBER)["warnings"] if "something else moved them" in w]
         self.assertIn("700.00 by the bills and challans, and 750.00 in the ledger", warning)
 
+    def test_a_bill_no_return_reports_is_not_to_pay_and_shows_as_the_difference(self):
+        """
+        O554, worked in /home/user/work/calc_g41_kept/o554_table.py. A bill brought in at go-live with 500 of
+        reverse-charge IGST owed into 2291 (made here at the model: the importer brings none in with tax): the
+        challan pays only the bills a return reports, so the footing read 500 still to pay that no challan could
+        pay. It is not to pay; the ledger holds it, as the difference. Paid and voided, the rest moves as before.
+        """
+        from apps.purchasing.models import Bill, BillLine
+
+        from .reverse_charge import GstCashPayment
+
+        old = Bill.objects.create(vendor=self.trucker, bill_date=DAY, payable_account=self.ap, reference="OLD/1",
+                                  is_opening_balance=True)
+        line = BillLine.objects.create(bill=old, description="Freight before go-live", quantity=D("1"),
+                                       unit_price=D("10000"), expense_account=self.expense)
+        line.taxes.set([self.igst5])
+        old.post(memo="Brought in at go-live", apply_prepayments=False)
+
+        def footed():
+            found = owed_against_the_ledger()
+            return found["to_pay"], found["ledger"], found["difference"]
+
+        self.assertEqual(footed(), (D("700.00"), D("1200.00"), D("500.00")))
+        challan = self.pay()
+        self.assertEqual((challan.igst, challan.cgst, challan.sgst), (D("500.00"), D("100.00"), D("100.00")))
+        self.assertEqual(footed(), (D("0.00"), D("500.00"), D("500.00")))
+        challan.void(on_date=challan.date)
+        self.assertEqual(footed(), (D("700.00"), D("1200.00"), D("500.00")))
+        self.assertTrue(GstCashPayment.objects.get(pk=challan.pk).voided_entry_id)
+
     def test_the_working_is_not_a_filed_figure(self):
         was = gstr3b(*SEPTEMBER)
         self.pay()

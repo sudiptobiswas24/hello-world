@@ -591,15 +591,18 @@ def cash_ledger(account):
 def owed_against_the_ledger():
     """
     The reverse-charge tax still to be paid in cash, footed to the books as they stand: for each account
-    it was owed into (kept on the bill's tax row as it posted), what every posted bill owed there, a debit
-    note's taken off, less what the challans standing paid of it, beside the account's own balance in
-    the ledger (credit less debit). They agree unless something else moved the account: a journal made by
-    hand, a balance brought in at go-live. {accounts: [{account, code, name, owed, paid, to_pay, ledger,
+    it was owed into (kept on the bill's tax row as it posted), what every bill a return reports owed there
+    (reported_bills, the set GstCashPayment.pay pays from), a debit note's taken off, less what the challans
+    standing paid of it, beside the account's own balance in the ledger (credit less debit). They agree
+    unless something else moved the account: a journal made by hand, a balance brought in at go-live. {accounts: [{account, code, name, owed, paid, to_pay, ledger,
     difference}], owed, paid, to_pay, ledger, difference, agrees}.
     """
     owed, paid = defaultdict(Decimal), defaultdict(Decimal)
+    # The bills a return reports, as the challan pays: a bill brought in at go-live had its tax paid in the old
+    # system, and counted here as still to pay it stood owed with no challan able to pay it (O554). The ledger
+    # still holds it, and it shows as the difference, as a balance brought in at go-live should.
     rows = BillLineTax.objects.filter(reverse_charge=True, gst_head__in=HEADS, owed_account__isnull=False,
-                                      line__bill__posted=True).select_related("line__bill")
+                                      line__bill__in=reported_bills()).select_related("line__bill")
     for row in rows:
         bill = row.line.bill
         owed[row.owed_account_id] += _base(row, bill) * (-1 if bill.is_debit_note() else 1)
