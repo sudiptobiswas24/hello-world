@@ -107,6 +107,7 @@ class Command(BaseCommand):
         findings += self.unsettable_fields(labels)
         findings += self.undeclared_actions(labels)
         findings += self.writes_around_the_mixin(labels)
+        findings += self.serializers_off_the_shared_base(labels)
         findings += self.unscoped_party_reads(labels)
         findings += self.bodies_read_past_the_object_parser(labels)
         findings += self.actions_named_after_a_verb(labels)
@@ -859,6 +860,42 @@ class Command(BaseCommand):
         "manufacturing.TestCertificateViewSet.create": "certificates.issue() is its own transaction; it stamps created_by from by= (O202)",
     }
     MIXIN_WRITES = ("create", "update", "destroy", "perform_create", "perform_update", "perform_destroy")
+
+    def serializers_off_the_shared_base(self, labels, serializers=None):
+        """
+        A ModelSerializer of ours not written on apps.core.api.ModelSerializer (O565).
+
+        DRF drops a read-only field it is sent without a word: a quotation posted with its lines was made with
+        none, 201. The shared base refuses a read-only list beside it; a serializer on DRF's own base drops it
+        again. Read from every ModelSerializer the routes import, by the app its module is in.
+        """
+        from rest_framework.serializers import ModelSerializer as DrfModelSerializer
+
+        from apps.core.api import ModelSerializer
+
+        def every(cls):
+            for sub in cls.__subclasses__():
+                yield sub
+                yield from every(sub)
+
+        scanned = serializers is None
+        if scanned:
+            self._routed_viewsets()  # imports every module a route reaches, and the serializers with them
+            serializers = set(every(DrfModelSerializer))
+        findings = []
+        for cls in sorted(serializers, key=lambda each: (each.__module__, each.__name__)):
+            parts = cls.__module__.split(".")
+            if parts[0] != "apps" or len(parts) < 2 or parts[1] not in labels:
+                continue
+            if scanned and any(part.startswith("tests") for part in parts):
+                continue
+            if not issubclass(cls, ModelSerializer):
+                findings.append((
+                    "serializer off the shared base",
+                    f"{cls.__module__}.{cls.__name__} is written on DRF's ModelSerializer, which drops a read-only "
+                    "list it is sent without a word: write it on apps.core.api.ModelSerializer.",
+                ))
+        return findings
 
     def writes_around_the_mixin(self, labels, viewsets=None):
         """

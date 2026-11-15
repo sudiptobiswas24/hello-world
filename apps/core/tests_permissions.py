@@ -404,6 +404,59 @@ class ATaxPreviewIsAReadTests(TestCase):
         self.assertEqual(self.post("accounting.add_tax").status_code, 403)
 
 
+class EverySerializerRefusesWhatItReadsBackOnlyTests(TestCase):
+    """The shared base refuses a read-only field sent (O565), and audit_invariants serializers_off_the_shared_base."""
+
+    @staticmethod
+    def planted():
+        from rest_framework import serializers
+
+        from apps.core.api import ModelSerializer
+
+        class Dropping(serializers.ModelSerializer):
+            lines = serializers.ListField(read_only=True)
+
+            class Meta:
+                model = Account
+                fields = ["id", "code", "name", "lines"]
+
+        class Refusing(ModelSerializer):
+            lines = serializers.ListField(read_only=True)
+            entry_lines = serializers.SerializerMethodField()
+            balance = serializers.SerializerMethodField()
+
+            class Meta:
+                model = Account
+                fields = ["id", "code", "name", "lines", "entry_lines", "balance"]
+
+        return Dropping, Refusing
+
+    def test_a_read_only_list_sent_is_refused_beside_it_and_any_other_read_only_field_is_ignored(self):
+        dropping, refusing = self.planted()
+        line = {"debit": "100.00"}
+        self.assertTrue(dropping(data={"id": 5, "code": "1010", "name": "Bank", "lines": [line]}).is_valid())
+        # Sent back as it was read, an id and a figure are ignored, as DRF ignores them: only the lists are refused,
+        # beside the other fields' errors (`name` is required).
+        sent = refusing(data={"id": 5, "code": "1010", "balance": "7.00", "lines": [line], "entry_lines": [line]})
+        self.assertFalse(sent.is_valid())
+        self.assertEqual(sorted(sent.errors), ["entry_lines", "lines", "name"])
+        self.assertEqual(sent.errors["lines"], ["`lines` is what the record reads back, and nothing sent in it is "
+                                                "kept: make the record, then add each one to it on its own."])
+        self.assertTrue(refusing(data={"id": 5, "code": "1010", "name": "Bank", "balance": "7.00"}).is_valid())
+
+    def test_a_planted_serializer_off_the_base_is_reported_and_one_on_it_is_not(self):
+        from apps.core.management.commands.audit_invariants import Command
+
+        found = Command().serializers_off_the_shared_base(["core"], self.planted())
+        self.assertEqual([detail.split(" is written")[0] for _shape, detail in found],
+                         ["apps.core.tests_permissions.Dropping"])
+
+    def test_every_serializer_of_ours_is_on_the_shared_base(self):
+        from apps.core.management.commands.audit_invariants import OUR_APPS, Command
+
+        self.assertEqual(Command().serializers_off_the_shared_base(list(OUR_APPS)), [])
+
+
 class EveryWriteGoesThroughTheHistoryMixinTests(TestCase):
     """audit_invariants writes_around_the_mixin, and the mixin's answer on a read-only viewset."""
 

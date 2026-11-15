@@ -2,12 +2,14 @@
 
 from rest_framework import serializers, viewsets
 
+from apps.core.api import ModelSerializer
+
 from apps.core.audit import AuditableViewSetMixin
 
 from .models import QualitySettings
 
 
-class QualitySettingsSerializer(serializers.ModelSerializer):
+class QualitySettingsSerializer(ModelSerializer):
     class Meta:
         model = QualitySettings
         exclude = ["created_at", "updated_at", "created_by", "updated_by"]

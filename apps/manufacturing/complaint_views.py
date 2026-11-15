@@ -13,6 +13,8 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from django.shortcuts import get_object_or_404
 from django.utils.dateparse import parse_date
 from rest_framework import serializers, viewsets
+
+from apps.core.api import ModelSerializer
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.response import Response
@@ -38,7 +40,7 @@ def _employee(pk):
     return get_object_or_404(Employee, pk=pk)
 
 
-class CorrectiveActionSerializer(serializers.ModelSerializer):
+class CorrectiveActionSerializer(ModelSerializer):
     class Meta:
         model = CorrectiveAction
         fields = ["id", "complaint", "alert", "kind", "description", "owner", "due_on", "done_on",
@@ -46,7 +48,7 @@ class CorrectiveActionSerializer(serializers.ModelSerializer):
         read_only_fields = ["done_on", "done_note", "verified_on", "verified_by"]
 
 
-class ComplaintSerializer(serializers.ModelSerializer):
+class ComplaintSerializer(ModelSerializer):
     lots = serializers.SerializerMethodField()
     customer_name = serializers.CharField(source="customer.name", read_only=True)
     actions = CorrectiveActionSerializer(many=True, read_only=True)
@@ -197,7 +199,7 @@ class CorrectiveActionViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 # --- quality alerts: what the plant finds before a customer does
 
-class QualityAlertSerializer(serializers.ModelSerializer):
+class QualityAlertSerializer(ModelSerializer):
     actions = CorrectiveActionSerializer(many=True, read_only=True)
     raised_by_name = serializers.CharField(source="raised_by.party.name", read_only=True, default="")
     owner_name = serializers.CharField(source="owner.party.name", read_only=True, default="")

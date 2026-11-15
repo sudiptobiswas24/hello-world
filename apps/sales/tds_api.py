@@ -1,6 +1,8 @@
 """Tax customers deducted: recorded from the invoice, confirmed against Form 26AS, or reversed."""
 
 from rest_framework import serializers, viewsets
+
+from apps.core.api import ModelSerializer
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.response import Response
@@ -13,7 +15,7 @@ from .scoping import UNLIMITED, CustomerScopedMixin, carried_by, rep_limit
 from .tds import CustomerTds
 
 
-class CustomerTdsSerializer(serializers.ModelSerializer):
+class CustomerTdsSerializer(ModelSerializer):
     invoice_number = serializers.CharField(source="invoice.number", read_only=True)
     customer_name = serializers.CharField(source="invoice.customer.name", read_only=True)
     section_code = serializers.CharField(source="section.code", read_only=True)

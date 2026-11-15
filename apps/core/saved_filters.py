@@ -15,6 +15,8 @@ from django.db import models
 
 from .audit import RowHeldViewSetMixin
 from rest_framework import serializers, viewsets
+
+from apps.core.api import ModelSerializer
 from rest_framework.permissions import IsAuthenticated
 
 # Where in the list one was is not kept; how it was narrowed, searched,
@@ -53,7 +55,7 @@ class SavedFilter(models.Model):
         super().save(*args, **kwargs)
 
 
-class SavedFilterSerializer(serializers.ModelSerializer):
+class SavedFilterSerializer(ModelSerializer):
     class Meta:
         model = SavedFilter
         fields = ["id", "screen", "name", "query", "created_at"]

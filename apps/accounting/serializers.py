@@ -2,6 +2,8 @@ from decimal import Decimal
 
 from rest_framework import serializers
 
+from apps.core.api import ModelSerializer
+
 from .analytic import CostCentre
 from .budgets import Budget, BudgetLine
 from .recurring import RecurringJournal, RecurringJournalLine
@@ -19,7 +21,7 @@ from .models import (
 )
 
 
-class AccountSerializer(serializers.ModelSerializer):
+class AccountSerializer(ModelSerializer):
     # What the account sits under, by name, for a page that shows it rather than offers a choice.
     parent_code = serializers.CharField(source="parent.code", read_only=True, default="")
     parent_name = serializers.CharField(source="parent.name", read_only=True, default="")
@@ -30,13 +32,13 @@ class AccountSerializer(serializers.ModelSerializer):
                   "is_active", "holds_money"]
 
 
-class CostCentreSerializer(serializers.ModelSerializer):
+class CostCentreSerializer(ModelSerializer):
     class Meta:
         model = CostCentre
         fields = ["id", "code", "name", "is_active", "note"]
 
 
-class AccountingPeriodSerializer(serializers.ModelSerializer):
+class AccountingPeriodSerializer(ModelSerializer):
     closed_by_name = serializers.CharField(source="closed_by.username", read_only=True, default="")
 
     class Meta:
@@ -46,7 +48,7 @@ class AccountingPeriodSerializer(serializers.ModelSerializer):
         read_only_fields = ["closed", "closed_at"]
 
 
-class BudgetLineSerializer(serializers.ModelSerializer):
+class BudgetLineSerializer(ModelSerializer):
     account_code = serializers.CharField(source="account.code", read_only=True)
     account_name = serializers.CharField(source="account.name", read_only=True)
     cost_centre_name = serializers.CharField(source="cost_centre.name", read_only=True, default="")
@@ -56,7 +58,7 @@ class BudgetLineSerializer(serializers.ModelSerializer):
         fields = ["id", "budget", "account", "account_code", "account_name", "cost_centre", "cost_centre_name", "amount"]
 
 
-class BudgetSerializer(serializers.ModelSerializer):
+class BudgetSerializer(ModelSerializer):
     lines = BudgetLineSerializer(many=True, read_only=True)
 
     class Meta:
@@ -64,7 +66,7 @@ class BudgetSerializer(serializers.ModelSerializer):
         fields = ["id", "code", "name", "start_date", "end_date", "note", "is_active", "lines"]
 
 
-class RecurringJournalLineSerializer(serializers.ModelSerializer):
+class RecurringJournalLineSerializer(ModelSerializer):
     account_code = serializers.CharField(source="account.code", read_only=True)
     account_name = serializers.CharField(source="account.name", read_only=True)
     party_name = serializers.CharField(source="party.name", read_only=True, default="")
@@ -76,7 +78,7 @@ class RecurringJournalLineSerializer(serializers.ModelSerializer):
                   "cost_centre", "cost_centre_name", "debit", "credit", "description"]
 
 
-class RecurringJournalSerializer(serializers.ModelSerializer):
+class RecurringJournalSerializer(ModelSerializer):
     lines = RecurringJournalLineSerializer(many=True, read_only=True)
 
     class Meta:
@@ -87,7 +89,7 @@ class RecurringJournalSerializer(serializers.ModelSerializer):
         read_only_fields = ["next_run_date"]
 
 
-class JournalLineSerializer(serializers.ModelSerializer):
+class JournalLineSerializer(ModelSerializer):
     account_code = serializers.CharField(source="account.code", read_only=True)
     account_name = serializers.CharField(source="account.name", read_only=True)
     party_name = serializers.CharField(source="party.name", read_only=True, default="")
@@ -108,7 +110,7 @@ class JournalLineSerializer(serializers.ModelSerializer):
         return attrs
 
 
-class JournalEntrySerializer(serializers.ModelSerializer):
+class JournalEntrySerializer(ModelSerializer):
     lines = JournalLineSerializer(many=True, read_only=True)
     posted_by = serializers.SerializerMethodField()
 
@@ -139,13 +141,13 @@ class JournalEntrySerializer(serializers.ModelSerializer):
         return None if document is None else f"{document._meta.verbose_name.capitalize()} {document}"
 
 
-class TaxGroupSerializer(serializers.ModelSerializer):
+class TaxGroupSerializer(ModelSerializer):
     class Meta:
         model = TaxGroup
         fields = ["id", "code", "name"]
 
 
-class TaxSerializer(serializers.ModelSerializer):
+class TaxSerializer(ModelSerializer):
     group_name = serializers.CharField(source="group.name", read_only=True, default="")
 
     class Meta:
@@ -159,7 +161,7 @@ class TaxSerializer(serializers.ModelSerializer):
         ]
 
 
-class FiscalPositionTaxMappingSerializer(serializers.ModelSerializer):
+class FiscalPositionTaxMappingSerializer(ModelSerializer):
     source_tax_name = serializers.CharField(source="source_tax.name", read_only=True)
     target_tax_name = serializers.CharField(source="target_tax.name", read_only=True, default="")
 
@@ -168,7 +170,7 @@ class FiscalPositionTaxMappingSerializer(serializers.ModelSerializer):
         fields = ["id", "fiscal_position", "source_tax", "target_tax", "source_tax_name", "target_tax_name"]
 
 
-class FiscalPositionSerializer(serializers.ModelSerializer):
+class FiscalPositionSerializer(ModelSerializer):
     tax_mappings = FiscalPositionTaxMappingSerializer(many=True, read_only=True)
 
     class Meta:
@@ -176,7 +178,7 @@ class FiscalPositionSerializer(serializers.ModelSerializer):
         fields = ["id", "code", "name", "country", "is_active", "tax_mappings"]
 
 
-class PartyTaxProfileSerializer(serializers.ModelSerializer):
+class PartyTaxProfileSerializer(ModelSerializer):
     class Meta:
         model = PartyTaxProfile
         fields = ["id", "party", "fiscal_position", "tax_exempt", "exemption_reference",
@@ -185,7 +187,7 @@ class PartyTaxProfileSerializer(serializers.ModelSerializer):
         ]
 
 
-class PaymentSerializer(serializers.ModelSerializer):
+class PaymentSerializer(ModelSerializer):
     party_name = serializers.CharField(source="party.name", read_only=True)
     bank_account_name = serializers.CharField(source="bank_account.name", read_only=True)
     # A payment whose entry was reversed, by void() or by hand: the
@@ -269,16 +271,8 @@ class TakesItsLinesMixin(serializers.Serializer):
 
     def validate(self, attrs):
         attrs = super().validate(attrs)
-        # What the document reads back is not what it takes (O555). DRF drops a read-only field it is sent
-        # without a word: a bill posted with `lines` was made with none, and refused only at posting for
-        # having no value. A read-only list sent is refused in words, beside it, on a new document or a saved one.
-        sent = getattr(self, "initial_data", None)
-        if hasattr(sent, "keys"):
-            for name, field in self.fields.items():
-                if name in sent and field.read_only and isinstance(field, serializers.ListSerializer):
-                    raise serializers.ValidationError({name: [
-                        f"`{name}` is what the document reads back, and nothing sent in it is kept. Send a new "
-                        "document's lines as `new_lines`; add one to a saved document on its own."]})
+        # `lines` sent, not `new_lines`, is refused beside it by the shared base (apps.core.api.ModelSerializer,
+        # O555, O565), in words naming `new_lines`.
         if self.instance is not None and "new_lines" in attrs:
             raise serializers.ValidationError(
                 {"new_lines": ["Lines are sent with a new document only; add one to a saved document on its own."]})

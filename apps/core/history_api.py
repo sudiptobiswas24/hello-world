@@ -6,6 +6,8 @@ the edit log, every record's changes, for whoever reads it (core.view_recordeven
 from django.apps import apps
 from django.contrib.contenttypes.models import ContentType
 from rest_framework import serializers, viewsets
+
+from apps.core.api import ModelSerializer
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -37,7 +39,7 @@ class HistoryView(viewsets.ViewSet):
         return Response(history(model, int(pk)))
 
 
-class EditLogSerializer(serializers.ModelSerializer):
+class EditLogSerializer(ModelSerializer):
     """One change, as the edit log lists it: when, who, through what, which record, each field's old and new."""
 
     record = serializers.SerializerMethodField()

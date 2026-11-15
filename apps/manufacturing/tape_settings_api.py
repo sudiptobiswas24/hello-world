@@ -2,12 +2,14 @@
 
 from rest_framework import serializers, viewsets
 
+from apps.core.api import ModelSerializer
+
 from apps.core.audit import AuditableViewSetMixin
 
 from .tape_settings import TapeRunSetting
 
 
-class TapeRunSettingSerializer(serializers.ModelSerializer):
+class TapeRunSettingSerializer(ModelSerializer):
     work_order_number = serializers.CharField(source="work_order.number", read_only=True)
     machine_code = serializers.CharField(source="machine.code", read_only=True, default="")
 

@@ -11,6 +11,8 @@ from decimal import Decimal
 from django.db.models import Q
 from django.shortcuts import get_object_or_404
 from rest_framework import serializers, viewsets
+
+from apps.core.api import ModelSerializer
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
@@ -23,7 +25,7 @@ from .gate import (
 from .models import Item
 
 
-class WeighingSerializer(serializers.ModelSerializer):
+class WeighingSerializer(ModelSerializer):
     net_kg = serializers.SerializerMethodField()
     typed = serializers.SerializerMethodField()
     vehicle_number = serializers.CharField(source="visit.vehicle_number", read_only=True)
@@ -59,7 +61,7 @@ class WeighingSerializer(serializers.ModelSerializer):
         return "weighed" if weighing.is_complete() else "weighing"
 
 
-class GateVisitSerializer(serializers.ModelSerializer):
+class GateVisitSerializer(ModelSerializer):
     weighings = WeighingSerializer(many=True, read_only=True)
     passes = serializers.SerializerMethodField()
     # Time on site, to the hundredth of an hour: so far while in, gate to gate once out.
@@ -81,7 +83,7 @@ class GateVisitSerializer(serializers.ModelSerializer):
         return [{"id": each.pk, "number": each.number, "status": each.status} for each in visit.gate_passes.all()]
 
 
-class GatePassReturnSerializer(serializers.ModelSerializer):
+class GatePassReturnSerializer(ModelSerializer):
     class Meta:
         model = GatePassReturn
         fields = ["id", "line", "quantity", "returned_on", "condition", "note", "visit", "cancelled_at",
@@ -89,7 +91,7 @@ class GatePassReturnSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
-class GatePassLineSerializer(serializers.ModelSerializer):
+class GatePassLineSerializer(ModelSerializer):
     label = serializers.SerializerMethodField()
     returned = serializers.SerializerMethodField()
     outstanding = serializers.SerializerMethodField()
@@ -117,7 +119,7 @@ class GatePassLineSerializer(serializers.ModelSerializer):
         return line.outstanding()
 
 
-class GatePassSerializer(serializers.ModelSerializer):
+class GatePassSerializer(ModelSerializer):
     lines = GatePassLineSerializer(many=True, read_only=True)
     visit_number = serializers.CharField(source="visit.number", read_only=True, default="")
     vehicle_number = serializers.CharField(source="visit.vehicle_number", read_only=True, default="")

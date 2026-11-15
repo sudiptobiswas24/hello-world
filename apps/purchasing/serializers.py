@@ -2,6 +2,8 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from rest_framework import serializers
 
+from apps.core.api import ModelSerializer
+
 from apps.accounting.serializers import MoneyLineSerializerMixin, TakesItsLinesMixin
 from apps.inventory.tracking import Lot
 
@@ -19,14 +21,14 @@ from .models import (
 from apps.core.customfields import ExtensibleSerializerMixin
 
 
-class SubcontractComponentSerializer(serializers.ModelSerializer):
+class SubcontractComponentSerializer(ModelSerializer):
     class Meta:
         model = SubcontractComponent
         fields = ["id", "order_line", "item", "quantity_per", "is_computed"]
         read_only_fields = ["is_computed"]
 
 
-class PurchaseOrderLineSerializer(MoneyLineSerializerMixin, serializers.ModelSerializer):
+class PurchaseOrderLineSerializer(MoneyLineSerializerMixin, ModelSerializer):
     quantity_received = serializers.SerializerMethodField()
     quantity_billed = serializers.SerializerMethodField()
     quantity_open = serializers.DecimalField(max_digits=18, decimal_places=4, read_only=True)
@@ -53,7 +55,7 @@ class PurchaseOrderLineSerializer(MoneyLineSerializerMixin, serializers.ModelSer
         return obj.quantity_billed()
 
 
-class PurchaseOrderSerializer(TakesItsLinesMixin, ExtensibleSerializerMixin, serializers.ModelSerializer):
+class PurchaseOrderSerializer(TakesItsLinesMixin, ExtensibleSerializerMixin, ModelSerializer):
     line_serializer = PurchaseOrderLineSerializer
     line_parent = "order"
     lines = PurchaseOrderLineSerializer(many=True, read_only=True)
@@ -80,7 +82,7 @@ class PurchaseOrderSerializer(TakesItsLinesMixin, ExtensibleSerializerMixin, ser
         read_only_fields = ["number", "status", "taxes_taken_under"]
 
 
-class BillLineSerializer(MoneyLineSerializerMixin, serializers.ModelSerializer):
+class BillLineSerializer(MoneyLineSerializerMixin, ModelSerializer):
     # What the line is called: its description, else its charge or item.
     label = serializers.CharField(read_only=True)
     cost_centre_name = serializers.CharField(source="cost_centre.name", read_only=True, default="")
@@ -95,7 +97,7 @@ class BillLineSerializer(MoneyLineSerializerMixin, serializers.ModelSerializer):
         ]
 
 
-class BillPaymentSerializer(serializers.ModelSerializer):
+class BillPaymentSerializer(ModelSerializer):
     bill_number = serializers.CharField(source="bill.number", read_only=True)
     payment_number = serializers.CharField(source="payment.number", read_only=True)
 
@@ -125,7 +127,7 @@ class BillListSerializer(serializers.ListSerializer):
         return super().to_representation(bills)
 
 
-class BillSerializer(TakesItsLinesMixin, ExtensibleSerializerMixin, serializers.ModelSerializer):
+class BillSerializer(TakesItsLinesMixin, ExtensibleSerializerMixin, ModelSerializer):
     line_serializer = BillLineSerializer
     line_parent = "bill"
     lines = BillLineSerializer(many=True, read_only=True)
@@ -203,7 +205,7 @@ class BillSerializer(TakesItsLinesMixin, ExtensibleSerializerMixin, serializers.
         extra_kwargs = {"payable_account": {"required": False}}
 
 
-class GoodsReceiptLineSerializer(serializers.ModelSerializer):
+class GoodsReceiptLineSerializer(ModelSerializer):
     description = serializers.SerializerMethodField()
     # "lot", "serial" or "none": whether the batch must be named before
     # the receipt posts.
@@ -264,7 +266,7 @@ class GoodsReceiptLineSerializer(serializers.ModelSerializer):
             return super().update(instance, self._with_batch(validated_data))
 
 
-class GoodsReceiptSerializer(serializers.ModelSerializer):
+class GoodsReceiptSerializer(ModelSerializer):
     lines = GoodsReceiptLineSerializer(many=True, read_only=True)
     order_number = serializers.CharField(source="purchase_order.number", read_only=True)
     vendor_name = serializers.CharField(source="purchase_order.vendor.name", read_only=True)
@@ -304,7 +306,7 @@ class GoodsReceiptSerializer(serializers.ModelSerializer):
         return comparison
 
 
-class WeightClaimSerializer(serializers.ModelSerializer):
+class WeightClaimSerializer(ModelSerializer):
     receipt_number = serializers.CharField(source="receipt.number", read_only=True)
     vendor_name = serializers.CharField(source="receipt.purchase_order.vendor.name", read_only=True)
     transporter_name = serializers.CharField(source="transporter.name", read_only=True, default="")

@@ -14,6 +14,8 @@ my-payslips/            the signed-in employee's own posted payslips, and {id}/p
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from rest_framework import serializers, viewsets
+
+from apps.core.api import ModelSerializer
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.exceptions import ValidationError as DRFValidationError
@@ -34,7 +36,7 @@ from .payroll_views import _run, _slip
 from .statutory import MinimumWage, StatutoryFigure
 
 
-class PayDetailsSerializer(serializers.ModelSerializer):
+class PayDetailsSerializer(ModelSerializer):
     employee_number = serializers.CharField(source="employee.employee_number", read_only=True)
 
     class Meta:
@@ -56,7 +58,7 @@ class PayDetailsViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         _run(super().perform_update, serializer)
 
 
-class FigureSerializer(serializers.ModelSerializer):
+class FigureSerializer(ModelSerializer):
     # Why it may not be deleted, or "": the screen offers Delete only where the server would take it (O567).
     kept_because = serializers.CharField(read_only=True)
 
@@ -101,7 +103,7 @@ class FigureViewSet(ConfirmAction, AuditableViewSetMixin, viewsets.ModelViewSet)
         _run(super().perform_destroy, instance)
 
 
-class MinimumWageSerializer(serializers.ModelSerializer):
+class MinimumWageSerializer(ModelSerializer):
     monthly = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
     # Why it may not be deleted, or "": the screen offers Delete only where the server would take it (O567).
     kept_because = serializers.CharField(read_only=True)
@@ -149,7 +151,7 @@ class RegisterView(viewsets.ViewSet):
         return Response({"kind": request.query_params["kind"], "month": f"{month:%Y-%m}", "rows": build(month)})
 
 
-class AdvanceSerializer(serializers.ModelSerializer):
+class AdvanceSerializer(ModelSerializer):
     recovered = serializers.SerializerMethodField()
     balance = serializers.SerializerMethodField()
     voided = serializers.SerializerMethodField()
@@ -192,7 +194,7 @@ class AdvanceViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         return Response(self.get_serializer(SalaryAdvance.objects.get(pk=advance.pk)).data)
 
 
-class ShortfallSettlementSerializer(serializers.ModelSerializer):
+class ShortfallSettlementSerializer(ModelSerializer):
     employee = serializers.SerializerMethodField()
     stands = serializers.SerializerMethodField()
     owed_back = serializers.SerializerMethodField()
@@ -240,7 +242,7 @@ class ShortfallSettlementViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         return Response(self.get_serializer(ShortfallSettlement.objects.get(pk=settlement.pk)).data)
 
 
-class TransferSerializer(serializers.ModelSerializer):
+class TransferSerializer(ModelSerializer):
     employee = serializers.CharField(source="payslip.employee.employee_number", read_only=True)
     returned = serializers.SerializerMethodField()
 
@@ -253,7 +255,7 @@ class TransferSerializer(serializers.ModelSerializer):
         return obj.is_returned()
 
 
-class TransferFileSerializer(serializers.ModelSerializer):
+class TransferFileSerializer(ModelSerializer):
     rows = TransferSerializer(many=True, read_only=True)
     # Its real state (review RP6): a payment voided pays nobody, though the file still names it.
     paid = serializers.SerializerMethodField()
@@ -355,7 +357,7 @@ class MyPayslipsView(viewsets.GenericViewSet):
         return _pdf(get_object_or_404(self._mine(request), pk=pk))
 
 
-class BonusLineSerializer(serializers.ModelSerializer):
+class BonusLineSerializer(ModelSerializer):
     number = serializers.CharField(source="employee.employee_number", read_only=True)
     name = serializers.CharField(source="employee.party.name", read_only=True)
     paid = serializers.SerializerMethodField()
@@ -370,7 +372,7 @@ class BonusLineSerializer(serializers.ModelSerializer):
         return obj.paid()
 
 
-class BonusDeclarationSerializer(serializers.ModelSerializer):
+class BonusDeclarationSerializer(ModelSerializer):
     lines = BonusLineSerializer(many=True, read_only=True)
     name = serializers.SerializerMethodField()
     # Declared here so the model answers a second declaration of a year in its own words (save()): the field
@@ -455,7 +457,7 @@ class BonusStatementView(viewsets.ViewSet):
         return Response(found)
 
 
-class GratuityPayoutSerializer(serializers.ModelSerializer):
+class GratuityPayoutSerializer(ModelSerializer):
     number = serializers.CharField(source="employee.employee_number", read_only=True)
     stands = serializers.SerializerMethodField()
 

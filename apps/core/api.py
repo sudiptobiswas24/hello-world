@@ -27,6 +27,7 @@ from django.db.models import (
     RestrictedError,
     UniqueConstraint,
 )
+from rest_framework import serializers
 from rest_framework.exceptions import ParseError
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.filters import BaseFilterBackend, OrderingFilter, SearchFilter
@@ -555,3 +556,58 @@ class Search(SearchFilter):
         return Q(**{f"{head}__in": related._default_manager.filter(
             self._matches(related, rest, term)).values("pk")})
 
+
+
+class RefusesWhatItReadsBackOnly(serializers.Serializer):
+    """
+    A list a record reads back only (its lines), sent to it, is refused beside it with a 400 (O555, O565).
+
+    DRF drops a read-only field it is sent without a word. A bill posted with `lines` instead of `new_lines` was
+    made with none and refused only at posting, for having no value (O555); a quotation posted with one line of
+    100 x 11.20 was made with none, 201, and so was a delivery and a recurring invoice (O565). One rule here, on
+    the base every ModelSerializer in this codebase is written on, so a serializer written tomorrow cannot drop
+    its lines either: audit_invariants (serializers_off_the_shared_base) reports one that is not on it.
+
+    Only a list: a nested serializer with many=True, a ListField, or a method field under a name lines go by.
+    Any other read-only field (an id, a total, a status) keeps DRF's behaviour and is ignored, so a screen or an
+    integration that sends back what it read is not refused for it.
+
+    Asked in to_internal_value, so the refusal stands beside the other fields' errors rather than after them.
+    """
+
+    def to_internal_value(self, data):
+        refused = self.read_back_only(data)
+        try:
+            value = super().to_internal_value(data)
+        except DRFValidationError as exc:
+            if refused and isinstance(exc.detail, dict):
+                raise DRFValidationError({**exc.detail, **refused}) from exc
+            raise
+        if refused:
+            raise DRFValidationError(refused)
+        return value
+
+    @staticmethod
+    def a_list(name, field):
+        """Whether a read-only field is a list the record reads back: its lines, or anything like them."""
+        if isinstance(field, (serializers.ListSerializer, serializers.ListField)):
+            return True
+        return isinstance(field, serializers.SerializerMethodField) and (name == "lines" or name.endswith("_lines"))
+
+    def read_back_only(self, data):
+        """Each read-only list `data` names, with the words it is refused in."""
+        if not hasattr(data, "keys"):
+            return {}
+        return {name: [self.read_back_words(name)] for name, field in self.fields.items()
+                if field.read_only and name in data and self.a_list(name, field)}
+
+    def read_back_words(self, name):
+        if "new_lines" in self.fields and not self.fields["new_lines"].read_only:
+            return (f"`{name}` is what the document reads back, and nothing sent in it is kept. Send a new "
+                    "document's lines as `new_lines`; add one to a saved document on its own.")
+        return (f"`{name}` is what the record reads back, and nothing sent in it is kept: make the record, "
+                "then add each one to it on its own.")
+
+
+class ModelSerializer(RefusesWhatItReadsBackOnly, serializers.ModelSerializer):
+    """The ModelSerializer every serializer here is written on (O565): a list it reads back only, sent, is refused."""

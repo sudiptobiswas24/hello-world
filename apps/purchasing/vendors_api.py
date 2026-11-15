@@ -9,6 +9,8 @@ profile and in the one-step form alike.
 """
 
 from rest_framework import serializers, viewsets
+
+from apps.core.api import ModelSerializer
 from rest_framework.exceptions import PermissionDenied
 
 from apps.accounting.models import PartyTaxProfile
@@ -26,7 +28,7 @@ CONTROLS = {
 }
 
 
-class VendorProfileSerializer(serializers.ModelSerializer):
+class VendorProfileSerializer(ModelSerializer):
     party_name = serializers.CharField(source="party.name", read_only=True)
 
     class Meta:

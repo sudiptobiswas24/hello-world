@@ -2,12 +2,14 @@
 
 from rest_framework import serializers, viewsets
 
+from apps.core.api import ModelSerializer
+
 from apps.core.audit import AuditableViewSetMixin
 
 from .history import ShipmentHistory
 
 
-class ShipmentHistorySerializer(serializers.ModelSerializer):
+class ShipmentHistorySerializer(ModelSerializer):
     item_sku = serializers.CharField(source="item.sku", read_only=True)
     item_name = serializers.CharField(source="item.name", read_only=True)
     warehouse_code = serializers.CharField(source="warehouse.code", read_only=True)

@@ -3,6 +3,8 @@
 from decimal import Decimal
 
 from rest_framework import serializers, viewsets
+
+from apps.core.api import ModelSerializer
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
@@ -15,7 +17,7 @@ from .positions import MachinePosition, critical_spares
 TENTH = Decimal("0.1")
 
 
-class MachinePositionSerializer(serializers.ModelSerializer):
+class MachinePositionSerializer(ModelSerializer):
     machine_code = serializers.CharField(source="machine.code", read_only=True)
     spare_item_sku = serializers.CharField(source="spare_item.sku", read_only=True, default="")
     spare_item_name = serializers.CharField(source="spare_item.name", read_only=True, default="")

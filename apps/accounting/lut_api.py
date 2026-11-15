@@ -6,6 +6,8 @@ accountant to review and marked reviewed, by whom and when.
 
 from django.utils import timezone
 from rest_framework import serializers, viewsets
+
+from apps.core.api import ModelSerializer
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.response import Response
@@ -16,7 +18,7 @@ from .gst import GstSettings, LetterOfUndertaking
 from .tcs import SeededDefault
 
 
-class LetterOfUndertakingSerializer(serializers.ModelSerializer):
+class LetterOfUndertakingSerializer(ModelSerializer):
     registration = serializers.PrimaryKeyRelatedField(queryset=GstSettings.objects.all(), required=False)
 
     class Meta:
@@ -42,7 +44,7 @@ class LetterOfUndertakingViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     date_field = "valid_from"
 
 
-class GstSettingsSerializer(serializers.ModelSerializer):
+class GstSettingsSerializer(ModelSerializer):
     """
     The plant's own GST registration, from the office. It had neither a screen nor an API: given once, as a flag to
     setup_indian_books, and changed only in code, while Settings' "GST registrations" edits the parties' (seen on a
@@ -74,7 +76,7 @@ class GstSettingsViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     http_method_names = ["get", "post", "patch", "head", "options"]
 
 
-class SeededDefaultSerializer(serializers.ModelSerializer):
+class SeededDefaultSerializer(ModelSerializer):
     reviewed_by_name = serializers.CharField(source="reviewed_by.username", read_only=True, default=None)
 
     class Meta:
@@ -104,7 +106,7 @@ class SeededDefaultViewSet(AuditableViewSetMixin, viewsets.ReadOnlyModelViewSet)
 from .gst import GstReturnFiled  # noqa: E402
 
 
-class GstReturnFiledSerializer(serializers.ModelSerializer):
+class GstReturnFiledSerializer(ModelSerializer):
     class Meta:
         model = GstReturnFiled
         fields = ["id", "return_name", "period", "filed_on", "arn"]
@@ -125,7 +127,7 @@ class GstReturnFiledViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 from .models import BooksOpening  # noqa: E402
 
 
-class BooksOpeningSerializer(serializers.ModelSerializer):
+class BooksOpeningSerializer(ModelSerializer):
     """
     The day the books opened and the equity account opening balances stand against (O251). It had an admin page
     only, while the asset typed in and the opening-balance import both refuse until it is set. BooksOpening.save()

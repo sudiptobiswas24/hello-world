@@ -1,6 +1,8 @@
 """Change orders on a bill of materials: raised from the bill, applied or rejected here."""
 
 from rest_framework import serializers, viewsets
+
+from apps.core.api import ModelSerializer
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
@@ -13,7 +15,7 @@ def _bom_label(bom):
     return f"{bom.item.sku} · {bom.item.name}, version {bom.version}"
 
 
-class BomChangeOrderSerializer(serializers.ModelSerializer):
+class BomChangeOrderSerializer(ModelSerializer):
     item_label = serializers.SerializerMethodField()
     supersedes_label = serializers.SerializerMethodField()
     draft_label = serializers.SerializerMethodField()
