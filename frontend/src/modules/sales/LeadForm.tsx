@@ -1,8 +1,30 @@
-import { RecordScreen } from "../../views/RecordScreen";
+import { RecordScreen, type FieldDef } from "../../views/RecordScreen";
 import { activitiesPanel, CAMPAIGN_REF, LEAD_TONES, REP_PICK, SOURCES } from "./crmRefs";
 
 type Row = Record<string, unknown> & { id: number };
 const open = (row: Row) => row.status === "new" || row.status === "working";
+
+/** A lead's fields, kept here so a test can read what a new lead starts as. */
+export const LEAD_FIELDS: FieldDef[] = [
+  { key: "company_name", label: "Who asked" },
+  { key: "contact_name", label: "Contact" },
+  { key: "phone", label: "Phone" },
+  { key: "email", label: "Email" },
+  { key: "city", label: "City" },
+  { key: "state", label: "State" },
+  { key: "source", label: "From", kind: "choice", choices: SOURCES, initial: "other" },
+  { key: "campaign", label: "Campaign", kind: "ref", ref: CAMPAIGN_REF },
+  { key: "interest", label: "What they asked for", wide: true, hint: "50 kg cement sacks, twenty thousand a month" },
+  { key: "owner", label: "Rep", kind: "pick", pick: REP_PICK, hint: "A rep's leads are their own; empty, any rep may take it", show: (row) => String(row.owner_name || "Nobody yet") },
+  // The server keeps the state and moves it by Take it, Convert and Lost: sent, it was dropped (O565). A new
+  // lead starts at New, shown so and never sent (O588).
+  { key: "status", label: "Status", kind: "choice", choices: [["new", "New"], ["working", "Being worked"]], readOnly: true, initial: "new" },
+  { key: "score_summary", label: "How warm", readOnly: true, existingOnly: true, wide: true,
+    show: (row) => (open(row) ? `${String(row.score ?? "")} of 100: ${String(row.score_summary ?? "")}` : String(row.score_summary ?? "")) },
+  { key: "converted_party_name", label: "Became", readOnly: true, existingOnly: true },
+  { key: "converted_on", label: "On", kind: "date", readOnly: true, existingOnly: true },
+  { key: "lost_reason", label: "Lost because", readOnly: true, existingOnly: true },
+];
 
 /**
  * One enquiry: who asked, for what, from where. Converted, it becomes a
@@ -21,25 +43,7 @@ export default function LeadForm() {
       state={(row) => (row.status ? { label: String(row.status), tone: LEAD_TONES[String(row.status)] ?? "draft" } : null)}
       permissions={{ add: "sales.add_lead", change: "sales.change_lead", delete: "sales.delete_lead" }}
       editable={open}
-      fields={[
-        { key: "company_name", label: "Who asked" },
-        { key: "contact_name", label: "Contact" },
-        { key: "phone", label: "Phone" },
-        { key: "email", label: "Email" },
-        { key: "city", label: "City" },
-        { key: "state", label: "State" },
-        { key: "source", label: "From", kind: "choice", choices: SOURCES, initial: "other" },
-        { key: "campaign", label: "Campaign", kind: "ref", ref: CAMPAIGN_REF },
-        { key: "interest", label: "What they asked for", wide: true, hint: "50 kg cement sacks, twenty thousand a month" },
-        { key: "owner", label: "Rep", kind: "pick", pick: REP_PICK, hint: "A rep's leads are their own; empty, any rep may take it", show: (row) => String(row.owner_name || "Nobody yet") },
-        // The server keeps the state and moves it by Take it, Convert and Lost: sent, it was dropped (O565).
-        { key: "status", label: "Status", kind: "choice", choices: [["new", "New"], ["working", "Being worked"]], readOnly: true },
-        { key: "score_summary", label: "How warm", readOnly: true, existingOnly: true, wide: true,
-          show: (row) => (open(row) ? `${String(row.score ?? "")} of 100: ${String(row.score_summary ?? "")}` : String(row.score_summary ?? "")) },
-        { key: "converted_party_name", label: "Became", readOnly: true, existingOnly: true },
-        { key: "converted_on", label: "On", kind: "date", readOnly: true, existingOnly: true },
-        { key: "lost_reason", label: "Lost because", readOnly: true, existingOnly: true },
-      ]}
+      fields={LEAD_FIELDS}
       actions={[
         { label: "Take it", path: "take", permission: "sales.change_lead", when: (row) => open(row) && !row.owner, done: "Yours" },
         { label: "Email them", path: "send", permission: "sales.change_lead", when: (row) => open(row) && Boolean(row.email),
