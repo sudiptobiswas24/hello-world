@@ -931,6 +931,26 @@ class WorkOrder(AuditModel):
             total += entry.posted_value or Decimal("0")
         return total
 
+    def last_posted_on(self):
+        """
+        The latest day an entry was posted against this run, its voids included: an issue, a return, output, time
+        booked or a cost added (every document of the run that keeps a journal entry). None if nothing was.
+        """
+        from django.db.models import Max
+
+        from apps.accounting.models import JournalEntry
+
+        days = []
+        for relation in self._meta.related_objects:
+            model = relation.related_model
+            if relation.field.name != "work_order":
+                continue
+            for field in model._meta.fields:
+                if getattr(field, "related_model", None) is JournalEntry:
+                    days.append(model.objects.filter(work_order=self, **{f"{field.name}__posted": True}).aggregate(
+                        last=Max(f"{field.name}__date"))["last"])
+        return max((to_date(day) for day in days if day), default=None)
+
     def unaccounted(self):
         """
         What went in and has not come back out as stock or scrap.
@@ -1441,7 +1461,11 @@ class WorkOrder(AuditModel):
                 "order can be closed."
             )
         self._check_no_clock_running("closed")
-        on_date = to_date(on_date) or timezone.localdate()
+        # What it sends to variance is what the run holds after its last posting, so it is never dated before
+        # that, nor on a day to come (O585): closed on 27 May, a run issued and produced on 1 June showed its
+        # variance in May and its work in progress below nothing until June. The reopen asks the same of the close.
+        on_date = correction_date(on_date, self.last_posted_on(), f"{self} is not closed on",
+                                  "its last posting is dated")
         balance = round_money(self.unaccounted())
         time_overrun = round_money(self.conversion_variance())
         vendor_overrun = round_money(self.outside_variance())

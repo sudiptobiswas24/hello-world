@@ -2842,10 +2842,6 @@ class Command(BaseCommand):
         "gst.SelfInvoice.issue":
             "an issue, not a correction: day_that_has_come() refuses a day to come, and a day before the supply "
             "was received is refused in words (Rule 47A); take_credit() posts on that day",
-        # Seen when the check learned to follow a helper (O580), and left for their own fixes: each posts through
-        # a helper on whatever day it is handed, today by default, with no rule. To be registered.
-        "manufacturing.WorkOrder.close":
-            "O580, to be registered: the close's variances post through _post_entry() on any day",
     }
 
     # An entry is taken back by create_reversal(), or written by hand
