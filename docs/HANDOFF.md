@@ -50,6 +50,59 @@ pg_isready -q || service postgresql start                              # role er
 
 ## 2. Next steps, in order
 
+**g41 is pushed (fe02c85, 15 November 2026), all seven lanes green on one tip (gated as 310f75e).** Ten commits, all
+register rows or defects that waited on nobody, from two agents and one gate fix:
+- O568: the TDS and TCS rate lists ask whether each rate was taken in the list's own query (DatedRate.with_taken),
+  not one EXISTS a row; a delete still asks the database fresh.
+- O569: the demo keeps one letter of undertaking for each financial year from the story's July to today, its year,
+  filing day and ARN worked out from its dates. The row understated it: every load failed from April 2027, and
+  even today the LUT ended on the day of the load. The demo runs again two years on and in May.
+- O567 and O570: hr has one rule, Confirmed.kept_because(), which delete() refuses in for the statutory figure,
+  the minimum wage and the pay component slab; their screens offer Delete (the slab list its remover) only where
+  no posted run kept the row, and say why.
+- O566: a footer a document passes prints as passed. The tax invoice, self-invoice and payment voucher keep their
+  contacts when issued and reprint those, not today's. A document issued before this kept no contacts and now
+  reprints with none (name and Tax ID only): every older printout's foot changes on the day of the upgrade.
+- O565 and O575: every serializer is written on one base, apps.core.api.ModelSerializer, which refuses a
+  read-only list sent to it (nested many=True, a related many=True, a ListField, a method field named as lines)
+  with a 400 beside the field, naming `new_lines` where the serializer takes it; O555's check moved into it.
+  audit_invariants (serializers_off_the_shared_base) reports a serializer off the base. Any other read-only field
+  is still ignored, so a screen or integration sending back what it read is not refused: the first form refused
+  every read-only field and broke 11 browser tests, and was narrowed. The lead screen's Status is read back only.
+- O574: six creates that read their body by hand (e-invoice, e-way bill, self-invoice, payment voucher, cost
+  sheet, test certificate) refuse a key they do not take, beside it, through apps.core.api.takes_only.
+- O572: the firming test PATCHed a read-only field and so tested nothing; it changes a writable one now.
+- O576: the agreement-lock race control (test_06_o227) was decided by machine speed. Every write takes the
+  company's numbering row first, so the two calls were always serialised; the control went wrong only when the
+  release reached the row first. A new helper, races.stale_behind_a_lock, holds the order by what PostgreSQL shows
+  (pg_blocking_pids), not by the clock.
+Counts: SQLite 8,850 (248 skipped), PostgreSQL 4,071 + 3,689 + 1,090 = 8,850, Asia/Kolkata 8,850 (248 skipped), migration-tagged 54, vitest 79.
+- The first tip (6243e1a, four commits) failed pg-c on test_06_o227 at load 8 on four cores; alone it passed three
+  in three. A longer barrier made it worse (each side then waited on the other until the barrier broke). Since the
+  tip had to change, g42's first five reviewed commits were folded in rather than gated twice.
+- Register: O571 (a lead can never be "Being worked", for the owner), O573 (fields DRF drops without a word:
+  undeclared ones, and scalar read-only ones by design), O579 (about 250 actions read their body by hand). O562 is
+  now for the owner and the accountant: which account is a leaver's provision when no run accrued one. O390 comes
+  off: it does not hold (a void of a receipt the restatement holds would take away what it holds, and one applied
+  to an invoice it did not restate would leave that invoice due at the close unrestated).
+- Next: g42, already built and pre-integrated on 310f75e (/home/user/work/g42int, 18 commits): O249, O357, O581
+  (a purchase order line calls off its agreement only as release() does, one shared check), O587, O588, O589,
+  O577 and O578 (takes_only on five more creates and the six viewsets' actions; audit_invariants'
+  creates_reading_the_body_by_hand; the e-way bill screen asks the value going back), O256 and O554, O580 (the
+  correction-date check follows a step into the helper it posts through) and the four undated postings it found
+  (O582 customer TDS, O583 landed cost, O584 a cost version's publish, O585 a run's close), O586 and O591 (the hr
+  lists in one query), O590 (the race helper waits on its own transaction).
+- O564 (the demo failure only g39's whole pg-c lane showed) did not recur in g41's two pg-c runs: still open, a
+  run-dependent failure waiting for its next appearance.
+- Waiting on people, unchanged but for O571 and O562: the owner (O448, O494, O557, O558, O559, O562, O571,
+  decision 24; O550 needs the Maharashtra minimum wage notification), the tax adviser (O449, O500, O534, O559,
+  O561), the accountant (O536, O538, O562, O563, docs/STATUTORY_REVIEW.md section 14).
+- Gate lessons from g41: the sqlite lane reached 7,259 of its 9,000 s beside mig; pausing mig's purchasing step
+  (SIGSTOP of both the lane's and timeout's process groups: timeout runs its child in a group of its own) let it
+  finish at 6,945 s of tests. A change to apps/accounting/dated_rates.py made mig run twelve apps, about eight
+  hours: the long pole again. Code review of the tip found the hr kept_because one query a row (O586), the read-only
+  list check keyed on names (O587) and the race helper's blind wait (O590), all fixed in g42.
+
 **g40 is pushed (c2b00a8, 15 November 2026), all seven lanes green on one tip (gated as 7556815).** Six commits, all register
 rows that waited on nobody: O555 (a document's lines sent as `lines` instead of `new_lines` are refused with a 400
 beside the field, on a new or saved document, in the shared TakesItsLinesMixin, so bill, invoice, sales order and
