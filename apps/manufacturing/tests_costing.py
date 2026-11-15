@@ -196,21 +196,45 @@ class PublishingIsARevaluationTests(CostingTestCase):
         item = self.standard_item()
         # 2,000 kg on the shelf at 100 becomes 2,000 at 110.
         version = self.version(prices={item: "110"})
-        entry = version.publish(on_date=TODAY)
+        entry = version.publish()
         self.assertIsNotNone(entry)
         self.assertEqual(self.balance(self.inventory), Decimal("20000.00"))
         self.assertEqual(self.balance(self.revaluation), Decimal("-20000.00"))
 
+    def test_not_published_before_the_shelves_it_revalues_last_moved(self):
+        """
+        O584 (probe /home/user/work/calc_g41_kept/probes/probe_o58x.py): published on 1 June, it booked on
+        1 June the revaluation of 2,000 kg that moved today. Refused before the last movement, and on a day to
+        come; published today, the 20,000.00 is booked today and the shelf and the ledger agree.
+        """
+        from django.utils import timezone
+
+        item = self.standard_item()
+        version = self.version(prices={item: "110"})
+        today = timezone.localdate()
+        with self.assertRaisesMessage(ValidationError, f"is not published on {TODAY}: the shelves it revalues "
+                                                       f"last moved on {today}."):
+            version.publish(on_date=TODAY)
+        with self.assertRaisesMessage(ValidationError, "that day has not come"):
+            version.publish(on_date=today + datetime.timedelta(days=1))
+        self.assertEqual(self.balance(self.inventory), Decimal("0"))
+        entry = version.publish()
+        self.assertEqual(entry.date, today)
+        self.assertEqual((self.balance(self.inventory), self.balance(self.revaluation)),
+                         (Decimal("20000.00"), Decimal("-20000.00")))
+        item.refresh_from_db()
+        self.assertEqual(item.stock_value_at(self.plant), Decimal("220000.00"))
+
     def test_the_item_carries_the_new_standard_afterwards(self):
         item = self.standard_item()
-        self.version(prices={item: "110"}).publish(on_date=TODAY)
+        self.version(prices={item: "110"}).publish()
         item.refresh_from_db()
         self.assertEqual(item.standard_cost, Decimal("110"))
         self.assertEqual(item.stock_value_at(self.plant), Decimal("220000.00"))
 
     def test_a_fall_in_the_standard_posts_the_other_way(self):
         item = self.standard_item()
-        self.version(prices={item: "90"}).publish(on_date=TODAY)
+        self.version(prices={item: "90"}).publish()
         self.assertEqual(self.balance(self.inventory), Decimal("-20000.00"))
         self.assertEqual(self.balance(self.revaluation), Decimal("20000.00"))
 
@@ -221,19 +245,19 @@ class PublishingIsARevaluationTests(CostingTestCase):
         """
         self.assertEqual(self.virgin.costing_method, CostingMethod.AVERAGE)
         version = self.version(prices={self.virgin: "110"})
-        entry = version.publish(on_date=TODAY)
+        entry = version.publish()
         self.assertIsNone(entry)
         self.virgin.refresh_from_db()
         self.assertEqual(self.virgin.standard_cost, Decimal("110"))
 
     def test_an_unchanged_standard_posts_nothing(self):
         item = self.standard_item()
-        self.assertIsNone(self.version(prices={item: "100"}).publish(on_date=TODAY))
+        self.assertIsNone(self.version(prices={item: "100"}).publish())
 
     def test_an_empty_shelf_posts_nothing(self):
         item = self.standard_item()
         self.stock(item, "-2000", "100")
-        self.assertIsNone(self.version(prices={item: "110"}).publish(on_date=TODAY))
+        self.assertIsNone(self.version(prices={item: "110"}).publish())
 
     def test_publishing_with_nowhere_to_put_the_difference_is_refused(self):
         item = self.standard_item()
@@ -241,26 +265,26 @@ class PublishingIsARevaluationTests(CostingTestCase):
         settings.revaluation_account = None
         settings.save()
         with self.assertRaisesMessage(ValidationError, "has to land somewhere"):
-            self.version(prices={item: "110"}).publish(on_date=TODAY)
+            self.version(prices={item: "110"}).publish()
 
     def test_publishing_twice_is_refused(self):
         item = self.standard_item()
         version = self.version(prices={item: "110"})
-        version.publish(on_date=TODAY)
+        version.publish()
         with self.assertRaisesMessage(ValidationError, "already published"):
-            version.publish(on_date=TODAY)
+            version.publish()
 
     def test_an_empty_version_is_refused(self):
         version = CostVersion.objects.create(
             code="V0", name="Empty", effective_from=TODAY
         )
         with self.assertRaisesMessage(ValidationError, "every standard to nothing"):
-            version.publish(on_date=TODAY)
+            version.publish()
 
     def test_a_published_version_cannot_be_rolled_again(self):
         item = self.standard_item()
         version = self.version(prices={item: "110"})
-        version.publish(on_date=TODAY)
+        version.publish()
         with self.assertRaisesMessage(ValidationError, "roll up a new version"):
             version.roll_up([self.tape])
 
@@ -276,7 +300,7 @@ class PublishingIsARevaluationTests(CostingTestCase):
         self.standard_item()
         at_standard(self.regrind, self.regrind.standard_cost)
         version = self.version(prices={self.virgin: "110", self.regrind: "70"})
-        entry = version.publish(on_date=TODAY)
+        entry = version.publish()
         self.assertTrue(entry.posted)
         # Two lines, not three: both items sit in the same inventory
         # account, and the helper aggregates by account before it
@@ -424,7 +448,7 @@ class APublishedVersionStandsTests(CostingTestCase):
 
     def published(self):
         version = self.version()
-        version.publish(on_date=TODAY)
+        version.publish()
         return version
 
     def api(self):
@@ -488,7 +512,7 @@ class TheAdminKeepsAPublishedVersionTests(CostingTestCase):
         from apps.core.tests_second_factor import staff_session
 
         version = self.version()
-        version.publish(on_date=TODAY)
+        version.publish()
         browser = Client()
         staff_session(browser, User.objects.create_superuser("root", "r@x.y", "p"))
         page = f"/admin/manufacturing/costversion/{version.pk}/"

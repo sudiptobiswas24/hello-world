@@ -2844,8 +2844,6 @@ class Command(BaseCommand):
             "was received is refused in words (Rule 47A); take_credit() posts on that day",
         # Seen when the check learned to follow a helper (O580), and left for their own fixes: each posts through
         # a helper on whatever day it is handed, today by default, with no rule. To be registered.
-        "manufacturing.CostVersion.publish":
-            "O580, to be registered: _revalue_shelves() revalues the shelves through _post_entry() on any day",
         "manufacturing.WorkOrder.close":
             "O580, to be registered: the close's variances post through _post_entry() on any day",
     }
