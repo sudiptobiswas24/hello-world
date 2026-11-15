@@ -10,6 +10,9 @@ export default function StatutoryFigureForm() {
       heading={(row) => `${String(row.kind ?? "")} from ${String(row.effective_from ?? "")}`}
       state={(row) => (row.confirmed_on ? { label: "Confirmed", tone: "done" } : { label: "To confirm", tone: "draft" })}
       permissions={{ add: "hr.add_statutoryfigure", change: "hr.change_statutoryfigure", delete: "hr.delete_statutoryfigure" }}
+      // Offered only where the server would take it, and why not where it would not: a run was paid at it (O567).
+      deletable={(row) => !row.kept_because}
+      note={(row) => (row?.kept_because ? <p className="muted">{String(row.kept_because)}</p> : null)}
       fields={[
         { key: "kind", label: "Figure", kind: "choice", choices: [
           ["epf_ceiling", "EPF wage ceiling"], ["eps_ceiling", "EPS wage ceiling"], ["overtime_multiplier", "Overtime multiple"],

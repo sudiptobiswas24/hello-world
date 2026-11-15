@@ -118,6 +118,22 @@ class Confirmed(models.Model):
     def figures(self):
         return {name: getattr(self, name) for name in self.FIGURES}
 
+    def kept_under(self):
+        """The name a payslip line keeps this row's term under (PayslipLine.kept_terms)."""
+        raise NotImplementedError
+
+    def kept_because(self):
+        """
+        Why the row may not be deleted, in words, or "" where it may: a posted run was paid at it. delete()
+        refuses in these words and the screen reads them to offer Delete or not (O567; the dated rates' O556), so
+        the two cannot disagree.
+        """
+        return kept_words(self.kept_under(), self.pk, f"{self}", "deleted") if self.pk is not None else ""
+
+    def refuse_delete_if_kept(self):
+        if reason := self.kept_because():
+            raise ValidationError(reason)
+
     def clear_if_changed(self, stored):
         if stored.figures() != self.figures():
             self.confirmed_by, self.confirmed_on = None, None
@@ -173,6 +189,9 @@ class StatutoryFigure(Confirmed, AuditModel):
     def term(self):
         return [self.pk, self.effective_from.isoformat(), f"{self.value.normalize():f}"]
 
+    def kept_under(self):
+        return self.kind
+
     @transaction.atomic
     def save(self, *args, **kwargs):
         self.effective_from = to_date(self.effective_from)
@@ -189,7 +208,7 @@ class StatutoryFigure(Confirmed, AuditModel):
     def delete(self, *args, **kwargs):
         # FOR UPDATE: the row is deleted, and a row being inserted that names it must wait (O257).
         lock_rows(self, refresh=False, deleting=True)
-        refuse_if_kept(self.kind, self.pk, f"{self}", "deleted")
+        self.refuse_delete_if_kept()
         return super().delete(*args, **kwargs)
 
 
@@ -281,6 +300,9 @@ class MinimumWage(Confirmed, AuditModel):
     def term(self):
         return [self.pk, self.effective_from.isoformat(), f"{self.monthly.normalize():f}"]
 
+    def kept_under(self):
+        return "minimum_wage"
+
     @transaction.atomic
     def save(self, *args, **kwargs):
         self.effective_from = to_date(self.effective_from)
@@ -295,7 +317,7 @@ class MinimumWage(Confirmed, AuditModel):
     @transaction.atomic
     def delete(self, *args, **kwargs):
         lock_rows(self, refresh=False, deleting=True)
-        refuse_if_kept("minimum_wage", self.pk, f"{self}", "deleted")
+        self.refuse_delete_if_kept()
         return super().delete(*args, **kwargs)
 
 
@@ -332,17 +354,30 @@ def bonus_ceiling(employee, day):
     return max(floor, wage), {FigureKind.BONUS_FLOOR.value: floor_term, "minimum_wage": wage_term}
 
 
+def kept_by(key, pk):
+    """The posted run a payslip line of which kept the figure (or slab) `pk` under `key`, or None."""
+    from .payroll import PayRunStatus, PayslipLine
+
+    # The term is [pk, day, figure]: its first place names the row. Asked of the database, not read line by line,
+    # since a list of figures asks it of every row it shows (kept_because).
+    line = PayslipLine.objects.filter(payslip__run__status=PayRunStatus.POSTED, **{f"kept_terms__{key}__0": pk}) \
+        .select_related("payslip__run").order_by("pk").first()
+    return line.payslip.run if line is not None else None
+
+
+def kept_words(key, pk, what, doing):
+    """Why `what` may not be `doing` ("changed", "deleted"), in words, or "" where it may."""
+    run = kept_by(key, pk)
+    if run is None:
+        return ""
+    return (f"{what} is what {run} was paid at; it is not {doing}. Void that run first, or give the new figure a "
+            "row of its own from the day it applies.")
+
+
 def refuse_if_kept(key, pk, what, doing):
     """
     Refuse changing a figure (or slab) a posted run kept: the run paid at
     it, and its files read it. `key` is the name the line keeps it under.
     """
-    from .payroll import PayRunStatus, PayslipLine
-
-    kept = PayslipLine.objects.filter(payslip__run__status=PayRunStatus.POSTED, kept_terms__has_key=key)
-    for line in kept.select_related("payslip__run").only("kept_terms", "payslip__run__number"):
-        term = (line.kept_terms or {}).get(key)
-        if term and term[0] == pk:
-            raise ValidationError(
-                f"{what} is what {line.payslip.run} was paid at; it is not {doing}. Void that run first, "
-                "or give the new figure a row of its own from the day it applies.")
+    if reason := kept_words(key, pk, what, doing):
+        raise ValidationError(reason)
