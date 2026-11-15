@@ -6,6 +6,8 @@ from django.contrib.auth.models import User
 from django.db import transaction
 from django.utils import timezone
 from rest_framework import mixins, serializers, viewsets
+
+from apps.core.api import ModelSerializer
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.exceptions import ValidationError as DRFValidationError
@@ -16,7 +18,7 @@ from .audit import AuditableViewSetMixin
 
 
 
-class IntegrationSerializer(serializers.ModelSerializer):
+class IntegrationSerializer(ModelSerializer):
     username = serializers.CharField(source="user.username", read_only=True)
     user = serializers.IntegerField(source="user.pk", read_only=True)
 
@@ -27,7 +29,7 @@ class IntegrationSerializer(serializers.ModelSerializer):
         read_only_fields = ["created_by", "created_at", "updated_by", "updated_at"]
 
 
-class ApiKeySerializer(serializers.ModelSerializer):
+class ApiKeySerializer(ModelSerializer):
     integration_name = serializers.CharField(source="integration.name", read_only=True)
     state = serializers.SerializerMethodField()
     issuer = serializers.CharField(source="created_by.username", read_only=True, default="")
@@ -48,7 +50,7 @@ class ApiKeySerializer(serializers.ModelSerializer):
         return "revoked" if key.revoked_at else "expired" if key.expires_at <= timezone.now() else "active"
 
 
-class ApiKeyUseSerializer(serializers.ModelSerializer):
+class ApiKeyUseSerializer(ModelSerializer):
     class Meta:
         model = ApiKeyUse
         fields = ["id", "key", "at", "method", "path", "address", "refused", "prefix"]

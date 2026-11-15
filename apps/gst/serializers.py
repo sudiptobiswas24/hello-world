@@ -1,11 +1,13 @@
 from rest_framework import serializers
 
+from apps.core.api import ModelSerializer
+
 from .einvoice import EInvoice
 from .ewaybill import EwayBill
 from .gstr2b import Gstr2bStatement
 
 
-class EInvoiceSerializer(serializers.ModelSerializer):
+class EInvoiceSerializer(ModelSerializer):
     invoice_number = serializers.CharField(source="invoice.number", read_only=True)
     warnings = serializers.SerializerMethodField()
 
@@ -20,7 +22,7 @@ class EInvoiceSerializer(serializers.ModelSerializer):
         return obj.warnings()
 
 
-class EwayBillSerializer(serializers.ModelSerializer):
+class EwayBillSerializer(ModelSerializer):
     carried_on_number = serializers.CharField(source="carried_on.number", read_only=True, default="")
     document_number = serializers.SerializerMethodField()
 
@@ -40,7 +42,7 @@ class EwayBillSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
-class Gstr2bStatementSerializer(serializers.ModelSerializer):
+class Gstr2bStatementSerializer(ModelSerializer):
     line_count = serializers.IntegerField(read_only=True)
     kept_by = serializers.SerializerMethodField()
 
@@ -57,7 +59,7 @@ class Gstr2bStatementSerializer(serializers.ModelSerializer):
 from .reverse_charge import GstCashPayment, PaymentVoucher, SelfInvoice  # noqa: E402
 
 
-class SelfInvoiceSerializer(serializers.ModelSerializer):
+class SelfInvoiceSerializer(ModelSerializer):
     bill_number = serializers.CharField(source="bill.number", read_only=True)
 
     class Meta:
@@ -67,7 +69,7 @@ class SelfInvoiceSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
-class PaymentVoucherSerializer(serializers.ModelSerializer):
+class PaymentVoucherSerializer(ModelSerializer):
     bill_number = serializers.CharField(source="bill.number", read_only=True)
     payment_number = serializers.CharField(source="payment.number", read_only=True)
 
@@ -78,7 +80,7 @@ class PaymentVoucherSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
-class GstCashPaymentSerializer(serializers.ModelSerializer):
+class GstCashPaymentSerializer(ModelSerializer):
     voided = serializers.BooleanField(source="voided_entry_id", read_only=True)
 
     class Meta:

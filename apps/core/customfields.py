@@ -21,6 +21,8 @@ from decimal import Decimal, InvalidOperation
 from django.core.exceptions import ValidationError
 from django.db import models
 from rest_framework import serializers, viewsets
+
+from apps.core.api import ModelSerializer
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
@@ -196,7 +198,7 @@ class ExtensibleSerializerMixin:
         return attrs
 
 
-class CustomFieldSerializer(serializers.ModelSerializer):
+class CustomFieldSerializer(ModelSerializer):
     kind_label = serializers.SerializerMethodField()
     choice_list = serializers.SerializerMethodField()
 

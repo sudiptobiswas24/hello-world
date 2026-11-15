@@ -45,6 +45,8 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.db.models import Q
 from rest_framework import serializers, viewsets
+
+from apps.core.api import ModelSerializer
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.exceptions import ValidationError as DRFValidationError
@@ -206,7 +208,7 @@ def refused_link(actor, login):
             "to a person.")
 
 
-class UserSerializer(serializers.ModelSerializer):
+class UserSerializer(ModelSerializer):
     roles = serializers.ListField(child=serializers.CharField(), required=False)
     employee_number = serializers.CharField(source="employee.employee_number", read_only=True, default="")
     employee_name = serializers.CharField(source="employee.party.name", read_only=True, default="")

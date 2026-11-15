@@ -1,6 +1,8 @@
 """TCS collected on sale invoices: listed, listed for the quarter's return, and paid over by challan."""
 
 from rest_framework import serializers, viewsets
+
+from apps.core.api import ModelSerializer
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.response import Response
@@ -12,7 +14,7 @@ from apps.core.models import to_date
 from .tcs import TcsChallan, TcsCollection, tcs_return
 
 
-class TcsCollectionSerializer(serializers.ModelSerializer):
+class TcsCollectionSerializer(ModelSerializer):
     invoice_number = serializers.CharField(source="invoice.number", read_only=True)
     buyer_name = serializers.CharField(source="invoice.customer.name", read_only=True)
     # The section the row kept when it was issued (sales 0072), not its section as it reads today.
@@ -51,7 +53,7 @@ class TcsCollectionViewSet(viewsets.ReadOnlyModelViewSet):
         return Response({**heading("tcs", start, end), "rows": tcs_return(start, end)})
 
 
-class TcsChallanSerializer(serializers.ModelSerializer):
+class TcsChallanSerializer(ModelSerializer):
     voided = serializers.BooleanField(source="voided_entry_id", read_only=True)
 
     class Meta:

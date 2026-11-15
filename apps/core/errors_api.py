@@ -1,13 +1,15 @@
 """The errors people hit, listed for whoever keeps the system, and marked dealt with."""
 
 from rest_framework import serializers, viewsets
+
+from apps.core.api import ModelSerializer
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
 from .errors import ServerError
 
 
-class ServerErrorSerializer(serializers.ModelSerializer):
+class ServerErrorSerializer(ModelSerializer):
     user_name = serializers.SerializerMethodField()
     resolved_by_name = serializers.SerializerMethodField()
 

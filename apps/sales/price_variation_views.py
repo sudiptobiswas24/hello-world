@@ -12,6 +12,8 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from django.shortcuts import get_object_or_404
 from django.utils.dateparse import parse_date
 from rest_framework import serializers, viewsets
+
+from apps.core.api import ModelSerializer
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.response import Response
@@ -46,13 +48,13 @@ def _dates(data):
     return start, end
 
 
-class PriceIndexSerializer(serializers.ModelSerializer):
+class PriceIndexSerializer(ModelSerializer):
     class Meta:
         model = PriceIndex
         fields = ["id", "code", "name"]
 
 
-class PriceClauseSerializer(serializers.ModelSerializer):
+class PriceClauseSerializer(ModelSerializer):
     index_code = serializers.CharField(source="index.code", read_only=True)
     line_label = serializers.SerializerMethodField()
 

@@ -1,6 +1,8 @@
 """TDS and TCS sections: the rates and thresholds the plant deducts, collects and is deducted at, kept by the controller."""
 
 from rest_framework import serializers, viewsets
+
+from apps.core.api import ModelSerializer
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
@@ -11,7 +13,7 @@ from .tcs import TcsDeclaration, TcsRate, TcsSection
 from .tds import TdsRate, TdsSection
 
 
-class TdsSectionSerializer(serializers.ModelSerializer):
+class TdsSectionSerializer(ModelSerializer):
     class Meta:
         model = TdsSection
         fields = ["id", "code", "name", "section_1961", "section_2025", "mode", "single_threshold",
@@ -25,7 +27,7 @@ class TdsSectionViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     search_fields = ["code", "name"]
 
 
-class TcsSectionSerializer(serializers.ModelSerializer):
+class TcsSectionSerializer(ModelSerializer):
     class Meta:
         model = TcsSection
         fields = ["id", "code", "name", "section_1961", "section_2025", "form_code", "base_includes_gst",
@@ -48,7 +50,7 @@ class KeptBecauseMixin(serializers.Serializer):
         return rate.kept_because(taken=getattr(rate, "was_taken", None))
 
 
-class TcsRateSerializer(KeptBecauseMixin, serializers.ModelSerializer):
+class TcsRateSerializer(KeptBecauseMixin, ModelSerializer):
     section_code = serializers.CharField(source="section.code", read_only=True)
     law_section = serializers.CharField(source="section_code", required=False, allow_blank=True, max_length=16)
 
@@ -91,7 +93,7 @@ class TcsRateViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         return Response(self.get_serializer(type(rate).objects.get(pk=rate.pk)).data)
 
 
-class TdsRateSerializer(KeptBecauseMixin, serializers.ModelSerializer):
+class TdsRateSerializer(KeptBecauseMixin, ModelSerializer):
     section_code = serializers.CharField(source="section.code", read_only=True)
 
     class Meta:
@@ -109,7 +111,7 @@ class TdsRateViewSet(TcsRateViewSet):
     action_permission_map = {"confirm": "accounting.confirm_tdsrate"}
 
 
-class BankRateSerializer(serializers.ModelSerializer):
+class BankRateSerializer(ModelSerializer):
     # Why it may not be deleted, or "": the screen offers Delete only where the server would take it (O556).
     kept_because = serializers.CharField(read_only=True)
     class Meta:
@@ -128,7 +130,7 @@ class BankRateViewSet(TcsRateViewSet):
     action_permission_map = {"confirm": "accounting.confirm_bankrate"}
 
 
-class TcsDeclarationSerializer(serializers.ModelSerializer):
+class TcsDeclarationSerializer(ModelSerializer):
     party_name = serializers.CharField(source="party.name", read_only=True)
 
     class Meta:

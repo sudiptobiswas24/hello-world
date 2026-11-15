@@ -9,6 +9,8 @@ bookkeeper is deliberately without it.
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers, viewsets
+
+from apps.core.api import ModelSerializer
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.response import Response
@@ -28,7 +30,7 @@ def _refused(call):
         raise DRFValidationError(exc.messages)
 
 
-class BankStatementSerializer(serializers.ModelSerializer):
+class BankStatementSerializer(ModelSerializer):
     bank_account_name = serializers.CharField(source="bank_account.name", read_only=True)
 
     class Meta:
@@ -38,7 +40,7 @@ class BankStatementSerializer(serializers.ModelSerializer):
         read_only_fields = ["closed", "closed_at"]
 
 
-class BankStatementLineSerializer(serializers.ModelSerializer):
+class BankStatementLineSerializer(ModelSerializer):
     payment_number = serializers.CharField(source="payment.number", read_only=True, default=None)
     returned_payment_number = serializers.CharField(source="returned_payment.number", read_only=True, default=None)
     resolved = serializers.BooleanField(source="is_resolved", read_only=True)

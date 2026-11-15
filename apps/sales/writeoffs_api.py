@@ -5,6 +5,8 @@ paid, and reverses a write-off when the money comes after all.
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers, viewsets
+
+from apps.core.api import ModelSerializer
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.response import Response
@@ -13,7 +15,7 @@ from .models import InvoiceWriteOff
 from .scoping import CustomerScopedMixin
 
 
-class InvoiceWriteOffSerializer(serializers.ModelSerializer):
+class InvoiceWriteOffSerializer(ModelSerializer):
     invoice_number = serializers.CharField(source="invoice.number", read_only=True)
     customer_name = serializers.CharField(source="invoice.customer.name", read_only=True)
     is_recovered = serializers.BooleanField(read_only=True)

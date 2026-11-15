@@ -4,6 +4,8 @@ challan, and listed for the quarter's return.
 """
 
 from rest_framework import serializers, viewsets
+
+from apps.core.api import ModelSerializer
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.response import Response
@@ -15,7 +17,7 @@ from apps.core.models import to_date
 from .tds import TdsChallan, TdsDeduction, tds_return
 
 
-class TdsDeductionSerializer(serializers.ModelSerializer):
+class TdsDeductionSerializer(ModelSerializer):
     bill_number = serializers.CharField(source="bill.number", read_only=True)
     vendor_name = serializers.CharField(source="bill.vendor.name", read_only=True)
     section_code = serializers.CharField(source="section.code", read_only=True)
@@ -67,7 +69,7 @@ class TdsDeductionViewSet(viewsets.ReadOnlyModelViewSet):
         return Response({**heading("tds", start, end), "rows": tds_return(start, end)})
 
 
-class TdsChallanSerializer(serializers.ModelSerializer):
+class TdsChallanSerializer(ModelSerializer):
     section_code = serializers.SerializerMethodField()
     voided = serializers.BooleanField(source="voided_entry_id", read_only=True)
 

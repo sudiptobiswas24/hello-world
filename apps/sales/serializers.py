@@ -2,6 +2,8 @@ from decimal import Decimal
 
 from rest_framework import serializers
 
+from apps.core.api import ModelSerializer
+
 from apps.accounting.serializers import MoneyLineSerializerMixin, TakesItsLinesMixin
 
 from .models import (
@@ -32,7 +34,7 @@ from apps.core.customfields import ExtensibleSerializerMixin
 from .teams import SalesTarget, SalesTeam
 
 
-class SalesOrderLineSerializer(MoneyLineSerializerMixin, serializers.ModelSerializer):
+class SalesOrderLineSerializer(MoneyLineSerializerMixin, ModelSerializer):
     # What the line is called: its description, else its charge or item.
     label = serializers.CharField(read_only=True)
     order_number = serializers.CharField(source="order.number", read_only=True)
@@ -55,7 +57,7 @@ class SalesOrderLineSerializer(MoneyLineSerializerMixin, serializers.ModelSerial
         ]
 
 
-class SalesOrderSerializer(TakesItsLinesMixin, ExtensibleSerializerMixin, serializers.ModelSerializer):
+class SalesOrderSerializer(TakesItsLinesMixin, ExtensibleSerializerMixin, ModelSerializer):
     line_serializer = SalesOrderLineSerializer
     line_parent = "order"
     lines = SalesOrderLineSerializer(many=True, read_only=True)
@@ -92,7 +94,7 @@ class SalesOrderSerializer(TakesItsLinesMixin, ExtensibleSerializerMixin, serial
         return [row.item_id for row in obj.supplied_items.all()]
 
 
-class SuppliedItemSerializer(serializers.ModelSerializer):
+class SuppliedItemSerializer(ModelSerializer):
     order_number = serializers.CharField(source="order.number", read_only=True)
     item_label = serializers.SerializerMethodField()
 
@@ -105,7 +107,7 @@ class SuppliedItemSerializer(serializers.ModelSerializer):
         validators = []
 
 
-class InvoiceLineSerializer(MoneyLineSerializerMixin, serializers.ModelSerializer):
+class InvoiceLineSerializer(MoneyLineSerializerMixin, ModelSerializer):
     # What the line is called: its description, else its charge or item.
     label = serializers.CharField(read_only=True)
     class Meta:
@@ -122,7 +124,7 @@ class InvoiceLineSerializer(MoneyLineSerializerMixin, serializers.ModelSerialize
         extra_kwargs = {"revenue_account": {"required": False}}
 
 
-class InvoiceSerializer(TakesItsLinesMixin, ExtensibleSerializerMixin, serializers.ModelSerializer):
+class InvoiceSerializer(TakesItsLinesMixin, ExtensibleSerializerMixin, ModelSerializer):
     line_serializer = InvoiceLineSerializer
     line_parent = "invoice"
     lines = InvoiceLineSerializer(many=True, read_only=True)
@@ -178,7 +180,7 @@ class InvoiceSerializer(TakesItsLinesMixin, ExtensibleSerializerMixin, serialize
         extra_kwargs = {"receivable_account": {"required": False}}
 
 
-class InvoicePaymentSerializer(serializers.ModelSerializer):
+class InvoicePaymentSerializer(ModelSerializer):
     invoice_number = serializers.CharField(source="invoice.number", read_only=True)
     payment_number = serializers.CharField(source="payment.number", read_only=True)
 
@@ -195,7 +197,7 @@ class InvoicePaymentSerializer(serializers.ModelSerializer):
         fields = ["id", "invoice", "invoice_number", "payment", "payment_number", "amount", "date", "discount_earned"]
 
 
-class DeliveryLineSerializer(serializers.ModelSerializer):
+class DeliveryLineSerializer(ModelSerializer):
     # What the line is, as the order line says it: a delivery line names
     # only the order line, and a screen needs to say "50 kg sacks".
     description = serializers.SerializerMethodField()
@@ -226,7 +228,7 @@ class BackorderMixin(serializers.Serializer):
     pass
 
 
-class DeliverySerializer(serializers.ModelSerializer):
+class DeliverySerializer(ModelSerializer):
     lines = DeliveryLineSerializer(many=True, read_only=True)
     customer_name = serializers.CharField(source="sales_order.customer.name", read_only=True)
     order_number = serializers.CharField(source="sales_order.number", read_only=True)
@@ -252,7 +254,7 @@ class DeliverySerializer(serializers.ModelSerializer):
                             "returned_under_release", "invoice"]
 
 
-class PriceListItemSerializer(serializers.ModelSerializer):
+class PriceListItemSerializer(ModelSerializer):
     item_label = serializers.SerializerMethodField()
 
     def get_item_label(self, row):
@@ -263,7 +265,7 @@ class PriceListItemSerializer(serializers.ModelSerializer):
         fields = ["id", "price_list", "item", "min_quantity", "unit_price", "item_label"]
 
 
-class PriceListSerializer(serializers.ModelSerializer):
+class PriceListSerializer(ModelSerializer):
     entries = PriceListItemSerializer(many=True, read_only=True)
 
     class Meta:
@@ -274,7 +276,7 @@ class PriceListSerializer(serializers.ModelSerializer):
         ]
 
 
-class CustomerProfileSerializer(serializers.ModelSerializer):
+class CustomerProfileSerializer(ModelSerializer):
     sales_rep_name = serializers.CharField(source="sales_rep.name", read_only=True, default="")
     price_list_name = serializers.CharField(source="price_list.name", read_only=True, default="")
     transporter_name = serializers.CharField(source="transporter.name", read_only=True, default="")
@@ -290,7 +292,7 @@ class CustomerProfileSerializer(serializers.ModelSerializer):
         ]
 
 
-class QuotationLineSerializer(MoneyLineSerializerMixin, serializers.ModelSerializer):
+class QuotationLineSerializer(MoneyLineSerializerMixin, ModelSerializer):
     # What the line is called: its description, else its charge or item.
     label = serializers.CharField(read_only=True)
     class Meta:
@@ -303,7 +305,7 @@ class QuotationLineSerializer(MoneyLineSerializerMixin, serializers.ModelSeriali
         ]
 
 
-class QuotationSerializer(serializers.ModelSerializer):
+class QuotationSerializer(ModelSerializer):
     lines = QuotationLineSerializer(many=True, read_only=True)
     customer_name = serializers.CharField(source="customer.name", read_only=True)
     subtotal = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
@@ -323,13 +325,13 @@ class QuotationSerializer(serializers.ModelSerializer):
         ]
 
 
-class DunningLevelSerializer(serializers.ModelSerializer):
+class DunningLevelSerializer(ModelSerializer):
     class Meta:
         model = DunningLevel
         fields = ["id", "name", "days_overdue", "subject", "body", "is_active"]
 
 
-class DunningNoticeSerializer(serializers.ModelSerializer):
+class DunningNoticeSerializer(ModelSerializer):
     invoice_number = serializers.CharField(source="invoice.number", read_only=True)
     customer_name = serializers.CharField(source="invoice.customer.name", read_only=True)
     level_name = serializers.CharField(source="level.name", read_only=True)
@@ -341,13 +343,13 @@ class DunningNoticeSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
-class CommissionPlanSerializer(serializers.ModelSerializer):
+class CommissionPlanSerializer(ModelSerializer):
     class Meta:
         model = CommissionPlan
         fields = ["id", "code", "name", "percent", "basis", "is_active"]
 
 
-class SalesRepSerializer(serializers.ModelSerializer):
+class SalesRepSerializer(ModelSerializer):
     name = serializers.CharField(source="party.name", read_only=True)
     plan_name = serializers.CharField(source="plan.name", read_only=True, default="")
     team_name = serializers.CharField(source="team.name", read_only=True, default="")
@@ -357,7 +359,7 @@ class SalesRepSerializer(serializers.ModelSerializer):
         fields = ["id", "party", "name", "plan", "team", "team_name", "is_active", "plan_name"]
 
 
-class SalesTeamSerializer(serializers.ModelSerializer):
+class SalesTeamSerializer(ModelSerializer):
     leader_name = serializers.CharField(source="leader.party.name", read_only=True, default="")
     # Annotated on the list; a team just made or saved counts its own.
     member_count = serializers.SerializerMethodField()
@@ -371,7 +373,7 @@ class SalesTeamSerializer(serializers.ModelSerializer):
         return team.members.count() if count is None else count
 
 
-class SalesTargetSerializer(serializers.ModelSerializer):
+class SalesTargetSerializer(ModelSerializer):
     who = serializers.CharField(read_only=True)
     team_name = serializers.CharField(source="team.name", read_only=True, default="")
     rep_name = serializers.CharField(source="rep.party.name", read_only=True, default="")
@@ -381,7 +383,7 @@ class SalesTargetSerializer(serializers.ModelSerializer):
         fields = ["id", "team", "team_name", "rep", "rep_name", "who", "period_start", "period_end", "amount", "note"]
 
 
-class RecurringInvoiceLineSerializer(MoneyLineSerializerMixin, serializers.ModelSerializer):
+class RecurringInvoiceLineSerializer(MoneyLineSerializerMixin, ModelSerializer):
     class Meta:
         model = RecurringInvoiceLine
         fields = [
@@ -391,7 +393,7 @@ class RecurringInvoiceLineSerializer(MoneyLineSerializerMixin, serializers.Model
         ]
 
 
-class RecurringInvoiceSerializer(serializers.ModelSerializer):
+class RecurringInvoiceSerializer(ModelSerializer):
     lines = RecurringInvoiceLineSerializer(many=True, read_only=True)
     customer_name = serializers.CharField(source="customer.name", read_only=True)
 
@@ -405,7 +407,7 @@ class RecurringInvoiceSerializer(serializers.ModelSerializer):
         read_only_fields = ["next_run_date", "taxes_taken_under"]
 
 
-class ThirdPartyReleaseLineSerializer(serializers.ModelSerializer):
+class ThirdPartyReleaseLineSerializer(ModelSerializer):
     lot_code = serializers.CharField(source="lot.code", read_only=True)
 
     class Meta:
@@ -413,7 +415,7 @@ class ThirdPartyReleaseLineSerializer(serializers.ModelSerializer):
         fields = ["id", "lot", "quantity_offered", "quantity_released", "remarks", "lot_code"]
 
 
-class ThirdPartyReleaseSerializer(serializers.ModelSerializer):
+class ThirdPartyReleaseSerializer(ModelSerializer):
     lines = ThirdPartyReleaseLineSerializer(many=True, read_only=True)
     customer_name = serializers.CharField(source="customer.name", read_only=True)
     agency_name = serializers.CharField(source="agency.name", read_only=True, default="")

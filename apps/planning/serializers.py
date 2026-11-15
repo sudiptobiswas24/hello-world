@@ -1,5 +1,7 @@
 from rest_framework import serializers
 
+from apps.core.api import ModelSerializer
+
 from .forecast import Forecast
 from .mps import MasterScheduleEntry
 from .models import (
@@ -12,7 +14,7 @@ from .models import (
 )
 
 
-class TransferRouteSerializer(serializers.ModelSerializer):
+class TransferRouteSerializer(ModelSerializer):
     from_name = serializers.CharField(source="from_warehouse.name", read_only=True)
     to_name = serializers.CharField(source="to_warehouse.name", read_only=True)
 
@@ -22,7 +24,7 @@ class TransferRouteSerializer(serializers.ModelSerializer):
                   "priority", "is_active", "notes"]
 
 
-class ForecastSerializer(serializers.ModelSerializer):
+class ForecastSerializer(ModelSerializer):
     item_label = serializers.SerializerMethodField()
     warehouse_name = serializers.CharField(source="warehouse.name", read_only=True, default="")
 
@@ -44,7 +46,7 @@ class ForecastSerializer(serializers.ModelSerializer):
         return obj.unconsumed()
 
 
-class PlanningSettingsSerializer(serializers.ModelSerializer):
+class PlanningSettingsSerializer(ModelSerializer):
     class Meta:
         model = PlanningSettings
         fields = ["id", "horizon_days", "default_buy_lead_days",
@@ -54,7 +56,7 @@ class PlanningSettingsSerializer(serializers.ModelSerializer):
                   "holiday_region", "requisition_requester"]
 
 
-class PlannedDemandSerializer(serializers.ModelSerializer):
+class PlannedDemandSerializer(ModelSerializer):
     describes = serializers.CharField(source="describe", read_only=True)
 
     class Meta:
@@ -64,7 +66,7 @@ class PlannedDemandSerializer(serializers.ModelSerializer):
                   "line_number", "describes"]
 
 
-class PlannedOrderSerializer(serializers.ModelSerializer):
+class PlannedOrderSerializer(ModelSerializer):
     # Named, so the planner's list reads without a call per row.
     item_sku = serializers.CharField(source="item.sku", read_only=True)
     item_name = serializers.CharField(source="item.name", read_only=True)
@@ -95,7 +97,7 @@ class PlannedOrderSerializer(serializers.ModelSerializer):
                             "waits_for", "routing"]
 
 
-class PlanningActionSerializer(serializers.ModelSerializer):
+class PlanningActionSerializer(ModelSerializer):
     item_sku = serializers.CharField(source="item.sku", read_only=True)
     item_name = serializers.CharField(source="item.name", read_only=True)
     sentence = serializers.CharField(read_only=True)
@@ -108,7 +110,7 @@ class PlanningActionSerializer(serializers.ModelSerializer):
                   "because", "inside_fence", "sentence"]
 
 
-class PlanningRunSerializer(serializers.ModelSerializer):
+class PlanningRunSerializer(ModelSerializer):
     warehouse_code = serializers.CharField(source="warehouse.code", read_only=True)
     is_complete = serializers.BooleanField(read_only=True)
     late = serializers.SerializerMethodField()
@@ -151,7 +153,7 @@ class PlanningRunSerializer(serializers.ModelSerializer):
         return [order.pk for order in run.orders.all() if order.is_overloaded]
 
 
-class MasterScheduleEntrySerializer(serializers.ModelSerializer):
+class MasterScheduleEntrySerializer(ModelSerializer):
     item_label = serializers.SerializerMethodField()
     warehouse_name = serializers.CharField(source="warehouse.name", read_only=True, default="")
 

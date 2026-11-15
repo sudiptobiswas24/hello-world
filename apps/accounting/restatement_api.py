@@ -1,6 +1,8 @@
 """The restatement of foreign balances at the closing rate, over the API (accounting.restatement)."""
 
 from rest_framework import serializers, viewsets
+
+from apps.core.api import ModelSerializer
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
@@ -10,7 +12,7 @@ from apps.core.models import to_date
 from .restatement import Restatement, RestatementLine, RestatementRate
 
 
-class RestatementRateSerializer(serializers.ModelSerializer):
+class RestatementRateSerializer(ModelSerializer):
     currency_code = serializers.CharField(source="currency.code", read_only=True)
 
     class Meta:
@@ -19,7 +21,7 @@ class RestatementRateSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
-class RestatementLineSerializer(serializers.ModelSerializer):
+class RestatementLineSerializer(ModelSerializer):
     currency_code = serializers.CharField(source="currency.code", read_only=True)
     account_code = serializers.CharField(source="account.code", read_only=True)
     party_name = serializers.CharField(source="party.name", read_only=True, default="")
@@ -32,7 +34,7 @@ class RestatementLineSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
-class RestatementSerializer(serializers.ModelSerializer):
+class RestatementSerializer(ModelSerializer):
     lines = RestatementLineSerializer(many=True, read_only=True)
     rates = RestatementRateSerializer(many=True, read_only=True)
 
