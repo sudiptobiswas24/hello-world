@@ -43,7 +43,8 @@ class TcsSectionViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 class KeptBecauseMixin(serializers.Serializer):
     # Why it may not be deleted, or "": the screen offers Delete only where the server would take it (O556).
-    # Read from what the list asked of every row at once (DatedRate.with_taken, O568), not one EXISTS a row.
+    # Read from what the list asked of every row at once (DatedRate.with_taken, O568), not one EXISTS a row. Every
+    # dated rate's serializer takes it: TDS, TCS and the bank rate (O589).
     kept_because = serializers.SerializerMethodField()
 
     def get_kept_because(self, rate) -> str:
@@ -111,9 +112,9 @@ class TdsRateViewSet(TcsRateViewSet):
     action_permission_map = {"confirm": "accounting.confirm_tdsrate"}
 
 
-class BankRateSerializer(ModelSerializer):
-    # Why it may not be deleted, or "": the screen offers Delete only where the server would take it (O556).
-    kept_because = serializers.CharField(read_only=True)
+class BankRateSerializer(KeptBecauseMixin, ModelSerializer):
+    # kept_because from the mixin the TDS and TCS rates share (O589): a bank rate is taken by nothing, so with_taken
+    # leaves its list as it is and the words are read off the row (BankRate.kept_because).
     class Meta:
         model = BankRate
         fields = ["id", "applies_from", "rate_percent", "authority", "confirmed_by", "confirmed_on", "kept_because"]
