@@ -16,6 +16,7 @@ from django.contrib.auth.models import Group, User
 from django.core.exceptions import ValidationError
 from django.core.management import call_command
 from django.db import IntegrityError, transaction
+from django.test import TransactionTestCase, tag
 from rest_framework.test import APIClient
 
 from .attendance import AttendanceDay, AttendanceStatus, import_punches, minutes_late, unmarked_days
@@ -221,3 +222,48 @@ class AHandCorrectionOfAPunchedDayTests(AttendanceTestCase):
         day.refresh_from_db()
         self.assertEqual((day.source, day.status, len(said["kept"])),
                          (AttendanceSource.MANUAL, AttendanceStatus.HALF_DAY, 1))
+
+
+@tag("migration")
+class PunchedDaysCorrectedByHandMigrate(TransactionTestCase):
+    """
+    O365: days the punch file wrote and a hand corrected before O304 kept source=import, and the next file put
+    them back to present. The file writes a present day with both times and nothing else: a day marked as its
+    that holds another status, one time, overtime or a note was a hand's. One with only a time changed cannot be
+    told, and stays the file's.
+    """
+
+    before = [("hr", "0042_the_gratuity_ceiling_is_a_dated_figure")]
+    after = [("hr", "0043_punched_days_a_hand_corrected")]
+
+    def test_a_day_holding_what_the_file_never_writes_is_marked_as_entered(self):
+        from django.db import connection
+        from django.db.migrations.executor import MigrationExecutor
+
+        executor = MigrationExecutor(connection)
+        executor.migrate(self.before)
+        apps = executor.loader.project_state(self.before).apps
+        now = executor.loader.project_state(executor.loader.graph.leaf_nodes()).apps
+        party = now.get_model("core", "Party").objects.create(code="E", name="E")
+        person = apps.get_model("hr", "Employee").objects.create(
+            party_id=party.pk, employee_number="E", hire_date=datetime.date(2020, 1, 1))
+        day = apps.get_model("hr", "AttendanceDay")
+        nine, six = datetime.time(9), datetime.time(18)
+        cases = {
+            1: dict(status="present", time_in=nine, time_out=six),                       # the file's, untouched
+            2: dict(status="half_day", time_in=nine, time_out=six),                      # set to half a day
+            3: dict(status="absent"),                                                    # set absent
+            4: dict(status="present", time_in=nine, time_out=six, overtime_hours=Decimal("2")),
+            5: dict(status="present", time_in=nine, time_out=six, note="Left early, approved"),
+            6: dict(status="present", time_in=nine, time_out=datetime.time(17)),         # a time only: not told
+        }
+        for n, values in cases.items():
+            day.objects.create(employee_id=person.pk, on=datetime.date(2026, 6, n), source="import", **values)
+        day.objects.create(employee_id=person.pk, on=datetime.date(2026, 6, 7), source="manual", status="present")
+        executor = MigrationExecutor(connection)
+        executor.migrate(self.after)
+        day = executor.loader.project_state(self.after).apps.get_model("hr", "AttendanceDay")
+        self.assertEqual(dict(day.objects.order_by("on").values_list("on__day", "source")),
+                         {1: "import", 2: "manual", 3: "manual", 4: "manual", 5: "manual", 6: "import", 7: "manual"})
+        executor = MigrationExecutor(connection)
+        executor.migrate(executor.loader.graph.leaf_nodes())

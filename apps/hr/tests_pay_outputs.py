@@ -546,6 +546,25 @@ class WhoARunLeftOffTests(OutputsTestCase):
         self.assertEqual([row["employee_number"] for row in said.json()["skipped"]], ["ZED9"])
         self.assertEqual(run.skipped(), [forgotten])
 
+    def test_a_run_for_some_names_only_the_chosen_with_no_pay_set_up(self):
+        """
+        O365: worked out for E1 alone, the run names nobody: E2 has a pay row of 5,000 and ZED9 none, and neither
+        was asked for. The answer said "no pay set up for the period" of both. Worked out for everyone, it names
+        ZED9 alone, as before.
+        """
+        paid, other = self.employee("E1"), self.employee("E2")
+        forgotten = self.employee("ZED9", hire=datetime.date(2026, 6, 16))
+        for person in (paid, other):
+            self.pay(person, self.salary, "5000")
+        run = self.pay_run()
+        officer = self.as_role("Payroll Officer")
+        said = officer.post(f"/api/hr/pay-runs/{run.pk}/calculate/", {"employees": [paid.pk]}, format="json")
+        self.assertEqual(said.status_code, 200, said.content)
+        self.assertEqual([slip["employee"] for slip in said.json()["payslips"]], ["E1"])
+        self.assertEqual(said.json()["skipped"], [])
+        everyone = officer.post(f"/api/hr/pay-runs/{run.pk}/calculate/", {}, format="json")
+        self.assertEqual([row["employee_number"] for row in everyone.json()["skipped"]], ["ZED9"])
+        self.assertEqual(run.skipped(), [forgotten])
 
 class APayDateNearItsPeriodTests(OutputsTestCase):
     """O308: a run is posted for a pay date from its period's start to ten days after its end (or today, if late)."""

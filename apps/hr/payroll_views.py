@@ -298,9 +298,10 @@ class PayRunViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
                 raise DRFValidationError([f"Hours for {person} are a number, not negative."])
         _run(run.calculate, employees=people, hours=hours)
         run = self._fresh(run)
-        # Who is employed in the period and was left off, by name (O305): no pay set up, or not chosen.
+        # Who is employed in the period, was chosen and was left off, by name (O305): no pay set up. Of the
+        # people chosen only, where some were (O365): the rest were not asked for, and their pay rows are not why.
         skipped = [{"id": person.pk, "employee_number": person.employee_number, "name": person.party.name}
-                   for person in run.skipped()]
+                   for person in run.skipped(among=people)]
         return Response({**self.get_serializer(run).data,
                          "payslips": [_slip(slip) for slip in run.payslips.all()], "skipped": skipped,
                          # A state levy on someone's pay with no schedule for their state: not taken, in words.
