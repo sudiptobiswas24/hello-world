@@ -64,3 +64,17 @@ class HrConfig(AppConfig):
 
         # A period closes with its pay runs posted (O310).
         register_close_check(pay_runs_owed)
+        from apps.accounting.settlement import register_taking_field
+
+        from .advances import SalaryAdvance
+        from .bank_file import SalaryTransfer, SalaryTransferFile
+        from .gratuity import GratuityPayout
+        from .payroll import Payslip, StatutoryRemittance
+        from .shortfalls import ShortfallSettlement
+
+        # The pay side's documents take their payment whole: applied, not money on account (O383). The one a
+        # refused application left standing then reads as unapplied, where the Controller voids it.
+        for model, field in ((Payslip, "payment"), (SalaryTransferFile, "payment"), (SalaryTransfer, "returned_by"),
+                             (SalaryAdvance, "payment"), (StatutoryRemittance, "payment"),
+                             (GratuityPayout, "payment"), (ShortfallSettlement, "payment")):
+            register_taking_field(model, field)
