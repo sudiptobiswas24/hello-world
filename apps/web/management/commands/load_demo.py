@@ -283,10 +283,22 @@ class Command(BaseCommand):
                 revenue_account=acc("4300", "Freight recharged", "income"),
                 expense_account=acc("5610", "Freight inward", "expense"))
             charge.taxes.set(gst18)
-            # Exports go out under LUT, and posting one asks for the LUT in force on its day (O218).
-            M("accounting.LetterOfUndertaking").objects.create(
-                registration=registration, arn="AD270326000123X", financial_year="2026-27",
-                filed_on=on(2026, 3, 24), valid_from=on(2026, 4, 1), valid_to=on(2027, 3, 31))
+            # Exports go out under LUT, and posting one asks for the LUT in force on its day (O218). An LUT is for
+            # one financial year, so the plant has one for each year the story's months fall in, from its first
+            # (July) to today, its year worked out from its dates: a fixed "2026-27" with dates that moved refused
+            # every load from April 2027 (O569), and a load in April or May has an export either side of 1 April.
+            # Each filed a week before its year opens and valid to its end, so an export made after the load is
+            # covered too.
+            from apps.accounting.tds import financial_year
+
+            year_opens, year_ends = financial_year(on(2026, 7, 1))
+            while year_opens <= TODAY:
+                filed = year_opens - datetime.timedelta(days=8)
+                M("accounting.LetterOfUndertaking").objects.create(
+                    registration=registration, arn=f"AD27{filed:%m%y}000123X",
+                    financial_year=f"{year_opens.year}-{year_ends.year % 100:02d}",
+                    filed_on=filed, valid_from=year_opens, valid_to=year_ends)
+                year_opens, year_ends = financial_year(year_ends + datetime.timedelta(days=1))
 
         with step("Warehouses, bins, items and the opening stock"):
             # A count's difference and a write-off need a reason to book against (O403), and an export customer a
