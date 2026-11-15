@@ -52,7 +52,8 @@ class BoardTests(RunTestCase):
         old = self.order("100")
         old.release(on_date=TODAY - datetime.timedelta(days=10))
         self.produce(old, "100").post()
-        old.close(on_date=TODAY - datetime.timedelta(days=10))
+        # Closed on the day of its output, never before it (O585); then dated ten days back on the card alone.
+        old.close(on_date=TODAY)
         # Closed ten days before the day the board is read for, whatever the clock says now.
         type(old).objects.filter(pk=old.pk).update(closed_at=timezone.make_aware(
             datetime.datetime.combine(TODAY - datetime.timedelta(days=10), datetime.time(12))))

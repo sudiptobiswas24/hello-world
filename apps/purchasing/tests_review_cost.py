@@ -227,7 +227,9 @@ class ClosedRunTests(Fates):
         self.issue_to_run("6")
         self.with_freight("80")
         self.assertBooks(wip="78")
-        self.work_order.close(JAN(20))
+        # On the day the freight landed, not before it (O585): closed on the 20th, the close cleared the 48 that
+        # came on the 25th and the run read below nothing between.
+        self.work_order.close(JAN(25))
         self.assertBooks(wip="0", cogs="78")
 
 
