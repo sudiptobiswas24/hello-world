@@ -122,6 +122,7 @@ class Command(BaseCommand):
         findings += self.reported_without_the_period(labels, sources)
         findings += self.bank_movements_unregistered(labels, sources)
         findings += self.plain_for_update(labels, sources)
+        findings += self.numbers_kept_past_a_rollback(labels, sources)
         findings += self.sign_in_writes_unmarked()
         findings += self.posted_as_calculated(labels, sources)
         findings += self.shelf_read_before_lock(labels, sources)
@@ -3322,6 +3323,85 @@ class Command(BaseCommand):
                                 "elsewhere wait, which deadlocked against the numbering row (O257). Take FOR NO "
                                 "KEY UPDATE, or lock in the delete() that deletes the row.",
                             ))
+        return findings
+
+    def numbers_kept_past_a_rollback(self, labels, sources):
+        """
+        A document number taken onto the object in hand where a rollback does not give it back (O380).
+
+        The sequence rolls back with the step that failed, and the next document takes that number; the object
+        still holding it, saved again, skipped numbering (`if not self.number`) and carried a number another
+        document had since taken. @serialised and @numbered_in_one_transaction give it back on the way out
+        (gives_back_its_number); a save() under a bare @transaction.atomic did not. A self.<field> =
+        ...next_for(...) or next_value(...) is reported unless its method has one of those, or it stands in a
+        `with gives_back_its_number(...)`, or the method is a private helper every caller of which in its class
+        has one.
+        """
+        givers = {"serialised", "numbered_in_one_transaction"}
+
+        def gives_back(function):
+            return any((getattr(d.func, "id", getattr(d.func, "attr", None)) if isinstance(d, ast.Call)
+                        else getattr(d, "id", getattr(d, "attr", None))) in givers
+                       for d in function.decorator_list)
+
+        def numbers_self(node):
+            if not isinstance(node, ast.Assign):
+                return False
+            if not any(isinstance(t, ast.Attribute) and isinstance(t.value, ast.Name) and t.value.id == "self"
+                       for t in node.targets):
+                return False
+            return any(isinstance(c, ast.Call) and getattr(c.func, "attr", None) in ("next_for", "next_value")
+                       for c in ast.walk(node.value))
+
+        def unguarded(function):
+            """The lines numbering self outside a `with gives_back_its_number(...)` in `function`."""
+            lines = []
+
+            def walk(node, guarded):
+                if isinstance(node, ast.With) and any(
+                        isinstance(item.context_expr, ast.Call)
+                        and getattr(item.context_expr.func, "id", getattr(item.context_expr.func, "attr", None))
+                        == "gives_back_its_number" for item in node.items):
+                    guarded = True
+                if numbers_self(node) and not guarded:
+                    lines.append(node.lineno)
+                for child in ast.iter_child_nodes(node):
+                    if not isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                        walk(child, guarded)
+
+            for statement in function.body:
+                walk(statement, False)
+            return lines
+
+        findings = []
+        for label in labels:
+            for path, text in sorted(sources.get(label, {}).items()):
+                if "test" in path.name or "migrations" in path.parts:
+                    continue
+                tree = ast.parse(text)
+                for owner in (node for node in ast.walk(tree) if isinstance(node, (ast.ClassDef, ast.Module))):
+                    methods = {node.name: node for node in owner.body
+                               if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
+                    for name, function in methods.items():
+                        if gives_back(function):
+                            continue
+                        lines = unguarded(function)
+                        if not lines:
+                            continue
+                        callers = [caller for caller in methods.values() if any(
+                            isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
+                            and call.func.attr == name and isinstance(call.func.value, ast.Name)
+                            and call.func.value.id == "self" for call in ast.walk(caller))]
+                        if name.startswith("_") and callers and all(gives_back(caller) for caller in callers):
+                            continue
+                        findings += [(
+                            "number kept past a rollback",
+                            f"{label} {path.name}:{line} {name}() numbers the object in hand outside "
+                            "@serialised or @numbered_in_one_transaction: rolled back, the sequence gives the "
+                            "number to the next document and this object keeps it, so a retry carries a number "
+                            "another document holds (O380). Decorate the method, or number inside "
+                            "`with gives_back_its_number(self)`.",
+                        ) for line in lines]
         return findings
 
     def bank_movements_unregistered(self, labels, sources):
