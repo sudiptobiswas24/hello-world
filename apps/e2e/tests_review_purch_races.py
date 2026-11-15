@@ -130,10 +130,12 @@ class PurchasingReviewRaceTests(races.RaceCase):
         Soundness of the refutation's test: with the agreement never locked, both go through and 110 are called off.
 
         The order's own lock is taken away too. Since O458 a line's save() holds its order first
-        (answer_to_its_document), and the first lock of a transaction takes the company's numbering row (O257):
-        the raise then held that row before the race's barrier, the release waited on it to number its order,
-        and the two ran one after the other with the agreement unlocked. Serialised by the numbering row, the
-        race proved nothing about the agreement's lock.
+        (answer_to_its_document), and the first lock of a transaction takes the company's numbering row (O257).
+        Every write takes that row too (numbering_before_a_write), so the two are serialised by it whatever else
+        is taken away: under race() the control went wrong only when the release reached the row first, and on a
+        loaded machine the raise got there first, ran before the release, and the control failed (O576). Here
+        the release holds the row and goes on only once the raise, its check made on the agreement unlocked, is
+        seen waiting on it: the raise then writes 70 on the 40 it read, after the release called off 40 more.
         """
         from apps.purchasing import models
 
@@ -146,7 +148,7 @@ class PurchasingReviewRaceTests(races.RaceCase):
         agreed, raise_it, release_more = self.blanket_scenario()
         with mock.patch.object(models, "lock_rows", without_the_agreement), \
                 mock.patch.object(models, "answer_to_its_document", lambda *args, **kwargs: None):
-            outcomes = races.race((PurchaseOrderLine, PurchaseOrder), raise_it, release_more)
+            outcomes = races.stale_behind_a_lock(release_more, raise_it)
         over = BlanketOrderLine.objects.get(pk=agreed.pk).quantity_released()
         self.assertTrue(over > Z("100") or sum(o == "done" for o in outcomes) == 2,
                         f"the race did not notice: outcomes {outcomes}, released {over}")
