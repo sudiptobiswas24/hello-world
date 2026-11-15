@@ -66,7 +66,9 @@ class IntraStateTests(TaxInvoiceTestCase):
         self.assertEqual(printed["supplier"], {
             "name": "Deccan Polysacks Private Limited", "trade_name": "Deccan Polysacks",
             "address": ["Plot 12, MIDC Chakan", "Pune Maharashtra 410501"],
-            "gstin": self.settings.gstin, "state": "27", "tax_id": "", "state_name": "Maharashtra (27)"})
+            "gstin": self.settings.gstin, "state": "27", "tax_id": "", "state_name": "Maharashtra (27)",
+            # The fixture's company has no email, phone or website to keep (O566).
+            "contacts": []})
         self.assertEqual(printed["recipient"], {
             "name": "MH-REG", "address": ["3 Market Yard", "Nashik 27 422001"],
             "gstin": self.mh.tax_profile.gstin, "state": "27", "state_name": "Maharashtra (27)"})
@@ -256,6 +258,33 @@ class WhatWasIssuedTests(TaxInvoiceTestCase):
         self.assertIn(f"GSTIN {self.settings.gstin}", text)
         self.assertNotIn("Renamed Buyer", text)
         self.assertIn("63053300", text)
+
+    def test_a_reprint_closes_with_the_contacts_it_was_issued_with(self):
+        """
+        O566: every page's foot added the company's email, phone and website as they stood on the day of printing,
+        over the footer the invoice kept, so a tax invoice reprinted after the phone changed carried the new one.
+        The contacts are kept with the supplier at posting; an invoice that kept none prints none.
+        """
+        from apps.sales.models import Invoice
+
+        Company.objects.update(email="accounts@deccan.example", phone="020 2765 1100", website="www.deccansacks.example")
+        invoice = self.p1()
+        self.assertEqual(invoice.issued_as["supplier"]["contacts"],
+                         ["accounts@deccan.example", "020 2765 1100", "www.deccansacks.example"])
+        Company.objects.update(email="billing@deccan.example", phone="0240 255 0000", website="")
+        text = self.text(invoice)
+        for issued in ("accounts@deccan.example", "020 2765 1100", "www.deccansacks.example"):
+            self.assertIn(issued, text)
+        for today in ("billing@deccan.example", "0240 255 0000"):
+            self.assertNotIn(today, text)
+        # Posted before contacts were kept: the foot prints what the invoice kept, and that is no contacts.
+        kept = invoice.issued_as
+        del kept["supplier"]["contacts"]
+        Invoice.objects.filter(pk=invoice.pk).update(issued_as=kept)
+        text = self.text(Invoice.objects.get(pk=invoice.pk))
+        for printed in ("accounts@deccan.example", "020 2765 1100", "billing@deccan.example", "0240 255 0000"):
+            self.assertNotIn(printed, text)
+        self.assertIn("Deccan Polysacks Private Limited", text)
 
 
 class ThroughTheApiTests(TaxInvoiceTestCase):

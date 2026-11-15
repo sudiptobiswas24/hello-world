@@ -165,7 +165,7 @@ def render_document(*, heading, document, party, address, meta, totals,
     heading (which copy this is); `blocks` are (label, text) printed after
     the totals; `signatory` closes the page with who signs for whom; `footer`
     is the bottom line's parts, when the company as it stands is not what
-    the document was issued by.
+    the document was issued by; it prints as passed, nothing added (O566).
     """
     company = Company.get()
     currency = currency or getattr(document, "currency", None)
@@ -310,14 +310,10 @@ def render_document(*, heading, document, party, address, meta, totals,
         story.append(Paragraph("Authorised signatory", style["right"]))
 
     if footer is None:
-        footer = [company.legal_name or company.name] + ([f"Tax ID {company.tax_id}"] if company.tax_id else [])
+        footer = printed_footer(issuer(company))
+    # A footer passed is what the document kept, and it prints only that: today's email, phone and website were
+    # added to every page, so a tax invoice reprinted after the phone changed carried the new one (O566).
     footer = list(footer)
-    if company.email:
-        footer.append(company.email)
-    if company.phone:
-        footer.append(company.phone)
-    if company.website:
-        footer.append(company.website)
     story.append(Spacer(1, 10 * mm))
     story.append(Paragraph(" · ".join(footer), style["muted"]))
 
@@ -350,7 +346,12 @@ def issuer(company):
     """
     return {"name": company.name, "legal_name": company.legal_name or "",
             "address": company.address.formatted().splitlines() if company.address_id else [],
-            "tax_id": company.tax_id or ""}
+            "tax_id": company.tax_id or "", "contacts": contacts(company)}
+
+
+def contacts(company):
+    """The email, phone and website a page's foot closes with, those the company has (O566)."""
+    return [value for value in (company.email, company.phone, company.website) if value]
 
 
 def printed_letterhead(kept):
@@ -363,7 +364,8 @@ def printed_letterhead(kept):
 
 def printed_footer(kept):
     """render_document's `footer` from issuer()'s values: who issued it, as the page's bottom line names them."""
-    return [kept.get("legal_name") or kept.get("name", "")] + ([f"Tax ID {kept['tax_id']}"] if kept.get("tax_id") else [])
+    return [kept.get("legal_name") or kept.get("name", "")] + ([f"Tax ID {kept['tax_id']}"] if kept.get("tax_id") else []) \
+        + list(kept.get("contacts", []))
 
 
 ONES = ["", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve",
