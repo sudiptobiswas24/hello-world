@@ -39,7 +39,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from apps.accounting.models import round_money
-from apps.core.models import numbering_first, AuditModel, lock_rows, serialised, to_date
+from apps.core.models import AuditModel, correction_date, lock_rows, numbering_first, serialised, to_date
 
 ZERO = Decimal("0")
 RATE = Decimal("0.000001")
@@ -313,7 +313,19 @@ class CostVersion(AuditModel):
                 f"{self} holds no costs, so publishing it would set every "
                 "standard to nothing."
             )
-        on_date = to_date(on_date) or timezone.localdate()
+        # It revalues what the shelves hold now, so it is dated no earlier than the last movement of an item it
+        # revalues, and never on a day to come (O584). Published on 1 June, it booked on 1 June the revaluation of
+        # stock that moved on 15 November: the ledger moved for quantities the shelves did not hold that day. Not
+        # a correction, but the rule's bounds are the ones that fit; a later version is published under the same.
+        from django.db.models import Max
+
+        from apps.inventory.models import StockMovement
+
+        revalued = [row.item_id for row in rows if row.total != (row.item.standard_cost or ZERO)
+                    and row.item.costing_method == CostingMethod.STANDARD]
+        moved = StockMovement.objects.filter(item_id__in=revalued).aggregate(last=Max("occurred_at"))["last"]
+        on_date = correction_date(on_date, to_date(moved) if moved else None, f"{self} is not published on",
+                                  "the shelves it revalues last moved")
 
         postings = []
         changes = []
