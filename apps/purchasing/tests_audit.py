@@ -475,6 +475,30 @@ class VendorSettlementDiscountTests(AuditTestCase):
         self.assertEqual((note.reversed_discount, note.refund_due()), (Decimal("0"), Decimal("49.00")))
         self.assertEqual(self.balance(self.discount_received), Decimal("0"))
 
+    def test_our_payment_returned_before_the_discount_was_taken_it_goes_on_the_discounts_day(self):
+        """
+        O256, the bill's side of the one rule (settlement.withdraw_discount): paid on the 15th, recalled on the
+        16th, the discount taken on the 20th, its last day. Withdrawn on the 20th, not the 16th, where it stood
+        before the discount it took back.
+        """
+        from apps.accounting.models import Payment, PaymentDirection
+
+        from .models import Bill, BillPayment
+
+        bill = self.discounted_bill()
+        bank = Account.objects.create(code="1010", name="Bank", account_type=AccountType.ASSET, holds_money=True)
+        paying = Payment.objects.create(party=self.vendor, direction=PaymentDirection.DISBURSEMENT,
+                                        payment_date=datetime.date(2026, 1, 15), amount=Decimal("49"),
+                                        currency=self.usd, bank_account=bank, counterpart_account=self.payable)
+        paying.post()
+        BillPayment.objects.create(bill=bill, payment=paying, amount=Decimal("49"))
+        bill.take_settlement_discount(on_date=datetime.date(2026, 1, 20))
+        paying.void(memo="Recalled", on_date=datetime.date(2026, 1, 16))
+        bill = Bill.objects.get(pk=bill.pk)
+        self.assertEqual(bill.settlement_discount_withdrawal_entry.date, datetime.date(2026, 1, 20))
+        self.assertEqual((bill.amount_due(), bill.settlement_discount_withdrawn), (Decimal("50.00"), Decimal("1.00")))
+        self.assertEqual((self.balance(self.payable), self.balance(self.discount_received)), (Decimal("-50.00"), Decimal("0")))
+
     def test_terms_with_no_discount_offer_none(self):
         order = self.make_order("10", "5")
         self.receive(order, "10")
