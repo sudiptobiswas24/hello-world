@@ -3284,6 +3284,8 @@ class Command(BaseCommand):
         the account FOR UPDATE and then asked for a number. A lock that serialises a decision takes
         select_for_update(no_key=True), and lock_rows() does; FOR UPDATE stays only for a row about to
         be deleted, in a delete() (lock_rows(..., deleting=True), row_lock_query(..., no_key=False)).
+        Django's update_or_create() locks the row it finds FOR UPDATE, unseen by a search for
+        select_for_update (O379): apps.core.models.update_or_create_held() is it under FOR NO KEY UPDATE.
         """
         findings = []
         for label in labels:
@@ -3309,6 +3311,9 @@ class Command(BaseCommand):
                         elif name == "lock_rows" and isinstance(keywords.get("deleting"), ast.Constant) \
                                 and keywords["deleting"].value is True:
                             plain = "lock_rows(..., deleting=True)"
+                        elif name == "update_or_create":
+                            # Django's takes a plain select_for_update() inside (O379): update_or_create_held().
+                            plain = "update_or_create(), whose lock is FOR UPDATE (use update_or_create_held())"
                         if plain:
                             findings.append((
                                 "plain FOR UPDATE",

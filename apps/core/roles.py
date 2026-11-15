@@ -44,7 +44,7 @@ from django.db.models.signals import m2m_changed, post_save, pre_save
 from django.dispatch import receiver
 from django.utils import timezone
 
-from .models import numbering_first, serialised
+from .models import numbering_first, serialised, update_or_create_held
 
 
 def may_give(actor, group):
@@ -364,8 +364,7 @@ def record_credential(user, kind, by, as_confirmer=False):
         if kind == KeptCredential.EMAIL:
             KeptCredential.objects.filter(user=user, kind=kind).delete()
         return
-    numbering_first()  # update_or_create() locks the row it finds: after the numbering row (O257)
-    KeptCredential.objects.update_or_create(user=user, kind=kind, defaults={
+    update_or_create_held(KeptCredential, user=user, kind=kind, defaults={
         "value": user.email if kind == KeptCredential.EMAIL else "", "set_by": by, "set_at": timezone.now(),
         "lapsed": False, "as_confirmer": as_confirmer})
 
@@ -401,8 +400,7 @@ def _lapse(kept, user):
     if kept.kind == KeptCredential.LOGIN and user.email:
         email = KeptCredential.objects.filter(user=user, kind=KeptCredential.EMAIL).first()
         if email is None or not email.in_force(user) or email.set_by_id in (None, kept.set_by_id):
-            numbering_first()  # update_or_create() locks the row it finds: after the numbering row (O257)
-            KeptCredential.objects.update_or_create(user=user, kind=KeptCredential.EMAIL, defaults={
+            update_or_create_held(KeptCredential, user=user, kind=KeptCredential.EMAIL, defaults={
                 "value": user.email, "set_by": kept.set_by, "set_at": timezone.now(), "lapsed": True})
     kept.lapsed = True
     kept.save(update_fields=["lapsed"])
@@ -480,8 +478,7 @@ def password_reset_through_email(user):
     if email is None or not email.in_force(user):
         KeptCredential.objects.filter(user=user, kind=KeptCredential.PASSWORD).delete()
         return
-    numbering_first()  # update_or_create() locks the row it finds: after the numbering row (O257)
-    KeptCredential.objects.update_or_create(user=user, kind=KeptCredential.PASSWORD, defaults={
+    update_or_create_held(KeptCredential, user=user, kind=KeptCredential.PASSWORD, defaults={
         "value": "", "set_by": email.set_by, "set_at": timezone.now(), "lapsed": False,
         "as_confirmer": email.as_confirmer})
 
