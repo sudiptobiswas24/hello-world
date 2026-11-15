@@ -158,9 +158,13 @@ def stale_behind_a_lock(first, second, timeout=60):
     behind_pid = []
     outcomes = [None, None]
 
-    def waiting():
+    finished = threading.Event()
+
+    def waiting_on_us():
+        # On this transaction (pg_backend_pid() is ours), not on any lock: a wait elsewhere is not the order this
+        # helper promises (O590).
         with connection.cursor() as cursor:
-            cursor.execute("SELECT cardinality(pg_blocking_pids(%s)) > 0", [behind_pid[0]])
+            cursor.execute("SELECT pg_backend_pid() = ANY(pg_blocking_pids(%s))", [behind_pid[0]])
             return cursor.fetchone()[0]
 
     def ahead():
@@ -169,7 +173,11 @@ def stale_behind_a_lock(first, second, timeout=60):
                 DocumentNumbering.hold()
                 held.set()
                 deadline = time.monotonic() + timeout
-                while not (behind_pid and waiting()):
+                while not (behind_pid and waiting_on_us()):
+                    if finished.is_set():
+                        # The second ended without waiting (refused before its first write): say so at once, as
+                        # the second's outcome shows why, rather than after the whole timeout (O590).
+                        raise AssertionError("the second ended without waiting on the numbering row")
                     if time.monotonic() > deadline:
                         raise AssertionError("the second never waited on the numbering row")
                     time.sleep(0.05)
@@ -192,6 +200,7 @@ def stale_behind_a_lock(first, second, timeout=60):
         except Exception as exc:
             outcomes[1] = f"refused: {exc}"
         finally:
+            finished.set()
             connection.close()
 
     threads = [threading.Thread(target=ahead), threading.Thread(target=behind)]
