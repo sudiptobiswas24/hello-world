@@ -102,6 +102,7 @@ from apps.accounting.settlement import (
     in_base,
     in_the_base,
     no_rate,
+    rate_or_none,
     amount_overdue,
     installment_schedule,
     oldest_overdue,
@@ -4270,6 +4271,24 @@ def outstanding_in_base(customer):
     return outstanding_balance(customer)
 
 
+def with_what_is_left_to_bill(orders):
+    """Sales orders with their lines, the lines' taxes and what has been invoiced of each, read at once."""
+    return orders.select_related("currency", "customer").prefetch_related(models.Prefetch(
+        "lines", queryset=SalesOrderLine.objects.prefetch_related(
+            "taxes", models.Prefetch("invoice_lines", queryset=InvoiceLine.objects.select_related("invoice")))))
+
+
+def unweighed_orders(orders):
+    """
+    The orders among `orders` with something still to bill and no exchange rate on their own date (O357): their
+    customer's exposure cannot be read in the base currency until each has one. committed_in_base refuses on
+    them, naming each; the Health screen lists them all for the accountant. One order fully billed asks nothing.
+    """
+    return [order for order in orders
+            if any(line.quantity_uninvoiced() > 0 for line in order.lines.all())
+            and rate_or_none(order.currency, order.order_date) is None]
+
+
 def committed_in_base(customer):
     """
     committed_balance in the base currency, as the credit limit is: what is
@@ -4282,11 +4301,16 @@ def committed_in_base(customer):
     from apps.accounting.balances import in_base_as_booked
 
     uninvoiced = Decimal("0")
-    orders = SalesOrder.objects.filter(
-        customer=customer, status=OrderStatus.CONFIRMED
-    ).select_related("currency").prefetch_related(models.Prefetch("lines", queryset=SalesOrderLine.objects.prefetch_related(
-        "taxes", models.Prefetch("invoice_lines",
-                                 queryset=InvoiceLine.objects.select_related("invoice")))))
+    orders = list(with_what_is_left_to_bill(SalesOrder.objects.filter(customer=customer, status=OrderStatus.CONFIRMED)))
+    # Named, every one, rather than a date: one old order with no rate on its own day blocked every new order of
+    # the customer in words naming only a day, and "this document" read as the order being weighed (O357).
+    if unweighed := unweighed_orders(orders):
+        raise ValidationError(
+            f"{customer}'s confirmed orders cannot all be weighed in the base currency: "
+            + "; ".join(f"{no_rate(order.currency, order.order_date)}, the date of {order.number}"
+                        for order in unweighed)
+            + ". Add a rate effective on or before that day; Settings > Health lists every confirmed order "
+              "without one.")
     for order in orders:
         for line in order.lines.all():
             remaining = line.quantity_uninvoiced()
