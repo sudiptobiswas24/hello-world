@@ -3305,3 +3305,46 @@ class ARollMountedBesideADrawOfItsLotRaceTests(RaceCase):
         # Mounted first, the draw finds nothing; drawn first, the mount takes the 74.4 left.
         self.assertIn(books, [("done", False, Decimal("104.4000"), Decimal("0")),
                               ("done", True, Decimal("74.4000"), Decimal("0"))], outcomes)
+
+
+@tag("race")
+@unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
+class AKeptCredentialHeldBesideAKeyShareRaceTests(RaceCase):
+    """
+    O379: Django's update_or_create() holds the row it finds FOR UPDATE, which PostgreSQL's deferred
+    foreign-key check of a row inserted elsewhere (FOR KEY SHARE, at COMMIT) waits on: the O257 shape. A keeper
+    setting a password again (record_credential) holds the person's kept credential; a key share of that row,
+    as a commit naming it takes, goes through at once beside it, under FOR NO KEY UPDATE
+    (update_or_create_held). Under the plain lock it waited out its lock_timeout and was refused.
+    """
+
+    def test_a_key_share_of_the_row_is_not_kept_waiting(self):
+        from django.contrib.auth import get_user_model
+
+        from apps.core.roles import KeptCredential, record_credential
+
+        users = get_user_model().objects
+        person, keeper = users.create_user(username="o379-person"), users.create_user(username="o379-keeper")
+        record_credential(person, KeptCredential.PASSWORD, keeper)
+        kept = KeptCredential.objects.get(user=person, kind=KeptCredential.PASSWORD)
+        held, released = threading.Event(), threading.Event()
+
+        def set_again():
+            record_credential(person, KeptCredential.PASSWORD, keeper, as_confirmer=True)
+            held.set()
+            released.wait(10)
+
+        def key_share():
+            held.wait(10)
+            try:
+                with connection.cursor() as cursor:
+                    cursor.execute("SET LOCAL lock_timeout = '2s'")
+                    cursor.execute(f'SELECT 1 FROM "{KeptCredential._meta.db_table}" WHERE id = %s FOR KEY SHARE',
+                                   [kept.pk])
+            finally:
+                released.set()
+
+        outcomes = race((), set_again, key_share)
+        self.assertEqual(outcomes, ["done", "done"], outcomes)
+        kept.refresh_from_db()
+        self.assertTrue(kept.as_confirmer)

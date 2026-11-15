@@ -362,6 +362,47 @@ def numbering_first():
         DocumentNumbering.hold()
 
 
+def update_or_create_held(source, defaults=None, create_defaults=None, **lookup):
+    """
+    QuerySet.update_or_create(), holding the row it finds FOR NO KEY UPDATE (O379). Returns (row, created).
+
+    Django's update_or_create() takes a plain FOR UPDATE, which PostgreSQL's deferred foreign-key check of a
+    row inserted elsewhere (FOR KEY SHARE, at COMMIT) waits on: the shape that deadlocked against the company's
+    numbering row (O257), which every lock_rows() had left and these six calls had not. Here the row is found
+    or made under FOR NO KEY UPDATE, the lock its own UPDATE takes, and updated as Django's would: the fields
+    in `defaults`, and the ones a save fills in itself (auto_now). The numbering row is held first, as
+    row_lock_query() holds it for every row lock, inside a transaction the caller opened.
+
+    `source`: a model, its manager or a queryset. audit_invariants (plain_for_update) reports an
+    update_or_create( anywhere else in apps/.
+    """
+    from django.db.models import Field
+    from django.db.models.utils import resolve_callables
+
+    queryset = (source._default_manager if isinstance(source, type) else source).all()
+    model = queryset.model
+    if not getattr(model, "numbering_exempt", None):
+        numbering_first()
+    defaults = defaults or {}
+    with transaction.atomic(using=queryset.db):
+        row, created = queryset.select_for_update(no_key=True).get_or_create(
+            defaults if create_defaults is None else create_defaults, **lookup)
+        if created:
+            return row, True
+        for name, value in resolve_callables(defaults):
+            setattr(row, name, value)
+        update_fields = set(defaults)
+        if model._meta._non_pk_concrete_field_names.issuperset(update_fields):
+            # As Django's: the fields a save fills in (auto_now) go with the ones named.
+            for field in model._meta.local_concrete_fields:
+                if not (field.primary_key or field.__class__.pre_save is Field.pre_save):
+                    update_fields.update({field.name, field.attname})
+            row.save(using=queryset.db, update_fields=update_fields)
+        else:
+            row.save(using=queryset.db)
+    return row, False
+
+
 @contextlib.contextmanager
 def gives_back_its_number(instance):
     """
