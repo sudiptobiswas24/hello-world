@@ -138,6 +138,70 @@ def race_in_order(sender, first, second, atomic=True):
     return race(sender, ahead, behind, atomic=atomic)
 
 
+def stale_behind_a_lock(first, second, timeout=60):
+    """
+    `second` makes its checks and then waits on the company's numbering row, which `first` holds from its start;
+    `first` goes on only once PostgreSQL shows `second` waiting, and commits; `second` then writes on what it
+    checked before. For a control that takes a lock away and asserts the race then goes wrong (O576).
+
+    race() cannot hold that order: every write takes the numbering row first (numbering_before_a_write), so the
+    two are serialised whatever lock the control removed, and which went first was whichever thread reached the
+    row first. Under load the checking side got there first, the two ran one after the other, and the control
+    failed for the machine's speed. Here the order is the database's to say, not the clock's. PostgreSQL only.
+    Outcomes are in (first, second) order.
+    """
+    import time
+
+    from apps.core.models import DocumentNumbering
+
+    held = threading.Event()
+    behind_pid = []
+    outcomes = [None, None]
+
+    def waiting():
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT cardinality(pg_blocking_pids(%s)) > 0", [behind_pid[0]])
+            return cursor.fetchone()[0]
+
+    def ahead():
+        try:
+            with transaction.atomic():
+                DocumentNumbering.hold()
+                held.set()
+                deadline = time.monotonic() + timeout
+                while not (behind_pid and waiting()):
+                    if time.monotonic() > deadline:
+                        raise AssertionError("the second never waited on the numbering row")
+                    time.sleep(0.05)
+                first()
+            outcomes[0] = "done"
+        except Exception as exc:
+            outcomes[0] = f"refused: {exc}"
+        finally:
+            connection.close()
+
+    def behind():
+        try:
+            held.wait(timeout)
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT pg_backend_pid()")
+                behind_pid.append(cursor.fetchone()[0])
+            with transaction.atomic():
+                second()
+            outcomes[1] = "done"
+        except Exception as exc:
+            outcomes[1] = f"refused: {exc}"
+        finally:
+            connection.close()
+
+    threads = [threading.Thread(target=ahead), threading.Thread(target=behind)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout + 30)
+    return outcomes
+
+
 def fixture(test, cls):
     """
     `cls`'s own setUp, run as a `cls`: its helpers and what it builds, for
