@@ -371,7 +371,7 @@ def update_or_create_held(source, defaults=None, create_defaults=None, **lookup)
     numbering row (O257), which every lock_rows() had left and these six calls had not. Here the row is found
     or made under FOR NO KEY UPDATE, the lock its own UPDATE takes, and updated as Django's would: the fields
     in `defaults`, and the ones a save fills in itself (auto_now). The numbering row is held first, as
-    row_lock_query() holds it for every row lock, inside a transaction the caller opened.
+    row_lock_query() holds it for every row lock, inside the transaction this opens.
 
     `source`: a model, its manager or a queryset. audit_invariants (plain_for_update) reports an
     update_or_create( anywhere else in apps/.
@@ -381,10 +381,12 @@ def update_or_create_held(source, defaults=None, create_defaults=None, **lookup)
 
     queryset = (source._default_manager if isinstance(source, type) else source).all()
     model = queryset.model
-    if not getattr(model, "numbering_exempt", None):
-        numbering_first()
     defaults = defaults or {}
     with transaction.atomic(using=queryset.db):
+        # Inside its own block: numbering_first() holds nothing outside a transaction the code opened, so taken
+        # before the block, a call with none open locked the row without the numbering row first.
+        if not getattr(model, "numbering_exempt", None):
+            numbering_first()
         row, created = queryset.select_for_update(no_key=True).get_or_create(
             defaults if create_defaults is None else create_defaults, **lookup)
         if created:
