@@ -297,3 +297,86 @@ class ALineMadeInCodeIsAReleaseTooTests(BlanketTestCase):
             self.made(order, "10")
         self.assertEqual(self.line.quantity_released(), Decimal("100"))
 
+
+class ACallOffIsOfTheAgreementTests(BlanketTestCase):
+    """
+    O581. release() made its order to the agreement's vendor, of the line's item, on a day within the agreement;
+    a purchase order line made or moved in code was asked none of it. Now release(), the line's save() and an
+    order whose vendor or date changes ask the one function, BlanketOrder.refuse_a_call_off
+    (calc_g41_lines/o581.py). 1,000 @ 4 with V-1 for WDG-1, 2026; 100 released on 1 February.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from apps.inventory.models import Item
+
+        self.blanket = self.agreement("1000", "4")
+        self.released = self.blanket.release({self.line: Decimal("100")}, order_date=datetime.date(2026, 2, 1))
+        self.bolt = Party.objects.create(code="V-BOLT", name="Bolt Supply")
+        PartyRoleAssignment.objects.create(party=self.bolt, role=PartyRole.VENDOR)
+        self.gadget = Item.objects.create(sku="WDG-2", name="Gadget", uom=self.uom)
+
+    def order(self, vendor=None, day=datetime.date(2026, 3, 1)):
+        from .models import PurchaseOrder
+
+        return PurchaseOrder.objects.create(vendor=vendor or self.vendor, order_date=day, currency=self.usd)
+
+    def made(self, order, item=None):
+        from .models import PurchaseOrderLine
+
+        return PurchaseOrderLine.objects.create(order=order, blanket_line=self.line, item=item or self.item,
+                                                uom=self.uom, quantity=Decimal("10"), unit_price=Decimal("4"))
+
+    def assert_still_100(self):
+        self.assertEqual(self.line.quantity_released(), Decimal("100"))
+
+    def test_a_line_on_another_vendor_s_order_is_refused(self):
+        with self.assertRaisesMessage(ValidationError, "BPO-2026-00001 is an agreement with V-1 - Supplier; an "
+                                                       "order to V-BOLT - Bolt Supply does not call it off."):
+            self.made(self.order(vendor=self.bolt))
+        self.assert_still_100()
+
+    def test_a_line_of_another_item_is_refused(self):
+        with self.assertRaisesMessage(ValidationError, "agrees WDG-1 - Widget on this line; a line of WDG-2 - Gadget "
+                                                       "does not call it off"):
+            self.made(self.order(), item=self.gadget)
+        self.assert_still_100()
+
+    def test_a_line_on_an_order_dated_outside_the_agreement_is_refused(self):
+        with self.assertRaisesMessage(ValidationError, "This agreement runs 01 Jan 2026 to 31 Dec 2026; 05 Jan 2027 "
+                                                       "is outside it."):
+            self.made(self.order(day=datetime.date(2027, 1, 5)))
+        self.assert_still_100()
+
+    def test_a_released_line_moved_to_another_item_or_vendor_is_refused(self):
+        line = self.released.lines.get()
+        line.item = self.gadget
+        with self.assertRaisesMessage(ValidationError, "a line of WDG-2 - Gadget does not call it off"):
+            line.save()
+        line = self.released.lines.get()
+        line.order = self.order(vendor=self.bolt)
+        with self.assertRaisesMessage(ValidationError, "an order to V-BOLT - Bolt Supply does not call it off"):
+            line.save()
+        self.assert_still_100()
+
+    def test_a_released_order_moved_to_another_vendor_or_day_is_refused_and_any_other_edit_stands(self):
+        from .models import PurchaseOrder
+
+        order = PurchaseOrder.objects.get(pk=self.released.pk)
+        order.vendor = self.bolt
+        with self.assertRaisesMessage(ValidationError, "an order to V-BOLT - Bolt Supply does not call it off"):
+            order.save()
+        order = PurchaseOrder.objects.get(pk=self.released.pk)
+        order.order_date = datetime.date(2027, 1, 5)
+        with self.assertRaisesMessage(ValidationError, "05 Jan 2027 is outside it"):
+            order.save()
+        order = PurchaseOrder.objects.get(pk=self.released.pk)
+        order.reference = "Call-off 1"
+        order.save()
+        # Nothing more called off, nothing moved: an edit of a released line stands after the agreement closed.
+        self.blanket.close()
+        line = self.released.lines.get()
+        line.expected_date = datetime.date(2026, 2, 20)
+        line.save()
+        self.assert_still_100()
+
