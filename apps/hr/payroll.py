@@ -829,15 +829,19 @@ class PayRun(AuditModel):
                 found.append(person)
         return found
 
-    def skipped(self):
+    def skipped(self, among=None):
         """
         People employed on some day of the period with no slip on this run, in employee-number order (O305):
         a joiner whose pay row was forgotten had no slip and nothing said so. Derived, so it is true after any
-        recalculation; the calculate action answers with it.
+        recalculation; the calculate action answers with it. `among`: the people the run was worked out for,
+        where it was asked for some (calculate(employees=)). Somebody not chosen was not skipped, and the answer
+        "no pay set up for the period" blamed their pay rows (O365).
         """
-        return list(Employee.objects.filter(hire_date__lte=self.period_end).filter(
-            Q(termination_date__isnull=True) | Q(termination_date__gte=self.period_start),
-        ).exclude(payslips__run=self).select_related("party").order_by("employee_number"))
+        people = Employee.objects.filter(hire_date__lte=self.period_end).filter(
+            Q(termination_date__isnull=True) | Q(termination_date__gte=self.period_start))
+        if among is not None:
+            people = people.filter(pk__in=[person.pk for person in among])
+        return list(people.exclude(payslips__run=self).select_related("party").order_by("employee_number"))
 
     def levies_not_taken(self):
         """
