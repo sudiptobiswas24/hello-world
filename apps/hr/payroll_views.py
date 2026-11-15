@@ -81,8 +81,9 @@ class SlabSerializer(ModelSerializer):
     # Every band of the schedule this band is of, as this response read them: the screen's Confirm sends them back,
     # so a band changed since is refused (confirm_schedule), and no screen could confirm a schedule before (O468).
     schedule_bands = serializers.SerializerMethodField()
-    # Why it may not be deleted, or "": the slab list offers removal only where the server would take it (O570).
-    kept_because = serializers.CharField(read_only=True)
+    # Why it may not be deleted, or "": the slab list offers removal only where the server would take it (O570),
+    # read from what the list asked of every band at once (with_kept, O586).
+    kept_because = serializers.SerializerMethodField()
 
     class Meta:
         # Method fields that return a list: sent, refused beside the field (apps.core.api, O587).
@@ -91,6 +92,9 @@ class SlabSerializer(ModelSerializer):
         fields = ["id", "component", "above", "up_to", "month", "amount", "state", "effective_from", "for_women",
                   "confirmed_by", "confirmed_on", "schedule_bands", "kept_because"]
         read_only_fields = ["confirmed_by", "confirmed_on"]
+
+    def get_kept_because(self, band) -> str:
+        return band.kept_because(run=band.kept_by_run) if hasattr(band, "kept_by_run") else band.kept_because()
 
     def get_schedule_bands(self, band):
         return [{"id": other.pk, **{name: getattr(other, name) for name in PayComponentSlab.BAND_FIGURES}}
@@ -331,6 +335,10 @@ class SlabViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     serializer_class = SlabSerializer
     filter_fields = ["component"]
     action_permission_map = {"confirm": "hr.confirm_statutoryfigure"}
+
+    def get_queryset(self):
+        # Which run kept each band, in the list's one query (O586).
+        return PayComponentSlab.with_kept(super().get_queryset())
 
     def perform_create(self, serializer):
         try:
