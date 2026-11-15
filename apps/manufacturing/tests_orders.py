@@ -388,6 +388,26 @@ class ClosingLeavesWorkInProgressEmptyTests(RunTestCase):
         # Plan and actual agreed, so there is nothing to explain.
         self.assertLess(abs(self.balance(self.variance)), Decimal("0.02"))
 
+    def test_not_closed_before_its_last_posting(self):
+        """
+        O585 (probe /home/user/work/calc_g41_kept/probes/probe_o58x.py): issued and produced on 1 June and
+        closed on 27 May, the variance stood in May and work in progress below nothing until June. Refused;
+        closed on the day of its last posting, the run holds nothing, and the reopen is refused before the close.
+        """
+        order = self.order()
+        order.release(TODAY)
+        self.full_issue(order).post()
+        self.produce(order, "1000", byproducts=[(self.regrind, "24.742268")]).post()
+        self.assertEqual(order.last_posted_on(), TODAY)
+        with self.assertRaisesMessage(ValidationError, f"is not closed on {TODAY - datetime.timedelta(days=5)}: "
+                                                       f"its last posting is dated on {TODAY}."):
+            order.close(TODAY - datetime.timedelta(days=5))
+        order.close(TODAY)
+        self.assertEqual(order.close_entry.date, TODAY)
+        self.assertEqual(self.balance(self.wip), Decimal("0"))
+        with self.assertRaisesMessage(ValidationError, "is not reopened on"):
+            order.reopen(TODAY - datetime.timedelta(days=1))
+
     def test_a_run_that_ate_more_polymer_than_it_should_have(self):
         order = self.order()
         order.release(TODAY)
