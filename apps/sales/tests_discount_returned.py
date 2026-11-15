@@ -53,6 +53,34 @@ class DiscountReturnedTests(SalesTestCase):
         self.assertIn(("Discount withdrawn", Decimal("20.00")),
                       [(entry.kind, entry.debit) for entry in statement["entries"]])
 
+    def test_returned_before_the_discount_was_taken_it_goes_on_the_discounts_day(self):
+        """
+        O256, worked in /home/user/work/calc_g41_kept/o256_table.py: 980 received on the 8th, the cheque returned
+        on the 9th, the discount of 20 taken on the 11th, its last day. Withdrawn on the void's day it stood
+        before the discount: on the 10th the discount account read -20 and receivables 1,020 against 1,000 owed.
+        Withdrawn on the 11th, the books say what the invoice says on every day.
+        """
+        invoice = self.bill(self.make_order("10", "100"))
+        cheque = self.receipt("980", on=PAID)
+        self.allocate(cheque, invoice, "980")
+        invoice.apply_settlement_discount(on_date=datetime.date(2026, 3, 11))
+        cheque.void(memo="Returned unpaid", on_date=datetime.date(2026, 3, 9))
+        invoice = Invoice.objects.get(pk=invoice.pk)
+        self.assertEqual(invoice.settlement_discount_withdrawal_entry.date, datetime.date(2026, 3, 11))
+        self.assertEqual(cheque.voided_entry.date, datetime.date(2026, 3, 9))
+        for day in (datetime.date(2026, 3, 10), datetime.date(2026, 3, 11)):
+            with self.subTest(day=day):
+                self.assertEqual((self.held(self.ar, day), self.held(self.discount_account, day)),
+                                 (Decimal("1000.00"), Decimal("0")))
+        self.assertEqual((invoice.amount_due(), self.receivable()), (Decimal("1000.00"), Decimal("1000.00")))
+
+    def held(self, account, day):
+        lines = JournalLine.objects.filter(account=account, entry__posted=True, entry__date__lte=day)
+        if account == self.ar:
+            lines = lines.filter(party=self.customer)
+        sums = lines.aggregate(d=Sum("debit"), c=Sum("credit"))
+        return (sums["d"] or Decimal("0")) - (sums["c"] or Decimal("0"))
+
     def test_paid_in_two_and_one_returned(self):
         invoice, (_, second) = self.discounted("500", "480")
         second.void(memo="Returned unpaid", on_date=RETURNED)

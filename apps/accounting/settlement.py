@@ -22,7 +22,7 @@ from decimal import Decimal
 from django.core.exceptions import ValidationError
 from django.db import transaction
 
-from apps.core.models import Company, to_date
+from apps.core.models import Company, correction_date, to_date
 
 from .models import JournalEntry, JournalLine, PaymentDirection, round_money
 
@@ -942,12 +942,19 @@ def withdraw_discount(document, control_account, party, amount, on_date, memo):
     """
     Put `amount` of `document`'s settlement discount back on it: the
     discount's own entry turned round, at the document's rate, on the day
-    the payment that earned it came back. Returns the entry.
+    the payment that earned it came back, never before the discount itself
+    (correction_date). Returns the entry. Shared by invoices and bills, so
+    one rule dates both.
     """
     from .restatement import refuse_behind_a_restatement
 
-    refuse_behind_a_restatement([document], on_date, f"{document.number}'s settlement discount is not withdrawn")
     taken = document.settlement_discount_entry
+    # Not before the discount it takes back (O256). A cheque of the 8th returned on the 9th, its discount taken on
+    # the 11th: withdrawn on the 9th, the discount account read -20 and receivables 1,020 against 1,000 owed until
+    # the 11th. Then it is withdrawn on the discount's own day, where the two cancel; the void is not refused.
+    on_date = correction_date(max(to_date(on_date), to_date(taken.date)), taken.date,
+                              f"{document.number}'s settlement discount is not withdrawn on", "it was taken")
+    refuse_behind_a_restatement([document], on_date, f"{document.number}'s settlement discount is not withdrawn")
     credited = any(line.credit for line in taken.lines.all() if line.account_id == control_account.pk)
     base = round_money(amount * (document.exchange_rate or Decimal("1")))
     to_control, to_other = (base, Decimal("0")) if credited else (Decimal("0"), base)
