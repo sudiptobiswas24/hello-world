@@ -196,11 +196,7 @@ class Lead(AuditModel):
 
     def _close(self, status, fields):
         self.status = status
-        self._closing = True
-        try:
-            self.save(update_fields=[*fields, "status", "updated_at"])
-        finally:
-            self._closing = False
+        self.write_past_its_guard([*fields, "status"], flag="_closing")
 
     def delete(self, *args, **kwargs):
         if not self.is_open():
@@ -412,11 +408,7 @@ class Opportunity(AuditModel):
     def _close(self, stage, on_date, fields):
         self.stage = stage
         self.closed_on = to_date(on_date) or timezone.localdate()
-        self._closing = True
-        try:
-            self.save(update_fields=["stage", "closed_on", *fields, "updated_at"])
-        finally:
-            self._closing = False
+        self.write_past_its_guard(["stage", "closed_on", *fields], flag="_closing")
 
     @serialised("stage")
     def win(self, sales_order=None, on_date=None):

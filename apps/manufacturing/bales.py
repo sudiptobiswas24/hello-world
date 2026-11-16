@@ -116,11 +116,7 @@ class Bale(AuditModel):
         raise ValidationError(f"{self} is sealed; break it.")
 
     def _write(self, fields):
-        self._moving = True
-        try:
-            self.save(update_fields=fields + ["updated_at"])
-        finally:
-            self._moving = False
+        self.write_past_its_guard(fields, flag="_moving")
 
 
 class BaleLine(AuditModel):

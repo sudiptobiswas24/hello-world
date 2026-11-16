@@ -65,6 +65,20 @@ class AuditModel(TimeStampedModel):
     class Meta:
         abstract = True
 
+    def write_past_its_guard(self, fields, flag="_writing", save=None):
+        """
+        Save `fields` (and updated_at) past this record's own save() guard, which lets a write through while
+        `flag` is set: a posted record's status moving on, a decision recorded. The flag is set for this one save
+        and cleared however it ends; left set, the next save of the object would pass the guard too. One copy:
+        twenty hand copies in eighteen modules each wrote it (the redundant-code audit of 16 November, M7-M9), and
+        audit_invariants (guard_bypasses_by_hand) reports a thirteenth. `save`: the save to call, where a line
+        goes round its own (super().save).
+        """
+        setattr(self, flag, True)
+        try:
+            (save or self.save)(update_fields=[*fields, "updated_at"])
+        finally:
+            setattr(self, flag, False)
 
 
 def prefetched(instance, relation):

@@ -156,3 +156,35 @@ class TheChecksReadStructureNotWordsTests(SimpleTestCase):
         self.assertEqual(self.published("    def save(self):\n        # published\n        raise ValueError\n"
                                         "    def delete(self):\n        raise ValueError('published')\n"),
                          ["mutable posted document", "deletable posted document"])
+
+
+def asked_guard(text, name="example.py"):
+    return Command().guard_bypasses_by_hand(["sales"], {"sales": {Path("apps/sales") / name: text}})
+
+
+class AGuardPassedByHandIsReportedTests(SimpleTestCase):
+    """The redundant-code audit of 16 November: twenty hand copies of one guard bypass became one."""
+
+    BY_HAND = (
+        "class Note(AuditModel):\n"
+        "    def _write(self, fields):\n"
+        "        self._writing = True\n"
+        "        try:\n"
+        "            self.save(update_fields=fields)\n"
+        "        finally:\n"
+        "            self._writing = False\n"
+    )
+
+    def test_a_hand_copy_is_reported(self):
+        (finding,) = asked_guard(self.BY_HAND)
+        self.assertEqual(finding[0], "guard passed by hand")
+        self.assertIn("sales/example.py:3 sets _writing", finding[1])
+
+    def test_the_shared_copy_is_not(self):
+        self.assertEqual(asked_guard("class Note(AuditModel):\n    def _write(self, fields):\n"
+                                     "        self.write_past_its_guard(fields)\n"), [])
+
+    def test_the_tree_holds_none(self):
+        from apps.core.management.commands.audit_invariants import OUR_APPS, app_sources
+
+        self.assertEqual(Command().guard_bypasses_by_hand(list(OUR_APPS), app_sources()), [])

@@ -403,11 +403,7 @@ class MaintenanceJob(AuditModel):
         return Decimal(total).quantize(CENTS)
 
     def _save_state(self, fields):
-        self._saving_state = True
-        try:
-            self.save(update_fields=[*fields, "updated_at"])
-        finally:
-            self._saving_state = False
+        self.write_past_its_guard(fields, flag="_saving_state")
 
     @serialised("cancelled_at", "done_on")
     @takes_back

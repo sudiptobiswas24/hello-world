@@ -125,11 +125,7 @@ class Complaint(AuditModel):
         raise ValidationError(f"{self} is a record of what a customer said; reject it.")
 
     def _decide(self, fields):
-        self._deciding = True
-        try:
-            self.save(update_fields=[*fields, "updated_at"])
-        finally:
-            self._deciding = False
+        self.write_past_its_guard(fields, flag="_deciding")
 
     def _check_not_paid_and_refused(self, status, settled):
         """

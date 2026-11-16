@@ -94,12 +94,7 @@ class MasterScheduleEntry(AuditModel):
         return super().delete(*args, **kwargs)
 
     def _write(self, fields):
-        self._writing = True
-        try:
-            self.save(update_fields=fields + ["updated_at"])
-        finally:
-            # Left set, the next save of this object would pass the guard too.
-            self._writing = False
+        self.write_past_its_guard(fields)
 
     def bom(self):
         from apps.manufacturing.bom import default_bom_for
