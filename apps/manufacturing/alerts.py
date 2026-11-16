@@ -102,11 +102,7 @@ class QualityAlert(AuditModel):
         raise ValidationError(f"{self} is a record of what was found; cancel it as not a defect.")
 
     def _decide(self, fields):
-        self._deciding = True
-        try:
-            self.save(update_fields=[*fields, "updated_at"])
-        finally:
-            self._deciding = False
+        self.write_past_its_guard(fields, flag="_deciding")
 
     @serialised("status")
     def close(self, root_cause, by, on_date=None):

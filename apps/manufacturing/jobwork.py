@@ -337,12 +337,7 @@ class JobWorkLoss(AuditModel):
             raise ValidationError("This loss is already withdrawn.")
         _refuse_closed(self.loss_date, f"the loss recorded on {self.loss_date} is not withdrawn")
         self.voided_at = timezone.now()
-        self._voiding = True
-        try:
-            self.save(update_fields=["voided_at", "updated_at"])
-        finally:
-            # Left set, the next save of this object would pass the guard too.
-            self._voiding = False
+        self.write_past_its_guard(["voided_at"], flag="_voiding")
 
 
 # -- what came back against what -----------------------------------------

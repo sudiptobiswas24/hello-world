@@ -79,12 +79,7 @@ class TestCertificate(AuditModel):
             raise ValidationError("Say why the certificate is withdrawn.")
         self.voided_at = timezone.now()
         self.voided_reason = reason.strip()
-        self._voiding = True
-        try:
-            self.save(update_fields=["voided_at", "voided_reason", "updated_at"])
-        finally:
-            # Left set, the next save of this object would pass the guard too.
-            self._voiding = False
+        self.write_past_its_guard(["voided_at", "voided_reason"], flag="_voiding")
 
 
 def _number(value):
