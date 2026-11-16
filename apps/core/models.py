@@ -138,8 +138,9 @@ def row_lock_query(model, pk, no_key=True):
 #      customer's order);
 #   2. an order's lines;
 #   3. the customer whose credit limit is weighed, then a payment it made or
-#      is paid, then what a payment pays in payroll (a bank file, its
-#      transfers, the slips);
+#      is paid, the person it is from or for (O374), the account it moves
+#      money through, then what a payment pays in payroll (a bank file,
+#      its transfers, the slips);
 #   4. the documents that move against an order: receipts, then deliveries
 #      (a drop-ship receipt makes the delivery), then bills, then invoices,
 #      each before the return or the note that corrects it;

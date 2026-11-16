@@ -1174,7 +1174,9 @@ class PaymentDirection(models.TextChoices):
 # What a trading module refuses of a payment with one of its parties
 # (a vendor whose payments are held), registered when it loads:
 # `check(payment) -> the reason in words, or None`. Accounting imports
-# neither module, so each says its own.
+# neither module, so each says its own. Asked inside post()'s transaction,
+# after the payment's own row and before its bank is shared: a check may
+# hold what the lock order puts before an account (the payer, O374).
 PAYMENT_CHECKS = []
 
 
@@ -1337,6 +1339,13 @@ class Payment(AuditModel):
 
         from .money import refuse_as_money_account
 
+        # The checks before the bank is shared (O374): one holds the person a receipt came from
+        # (hr.shortfalls.hold_the_payer), and a person comes before an account in the lock order. Asked after
+        # the bank, a receipt from a person took them after their bank, which PostgreSQL alone showed.
+        for check in PAYMENT_CHECKS:
+            said = check(self)
+            if said:
+                raise ValidationError(said)
         # Asked again as the money moves: a draft outlives the account it named being closed.
         bank = Account.objects.get(pk=self.bank_account_id)
         refuse_as_money_account(bank)
@@ -1347,10 +1356,6 @@ class Payment(AuditModel):
             raise ValidationError(
                 f"{bank} is kept in {bank.currency.code}; a payment through it is in {bank.currency.code}, "
                 f"not {self.currency.code if self.currency_id else 'the base currency'}.")
-        for check in PAYMENT_CHECKS:
-            said = check(self)
-            if said:
-                raise ValidationError(said)
 
         self.payment_date = to_date(self.payment_date)
         # Money dated into a restated day would be open there at its own rate (the mirror of E).

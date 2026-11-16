@@ -2839,6 +2839,59 @@ class AWriteOffBesideMoneyPaidBackRaceTests(RaceCase):
 
 @tag("race")
 @unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
+class APersonBeforeTheirBankRaceTests(RaceCase):
+    """
+    O374: a person is held before the account money moves through (apps.core.lock_order). A receipt of 300.00
+    from the weaver (the O215 fixture) posts beside a transaction that writes the weaver's row and then the
+    bank's, in that order, as the demo holds its people and then pays a claim through a bank, here as plain
+    writes that take no numbering row first (O384). The receipt shared its bank (hold_money_account) and then
+    asked for the weaver (hold_the_payer, a payment check): it waited for the weaver, the other for the bank
+    the receipt shared, and PostgreSQL refused one ("deadlock detected"). Now post() asks its checks first: the
+    receipt waits for the weaver before it touches the bank, the other writes the bank and commits, and the
+    receipt posts. The bank is written only once the receipt is waiting on a lock, read from pg_stat_activity,
+    not a clock.
+    """
+
+    def test_a_receipt_from_a_person_waits_for_them_before_its_bank_and_both_stand(self):
+        import time
+
+        from django.utils import timezone
+
+        from apps.accounting.models import Account
+        from apps.manufacturing import tests_piecework as piece_fixture
+
+        shop = fixture(self, piece_fixture.AFormerEmployeesShortfallIsSettledTests)
+        draft = Payment.objects.create(party=shop.weaver.party, direction=PaymentDirection.RECEIPT,
+                                       payment_date=datetime.date(2026, 9, 30), amount=Decimal("300.00"),
+                                       bank_account=shop.bank, counterpart_account=shop.receivable)
+        person_held = threading.Event()
+
+        def post():
+            person_held.wait(timeout=5)
+            Payment.objects.get(pk=draft.pk).post()
+
+        def the_person_then_the_bank():
+            Employee.objects.filter(pk=shop.weaver.pk).update(updated_at=timezone.now())
+            person_held.set()
+            with connection.cursor() as cursor:
+                for _ in range(400):
+                    cursor.execute("SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() "
+                                   "AND wait_event_type = 'Lock' AND pid <> pg_backend_pid()")
+                    if cursor.fetchone()[0]:
+                        break
+                    time.sleep(0.05)
+                else:
+                    raise RuntimeError("the receipt never waited for the weaver")
+            Account.objects.filter(pk=shop.bank.pk).update(updated_at=timezone.now())
+
+        # Held by the two events, not at a save: neither saves a person.
+        outcomes = race(Employee, post, the_person_then_the_bank)
+        self.assertEqual(outcomes, ["done", "done"], outcomes)
+        self.assertTrue(Payment.objects.get(pk=draft.pk).posted)
+
+
+@tag("race")
+@unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
 class TwoDocumentsNumberingEachOthersTypeRaceTests(RaceCase):
     """
     O257: a document numbering a second type inside its own transaction (an invoice posting its delivery's
