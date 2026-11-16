@@ -2814,19 +2814,22 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxesTa
         """
         [(day, amount, entries, words)]: everything but a payment that settled it, signed (what took it back is
         negative), with the day of each and the entries that moved its control account for it (None where they
-        are not its alone). The restatement replays what is dated after its day (accounting.restatement).
+        are not its alone; for a note's part absorbed, the base it cleared). The restatement replays what is
+        dated after its day (accounting.restatement).
         """
-        if self.is_credit_note():
-            from apps.accounting.restatement import absorbed_on_the_note
+        from apps.accounting.restatement import absorbed_cleared, absorbed_on_the_note
 
-            return absorbed_on_the_note(self, self.invoice_date)
+        if self.is_credit_note():
+            return absorbed_on_the_note(self, self.invoice_date, self.receivable_account)
         rows = []
         for note in self.credit_notes.all():
             if not note.posted:
                 continue
             absorbed = note.amount_absorbed()
             whole = absorbed == note.total() and not note.reversed_write_off and not note.reversed_discount
-            rows.append((note.invoice_date, absorbed, entries_booked(note) if whole else None,
+            # A part absorbed at the base it cleared, the figure the note's own side counts (O388).
+            rows.append((note.invoice_date, absorbed,
+                         entries_booked(note) if whole else absorbed_cleared(note, self.receivable_account),
                          f"credit note {note.number}"))
             undone = note.reversed_write_off + note.reversed_discount
             if undone and note.settlement_reversal_entry_id:
