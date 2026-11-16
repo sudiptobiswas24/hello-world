@@ -35,7 +35,12 @@ class ABackupRestoresItsAttachmentsTests(SimpleTestCase):
             self.psql(SERVER, f"CREATE DATABASE {self.name}")
         except (subprocess.CalledProcessError, OSError) as failure:
             self.skipTest(f"no PostgreSQL server to back up at {SERVER}: {failure}")
-        self.addCleanup(self.psql, SERVER, f"DROP DATABASE IF EXISTS {self.name} WITH (FORCE)")
+        # A plain DROP, not WITH (FORCE). FORCE terminates every other session on the database first, and erp
+        # may not terminate one it does not own: an autovacuum worker that reached the scratch database (it has
+        # no role) failed the cleanup with "permission denied to terminate process" (g42's sqlite lane, 16 Nov;
+        # PostgreSQL 16). A plain DROP stops autovacuum workers itself and waits up to five seconds for the
+        # scripts' own sessions to end; a session still open after that is a real failure and says so.
+        self.addCleanup(self.psql, SERVER, f"DROP DATABASE IF EXISTS {self.name}")
         self.url = SERVER.rsplit("/", 1)[0] + "/" + self.name
         root = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, root, True)
