@@ -58,6 +58,14 @@ LOCK_ORDER = (
     #    bill it settles (every path the survey of 14 October saw)
     "core.party",
     "accounting.payment",
+    # 3c. a person, after a payment from or to them and before the account it moves money through (O374, the
+    #     survey of 16 November on PostgreSQL over hr, accounting, e2e and the piecework settlements): a gratuity
+    #     or an advance holds its payment, then the person; the demo pays a claim through a bank holding its
+    #     people; a pay run holds its people, then their slips. A receipt from a person holds them (the payment
+    #     check hr.shortfalls.hold_the_payer) before its bank is shared: Payment.post asks its checks first.
+    #     Asked after the bank, as before, the receipt was refused 41 times on PostgreSQL alone (g43), where the
+    #     bank is shared FOR SHARE and SQLite takes no lock for the sentinel to see.
+    "hr.employee",
     # 3b. an account, after the payment that moves money through it (O258, the survey of 24 October
     #     over accounting, sales, purchasing, hr, inventory and e2e on PostgreSQL): a payment posting
     #     holds itself, then shares its bank account (accounting.money.hold_money_account), and the

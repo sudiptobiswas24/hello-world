@@ -412,6 +412,35 @@ class APlainForUpdateIsReportedTests(TestCase):
         self.assertFalse(row_lock_query(Party, 1, no_key=False).query.select_for_no_key_update)
 
 
+class APersonIsRankedBetweenAPaymentAndItsBankTests(TestCase):
+    """
+    O374: hr.employee was ranked nowhere, so a receipt that shared its bank and then held the person it came
+    from (hold_the_payer) passed unseen beside the demo, which holds its people and then pays a claim through a
+    bank. The person comes after the payment and before the account, and before the slips a pay run holds
+    after its people. A bank shared and then a person, as a receipt took them on PostgreSQL, is refused.
+    """
+
+    def test_a_shared_bank_then_a_person_is_refused(self):
+        with self.assertRaisesMessage(LockOrderViolation, "hr.employee 5 locked after accounting.account 2"):
+            with transaction.atomic():
+                taken(connection, "accounting.payment", [9])
+                taken(connection, "accounting.account", [2], how="for_share")
+                taken(connection, "hr.employee", [5])
+
+    def test_a_payment_the_person_their_shared_bank_then_their_slip_pass(self):
+        with transaction.atomic():
+            taken(connection, "accounting.payment", [9])
+            taken(connection, "hr.employee", [5])
+            taken(connection, "accounting.account", [2], how="for_share")
+            taken(connection, "hr.payslip", [1])
+
+    def test_a_slip_then_its_person_is_refused(self):
+        with self.assertRaisesMessage(LockOrderViolation, "hr.employee 5 locked after hr.payslip 1"):
+            with transaction.atomic():
+                taken(connection, "hr.payslip", [1])
+                taken(connection, "hr.employee", [5])
+
+
 class TheSurveyRecordsEverySiteOfAPairTests(TestCase):
     """
     O373: the survey (LOCK_ORDER_SURVEY) kept each pair once per process with the first site to take it, so a
