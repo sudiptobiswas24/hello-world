@@ -1170,7 +1170,8 @@ class WhereTheFreightIsTests(OneChargeLandsOnceTests):
         self.assertEqual(self.balance(self.category.asset_account), Decimal("0"))
 
 
-# The purchasing audit probes (docs/handoff/reports/probes/audit_pur_purchasing_tests_probe_audit.py).
+# The purchasing audit probes (docs/handoff/reports/probes/audit_pur_purchasing_tests_probe_audit.py,
+# in git at 565c724: docs/handoff/reports/README.md).
 JAN = lambda day: datetime.date(2026, 1, day)  # noqa: E731
 
 
