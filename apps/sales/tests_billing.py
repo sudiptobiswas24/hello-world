@@ -246,6 +246,54 @@ class InvoiceNumberingTests(SalesBillingTestCase):
         invoice.post()
         self.assertEqual(invoice.journal_entry.reference, invoice.number)
 
+    def test_a_post_its_caller_rolled_back_takes_a_fresh_number_when_posted_again(self):
+        # O593: the post returned, and the caller's transaction around it then failed. The sequence went back to
+        # 1 and the next invoice took INV-2026-00001; the first, still carrying it, posted again skipped
+        # numbering and was refused on the unique number.
+        from django.db import transaction
+
+        first = self.make_invoice()
+        with self.assertRaisesMessage(RuntimeError, "the caller failed after the post"):
+            with transaction.atomic():
+                first.post()
+                self.assertEqual(first.number, "INV-2026-00001")
+                raise RuntimeError("the caller failed after the post")
+        other = self.make_invoice()
+        other.post()
+        first.post()
+        self.assertEqual((other.number, first.number), ("INV-2026-00001", "INV-2026-00002"))
+        self.assertEqual(sorted(Invoice.objects.filter(posted=True).values_list("number", flat=True)),
+                         ["INV-2026-00001", "INV-2026-00002"])
+
+    def test_a_post_rolled_back_with_a_savepoint_its_caller_survives_is_given_back_too(self):
+        # O593: only the inner block rolls back, and the caller posts the invoice again in its own transaction.
+        # Kept, the number went out a second time without the sequence moving: the next invoice took it too.
+        from django.db import transaction
+
+        first = self.make_invoice()
+        with transaction.atomic():
+            with self.assertRaisesMessage(RuntimeError, "the inner step failed"):
+                with transaction.atomic():
+                    first.post()
+                    raise RuntimeError("the inner step failed")
+            first.post()
+        other = self.make_invoice()
+        other.post()
+        self.assertEqual((first.number, other.number), ("INV-2026-00001", "INV-2026-00002"))
+
+    def test_a_post_whose_caller_did_not_roll_back_keeps_its_number(self):
+        # O593's mark gives back only what rolled back: a post inside a caller's block that ends well keeps it.
+        from django.db import transaction
+
+        first = self.make_invoice()
+        with transaction.atomic():
+            first.post()
+        other = self.make_invoice()
+        other.post()
+        with self.assertRaises(ValidationError):
+            first.post()
+        self.assertEqual((first.number, other.number), ("INV-2026-00001", "INV-2026-00002"))
+
 
 class CustomerDefaultsTests(SalesBillingTestCase):
     def test_invoice_inherits_currency_terms_and_addresses(self):
