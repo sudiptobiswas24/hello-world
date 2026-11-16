@@ -98,11 +98,7 @@ class _Posted(AuditModel):
         return super().delete(*args, **kwargs)
 
     def _write(self, fields):
-        self._writing = True
-        try:
-            self.save(update_fields=fields + ["updated_at"])
-        finally:
-            self._writing = False
+        self.write_past_its_guard(fields)
 
 
 class _Line(AuditModel):

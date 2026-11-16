@@ -106,11 +106,7 @@ class ExpenseClaim(AuditModel):
         return super().delete(*args, **kwargs)
 
     def _move(self, fields):
-        self._moving = True
-        try:
-            self.save(update_fields=[*fields, "updated_at"])
-        finally:
-            self._moving = False
+        self.write_past_its_guard(fields, flag="_moving")
 
     def check_accounts(self):
         """Every line charged to an active expense account, as the accounts stand now (O303, O360)."""

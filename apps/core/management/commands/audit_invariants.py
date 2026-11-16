@@ -128,6 +128,7 @@ class Command(BaseCommand):
         findings += self.shelf_read_before_lock(labels, sources)
         findings += self.per_unit_withdrawal_rates(labels, sources)
         findings += self.movements_written_around_save(labels, sources)
+        findings += self.guard_bypasses_by_hand(labels, sources)
         findings += self.item_counting_changed_around_save(labels, sources)
         findings += self.arrivals_without_their_departure(labels, sources)
         findings += self.posted_admin_rule_copied(labels, sources)
@@ -1474,6 +1475,28 @@ class Command(BaseCommand):
                     f"{label}/{path.name}:{line} {said}; book what cost_of_removing() "
                     "says leaving takes, the total, or move it with move_stock().",
                 ))
+        return findings
+
+    def guard_bypasses_by_hand(self, labels, sources):
+        """
+        A record's own save() guard passed by hand: a flag set, the record saved, the flag cleared. One copy,
+        AuditModel.write_past_its_guard, sets it for that one save and clears it however the save ends; twenty
+        hand copies in eighteen modules each wrote it (the redundant-code audit of 16 November), and a copy that left the flag set
+        would let the object's next save through the guard too.
+        """
+        findings = []
+        shape = re.compile(r"self\.(_\w+) = True\n\s+try:\n\s+(?:super\(\)|self)\.save\(")
+        for label in labels:
+            for path, text in sorted(sources[label].items()):
+                if "test" in path.name or "migrations" in path.parts:
+                    continue
+                for match in shape.finditer(text):
+                    line = text.count("\n", 0, match.start()) + 1
+                    findings.append((
+                        "guard passed by hand",
+                        f"{label}/{path.name}:{line} sets {match.group(1)} around a save() by hand: call "
+                        f"self.write_past_its_guard(fields, flag=\"{match.group(1)}\") instead.",
+                    ))
         return findings
 
     def movements_written_around_save(self, labels, sources):
