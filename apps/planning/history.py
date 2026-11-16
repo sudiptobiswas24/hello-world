@@ -11,7 +11,6 @@ on top would count the month twice. A figure is replaced, not added
 to, so the file can be run again to correct a month.
 """
 
-import calendar
 import datetime
 
 from django.core.exceptions import ValidationError
@@ -19,7 +18,7 @@ from django.db import models
 from django.db.models import Q
 from django.utils import timezone
 
-from apps.core.models import AuditModel
+from apps.core.models import AuditModel, month_end
 
 
 class ShipmentHistory(AuditModel):
@@ -55,8 +54,6 @@ class ShipmentHistory(AuditModel):
         super().save(*args, **kwargs)
 
 
-def month_end(first):
-    return first.replace(day=calendar.monthrange(first.year, first.month)[1])
 
 
 def shipped_in(item, warehouse, month):

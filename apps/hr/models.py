@@ -26,6 +26,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from apps.core.models import (
+    require_role,
     numbering_first,
     Extensible, AuditModel, correction_date, Party, PartyRole, documents_it_answers_to, lock_rows, serialised, to_date,
 )
@@ -37,11 +38,6 @@ from .calendars import (  # noqa: F401
     parse_working_days,
     working_days,
 )
-
-
-def _require_employee_role(party):
-    if party and not party.role_assignments.filter(role=PartyRole.EMPLOYEE).exists():
-        raise ValidationError(f"{party} does not have the Employee role.")
 
 
 class EmploymentStatus(models.TextChoices):
@@ -271,7 +267,7 @@ class Employee(Extensible, AuditModel):
         # keeps the next reader from having to know that.
         self.hire_date = to_date(self.hire_date)
         self.termination_date = to_date(self.termination_date)
-        _require_employee_role(self.party)
+        require_role(self.party, PartyRole.EMPLOYEE)
         if self.manager_id and self.manager_id == self.pk:
             raise ValidationError("An employee cannot be their own manager.")
         hours = Decimal(str(self.hours_a_day)) if self.hours_a_day is not None else None

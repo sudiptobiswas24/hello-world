@@ -17,7 +17,7 @@ import datetime
 from django.core.exceptions import ValidationError
 from django.db import models
 
-from apps.core.models import AuditModel
+from apps.core.models import AuditModel, month_end
 
 # ISO weekday numbers, so 1 is Monday and 7 is Sunday — the same
 # convention date.isoweekday() uses, so nothing has to convert.
@@ -218,11 +218,6 @@ class WorkingCalendar:
         return day
 
 
-def month_end(day):
-    """The last day of the month `day` falls in."""
-    if day.month == 12:
-        return datetime.date(day.year, 12, 31)
-    return datetime.date(day.year, day.month + 1, 1) - datetime.timedelta(days=1)
 
 
 def completed_months(start, end):

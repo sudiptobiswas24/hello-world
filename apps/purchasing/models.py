@@ -47,6 +47,8 @@ from apps.core.approvals import (
     check_not_raised_by,
 )
 from apps.core.models import (
+    names_another,
+    require_role,
     update_or_create_held,
     check_login_acts,
     BILLED,
@@ -91,9 +93,8 @@ from apps.accounting.settlement import (
     in_base,
     in_the_base,
     no_rate,
-    amount_overdue,
+    LateByItsInstallments,
     installment_schedule,
-    oldest_overdue,
     owed_beyond,
     held_base_left,
     last_of_held,
@@ -126,23 +127,6 @@ from .pricing import preferred_vendor, resolve_lead_time, resolve_purchase_price
 
 
 from apps.core.models import takes_back  # noqa: E402  (O354: a correction step)
-
-def _require_employee_role(party):
-    if party and not party.role_assignments.filter(role=PartyRole.EMPLOYEE).exists():
-        raise ValidationError(f"{party} does not have the Employee role.")
-
-
-def _require_vendor_role(party):
-    if party and not party.role_assignments.filter(role=PartyRole.VENDOR).exists():
-        raise ValidationError(f"{party} does not have the Vendor role.")
-
-
-def _names_another(row, field):
-    """New, or `field` now names another party than the one stored: when a role is first known to matter."""
-    if row._state.adding or row.pk is None:
-        return True
-    return not type(row)._base_manager.filter(pk=row.pk, **{f"{field}_id": getattr(row, f"{field}_id")}).exists()
-
 
 def net_unit_price(line):
     """What one unit costs on an order or bill line after its discount, unrounded."""
@@ -327,8 +311,8 @@ class VendorPrice(AuditModel):
             super().save(*args, **kwargs)
 
     def _check_terms(self):
-        if _names_another(self, "vendor"):
-            _require_vendor_role(self.vendor)
+        if names_another(self, "vendor"):
+            require_role(self.vendor, PartyRole.VENDOR)
         if self.valid_from and self.valid_to and self.valid_to < self.valid_from:
             raise ValidationError("valid_to cannot be before valid_from.")
         if self.uom_id and self.item_id:
@@ -653,8 +637,8 @@ class RfqInvitation(AuditModel):
         return super().delete(*args, **kwargs)
 
     def _check_vendor(self):
-        if _names_another(self, "vendor"):
-            _require_vendor_role(self.vendor)
+        if names_another(self, "vendor"):
+            require_role(self.vendor, PartyRole.VENDOR)
 
     @serialised("declined")
     def decline(self, note=""):
@@ -812,8 +796,8 @@ class PurchaseRequisition(AuditModel):
         return super().delete(*args, **kwargs)
 
     def _check_requester(self):
-        if _names_another(self, "requested_by"):
-            _require_employee_role(self.requested_by)
+        if names_another(self, "requested_by"):
+            require_role(self.requested_by, PartyRole.EMPLOYEE)
 
     def estimated_total(self):
         return sum((line.estimated_value() for line in self.lines.all()), Decimal("0"))
@@ -918,7 +902,7 @@ class PurchaseRequisition(AuditModel):
         """
         if self.status not in (RequisitionStatus.APPROVED, RequisitionStatus.ORDERED):
             raise ValidationError("Only an approved requisition can be ordered.")
-        _require_vendor_role(vendor)
+        require_role(vendor, PartyRole.VENDOR)
 
         candidates = list(lines if lines is not None else self.lines.all())
         hold_requisition_lines(candidates)
@@ -1307,8 +1291,8 @@ class BlanketOrder(TaxesTakenUnder, AuditModel):
         self._check_terms()
 
     def _check_terms(self):
-        if _names_another(self, "vendor"):
-            _require_vendor_role(self.vendor)
+        if names_another(self, "vendor"):
+            require_role(self.vendor, PartyRole.VENDOR)
         if self.start_date and self.end_date and self.end_date < self.start_date:
             raise ValidationError("A blanket order cannot end before it starts.")
 
@@ -1816,8 +1800,8 @@ class ReorderRule(AuditModel):
                 f"is {self.multiple_of}, so every order would be refused by "
                 "one rule or the other."
             )
-        if self.vendor_id and _names_another(self, "vendor"):
-            _require_vendor_role(self.vendor)
+        if self.vendor_id and names_another(self, "vendor"):
+            require_role(self.vendor, PartyRole.VENDOR)
 
     def on_order(self):
         """
@@ -2026,8 +2010,8 @@ class PurchaseOrder(Extensible, TaxesTakenUnder, TaxedDocumentMixin, ChangesWith
         self._check_vendor()
 
     def _check_vendor(self):
-        if _names_another(self, "vendor"):
-            _require_vendor_role(self.vendor)
+        if names_another(self, "vendor"):
+            require_role(self.vendor, PartyRole.VENDOR)
 
     # Shared rule A (apps.core.models.refuse_changing_what_moved), the mirror
     # of the sales order's: confirmed with one vendor in one currency, with
@@ -2422,7 +2406,7 @@ class PurchaseOrder(Extensible, TaxesTakenUnder, TaxedDocumentMixin, ChangesWith
         lock_rows(sales_order)
         if sales_order.status != SalesOrderStatus.CONFIRMED:
             raise ValidationError("Only a confirmed sales order can be drop-shipped.")
-        _require_vendor_role(vendor)
+        require_role(vendor, PartyRole.VENDOR)
 
         # What is not already coming from a vendor: drop-shipping the same
         # remainder twice ordered it twice, and the second lorry was the
@@ -3459,7 +3443,8 @@ def register_debit_note_follow_up(follow_up):
         DEBIT_NOTE_FOLLOW_UPS.append(follow_up)
 
 
-class Bill(Extensible, PostedTaxDocumentMixin, TaxesTakenUnder, TaxedDocumentMixin, AuditModel):
+class Bill(Extensible, PostedTaxDocumentMixin, TaxesTakenUnder, TaxedDocumentMixin, LateByItsInstallments,
+           AuditModel):
     """
     Vendor bill — the Purchasing mirror of Sales' Invoice. Posting builds
     a balanced JournalEntry (Dr Expense per line / Cr Accounts Payable)
@@ -3675,8 +3660,8 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxesTakenUnder, TaxedDocumentMix
         self._check_kind()
 
     def _check_kind(self):
-        if _names_another(self, "vendor"):
-            _require_vendor_role(self.vendor)
+        if names_another(self, "vendor"):
+            require_role(self.vendor, PartyRole.VENDOR)
         if self.is_prepayment and not self.purchase_order_id:
             raise ValidationError("A prepayment must be against a purchase order.")
         if self.is_prepayment and self.debits_id:
@@ -4247,31 +4232,6 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxesTakenUnder, TaxedDocumentMix
             return min(days) if days else None
         days = [row["due_date"] for row in rows]
         return max(days) if days else to_date(self.due_date)
-
-    def amount_overdue(self, as_of=None):
-        """
-        How much is actually late — not the whole balance.
-
-        On a 50/50 term the deposit can be weeks overdue while the balance
-        is not due for another month. Chasing the full amount would be
-        wrong, and chasing nothing would be worse.
-        """
-        if not self.posted or self.amount_due() <= 0:
-            return Decimal("0")
-        return amount_overdue(self.installments(), to_date(as_of) or timezone.localdate())
-
-    def is_overdue(self, as_of=None):
-        if not self.posted or self.amount_due() <= 0:
-            return False
-        return self.amount_overdue(as_of) > 0
-
-    def days_overdue(self, as_of=None):
-        """Days since the *earliest* installment that is still unpaid."""
-        as_of = to_date(as_of) or timezone.localdate()
-        if not self.is_overdue(as_of):
-            return 0
-        oldest = oldest_overdue(self.installments(), as_of)
-        return (as_of - oldest["due_date"]).days if oldest else 0
 
     def _was_posted_in_db(self):
         if not self.pk:
@@ -6138,6 +6098,7 @@ class BillPayment(RealisedOnItsOwnDay, AuditModel):
     may not import Purchasing, so the allocation lives on this side
     pointing back.
     """
+    document_field = "bill"  # what it settles (RealisedOnItsOwnDay.locked_before_it)
 
     bill = models.ForeignKey(Bill, on_delete=models.CASCADE, related_name="payment_allocations")
     payment = models.ForeignKey(Payment, on_delete=models.CASCADE, related_name="bill_allocations")
@@ -6225,30 +6186,6 @@ class BillPayment(RealisedOnItsOwnDay, AuditModel):
             raise ValidationError(
                 f"The bill only has {outstanding} outstanding; cannot apply {self.amount}."
             )
-
-    def locked_before_it(self):
-        """
-        The payment and the bill, as save() takes them and as voiding the
-        payment does, which then releases this allocation's exchange
-        difference (apps.core.models.lock_for_change).
-        """
-        return [self.payment if self.payment_id else None, self.bill if self.bill_id else None]
-
-    @transaction.atomic
-    def save(self, *args, **kwargs):
-        # What is left on the payment and due on the bill are read in
-        # clean(); two allocations at once must not both spend them.
-        lock_rows(*self.locked_before_it())
-        self.full_clean()
-        # Re-posting rather than adjusting: an allocation can be re-pointed
-        # or re-sized after the fact, and the exchange difference it caused
-        # has to move with it or the control account keeps the old one. Both
-        # on the allocation's own day (RealisedOnItsOwnDay).
-        previous = self.fx_entry if self.fx_entry_id else None
-        self.date = self.day_applied()
-        self.fx_entry = None
-        super().save(*args, **kwargs)
-        self.realise_exchange_difference(previous)
 
     def settles(self):
         document = self.bill

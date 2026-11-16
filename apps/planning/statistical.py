@@ -46,7 +46,7 @@ from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
 
-from .history import month_end
+from apps.core.models import month_end
 
 ZERO = Decimal("0")
 THOUSANDTH = Decimal("0.001")

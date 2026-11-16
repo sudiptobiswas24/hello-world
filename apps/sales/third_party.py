@@ -115,11 +115,11 @@ class ThirdPartyRelease(AuditModel):
 
     @serialised("posted")
     def post(self):
-        from .models import _require_customer_role
+        from apps.core.models import PartyRole, require_role
 
         if self.posted:
             raise ValidationError(f"{self} is already posted.")
-        _require_customer_role(self.customer)
+        require_role(self.customer, PartyRole.CUSTOMER)
         if self.agency_id == self.customer_id:
             raise ValidationError("The customer does not inspect as their own agency here; "
                                   "name the agency that signed.")

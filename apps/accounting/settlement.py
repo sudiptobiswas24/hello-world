@@ -21,8 +21,9 @@ from decimal import Decimal
 
 from django.core.exceptions import ValidationError
 from django.db import transaction
+from django.utils import timezone
 
-from apps.core.models import Company, correction_date, to_date
+from apps.core.models import Company, correction_date, lock_rows, to_date
 
 from .models import JournalEntry, JournalLine, PaymentDirection, round_money
 
@@ -331,8 +332,40 @@ class RealisedOnItsOwnDay:
     made either.
     """
 
+    # The field naming what this allocation settles: "invoice" or "bill".
+    document_field = None
+
     def settles(self):
         raise NotImplementedError
+
+    def locked_before_it(self):
+        """
+        The payment and the document, as save() takes them and as voiding the
+        payment does, which then releases this allocation's exchange
+        difference (apps.core.models.lock_for_change).
+        """
+        named = getattr(self, f"{self.document_field}_id")
+        return [self.payment if self.payment_id else None, getattr(self, self.document_field) if named else None]
+
+    @transaction.atomic
+    def save(self, *args, **kwargs):
+        """
+        One save for both sides (the redundant-code audit of 16 November, M3): InvoicePayment and BillPayment each
+        carried this body, line for line, so a fix to one would have left the other.
+        """
+        # What is left on the payment and due on the document are read in
+        # clean(); two allocations at once must not both spend them.
+        lock_rows(*self.locked_before_it())
+        self.full_clean()
+        # Re-posting rather than adjusting: an allocation can be re-pointed
+        # or re-sized after the fact, and the exchange difference it caused
+        # has to move with it or the control account keeps the old one. Both
+        # on the allocation's own day.
+        previous = self.fx_entry if self.fx_entry_id else None
+        self.date = self.day_applied()
+        self.fx_entry = None
+        super().save(*args, **kwargs)
+        self.realise_exchange_difference(previous)
 
     def outstanding_for_it(self):
         """
@@ -645,6 +678,39 @@ def oldest_overdue(schedule, as_of):
             return row
     return None
 
+
+
+class LateByItsInstallments:
+    """
+    What is late on an invoice or a bill, read from its installments: how much, whether any, and since when. Each
+    side carried these three, line for line (the redundant-code audit of 16 November, M4). The document gives
+    `installments()`, `posted` and `amount_due()`.
+    """
+
+    def amount_overdue(self, as_of=None):
+        """
+        How much is actually late — not the whole balance.
+
+        On a 50/50 term the deposit can be weeks overdue while the balance
+        is not due for another month. Chasing the full amount would be
+        wrong, and chasing nothing would be worse.
+        """
+        if not self.posted or self.amount_due() <= 0:
+            return Decimal("0")
+        return amount_overdue(self.installments(), to_date(as_of) or timezone.localdate())
+
+    def is_overdue(self, as_of=None):
+        if not self.posted or self.amount_due() <= 0:
+            return False
+        return self.amount_overdue(as_of) > 0
+
+    def days_overdue(self, as_of=None):
+        """Days since the *earliest* installment that is still unpaid."""
+        as_of = to_date(as_of) or timezone.localdate()
+        if not self.is_overdue(as_of):
+            return 0
+        oldest = oldest_overdue(self.installments(), as_of)
+        return (as_of - oldest["due_date"]).days if oldest else 0
 
 def owed_beyond(candidates, *, notes, drawdowns, reductions=()):
     """
