@@ -31,6 +31,8 @@ from apps.core.documents import grouped, in_words_of_money, money
 from apps.core.history import EventKind, record
 from apps.core.recurrence import RecurrenceInterval, add_interval, follow_the_start, run_date, still_to_take
 from apps.core.models import (
+    names_another,
+    require_role,
     BILLED,
     CONFIRMED,
     MOVED,
@@ -103,9 +105,8 @@ from apps.accounting.settlement import (
     in_the_base,
     no_rate,
     rate_or_none,
-    amount_overdue,
+    LateByItsInstallments,
     installment_schedule,
-    oldest_overdue,
     owed_beyond,
     held_base_left,
     last_of_held,
@@ -132,18 +133,6 @@ logger = logging.getLogger(__name__)
 
 
 from apps.core.models import takes_back  # noqa: E402  (O354: a correction step)
-
-def _require_customer_role(party):
-    if party and not party.role_assignments.filter(role=PartyRole.CUSTOMER).exists():
-        raise ValidationError(f"{party} does not have the Customer role.")
-
-
-def _names_another(row, field):
-    """New, or `field` now names another party than the one stored: when a role is first known to matter."""
-    if row._state.adding or row.pk is None:
-        return True
-    return not type(row)._base_manager.filter(pk=row.pk, **{f"{field}_id": getattr(row, f"{field}_id")}).exists()
-
 
 class SettlementStatus(models.TextChoices):
     DRAFT = "draft", "Draft"
@@ -694,8 +683,8 @@ class SalesOrder(PlacedWhereTheGoodsGo, Extensible, TaxesTakenUnder, TaxedDocume
         self._check_customer()
 
     def _check_customer(self):
-        if _names_another(self, "customer"):
-            _require_customer_role(self.customer)
+        if names_another(self, "customer"):
+            require_role(self.customer, PartyRole.CUSTOMER)
 
     # Shared rule A (apps.core.models.refuse_changing_what_moved): confirmed
     # for one customer in one currency, with their credit limit and hold
@@ -1946,7 +1935,8 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
         return self.quantity_invoiced() >= self.invoice_limit()
 
 
-class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxesTakenUnder, TaxedDocumentMixin, AuditModel):
+class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxesTakenUnder, TaxedDocumentMixin,
+              LateByItsInstallments, AuditModel):
     """
     Sales invoice. Posting creates a balanced JournalEntry (Dr Accounts
     Receivable / Cr Revenue / Cr tax accounts) via Accounting — Sales
@@ -2910,37 +2900,12 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxesTa
             settled=self.total() - self.amount_due(),
         )
 
-    def amount_overdue(self, as_of=None):
-        """
-        How much is actually late — not the whole balance.
-
-        On a 50/50 term the deposit can be weeks overdue while the balance
-        is not due for another month. Chasing the full amount would be
-        wrong, and chasing nothing would be worse.
-        """
-        if not self.posted or self.amount_due() <= 0:
-            return Decimal("0")
-        return amount_overdue(self.installments(), to_date(as_of) or timezone.localdate())
-
-    def is_overdue(self, as_of=None):
-        if not self.posted or self.amount_due() <= 0:
-            return False
-        return self.amount_overdue(as_of) > 0
-
-    def days_overdue(self, as_of=None):
-        """Days since the *earliest* installment that is still unpaid."""
-        as_of = to_date(as_of) or timezone.localdate()
-        if not self.is_overdue(as_of):
-            return 0
-        oldest = oldest_overdue(self.installments(), as_of)
-        return (as_of - oldest["due_date"]).days if oldest else 0
-
     def clean(self):
         self._check_kind()
 
     def _check_kind(self):
-        if _names_another(self, "customer"):
-            _require_customer_role(self.customer)
+        if names_another(self, "customer"):
+            require_role(self.customer, PartyRole.CUSTOMER)
         if self.is_down_payment and not self.sales_order_id:
             raise ValidationError("A down payment must be against a sales order.")
         if self.is_down_payment and self.credits_id:
@@ -3874,6 +3839,7 @@ class InvoicePayment(RealisedOnItsOwnDay, AuditModel):
     Allocations stay editable after the fact: re-applying a payment to a
     different invoice is a bookkeeping correction, not a ledger change.
     """
+    document_field = "invoice"  # what it settles (RealisedOnItsOwnDay.locked_before_it)
 
     invoice = models.ForeignKey(Invoice, on_delete=models.CASCADE, related_name="payment_allocations")
     payment = models.ForeignKey(Payment, on_delete=models.CASCADE, related_name="invoice_allocations")
@@ -3956,30 +3922,6 @@ class InvoicePayment(RealisedOnItsOwnDay, AuditModel):
             raise ValidationError(
                 f"The invoice only has {outstanding} outstanding; cannot apply {self.amount}."
             )
-
-    def locked_before_it(self):
-        """
-        The payment and the invoice, as save() takes them and as voiding the
-        payment does, which then releases this allocation's exchange
-        difference (apps.core.models.lock_for_change).
-        """
-        return [self.payment if self.payment_id else None, self.invoice if self.invoice_id else None]
-
-    @transaction.atomic
-    def save(self, *args, **kwargs):
-        # What is left on the payment and due on the invoice are read in
-        # clean(); two allocations at once must not both spend them.
-        lock_rows(*self.locked_before_it())
-        self.full_clean()
-        # Re-posting rather than adjusting: an allocation can be re-pointed
-        # or re-sized after the fact, and the exchange difference it caused
-        # has to move with it or the control account keeps the old one. Both
-        # on the allocation's own day (RealisedOnItsOwnDay).
-        previous = self.fx_entry if self.fx_entry_id else None
-        self.date = self.day_applied()
-        self.fx_entry = None
-        super().save(*args, **kwargs)
-        self.realise_exchange_difference(previous)
 
     def settles(self):
         document = self.invoice
@@ -5976,8 +5918,8 @@ class Quotation(PlacedWhereTheGoodsGo, TaxesTakenUnder, TaxedDocumentMixin, Audi
         self._check_terms()
 
     def _check_terms(self):
-        if _names_another(self, "customer"):
-            _require_customer_role(self.customer)
+        if names_another(self, "customer"):
+            require_role(self.customer, PartyRole.CUSTOMER)
         if self.valid_until and self.valid_until < to_date(self.quotation_date):
             raise ValidationError("valid_until cannot be before the quotation date.")
 
@@ -6319,11 +6261,6 @@ class QuotationLine(TaxedLineMixin, AuditModel):
             self.quotation.check_place()
 
 
-def _require_employee_role(party):
-    if party and not party.role_assignments.filter(role=PartyRole.EMPLOYEE).exists():
-        raise ValidationError(f"{party} does not have the Employee role.")
-
-
 class CommissionBasis(models.TextChoices):
     INVOICED = "invoiced", "What was invoiced"
     PAID = "paid", "What was collected"
@@ -6385,8 +6322,8 @@ class SalesRep(AuditModel):
         super().save(*args, **kwargs)
 
     def _check_party(self):
-        if _names_another(self, "party"):
-            _require_employee_role(self.party)
+        if names_another(self, "party"):
+            require_role(self.party, PartyRole.EMPLOYEE)
 
 
 def commission_report(date_from=None, date_to=None):
@@ -6555,8 +6492,8 @@ class RecurringInvoice(TaxesTakenUnder, AuditModel):
         self._check_terms()
 
     def _check_terms(self):
-        if _names_another(self, "customer"):
-            _require_customer_role(self.customer)
+        if names_another(self, "customer"):
+            require_role(self.customer, PartyRole.CUSTOMER)
         if self.end_date and self.end_date < to_date(self.start_date):
             raise ValidationError("end_date cannot be before start_date.")
 

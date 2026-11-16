@@ -222,9 +222,9 @@ class BillOfEntry(AuditModel):
         if self.supersedes_id and self.supersedes.status != EntryStatus.POSTED:
             raise ValidationError({"supersedes": f"{self.supersedes} is {self.supersedes.status}: only a posted "
                                                  "bill of entry is re-assessed."})
-        from .models import _require_vendor_role
+        from apps.core.models import PartyRole, require_role
 
-        _require_vendor_role(self.customs_party)
+        require_role(self.customs_party, PartyRole.VENDOR)
         # One standing BE a number, port and day; a re-assessment carries its own number on.
         twin = BillOfEntry.objects.filter(port_code=self.port_code, be_number=self.be_number,
                                           be_date=to_date(self.be_date), status__in=STANDING).exclude(pk=self.pk)

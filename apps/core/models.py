@@ -66,6 +66,7 @@ class AuditModel(TimeStampedModel):
         abstract = True
 
 
+
 def prefetched(instance, relation):
     """Whether `relation` was prefetched on `instance`, so reading it costs nothing."""
     return relation in getattr(instance, "_prefetched_objects_cache", {})
@@ -439,6 +440,16 @@ def numbered_in_one_transaction(method):
             with transaction.atomic():
                 return method(self, *args, **kwargs)
     return inner
+
+
+def month_end(day):
+    """
+    The last day of the month `day` falls in. One rule: hr's calendars and planning's history each wrote their own
+    (the redundant-code audit of 16 November, M11), the one in imports never called.
+    """
+    if day.month == 12:
+        return datetime.date(day.year, 12, 31)
+    return datetime.date(day.year, day.month + 1, 1) - datetime.timedelta(days=1)
 
 
 def to_date(value):
@@ -1151,6 +1162,23 @@ class PartyRoleAssignment(AuditModel):
     def __str__(self):
         return f"{self.party} [{self.role}]"
 
+
+
+def require_role(party, role):
+    """
+    `party`, where one is named, holds `role` (PartyRole); refused in words where it does not. One rule for every
+    record that names a customer, a vendor or an employee: sales, purchasing and hr each kept their own copy, the
+    employee's word for word three times (the redundant-code audit of 16 November, M1).
+    """
+    if party and not party.role_assignments.filter(role=role).exists():
+        raise ValidationError(f"{party} does not have the {PartyRole(role).label} role.")
+
+
+def names_another(row, field):
+    """New, or `field` now names another party than the one stored: when a role is first known to matter (M2)."""
+    if row._state.adding or row.pk is None:
+        return True
+    return not type(row)._base_manager.filter(pk=row.pk, **{f"{field}_id": getattr(row, f"{field}_id")}).exists()
 
 def only_one(row, field, **scope):
     """

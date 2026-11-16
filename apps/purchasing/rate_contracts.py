@@ -72,7 +72,7 @@ class PurchaseRateContract(AuditModel):
 
     @numbered_in_one_transaction
     def save(self, *args, **kwargs):
-        from .models import _require_vendor_role
+        from apps.core.models import PartyRole, require_role
 
         if not self._state.adding and self.order_lines.exists():
             stored = PurchaseRateContract.objects.get(pk=self.pk)
@@ -81,7 +81,7 @@ class PurchaseRateContract(AuditModel):
                 raise ValidationError(f"{stored} has been ordered on; its terms are as agreed.")
             if to_date(self.valid_to) < max(line.order.order_date for line in stored.order_lines.select_related("order")):
                 raise ValidationError({"valid_to": "Orders stand on it after that day."})
-        _require_vendor_role(self.vendor)
+        require_role(self.vendor, PartyRole.VENDOR)
         if not self.number:
             self.number = DocumentSequence.next_for("purchasing.rate_contract", to_date(self.valid_from),
                                                     name="Purchase rate contracts", prefix="PRC-")
