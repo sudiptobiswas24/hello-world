@@ -240,6 +240,24 @@ class DowntimeTests(ShiftTestCase):
         stop.save()
         self.assertEqual((other.number, stop.number), ("DT-2026-00001", "DT-2026-00002"))
 
+    def test_a_stoppage_its_caller_rolled_back_is_numbered_and_made_afresh_when_saved_again(self):
+        # O593: the save returned and the caller's transaction around it failed, so the row and the number both
+        # went back. Saved again, the stoppage kept DT-2026-00001, which the next stoppage had taken, and the id
+        # of a row that was not there.
+        from django.db import transaction
+
+        stop = Downtime(work_centre=self.loom, shift_date=DAY, shift=self.night, reason=self.breakdown,
+                        minutes=Decimal("30"))
+        with self.assertRaisesMessage(RuntimeError, "the caller failed after the save"):
+            with transaction.atomic():
+                stop.save()
+                raise RuntimeError("the caller failed after the save")
+        other = self.stop("20")
+        stop.save()
+        self.assertEqual((other.number, stop.number), ("DT-2026-00001", "DT-2026-00002"))
+        self.assertEqual(sorted(Downtime.objects.values_list("number", "minutes")),
+                         [("DT-2026-00001", Decimal("20")), ("DT-2026-00002", Decimal("30"))])
+
     def test_a_changeover_belongs_to_no_run_at_all(self):
         stop = self.stop("45", reason=self.changeover)
         self.assertIsNone(stop.work_order)

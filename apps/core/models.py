@@ -420,6 +420,49 @@ def update_or_create_held(source, defaults=None, create_defaults=None, **lookup)
     return row, False
 
 
+class _NumberTaken:
+    """
+    A number taken inside a transaction the caller opened, marked on the object (O593): what it held before,
+    the number taken, and whether the method made the row (pk, adding). Whether that transaction kept it is
+    asked of the row itself when it next matters (_give_back_a_rolled_back_number).
+    """
+
+    def __init__(self, held, number, pk, adding):
+        self.held, self.number, self.pk, self.adding = held, number, pk, adding
+
+
+def _give_back_a_rolled_back_number(instance):
+    """
+    Before a method that numbers decides on `instance.number`: a number it took inside a caller's transaction
+    is kept while its row holds it (committed, or that transaction still open), and given back once the row
+    does not (that transaction, or a savepoint in it, rolled back, and the sequence with it); with it the row
+    the method made, if it made one (pk and adding), so the next save numbers and inserts afresh instead of
+    updating a row that is not there. Read off the row, not off Django's on-commit bookkeeping: a callback
+    raising before the mark's would have read a commit as a rollback.
+    """
+    taken = instance.__dict__.get("_number_taken")
+    if taken is None:
+        return
+    if instance.number != taken.number:
+        del instance.__dict__["_number_taken"]  # read again from the database, or set, since
+        return
+    # A row the method made is known by when it was made as well: SQLite gives a rolled-back id to the next
+    # row, and the next stoppage, numbered from the same rolled-back sequence, had this one's id and number.
+    model = type(instance)
+    fields = ["number"]
+    if taken.pk is None and any(field.name == "created_at" for field in model._meta.concrete_fields):
+        fields.append("created_at")
+    stored = (model._base_manager.filter(pk=instance.pk).values_list(*fields).first()
+              if instance.pk is not None else None)
+    if stored == tuple(getattr(instance, name) for name in fields):
+        return
+    del instance.__dict__["_number_taken"]
+    instance.number = taken.held
+    if taken.pk is None:
+        instance.pk = None
+        instance._state.adding = taken.adding
+
+
 @contextlib.contextmanager
 def gives_back_its_number(instance):
     """
@@ -428,15 +471,26 @@ def gives_back_its_number(instance):
     The sequence rolls back with the posting that failed, so the next document takes that number; the object
     still carrying it, retried, saved a second document under a number another had taken since (a refused
     UNIQUE number). What it held before the block is put back, so a retry takes a fresh one.
+
+    The same when the block returns and a transaction the caller opened around it rolls back afterwards
+    (O593: `with atomic(): invoice.post(); <fails>`): the number is marked as taken in that transaction, and
+    the next method on the object that numbers (every @serialised one, every @numbered_in_one_transaction
+    save) gives it back first. Without that the invoice, posted again, skipped numbering (only its state
+    fields are read again) and was refused on the number the next invoice had taken since.
     """
     numbered = any(field.name == "number" for field in type(instance)._meta.concrete_fields)
+    if numbered:
+        _give_back_a_rolled_back_number(instance)
     held = instance.number if numbered else None
+    pk, adding = instance.pk, instance._state.adding
     try:
         yield
     except BaseException:
         if numbered:
             instance.number = held
         raise
+    if numbered and instance.number != held and in_a_transaction_it_opened():
+        instance.__dict__["_number_taken"] = _NumberTaken(held, instance.number, pk, adding)
 
 
 def numbered_in_one_transaction(method):
