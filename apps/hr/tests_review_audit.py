@@ -26,6 +26,12 @@ class PayRunPostNamesThePoster(PayrollApiTestCase):
                                       "pay_date": "2026-06-30", "name": "June"}, format="json").json()
         self.client.post(f"{base}{run['id']}/calculate/", {}, format="json")
         mark = RecordEvent.objects.order_by("-pk").first().pk
+        # The ledger log's rows from before this post are not its own: a TransactionTestCase earlier in the same
+        # PostgreSQL database (the demo loader's) leaves its commits there, unnamed (O596).
+        ledger_mark = 0
+        if connection.vendor == "postgresql":
+            from apps.core.ledger_log import LedgerChange
+            ledger_mark = LedgerChange.objects.order_by("-pk").values_list("pk", flat=True).first() or 0
         self.assertEqual(self.client.post(f"{base}{run['id']}/post/", {}, format="json").status_code, 200)
         lines = list(RecordEvent.objects.filter(pk__gt=mark))
         self.assertTrue(lines)
@@ -34,11 +40,10 @@ class PayRunPostNamesThePoster(PayrollApiTestCase):
             from apps.core.ledger_log import LedgerChange
             poster = User.objects.get(username="payroll").pk
             rows = LedgerChange.objects.filter(table_name__in=["hr_payrun", "hr_payslip", "accounting_journalentry",
-                                                               "accounting_journalline"]).exclude(
-                id__lte=0)
+                                                               "accounting_journalline"], pk__gt=ledger_mark)
             self.assertEqual(set(rows.filter(operation="UPDATE", table_name="hr_payrun").values_list(
                 "acting_user_id", "through")), {(poster, "api")})
-            self.assertEqual(LedgerChange.objects.filter(through="unattributed").count(), 0)
+            self.assertEqual(LedgerChange.objects.filter(through="unattributed", pk__gt=ledger_mark).count(), 0)
 
 
 class ReadingTheLog(RolesTestCase):
