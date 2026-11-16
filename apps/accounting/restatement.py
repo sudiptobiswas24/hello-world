@@ -119,20 +119,41 @@ def _allocations_then(document, day):
     return rows
 
 
-def absorbed_on_the_note(note, day):
+def absorbed_on_the_note(note, day, account):
     """
-    [(day, amount, entries, words)] for a note partly or wholly absorbed into its document: the part absorbed
+    [(day, amount, base, words)] for a note partly or wholly absorbed into its document: the part absorbed
     settled the note as it settled the document, on the note's own day (O424). Left out, a restatement
     carried the note at all it booked while the invoice's carried base had that part off already: USD 1,000
     at 83.25, 600 received and a note of 700 absorbing the 400 left read 58,275.00 carried for the 300 owed
-    back, and the restatement moved the receivable 33,039.00 where 300 at 84.12 moves it -261.00. Priced at the
-    note's rate, as the document's side prices a part absorbed that is not the whole note.
+    back, and the restatement moved the receivable 33,039.00 where 300 at 84.12 moves it -261.00. At the base
+    the part cleared (absorbed_cleared), the figure the document's side counts too.
     """
     taken = note.absorbed_into()
     if not taken or not taken[1]:
         return []
     document, amount = taken
-    return [(day, amount, None, f"absorbed into {document.number}")]
+    return [(day, amount, absorbed_cleared(note, account), f"absorbed into {document.number}")]
+
+
+def absorbed_cleared(note, account):
+    """
+    What the part of `note` absorbed into its document cleared off `account`, one figure for the note's side
+    and the document's (O388): a note absorbed whole, the entries it booked; a part, what the document had
+    left for it (settlement.absorbed_base), as the next settlement reads it on either side. Priced at the
+    rate instead, each side on its own, three lines of USD 10.01 at 83.25 (2,499.99 booked), 20.00 received
+    (clearing 1,665.00) and a note of all three absorbing the 10.03 left read 835.00 where the invoice had
+    834.99 left: the note was carried at -1,664.99 where the receivable held -1,665.00, and the restatement
+    left it a paisa off the 20.00 at the closing rate (calc_g45_numbers/o388.py). None when nothing is absorbed.
+    """
+    from .settlement import absorbed_base, entries_booked
+
+    taken = note.absorbed_into()
+    if not taken or not taken[1]:
+        return None
+    document, amount = taken
+    if amount == note.total():
+        return entries_booked(note)
+    return absorbed_base(document, account, amount)
 
 
 def document_open_on(document, day, later):
@@ -175,8 +196,11 @@ def carried_on(document, day, account, booked, later):
     for when, amount, entries, _words in later:
         if when is None or to_date(when) > day or not amount:
             continue
-        base = booked_on_together([entry for entry in entries if entry is not None], account) if entries else None
-        base = round_money(abs(amount) * rate) if base is None else base
+        if isinstance(entries, Decimal):
+            base = entries  # a note's part absorbed, at the base it cleared (absorbed_cleared, O388)
+        else:
+            base = booked_on_together([entry for entry in entries if entry is not None], account) if entries else None
+            base = round_money(abs(amount) * rate) if base is None else base
         cleared += base if amount > 0 else -base
     return booked - cleared
 

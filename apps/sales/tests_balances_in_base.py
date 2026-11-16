@@ -199,6 +199,34 @@ class TheAgingReadsWhatTheReceivableHoldsTests(BalancesInBaseCase):
         self.assertEqual((self.held(by=MAR(31)), self.total(aging), aging["restated"]["total"]),
                          (D("-25236.00"), D("-25236.00"), D("-261.00")))
 
+    def three_lines_of_ten_oh_one(self):
+        order = SalesOrder.objects.create(customer=self.customer, order_date=MAR(1), currency=self.dollar)
+        for _ in range(3):
+            SalesOrderLine.objects.create(order=order, item=self.item, uom=self.uom, quantity=D("1"),
+                                          unit_price=D("10.01"), revenue_account=self.revenue)
+        order.confirm()
+        return self.bill(order, on=MAR(1))
+
+    def test_a_note_partly_absorbed_is_carried_at_what_its_invoice_had_left_for_it(self):
+        """
+        O388 (calc_g45_numbers/o388.py): three lines of USD 10.01 at 83.25 book 2,499.99; 20.00 received at 84.00
+        clears its slice, 1,665.00, and leaves 834.99 on the invoice. A note of all three, at the invoice's rate
+        (2,499.99), absorbs the 10.03 left and owes 20.00 back: the receivable holds -1,665.00, and restated at
+        84.12 the 20.00 is -1,682.40, a move of -17.40. The absorbed part priced at the rate, 10.03 x 83.25 =
+        835.00, carried the note at -1,664.99: the restatement moved -17.41 and the receivable read -1,682.41.
+        """
+        from apps.accounting.restatement import Restatement
+
+        invoice = self.three_lines_of_ten_oh_one()
+        self.receive("20.00", invoice)
+        note = invoice.create_credit_note(on_date=MAR(25))
+        self.assertEqual((invoice.amount_due(), note.amount_absorbed(), note.refund_due(), self.held()),
+                         (D("0"), D("10.03"), D("20.00"), D("-1665.00")))
+        Restatement.make(MAR(31), rates={"USD": "84.12"})
+        aging = ar_aging(as_of=MAR(31))
+        self.assertEqual((self.held(by=MAR(31)), self.total(aging), aging["restated"]["total"]),
+                         (D("-1682.40"), D("-1682.40"), D("-17.40")))
+
     def test_a_note_wholly_absorbed_into_an_unpaid_invoice_is_restated_once(self):
         """O424, the other reading: unpaid, the note of 700 leaves 300 owing, 24,975.00; at 84.12, 25,236.00."""
         from apps.accounting.restatement import Restatement
