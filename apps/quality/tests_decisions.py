@@ -518,6 +518,26 @@ class LeftUndecidedTests(AwaitingTestCase):
         self.assertIn("0 escalated.", second.getvalue())
         self.assertEqual(self.admins().count(), 1)
 
+    def test_the_morning_checks_escalate_it_once_and_a_dry_run_not_at_all(self):
+        """
+        The cron line the RUNBOOK gives is morning_checks: nothing ran the escalation's own command, so a failure
+        left undecided was never sent to the administrator. The morning checks send it, once.
+        """
+        from io import StringIO
+
+        dry, first, second = StringIO(), StringIO(), StringIO()
+        call_command("morning_checks", "--dry-run", stdout=dry)
+        self.inspection.refresh_from_db()
+        self.assertIsNone(self.inspection.escalated_on)
+        self.assertEqual(self.admins().count(), 0)
+        call_command("morning_checks", stdout=first)
+        call_command("morning_checks", stdout=second)
+        self.assertIn("1 quality decision(s) overdue sent to the administrator.", first.getvalue())
+        self.assertIn("0 quality decision(s) overdue sent to the administrator.", second.getvalue())
+        self.inspection.refresh_from_db()
+        self.assertIsNotNone(self.inspection.escalated_on)
+        self.assertEqual(self.admins().count(), 1)
+
     def test_deciding_closes_the_administrators_too(self):
         escalate_overdue(datetime.date(2026, 6, 3))
         self.decide(self.inspection, "asha", Disposition.REJECT, "Too heavy for the order.")

@@ -3,6 +3,14 @@ The morning's checks, run once a day by cron, and each person told what
 is theirs: one mail a login with something waiting, nothing to the rest.
 Where no mail server is set up it prints the same lines instead of
 failing, so the inbox on the home page is never the only place.
+
+First it sends each quality failure left undecided past the next working
+day to the administrator (decision 22; apps.quality.decisions), so their
+to-do is in this same morning's mail. Its own command,
+escalate_quality_decisions, was scheduled nowhere: no cron line, the
+RUNBOOK or a deploy file named it, and nothing was ever escalated. Escalated
+once (`Inspection.escalated_on`), so a second run the same day sends nothing.
+A dry run escalates nothing.
 """
 
 from django.contrib.auth import get_user_model
@@ -20,6 +28,11 @@ class Command(BaseCommand):
         parser.add_argument("--dry-run", action="store_true", help="Print what would be mailed; send nothing.")
 
     def handle(self, *args, **options):
+        from apps.quality.decisions import escalate_overdue
+
+        if not options["dry_run"]:
+            escalated = escalate_overdue()
+            self.stdout.write(f"{len(escalated)} quality decision(s) overdue sent to the administrator.")
         mailed, quiet, printed = 0, 0, 0
         counted = {}  # the plant-wide answers, found once and told to everyone they are for
         for user in get_user_model().objects.filter(is_active=True).order_by("username"):

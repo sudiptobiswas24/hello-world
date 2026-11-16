@@ -1,8 +1,9 @@
 """
 Failures under an advisory plan left undecided past the next working day,
 each sent to the administrator: a to-do for every active superuser, and a
-mail. Run once a day by cron, before the morning checks. Safe to run
-again: an inspection is escalated once (`Inspection.escalated_on`).
+mail. morning_checks runs the same each morning before it mails anyone; this
+runs it by hand. Safe to run again: an inspection is escalated once
+(`Inspection.escalated_on`).
 """
 
 from django.core.management.base import BaseCommand
