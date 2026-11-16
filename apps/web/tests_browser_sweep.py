@@ -49,6 +49,14 @@ class SweepMixin:
         company = Company.get()
         if not company.tan:
             Company.objects.filter(pk=company.pk).update(tan="CALA12345B")
+        # Without a confirmed gratuity ceiling the gratuity report answers 400 "... has no figure ... have the
+        # Controller confirm it", which is right (hr.tests_gratuity holds it, O551) and opens nothing; an
+        # installed plant has it from setup_statutory and the Controller's confirmation.
+        from apps.hr.statutory import FigureKind, StatutoryFigure
+        from apps.hr.tests_gratuity import confirmed_ceiling
+
+        if not StatutoryFigure.objects.filter(kind=FigureKind.GRATUITY_CEILING).exists():
+            confirmed_ceiling()
         opened = {}
         for role in roles or list(ROLES):
             with self.subTest(role=role):
