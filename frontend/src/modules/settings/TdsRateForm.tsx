@@ -26,7 +26,7 @@ export default function TdsRateForm() {
       actions={[
         // The figures the accountant read, so a row changed since is refused, not confirmed unseen.
         { label: "Confirm", path: "confirm", body: (_values, record) => ({ section: record.section, applies_from: record.applies_from,
-            rate_percent: record.rate_percent, no_pan_rate_percent: record.no_pan_rate_percent, law_section: record.law_section }), permission: "accounting.confirm_tdsrate", when: (row) => !row.confirmed_on,
+            rate_percent: record.rate_percent, no_pan_rate_percent: record.no_pan_rate_percent }), permission: "accounting.confirm_tdsrate", when: (row) => !row.confirmed_on,
           done: "Confirmed: bills are deducted at it from its day" },
       ]}
     />

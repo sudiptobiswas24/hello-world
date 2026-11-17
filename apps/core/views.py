@@ -228,6 +228,7 @@ class PartyViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         party in that role is asked: a rep makes only customers, and the
         customer is theirs once made.
         """
+        takes_only(request.data, "role")
         party = self.get_object()
         role = request.data.get("role") if request.method == "POST" else request.query_params.get("role")
         if role not in TRADING_ROLES:

@@ -2,7 +2,7 @@
 
 from rest_framework import serializers, viewsets
 
-from apps.core.api import ModelSerializer
+from apps.core.api import ModelSerializer, takes_only
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
@@ -86,6 +86,8 @@ class TcsRateViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         from rest_framework.exceptions import ValidationError as DRFValidationError
 
         rate = self.get_object()
+        # The figures it confirms are the keys it takes (O579): any other is refused, not dropped.
+        takes_only(request.data, *(self.READ_AS.get(name, name) for name in rate.FIGURES))
         seen = {name: request.data.get(self.READ_AS.get(name, name)) for name in rate.FIGURES}
         try:
             rate.confirm(request.user, seen=seen)

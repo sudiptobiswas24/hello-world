@@ -7,7 +7,7 @@ from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.permissions import IsAuthenticated
 
 from apps.accounting.defaults import chosen_or_default
-from apps.core.api import flag, money_amount, number, posts_its_notes, quantities_by_line, record_or_404
+from apps.core.api import flag, money_amount, number, posts_its_notes, quantities_by_line, record_or_404, takes_only
 from apps.inventory.models import Warehouse
 from apps.core.models import to_date
 from apps.core.permissions import ActionPermission, RequiredPermission
@@ -102,6 +102,7 @@ class PurchaseOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def send(self, request, pk=None):
         """Email the PDF; {"to", "subject", "body"} override the party's address and the wording."""
+        takes_only(request.data, "body", "subject", "to")
         document = self.get_object()
         recipient = document.email_to_vendor(to=request.data.get("to") or None, subject=request.data.get("subject") or None,
                                  body=request.data.get("body") or None, user=request.user)
@@ -110,6 +111,7 @@ class PurchaseOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def receive(self, request, pk=None):
         """{receipt_date?, warehouse?}: a draft receipt of what is still to come."""
+        takes_only(request.data, "receipt_date", "warehouse")
         order = self.get_object()
         warehouse = request.data.get("warehouse")
         receipt = order.create_receipt(
@@ -127,6 +129,7 @@ class PurchaseOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         """
         from apps.inventory.models import Item
 
+        takes_only(request.data, "quantities", "warehouse")
         order = self.get_object()
         warehouse = record_or_404(Warehouse, request.data.get("warehouse"), "warehouse")
         given = request.data.get("quantities") or None
@@ -170,6 +173,7 @@ class PurchaseOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         order's own check (its tiers), not this view's. The mirror of sales:
         purchasing had the permission and the tiers and no way to use them.
         """
+        takes_only(request.data, "note")
         order = self.get_object()
         try:
             order.approve(by=request.user, note=request.data.get("note", ""))
@@ -188,6 +192,7 @@ class PurchaseOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def create_bill(self, request, pk=None):
+        takes_only(request.data, "bill_date", "payable_account", "reference")
         order = self.get_object()
         account = chosen_or_default(request.data, "payable_account", "payable")
         try:
@@ -206,6 +211,7 @@ class PurchaseOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         {payable_account?, amount | percent, bill_date?, description?}: a
         draft prepayment bill, the vendor asking for money up front.
         """
+        takes_only(request.data, "amount", "bill_date", "description", "payable_account", "percent")
         order = self.get_object()
         account = chosen_or_default(request.data, "payable_account", "payable")
         # An amount to the paisa, or a percent to four places; the model asks that just one is given.
@@ -235,6 +241,7 @@ class PurchaseOrderLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=["post"], url_path="close-short")
     def close_short(self, request, pk=None):
         """{reason}: the vendor will send no more of this line."""
+        takes_only(request.data, "reason")
         line = self.get_object()
         try:
             line.close_short(request.data.get("reason", ""))
@@ -295,6 +302,8 @@ class BillViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         from apps.assets.serializers import FixedAssetSerializer
         from apps.core.api import whole_number
 
+        takes_only(request.data, "category", "in_service_date", "life_months", "line", "name", "on_date",
+                   "salvage_value")
         bill = self.get_object()
         line = record_or_404(BillLine.objects.filter(bill=bill), request.data.get("line"), "line")
         category = record_or_404(AssetCategory, request.data.get("category"), "category")
@@ -329,6 +338,7 @@ class BillViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         """The vendor's early-payment discount on the payment ({"payment"}) made within its days (O109)."""
         from apps.accounting.models import Payment
 
+        takes_only(request.data, "date", "payment")
         bill = self.get_object()
         payment = record_or_404(Payment, request.data.get("payment"), "payment")
         try:
@@ -355,6 +365,7 @@ class BillViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
         from .freight import carry, uncarry
 
+        takes_only(request.data, "delivery")
         bill = self.get_object()
         given = request.data.get("delivery") if request.method == "POST" else request.query_params.get("delivery")
         delivery = record_or_404(Delivery, given, "delivery")
@@ -366,6 +377,7 @@ class BillViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         """Tax deducted from what the bill owes: under {"section"}, or the vendor's own."""
         from apps.accounting.models import TdsSection
 
+        takes_only(request.data, "date", "section")
         bill = self.get_object()
         section = request.data.get("section")
         section = record_or_404(TdsSection, section, "section", optional=True)
@@ -382,6 +394,8 @@ class BillViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         from apps.accounting.old_supply import from_request
         from apps.inventory.models import Item
 
+        takes_only(request.data, "expense_account", "lines", "memo", "old_value", "on_date", "supplier_note_date",
+                   "supplier_note_number")
         bill = self.get_object()
         lines, memo, on_date, old_value = from_request(request.data, "expense_account", Item)
         try:
@@ -402,6 +416,7 @@ class BillViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def post_bill(self, request, pk=None):
+        takes_only(request.data, "memo")
         bill = self.get_object()
         try:
             bill.post(memo=request.data.get("memo"))
@@ -417,6 +432,7 @@ class BillViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         on a posted note recorded already, corrected only with a reason.
         Asked of whoever may issue debit notes.
         """
+        takes_only(request.data, "reason", "supplier_note_date", "supplier_note_number")
         note = self.get_object()
         try:
             note.record_supplier_note(request.data.get("supplier_note_number") or "",
@@ -433,6 +449,7 @@ class BillViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         to give back part of it; {"supplier_note_number", "supplier_note_date"}
         record the supplier's credit note for it.
         """
+        takes_only(request.data, "amount", "memo", "quantities", "supplier_note_date", "supplier_note_number")
         bill = self.get_object()
         quantities = quantities_by_line(request.data.get("quantities"), bill.lines.all(), "bill")
         amount = money_amount(request.data, "amount")  # a prepayment's, part of what is left
@@ -497,6 +514,7 @@ class GoodsReceiptViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         """A scanned item or batch adds its line on this draft, or counts it up by `quantity`."""
         from .scanning import scan_into_receipt
 
+        takes_only(request.data, "code", "key", "quantity")
         receipt = self.get_object()
         if not request.data.get("code"):
             raise DRFValidationError("code is required.")
@@ -548,6 +566,7 @@ class GoodsReceiptViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         POST {objection_removed_on} records the day the supplier removed it;
         DELETE withdraws one keyed in error.
         """
+        takes_only(request.data, "objected_on", "objection", "objection_removed_on")
         receipt = self.get_object()
         was = (receipt.objected_on, receipt.objection_removed_on)
         if request.method == "DELETE":
@@ -568,6 +587,7 @@ class GoodsReceiptViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         Assemblies held for the batch they were made from are a concession: a reason, and
         whoever asks is named as deciding it.
         """
+        takes_only(request.data, "quantities", "reason", "warehouse")
         receipt = self.get_object()
         warehouse = record_or_404(Warehouse, request.data.get("warehouse"), "warehouse")
         quantities = quantities_by_line(request.data.get("quantities"), receipt.lines.all(), "receipt")
@@ -579,6 +599,7 @@ class GoodsReceiptViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def reject(self, request, pk=None):
         """{quantities?, note, debit_bills?}: held goods failed, and sent back to the vendor."""
+        takes_only(request.data, "debit_bills", "note", "quantities")
         receipt = self.get_object()
         quantities = quantities_by_line(request.data.get("quantities"), receipt.lines.all(), "receipt")
         if not str(request.data.get("note", "")).strip():
@@ -612,6 +633,7 @@ class GoodsReceiptViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         {"quantities": {"<receipt_line_id>": "20"}} sends back part; {"date"} the day
         they went back, which its debit notes are dated on too.
         """
+        takes_only(request.data, "date", "debit_bills", "quantities")
         receipt = self.get_object()
         quantities = quantities_by_line(request.data.get("quantities"), receipt.lines.all(), "receipt")
         debit = flag(request.data, "debit_bills", True)
@@ -646,6 +668,7 @@ class ReceiptRoutingMixin:
 
     @action(detail=True, methods=["post"], url_path="advance")
     def advance(self, request, pk=None):
+        takes_only(request.data, "quantity")
         line = self.get_object()
         move = _run(line.advance, quantity=request.data.get("quantity"))
         return Response({
@@ -728,6 +751,7 @@ class PurchasingReportViewSet(viewsets.ViewSet):
     @action(detail=False, methods=["post"], url_path="request-quotes")
     def ask_quotes(self, request):
         """{lines: [requisition line ids], issue_date?, response_due?}: one request for quotation for what is left of them."""
+        takes_only(request.data, "issue_date", "lines", "response_due")
         try:
             ids = {int(line_id) for line_id in (request.data.get("lines") or [])}
         except (TypeError, ValueError):
@@ -879,6 +903,8 @@ class PurchasingReportViewSet(viewsets.ViewSet):
         from apps.accounting.models import Account
         from apps.inventory.models import Item, Warehouse
 
+        takes_only(request.data, "from_warehouse", "item", "on_date", "payable_account", "quantity", "to_warehouse",
+                   "unit_price")
         required = ("item", "from_warehouse", "to_warehouse", "quantity",
                     "payable_account")
         missing = [field for field in required if request.data.get(field) is None]
@@ -909,6 +935,7 @@ class PurchasingReportViewSet(viewsets.ViewSet):
         """
         from apps.inventory.models import Warehouse
 
+        takes_only(request.data, "on_date", "warehouse")
         warehouse_id = request.data.get("warehouse")
         requisition = _run(
             raise_reorder_requisition,
@@ -977,6 +1004,7 @@ class WeightClaimViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def settle(self, request, pk=None):
         """{bill_line, on_date, supplier_note_number} against the supplier; {on_date} against the transporter."""
+        takes_only(request.data, "bill_line", "on_date", "supplier_note_number")
         claim = self.get_object()
         bill_line = record_or_404(BillLine, request.data.get("bill_line"), "bill_line", optional=True)
         claim.settle(bill_line=bill_line, on_date=request.data.get("on_date") or None,
@@ -985,6 +1013,7 @@ class WeightClaimViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def withdraw(self, request, pk=None):
+        takes_only(request.data, "on_date", "reason")
         claim = self.get_object()
         claim.withdraw(reason=request.data.get("reason") or "", on_date=request.data.get("on_date") or None)
         return Response(self.get_serializer(claim).data)

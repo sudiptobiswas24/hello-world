@@ -15,7 +15,7 @@ from rest_framework.permissions import IsAuthenticated
 from apps.core.permissions import ActionPermission, RequiredPermission
 from rest_framework.response import Response
 
-from apps.core.api import NOT_NEGATIVE, flag, money_amount, number, posts_its_notes, quantities_by_line, record_or_404
+from apps.core.api import NOT_NEGATIVE, flag, money_amount, number, posts_its_notes, quantities_by_line, record_or_404, takes_only
 from apps.accounting.models import PartyTaxProfile
 from apps.accounting.serializers import PartyTaxProfileSerializer
 from apps.core.models import Party, PartyRole, to_date
@@ -158,6 +158,7 @@ class SalesOrderViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.Mod
     @action(detail=True, methods=["post"])
     def send(self, request, pk=None):
         """Email the acknowledgement or the proforma ({"kind"}); {"to", "subject", "body"} override the wording."""
+        takes_only(request.data, "body", "kind", "subject", "to")
         order = self.get_object()
         try:
             recipient = order.email_to_customer(to=request.data.get("to") or None,
@@ -178,6 +179,7 @@ class SalesOrderViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.Mod
     @action(detail=True, methods=["post"])
     def ship(self, request, pk=None):
         """{delivery_date?, warehouse?}: a draft delivery of what is still owed."""
+        takes_only(request.data, "delivery_date", "warehouse")
         order = self.get_object()
         warehouse = request.data.get("warehouse")
         delivery = order.create_delivery(
@@ -216,6 +218,7 @@ class SalesOrderViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.Mod
 
     @action(detail=True, methods=["post"])
     def approve(self, request, pk=None):
+        takes_only(request.data, "note")
         order = self.get_object()
         try:
             order.approve(by=request.user, note=request.data.get("note", ""))
@@ -234,6 +237,7 @@ class SalesOrderViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.Mod
 
     @action(detail=True, methods=["post"])
     def create_invoice(self, request, pk=None):
+        takes_only(request.data, "invoice_date", "receivable_account")
         order = self.get_object()
         account = chosen_or_default(request.data, "receivable_account", "receivable")
         try:
@@ -252,6 +256,7 @@ class SalesOrderViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.Mod
         a draft down-payment invoice. The model had it; nothing outside
         code could reach it, so a screen could not take an advance.
         """
+        takes_only(request.data, "amount", "description", "invoice_date", "percent", "receivable_account")
         order = self.get_object()
         account = chosen_or_default(request.data, "receivable_account", "receivable")
         # An amount to the paisa, or a percent to four places; the model asks that just one is given.
@@ -281,6 +286,7 @@ class SalesOrderLineViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets
     @action(detail=True, methods=["post"], url_path="close-short")
     def close_short(self, request, pk=None):
         """{reason}: the customer wants no more of this line."""
+        takes_only(request.data, "reason")
         line = self.get_object()
         try:
             line.close_short(request.data.get("reason", ""))
@@ -364,6 +370,7 @@ class InvoiceViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.ModelV
     @action(detail=False, methods=["post"])
     def claim(self, request):
         """Money given back on a customer's claim: {invoice, net, reason, memo, date}; the credit note made."""
+        takes_only(request.data, "date", "invoice", "memo", "net", "reason")
         given = str(request.data.get("invoice") or "")
         invoice = self.get_queryset().filter(pk=int(given)).first() if given.isdigit() else None
         if invoice is None:
@@ -392,6 +399,7 @@ class InvoiceViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.ModelV
     @action(detail=True, methods=["post"])
     def debit_note(self, request, pk=None):
         """A debit note for what was short-billed ({"net"} before tax, {"reason"}, {"date"}): O235."""
+        takes_only(request.data, "date", "net", "reason")
         invoice = self.get_object()
         try:
             note = invoice.debit(money_amount(request.data, "net"), request.data.get("reason") or "",
@@ -408,6 +416,7 @@ class InvoiceViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.ModelV
         """
         from apps.accounting.models import Payment
 
+        takes_only(request.data, "date", "payment")
         invoice = self.get_object()
         payment = record_or_404(Payment, request.data.get("payment"), "payment")
         try:
@@ -420,6 +429,7 @@ class InvoiceViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.ModelV
     @action(detail=True, methods=["post"])
     def write_off(self, request, pk=None):
         """What is left, or {"amount": "..."} of it, to bad debt; with a reason."""
+        takes_only(request.data, "amount", "date", "reason")
         invoice = self.get_object()
         reason = (request.data.get("reason") or "").strip()
         if not reason:
@@ -445,6 +455,7 @@ class InvoiceViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.ModelV
         from apps.accounting.old_supply import from_request
         from apps.inventory.models import Item
 
+        takes_only(request.data, "lines", "memo", "old_value", "on_date", "revenue_account")
         invoice = self.get_object()
         try:
             usual = default_account("revenue")
@@ -459,6 +470,7 @@ class InvoiceViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.ModelV
 
     @action(detail=True, methods=["post"])
     def post_invoice(self, request, pk=None):
+        takes_only(request.data, "memo")
         invoice = self.get_object()
         try:
             invoice.post(memo=request.data.get("memo"))
@@ -491,6 +503,7 @@ class InvoiceViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.ModelV
     @action(detail=True, methods=["post"])
     def send(self, request, pk=None):
         """Email the invoice as a PDF. {"to": "..."} overrides the recipient."""
+        takes_only(request.data, "body", "subject", "to")
         invoice = self.get_object()
         try:
             recipient = invoice.email_to_customer(
@@ -545,6 +558,7 @@ class InvoiceViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.ModelV
         Credit the whole invoice, or pass
         {"quantities": {"<invoice_line_id>": "3"}} to credit part of it.
         """
+        takes_only(request.data, "amount", "memo", "quantities")
         invoice = self.get_object()
         quantities = quantities_by_line(request.data.get("quantities"), invoice.lines.all(), "invoice")
         amount = money_amount(request.data, "amount")  # a down payment's, part of what is left
@@ -641,6 +655,7 @@ class DeliveryViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.Model
         """{line}: the batch a scan named taken off it again, its quantity back on the line it came from."""
         from .scanning import unpick
 
+        takes_only(request.data, "line")
         delivery = self.get_object()
         try:
             line = unpick(delivery, request.data.get("line"))
@@ -653,6 +668,7 @@ class DeliveryViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.Model
         """A scanned batch is named on this draft's line for its item (apps.sales.scanning)."""
         from .scanning import scan_into_delivery
 
+        takes_only(request.data, "code", "key")
         delivery = self.get_object()
         if not request.data.get("code"):
             raise DRFValidationError("code is required.")
@@ -705,6 +721,7 @@ class DeliveryViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.Model
     @action(detail=True, methods=["post"])
     def received(self, request, pk=None):
         """The customer's acknowledgement: {received_on, received_by, reference}."""
+        takes_only(request.data, "received_by", "received_on", "reference")
         delivery = self.get_object()
         delivery.record_receipt(request.data.get("received_on"), request.data.get("received_by") or "",
                                 request.data.get("reference") or "")
@@ -728,6 +745,7 @@ class DeliveryViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.Model
     @action(detail=True, methods=["post"])
     def send(self, request, pk=None):
         """Email the PDF; {"to", "subject", "body"} override the party's address and the wording."""
+        takes_only(request.data, "body", "subject", "to")
         document = self.get_object()
         recipient = document.email_to_customer(to=request.data.get("to") or None, subject=request.data.get("subject") or None,
                                  body=request.data.get("body") or None, user=request.user)
@@ -736,6 +754,7 @@ class DeliveryViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.Model
     @action(detail=True, methods=["post"])
     def transport(self, request, pk=None):
         """Who carried it: {transporter, lr_number, lr_date, vehicle_number}, after it shipped too."""
+        takes_only(request.data, "lr_date", "lr_number", "transporter", "vehicle_number")
         delivery = self.get_object()
         given = request.data.get("transporter")
         transporter = record_or_404(Party, given, "transporter", optional=True)
@@ -746,6 +765,7 @@ class DeliveryViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.Model
     @action(detail=True, methods=["post"])
     def travels_on(self, request, pk=None):
         """The invoice its goods travelled under: {invoice}, or null to take it off (limit 20)."""
+        takes_only(request.data, "invoice")
         delivery = self.get_object()
         delivery.travel_on(record_or_404(Invoice, request.data.get("invoice"), "invoice", optional=True))
         return Response(self.get_serializer(delivery).data)
@@ -755,6 +775,7 @@ class DeliveryViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.Model
         """The weighbridge slip of the truck it left on: {weighing}, or null to take it off."""
         from apps.inventory.models import Weighing
 
+        takes_only(request.data, "weighing")
         delivery = self.get_object()
         weighing = record_or_404(Weighing, request.data.get("weighing"), "weighing", optional=True)
         delivery.record_weighing(weighing)
@@ -772,6 +793,7 @@ class DeliveryViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.Model
     @action(detail=True, methods=["post"])
     def backorder(self, request, pk=None):
         """Raise a draft delivery for whatever this shipment left behind."""
+        takes_only(request.data, "delivery_date")
         delivery = self.get_object()
         try:
             created = delivery.create_backorder(
@@ -788,6 +810,7 @@ class DeliveryViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.Model
         {"credit_invoices": false} is passed (a replacement, not a refund).
         {"quantities": {"<delivery_line_id>": "20"}} takes back part.
         """
+        takes_only(request.data, "credit_invoices", "quantities")
         delivery = self.get_object()
         credit = flag(request.data, "credit_invoices", True)
         quantities = quantities_by_line(request.data.get("quantities"), delivery.lines.all(), "delivery")
@@ -885,6 +908,7 @@ class QuotationViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.Mode
     @action(detail=True, methods=["post"])
     def send(self, request, pk=None):
         """Email the quote as a PDF and mark it sent."""
+        takes_only(request.data, "body", "subject", "to")
         quotation = self.get_object()
         try:
             recipient = quotation.email_to_customer(
@@ -909,6 +933,7 @@ class QuotationViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.Mode
     @action(detail=True, methods=["post"])
     def revise(self, request, pk=None):
         """Supersede this quote with an editable revision."""
+        takes_only(request.data, "quotation_date", "valid_until")
         quotation = self.get_object()
         try:
             revision = quotation.create_revision(
@@ -932,6 +957,7 @@ class QuotationViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.Mode
     @action(detail=True, methods=["post"])
     def accept(self, request, pk=None):
         """Convert to a confirmed sales order."""
+        takes_only(request.data, "approve", "order_date")
         quotation = self.get_object()
         try:
             # Approving as part of acceptance needs the approval
@@ -968,6 +994,7 @@ class DunningLevelViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         Raise the reminders now due. {"send": false} records them without
         emailing, which is how you preview a run.
         """
+        takes_only(request.data, "as_of", "send")
         notices = run_dunning(
             as_of=request.data.get("as_of"),
             send=flag(request.data, "send", True),
@@ -1051,6 +1078,7 @@ class RecurringInvoiceViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewse
     @action(detail=True, methods=["post"])
     def generate(self, request, pk=None):
         """Issue the next invoice in this series."""
+        takes_only(request.data, "next_run_date", "on_date")
         schedule = self.get_object()
         self._may_post(request, [schedule])
         try:
@@ -1063,6 +1091,7 @@ class RecurringInvoiceViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewse
     @action(detail=False, methods=["post"])
     def run(self, request):
         """Issue every invoice now due across all active schedules."""
+        takes_only(request.data, "as_of")
         as_of = to_date(request.data.get("as_of")) or timezone.localdate()
         self._may_post(request, [s for s in RecurringInvoice.objects.filter(is_active=True, auto_post=True)
                                  if s.next_run_date and s.next_run_date <= as_of and not s.has_finished()])
@@ -1114,6 +1143,7 @@ class SalesReportViewSet(viewsets.ViewSet):
         Send everybody their statement. A POST, because it sends email —
         a report you can refresh by reloading should not be one.
         """
+        takes_only(request.data, "as_of")
         sent = send_statements(as_of=request.data.get("as_of"))
         return Response({"sent": len(sent) if sent is not None else 0})
 
@@ -1134,6 +1164,8 @@ class ThirdPartyReleaseViewSet(CustomerScopedMixin, AuditableViewSetMixin, views
     def record(self, request):
         from django.db import transaction
 
+        takes_only(request.data, "agency", "customer", "inspected_on", "inspector", "lines", "sales_order",
+                   "their_reference")
         data = request.data
         rows = data.get("lines") or []
         try:
@@ -1164,6 +1196,7 @@ class ThirdPartyReleaseViewSet(CustomerScopedMixin, AuditableViewSetMixin, views
 
     @action(detail=True, methods=["post"])
     def void(self, request, pk=None):
+        takes_only(request.data, "reason")
         release = self.get_object()
         try:
             release.void(request.data.get("reason", ""))

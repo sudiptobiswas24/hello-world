@@ -21,7 +21,7 @@ from rest_framework.permissions import IsAuthenticated
 from apps.core.permissions import ActionPermission, RequiredPermission
 from rest_framework.response import Response
 
-from apps.core.api import flag
+from apps.core.api import flag, takes_only
 from apps.core.audit import AuditableViewSetMixin
 
 from .models import (
@@ -182,6 +182,7 @@ class ItemViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         Changing a standard revalues the stock on hand, which is a
         posting — so it is an action and not a writable field.
         """
+        takes_only(request.data, "on_date", "reason", "standard_cost")
         item = self.get_object()
         amount = request.data.get("standard_cost")
         if amount is None:
@@ -338,12 +339,14 @@ class StockAdjustmentViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def post(self, request, pk=None):
+        takes_only(request.data, "memo")
         adjustment = self.get_object()
         _run(adjustment.post, memo=request.data.get("memo", ""))
         return self._as_it_now_stands()
 
     @action(detail=True, methods=["post"])
     def void(self, request, pk=None):
+        takes_only(request.data, "memo", "on_date")
         adjustment = self.get_object()
         _run(
             adjustment.void,
@@ -385,6 +388,7 @@ class StockCountViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         """
         from .scanning import scan_into_count
 
+        takes_only(request.data, "bin", "code", "key", "quantity")
         count = self.get_object()
         code = request.data.get("code")
         if not code:
@@ -405,6 +409,7 @@ class StockCountViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         which is the whole point of the document and cannot be done by
         POSTing a line with a system quantity of the caller's choosing.
         """
+        takes_only(request.data, "bin", "counted_quantity", "item", "lot")
         count = self.get_object()
         item = get_object_or_404(Item, pk=request.data.get("item"))
         counted = request.data.get("counted_quantity")
@@ -424,6 +429,7 @@ class StockCountViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def post(self, request, pk=None):
+        takes_only(request.data, "memo")
         count = self.get_object()
         adjustment = _run(count.post, memo=request.data.get("memo", ""))
         return Response({
@@ -464,6 +470,7 @@ class StockTransferViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         """
         from .scanning import scan_into_transfer
 
+        takes_only(request.data, "code", "from_bin", "key", "quantity", "stage")
         transfer = self.get_object()
         code, stage = request.data.get("code"), request.data.get("stage") or "goods"
         if not code:
@@ -503,6 +510,7 @@ class StockTransferViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         less than it left with. Omit it and everything still in transit
         arrives.
         """
+        takes_only(request.data, "quantities")
         transfer = self.get_object()
         supplied = request.data.get("quantities")
         quantities = None
@@ -516,6 +524,7 @@ class StockTransferViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def cancel(self, request, pk=None):
+        takes_only(request.data, "memo")
         transfer = self.get_object()
         _run(transfer.cancel, memo=request.data.get("memo", ""))
         return Response(self.get_serializer(transfer).data)

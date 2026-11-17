@@ -7,7 +7,7 @@ from django.db import transaction
 from django.utils import timezone
 from rest_framework import mixins, serializers, viewsets
 
-from apps.core.api import ModelSerializer
+from apps.core.api import ModelSerializer, takes_only
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.exceptions import ValidationError as DRFValidationError
@@ -86,6 +86,7 @@ class IntegrationViewSet(AuditableViewSetMixin, mixins.CreateModelMixin, mixins.
         """A new key ({"label", "expires_on"}), shown in this answer and never again."""
         from .users_api import check_may_know
 
+        takes_only(request.data, "expires_on", "label")
         integration = self.get_object()
         if not request.user.has_perm("core.add_apikey"):
             raise PermissionDenied("Issuing an API key needs the right to add API keys.")

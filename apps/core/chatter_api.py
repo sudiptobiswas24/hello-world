@@ -206,6 +206,7 @@ class FollowUpViewSet(viewsets.ViewSet):
     @action(detail=True, methods=["post"])
     @transaction.atomic
     def done(self, request, pk=None):
+        takes_only(request.data, "outcome")
         row = self._changeable(request, pk)
         row.mark_done(request.user, outcome=str(request.data.get("outcome", "")))
         row.refresh_from_db()

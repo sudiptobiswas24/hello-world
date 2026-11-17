@@ -6,7 +6,7 @@ from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.response import Response
 
 from apps.accounting.models import JournalLine
-from apps.core.api import NOT_NEGATIVE, number
+from apps.core.api import NOT_NEGATIVE, number, takes_only
 from apps.core.audit import AuditableViewSetMixin
 from apps.core.models import day_that_has_come, lock_rows, to_date
 
@@ -87,12 +87,14 @@ class FixedAssetViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"], url_path="place-in-service")
     def place_in_service(self, request, pk=None):
+        takes_only(request.data, "on_date")
         asset = self.get_object()
         _run(asset.place_in_service, on_date=_date(request, "on_date"))
         return Response(self.get_serializer(asset).data)
 
     @action(detail=True, methods=["post"])
     def depreciate(self, request, pk=None):
+        takes_only(request.data, "through")
         asset = self.get_object()
         made = _run(asset.depreciate, through=_date(request, "through"))
         return Response({
@@ -110,6 +112,7 @@ class FixedAssetViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         entry; the sale itself is invoiced to the buyer with the
         category's disposal account as revenue — this banks nothing.
         """
+        takes_only(request.data, "memo", "on_date", "proceeds")
         asset = self.get_object()
         # Money, to the paisa, at the column the entry books it in: a journal line holds 18 digits, 2 of them places.
         proceeds = number(request.data, "proceeds", field=JournalLine._meta.get_field("debit"), sign=NOT_NEGATIVE,
@@ -123,6 +126,7 @@ class FixedAssetViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def reinstate(self, request, pk=None):
         """A disposal recorded in error, taken back: `on_date` only matters where its month has closed."""
+        takes_only(request.data, "memo", "on_date")
         asset = self.get_object()
         _run(asset.reinstate, on_date=_date(request, "on_date"), memo=request.data.get("memo", ""))
         return Response(self.get_serializer(asset).data)
@@ -130,12 +134,14 @@ class FixedAssetViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=["post"], url_path="remove-opening")
     def remove_opening(self, request, pk=None):
         """An asset typed in by hand, taken off the books while nothing else is posted against it."""
+        takes_only(request.data, "memo", "on_date")
         asset = self.get_object()
         _run(asset.remove_opening, on_date=_date(request, "on_date"), memo=request.data.get("memo", ""))
         return Response(self.get_serializer(asset).data)
 
     @action(detail=True, methods=["post"])
     def uncapitalise(self, request, pk=None):
+        takes_only(request.data, "on_date")
         asset = self.get_object()
         _run(asset.uncapitalise, on_date=_date(request, "on_date"))
         return Response(self.get_serializer(asset).data)
@@ -147,6 +153,7 @@ class FixedAssetViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         `through`. All or nothing — a run that stops half-way leaves a
         month charged for some machines and not others.
         """
+        takes_only(request.data, "through")
         through = _date(request, "through")
         if through is not None:
             # Refused with nothing in service too: the run is not a way past the rule.

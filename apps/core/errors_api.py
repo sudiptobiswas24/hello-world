@@ -2,7 +2,7 @@
 
 from rest_framework import serializers, viewsets
 
-from apps.core.api import ModelSerializer
+from apps.core.api import ModelSerializer, takes_only
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
@@ -47,6 +47,7 @@ class ServerErrorViewSet(viewsets.ReadOnlyModelViewSet):
 
     @action(detail=True, methods=["post"])
     def resolve(self, request, pk=None):
+        takes_only(request.data, "note")
         row = self.get_object()
         row.resolve(by=request.user, note=str(request.data.get("note") or "")[:255])
         return Response(self.get_serializer(row).data)

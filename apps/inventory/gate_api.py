@@ -12,7 +12,7 @@ from django.db.models import Q
 from django.shortcuts import get_object_or_404
 from rest_framework import serializers, viewsets
 
-from apps.core.api import ModelSerializer
+from apps.core.api import ModelSerializer, takes_only
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
@@ -172,6 +172,7 @@ class GateVisitViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def cancel(self, request, pk=None):
+        takes_only(request.data, "reason")
         visit = self.get_object()
         visit.cancel(reason=request.data.get("reason") or "")
         return Response(self.get_serializer(visit).data)
@@ -179,6 +180,7 @@ class GateVisitViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def weigh(self, request, pk=None):
         """A weighing of this vehicle on {scale_code}, the weighbridge's scale."""
+        takes_only(request.data, "scale_code")
         visit = self.get_object()
         weighing = visit.start_weighing(scale_code=request.data.get("scale_code") or "")
         return Response(WeighingSerializer(weighing).data, status=201)
@@ -199,6 +201,7 @@ class WeighingViewSet(AuditableViewSetMixin, viewsets.ReadOnlyModelViewSet):
     def record(self, request, pk=None):
         """A typed weight: {side: gross|tare, source: typed, kg, reason, note}; needs inventory.type_weight.
         From the scale: /api/manufacturing/weighbridge/{id}/from-scale/, where the readings are."""
+        takes_only(request.data, "kg", "note", "reason", "side", "source")
         weighing = self.get_object()
         weighing.record(request.data.get("side"), request.data.get("source"), kg=request.data.get("kg"),
                         reason=request.data.get("reason") or "", note=request.data.get("note") or "",
@@ -207,6 +210,7 @@ class WeighingViewSet(AuditableViewSetMixin, viewsets.ReadOnlyModelViewSet):
 
     @action(detail=True, methods=["post"])
     def replace(self, request, pk=None):
+        takes_only(request.data, "reason")
         weighing = self.get_object()
         following = weighing.replace(reason=request.data.get("reason") or "")
         return Response(self.get_serializer(following).data, status=201)
@@ -254,6 +258,7 @@ class GatePassViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def cancel(self, request, pk=None):
+        takes_only(request.data, "reason")
         gate_pass = self.get_object()
         gate_pass.cancel(reason=request.data.get("reason") or "")
         return Response(self.get_serializer(gate_pass).data)
@@ -261,6 +266,7 @@ class GatePassViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def returned(self, request, pk=None):
         """What came back: {line, quantity, returned_on, condition: good|damaged, note, visit}."""
+        takes_only(request.data, "condition", "line", "note", "quantity", "returned_on", "visit")
         gate_pass = self.get_object()
         line = get_object_or_404(GatePassLine, pk=request.data.get("line"), gate_pass=gate_pass)
         visit = record_or_404(GateVisit, request.data.get("visit"), "visit", optional=True)
@@ -271,6 +277,7 @@ class GatePassViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"], url_path="cancel-return")
     def cancel_return(self, request, pk=None):
+        takes_only(request.data, "entry", "reason")
         gate_pass = self.get_object()
         entry = get_object_or_404(GatePassReturn, pk=request.data.get("entry"), line__gate_pass=gate_pass)
         gate_pass.cancel_return(entry, reason=request.data.get("reason") or "")

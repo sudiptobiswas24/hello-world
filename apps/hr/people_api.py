@@ -10,7 +10,7 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import Q
 from rest_framework import serializers, viewsets
 
-from apps.core.api import ModelSerializer
+from apps.core.api import ModelSerializer, takes_only
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.response import Response
@@ -158,6 +158,7 @@ class ExpenseClaimViewSet(OwnOrReportsMixin, AuditableViewSetMixin, viewsets.Mod
 
     @action(detail=True, methods=["post"])
     def approve(self, request, pk=None):
+        takes_only(request.data, "note")
         claim = self.get_object()
         _run(claim.approve, _me(request), note=str(request.data.get("note", "")),
              as_hr=request.user.has_perm("hr.decide_any_expenseclaim"))
@@ -165,6 +166,7 @@ class ExpenseClaimViewSet(OwnOrReportsMixin, AuditableViewSetMixin, viewsets.Mod
 
     @action(detail=True, methods=["post"])
     def reject(self, request, pk=None):
+        takes_only(request.data, "note")
         claim = self.get_object()
         _run(claim.reject, _me(request), note=str(request.data.get("note", "")),
              as_hr=request.user.has_perm("hr.decide_any_expenseclaim"))
@@ -175,6 +177,7 @@ class ExpenseClaimViewSet(OwnOrReportsMixin, AuditableViewSetMixin, viewsets.Mod
         """{paid_from, on_date?, memo?}: one journal, the claim recorded as paid."""
         from apps.accounting.models import Account
 
+        takes_only(request.data, "memo", "on_date", "paid_from")
         claim = self.get_object()
         _run(claim.pay, record_or_404(Account, request.data.get("paid_from"), "paid_from", optional=True),
              on_date=request.data.get("on_date"), memo=str(request.data.get("memo", "")))
@@ -183,6 +186,7 @@ class ExpenseClaimViewSet(OwnOrReportsMixin, AuditableViewSetMixin, viewsets.Mod
     @action(detail=True, methods=["post"])
     def unpay(self, request, pk=None):
         """{reason, on_date?}: the payment reversed, the claim approved again."""
+        takes_only(request.data, "on_date", "reason")
         claim = self.get_object()
         _run(claim.unpay, str(request.data.get("reason", "")), on_date=request.data.get("on_date"))
         return self._answer(claim)
@@ -311,6 +315,7 @@ class TimesheetViewSet(OwnOrReportsMixin, AuditableViewSetMixin, viewsets.ModelV
 
     @action(detail=True, methods=["post"])
     def reject(self, request, pk=None):
+        takes_only(request.data, "note")
         sheet = self.get_object()
         _run(sheet.reject, _me(request), note=str(request.data.get("note", "")))
         return self._answer(sheet)
@@ -318,6 +323,7 @@ class TimesheetViewSet(OwnOrReportsMixin, AuditableViewSetMixin, viewsets.ModelV
     @action(detail=True, methods=["post"])
     def send_back(self, request, pk=None):
         """{note?}: back to a draft in its person's hands; refused once a posted run paid the hours."""
+        takes_only(request.data, "note")
         sheet = self.get_object()
         _run(sheet.send_back, note=str(request.data.get("note", "")), by=_me(request))
         return self._answer(sheet)
@@ -420,6 +426,7 @@ class AppraisalViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def acknowledge(self, request, pk=None):
+        takes_only(request.data, "comment")
         appraisal = self.get_object()
         if appraisal.employee != _me(request):
             raise DRFValidationError(["Only the person appraised acknowledges it."])
@@ -486,6 +493,7 @@ class JobOpeningViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def close(self, request, pk=None):
+        takes_only(request.data, "on_date")
         opening = self.get_object()
         _run(opening.close, on_date=request.data.get("on_date"))
         return self._answer(opening)
@@ -505,12 +513,14 @@ class ApplicantViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def advance(self, request, pk=None):
+        takes_only(request.data, "stage")
         applicant = self.get_object()
         _run(applicant.advance, str(request.data.get("stage", "")))
         return self._answer(applicant)
 
     @action(detail=True, methods=["post"])
     def reject(self, request, pk=None):
+        takes_only(request.data, "reason")
         applicant = self.get_object()
         _run(applicant.reject, str(request.data.get("reason", "")))
         return self._answer(applicant)
@@ -518,6 +528,7 @@ class ApplicantViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def hire(self, request, pk=None):
         """{employee_number, hire_date?, job_title?}: the employee record made, the applicant hired."""
+        takes_only(request.data, "employee_number", "hire_date", "job_title")
         applicant = self.get_object()
         employee = _run(applicant.hire, str(request.data.get("employee_number", "")),
                         hire_date=request.data.get("hire_date"), job_title=str(request.data.get("job_title", "")))

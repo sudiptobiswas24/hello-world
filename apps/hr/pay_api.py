@@ -15,7 +15,7 @@ from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from rest_framework import serializers, viewsets
 
-from apps.core.api import ModelSerializer
+from apps.core.api import ModelSerializer, takes_only
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.exceptions import ValidationError as DRFValidationError
@@ -82,6 +82,8 @@ class ConfirmAction:
         from rest_framework.exceptions import ValidationError as DRFValidationError
 
         row = self.get_object()
+        # The figures it confirms, each by its name or its name less _id, are the keys it takes (O579).
+        takes_only(request.data, *sorted({key for name in row.FIGURES for key in (name, name.removesuffix("_id"))}))
         seen = {name: request.data.get(name.removesuffix("_id"), request.data.get(name)) for name in row.FIGURES}
         try:
             row.confirm(request.user, seen=seen)
@@ -205,6 +207,7 @@ class AdvanceViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def void(self, request, pk=None):
+        takes_only(request.data, "on_date")
         advance = self.get_object()
         _run(advance.void, on_date=to_date(request.data.get("on_date")))
         return Response(self.get_serializer(SalaryAdvance.objects.get(pk=advance.pk)).data)
@@ -253,6 +256,7 @@ class ShortfallSettlementViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def void(self, request, pk=None):
+        takes_only(request.data, "on_date")
         settlement = self.get_object()
         _run(settlement.void, on_date=to_date(request.data.get("on_date")))
         return Response(self.get_serializer(ShortfallSettlement.objects.get(pk=settlement.pk)).data)
@@ -319,6 +323,7 @@ class TransferFileViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     def mark_paid(self, request, pk=None):
         from apps.accounting.models import Payment
 
+        takes_only(request.data, "payment")
         made = self.get_object()
         _run(made.mark_paid, get_object_or_404(Payment, pk=request.data.get("payment")))
         return Response(self.get_serializer(self.get_queryset().get(pk=made.pk)).data)
@@ -327,6 +332,7 @@ class TransferFileViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     def return_transfer(self, request, pk=None):
         from apps.accounting.models import Payment
 
+        takes_only(request.data, "receipt", "row")
         made = self.get_object()
         row = get_object_or_404(SalaryTransfer, pk=request.data.get("row"), file=made)
         _run(row.return_transfer, get_object_or_404(Payment, pk=request.data.get("receipt")))
@@ -428,12 +434,14 @@ class BonusDeclarationViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def void(self, request, pk=None):
+        takes_only(request.data, "on_date")
         declaration = self.get_object()
         _run(declaration.void, on_date=to_date(request.data.get("on_date")))
         return self._answer(declaration)
 
     @action(detail=True, methods=["post"])
     def put_on_pay(self, request, pk=None):
+        takes_only(request.data, "month")
         declaration = self.get_object()
         _run(declaration.put_on_pay, request.data.get("month"))
         return self._answer(declaration)
@@ -508,6 +516,7 @@ class GratuityPayoutViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def void(self, request, pk=None):
+        takes_only(request.data, "on_date")
         payout = self.get_object()
         _run(payout.void, on_date=to_date(request.data.get("on_date")))
         return Response(self.get_serializer(type(payout).objects.get(pk=payout.pk)).data)

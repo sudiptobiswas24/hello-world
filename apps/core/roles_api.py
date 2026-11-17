@@ -10,7 +10,7 @@ from django.db import transaction
 from django.db.models import Q
 from rest_framework import serializers, viewsets
 
-from apps.core.api import ModelSerializer
+from apps.core.api import ModelSerializer, takes_only
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.response import Response
@@ -102,6 +102,7 @@ class RoleProposalViewSet(AuditableViewSetMixin, viewsets.ReadOnlyModelViewSet):
         """
         from .users_api import issue_password
 
+        takes_only(request.data, "confirm", "password")
         password = str(request.data.get("password") or "")
         with transaction.atomic():
             response = self._decided(request, "confirm")

@@ -10,7 +10,7 @@ bookkeeper is deliberately without it.
 from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers, viewsets
 
-from apps.core.api import ModelSerializer
+from apps.core.api import ModelSerializer, takes_only
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.response import Response
@@ -91,6 +91,7 @@ class BankStatementViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def import_lines(self, request, pk=None):
         """The bank's export ({"text"}, CSV), checked whole; its lines kept only with commit=true and no errors."""
+        takes_only(request.data, "commit", "text")
         statement = self.get_object()
         text = request.data.get("text") or ""
         if not text.strip():
@@ -155,6 +156,7 @@ class BankStatementViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         Say a line ({"line"}) is a payment ({"payment"}), or money a document
         booked through the bank ({"entry"}: a TDS challan, an expense claim paid out).
         """
+        takes_only(request.data, "entry", "line", "payment")
         statement = self.get_object()
         line = self._line(statement, request)
         if request.data.get("entry") not in (None, ""):
@@ -168,6 +170,7 @@ class BankStatementViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def post_line(self, request, pk=None):
         """A bank charge, interest, a direct debit nobody recorded: a line ({"line"}) straight to an account."""
+        takes_only(request.data, "account", "line", "memo", "party")
         statement = self.get_object()
         line = self._line(statement, request)
         account = record_or_404(Account, request.data.get("account"), "account")
@@ -214,6 +217,7 @@ class BankStatementLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def reverse_posting(self, request, pk=None):
+        takes_only(request.data, "date")
         line = self.get_object()
         _refused(lambda: line.reverse_posting(on_date=request.data.get("date") or None))
         return self._answer(line)
