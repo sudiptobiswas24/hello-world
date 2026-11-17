@@ -160,6 +160,7 @@ class LoomStationViewSet(viewsets.GenericViewSet):
 
     @action(detail=True, methods=["post"], url_path="sign-in")
     def sign_in(self, request, code=None):
+        takes_only(request.data, "pin")
         station = self.get_object()
         operator = _run(station.identify, request.data.get("pin"))
         request.session[self._key(station)] = {
@@ -211,6 +212,8 @@ class LoomStationViewSet(viewsets.GenericViewSet):
 
     @action(detail=True, methods=["post"])
     def rolls(self, request, code=None):
+        takes_only(request.data, "core", "declared_m", "gross_kg", "loom", "note", "reason", "source", "supervisor_pin",
+                   "weaver_pin")
         station = self.get_object()
         operator = self._require_operator(request, station)
         data = request.data
@@ -264,6 +267,7 @@ class LoomStationViewSet(viewsets.GenericViewSet):
         given, not guessed from the clock: the eight o'clock count closes
         yesterday, and at shift change the clock says today.
         """
+        takes_only(request.data, "contractor", "correct", "kg", "shift_date", "supervisor_pin")
         station = self.get_object()
         operator = self._require_operator(request, station)
         contractor = self._contractor(station, request.data.get("contractor"))
@@ -302,6 +306,7 @@ class LoomStationViewSet(viewsets.GenericViewSet):
         """The board's three dials, copied as the shift ends: kWh, maximum demand and power factor."""
         from .energy import MeterReading
 
+        takes_only(request.data, "max_demand_kva", "meter", "power_factor", "reading")
         station = self.get_object()
         operator = self._require_operator(request, station)
         meter = self._meter(station, request.data.get("meter"))
@@ -318,6 +323,7 @@ class LoomStationViewSet(viewsets.GenericViewSet):
 
     @action(detail=True, methods=["post"])
     def waste(self, request, code=None):
+        takes_only(request.data, "contractor", "kg")
         station = self.get_object()
         operator = self._require_operator(request, station)
         contractor = self._contractor(station, request.data.get("contractor"))
@@ -337,6 +343,7 @@ class LoomStationViewSet(viewsets.GenericViewSet):
     @action(detail=True, methods=["post"], url_path=r"waste/(?P<waste>[0-9]+)/void")
     def void_waste(self, request, code=None, waste=None):
         """A weighing taken wrong, withdrawn with a supervisor's PIN."""
+        takes_only(request.data, "supervisor_pin")
         station = self.get_object()
         operator = self._require_operator(request, station)
         row = get_object_or_404(LoomWaste, pk=waste, station=station)
@@ -350,6 +357,7 @@ class LoomStationViewSet(viewsets.GenericViewSet):
         supervisor's PIN and a reason, or nothing is booked."""
         from .conversion import record_bags
 
+        takes_only(request.data, "bags", "machine", "reason", "sample_grams", "scale", "supervisor_pin")
         station = self.get_object()
         operator = self._require_operator(request, station)
         data = request.data
@@ -383,6 +391,7 @@ class LoomStationViewSet(viewsets.GenericViewSet):
         """A count taken wrong, withdrawn with a supervisor's PIN and a reason."""
         from .conversion import BagCount, void_bags
 
+        takes_only(request.data, "reason", "supervisor_pin")
         station = self.get_object()
         self._require_operator(request, station)
         row = get_object_or_404(BagCount, pk=count, station=station)
@@ -401,6 +410,7 @@ class LoomStationViewSet(viewsets.GenericViewSet):
         """A machine stopped: its code, a reason code, minutes, a note."""
         from .station_floor import book_stoppage
 
+        takes_only(request.data, "machine", "minutes", "notes", "reason")
         station = self.get_object()
         operator = self._require_operator(request, station)
         data = request.data
@@ -415,6 +425,7 @@ class LoomStationViewSet(viewsets.GenericViewSet):
         from .shifts import Downtime
         from .station_floor import void_stoppage
 
+        takes_only(request.data, "reason", "supervisor_pin")
         station = self.get_object()
         operator = self._require_operator(request, station)
         stoppage = get_object_or_404(Downtime, pk=row)
@@ -428,6 +439,7 @@ class LoomStationViewSet(viewsets.GenericViewSet):
         """What a machine's step of its run has made good."""
         from .station_floor import count_step
 
+        takes_only(request.data, "machine", "quantity")
         station = self.get_object()
         operator = self._require_operator(request, station)
         data = request.data
@@ -442,6 +454,7 @@ class LoomStationViewSet(viewsets.GenericViewSet):
         from .scrap import OperationReport
         from .station_floor import void_count
 
+        takes_only(request.data, "reason", "supervisor_pin")
         station = self.get_object()
         operator = self._require_operator(request, station)
         counted = get_object_or_404(OperationReport, pk=row)
@@ -454,6 +467,7 @@ class LoomStationViewSet(viewsets.GenericViewSet):
         """Output spoiled at a machine's step, for a reason."""
         from .station_floor import book_scrap
 
+        takes_only(request.data, "machine", "quantity", "reason")
         station = self.get_object()
         operator = self._require_operator(request, station)
         data = request.data
@@ -468,6 +482,7 @@ class LoomStationViewSet(viewsets.GenericViewSet):
         from .orders import ProductionEntry
         from .station_floor import void_scrap
 
+        takes_only(request.data, "reason", "supervisor_pin")
         station = self.get_object()
         operator = self._require_operator(request, station)
         entry = get_object_or_404(ProductionEntry, pk=row)
@@ -480,6 +495,7 @@ class LoomStationViewSet(viewsets.GenericViewSet):
         """{machine, roll}: the roll going onto a laminator, flexo or BCS."""
         from .process_rolls import mount_roll
 
+        takes_only(request.data, "machine", "roll")
         station = self.get_object()
         operator = self._require_operator(request, station)
         data = request.data
@@ -494,6 +510,7 @@ class LoomStationViewSet(viewsets.GenericViewSet):
         """{machine, remaining_kg?}: the roll off; what is left goes back."""
         from .process_rolls import dismount_roll
 
+        takes_only(request.data, "machine", "remaining_kg")
         station = self.get_object()
         operator = self._require_operator(request, station)
         data = request.data
@@ -507,6 +524,8 @@ class LoomStationViewSet(viewsets.GenericViewSet):
         """{machine, gross_kg, core, metres}: a laminated or printed roll, weighed."""
         from .process_rolls import weigh_roll
 
+        takes_only(request.data, "core", "delta_e", "design", "gross_kg", "machine", "metres", "reason",
+                   "registration_mm", "source", "supervisor_pin", "typed_note", "typed_reason")
         station = self.get_object()
         operator = self._require_operator(request, station)
         data = request.data
@@ -529,6 +548,7 @@ class LoomStationViewSet(viewsets.GenericViewSet):
     def void_mount(self, request, code=None, row=None):
         from .process_rolls import RollMount, void_mount
 
+        takes_only(request.data, "reason", "supervisor_pin")
         station = self.get_object()
         operator = self._require_operator(request, station)
         mount = get_object_or_404(RollMount, pk=row)
@@ -540,6 +560,7 @@ class LoomStationViewSet(viewsets.GenericViewSet):
     def void_roll_off(self, request, code=None, row=None):
         from .process_rolls import ProcessRoll, void_roll
 
+        takes_only(request.data, "reason", "supervisor_pin")
         station = self.get_object()
         operator = self._require_operator(request, station)
         roll = get_object_or_404(ProcessRoll, pk=row)
@@ -552,6 +573,7 @@ class LoomStationViewSet(viewsets.GenericViewSet):
         """Waste off a machine's run, weighed into stock: {machine, kg, item?}."""
         from .station_floor import book_waste
 
+        takes_only(request.data, "item", "kg", "machine")
         station = self.get_object()
         operator = self._require_operator(request, station)
         data = request.data
@@ -568,6 +590,7 @@ class LoomStationViewSet(viewsets.GenericViewSet):
         Withdrawn as waste is, at run-waste/{id}/void/."""
         from .station_floor import book_seconds
 
+        takes_only(request.data, "machine", "pieces", "reason")
         station = self.get_object()
         operator = self._require_operator(request, station)
         data = request.data
@@ -584,6 +607,7 @@ class LoomStationViewSet(viewsets.GenericViewSet):
         from .orders import ProductionEntry
         from .station_floor import void_waste
 
+        takes_only(request.data, "reason", "supervisor_pin")
         station = self.get_object()
         operator = self._require_operator(request, station)
         entry = get_object_or_404(ProductionEntry, pk=row)
@@ -603,6 +627,7 @@ class LoomStationViewSet(viewsets.GenericViewSet):
         """Start a machine's clock on its run, join the crew on it, or stop it."""
         from .station_clock import join_clock, start_clock, stop_clock
 
+        takes_only(request.data, "machine", "quantity", "supervisor_pin")
         station = self.get_object()
         operator = self._require_operator(request, station)
         data = request.data
@@ -622,6 +647,7 @@ class LoomStationViewSet(viewsets.GenericViewSet):
     def void_clock(self, request, code=None, row=None):
         from .station_clock import MachineClock, void_clock
 
+        takes_only(request.data, "reason", "supervisor_pin")
         station = self.get_object()
         operator = self._require_operator(request, station)
         clock = get_object_or_404(MachineClock, pk=row)
@@ -634,6 +660,8 @@ class LoomStationViewSet(viewsets.GenericViewSet):
         """A doff off the tape line: gross kg, bobbins, bobbin type, denier checks."""
         from .station_tape import record_tape
 
+        takes_only(request.data, "bobbins", "core", "denier", "gross_kg", "machine", "reason", "source",
+                   "supervisor_pin", "typed_note", "typed_reason")
         station = self.get_object()
         operator = self._require_operator(request, station)
         data = request.data
@@ -660,6 +688,7 @@ class LoomStationViewSet(viewsets.GenericViewSet):
         """{machine, doff, kg, side}: tape put on a loom's warp creel or weft."""
         from .tape_loads import load_tape
 
+        takes_only(request.data, "doff", "kg", "machine", "side")
         station = self.get_object()
         operator = self._require_operator(request, station)
         data = request.data
@@ -672,6 +701,7 @@ class LoomStationViewSet(viewsets.GenericViewSet):
     def void_load_tape(self, request, code=None, row=None):
         from .tape_loads import TapeLoad, void_load
 
+        takes_only(request.data, "reason", "supervisor_pin")
         station = self.get_object()
         operator = self._require_operator(request, station)
         load = get_object_or_404(TapeLoad, pk=row)
@@ -684,6 +714,8 @@ class LoomStationViewSet(viewsets.GenericViewSet):
         """A roll off the blown-film line: gross kg, core, metres, micron checks."""
         from .station_film import record_film
 
+        takes_only(request.data, "core", "gross_kg", "machine", "metres", "micron", "reason", "source",
+                   "supervisor_pin", "typed_note", "typed_reason")
         station = self.get_object()
         operator = self._require_operator(request, station)
         data = request.data
@@ -708,6 +740,7 @@ class LoomStationViewSet(viewsets.GenericViewSet):
     def void_film(self, request, code=None, row=None):
         from .station_film import FilmRoll, void_film
 
+        takes_only(request.data, "reason", "supervisor_pin")
         station = self.get_object()
         operator = self._require_operator(request, station)
         roll = get_object_or_404(FilmRoll, pk=row)
@@ -719,6 +752,7 @@ class LoomStationViewSet(viewsets.GenericViewSet):
     def void_tape(self, request, code=None, row=None):
         from .station_tape import TapeDoff, void_doff
 
+        takes_only(request.data, "reason", "supervisor_pin")
         station = self.get_object()
         operator = self._require_operator(request, station)
         doff = get_object_or_404(TapeDoff, pk=row)
@@ -757,6 +791,7 @@ class LoomStationViewSet(viewsets.GenericViewSet):
         """Metres off the coater and pairs of discs, coated and uncoated, in grammes."""
         from .station_coat import record_coating
 
+        takes_only(request.data, "machine", "metres", "reason", "samples", "supervisor_pin")
         station = self.get_object()
         operator = self._require_operator(request, station)
         data = request.data
@@ -776,6 +811,7 @@ class LoomStationViewSet(viewsets.GenericViewSet):
     def void_coating(self, request, code=None, row=None):
         from .station_coat import CoatingCheck, void_coating
 
+        takes_only(request.data, "reason", "supervisor_pin")
         station = self.get_object()
         operator = self._require_operator(request, station)
         check = get_object_or_404(CoatingCheck, pk=row)

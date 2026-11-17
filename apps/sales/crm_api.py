@@ -8,7 +8,7 @@ opens an opportunity only on a customer they carry.
 from django.db.models import Count
 from rest_framework import serializers, viewsets
 
-from apps.core.api import ModelSerializer
+from apps.core.api import ModelSerializer, takes_only
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.exceptions import ValidationError as DRFValidationError
@@ -98,6 +98,7 @@ class LeadViewSet(OwnedMixin, AuditableViewSetMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def convert(self, request, pk=None):
         """{code, name?}: the customer and its first opportunity."""
+        takes_only(request.data, "code", "name", "on_date")
         if not request.user.has_perm("core.add_party"):
             raise PermissionDenied("Converting a lead makes a customer, which you may not.")
         lead = self.get_object()
@@ -108,6 +109,7 @@ class LeadViewSet(OwnedMixin, AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def lose(self, request, pk=None):
+        takes_only(request.data, "reason")
         lead = self.get_object()
         lead.lose(request.data.get("reason", ""))
         return Response(self.get_serializer(lead).data)
@@ -130,6 +132,7 @@ class LeadViewSet(OwnedMixin, AuditableViewSetMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def send(self, request, pk=None):
         """{subject, body}: a mail to the lead's address, in its history and as an activity done today."""
+        takes_only(request.data, "body", "subject")
         lead = self.get_object()
         sent_to = lead.email_them(str(request.data.get("subject", "")), str(request.data.get("body", "")), user=request.user)
         return Response({"sent_to": sent_to})
@@ -198,6 +201,7 @@ class OpportunityViewSet(OwnedMixin, AuditableViewSetMixin, viewsets.ModelViewSe
 
     @action(detail=True, methods=["post"])
     def quote(self, request, pk=None):
+        takes_only(request.data, "quotation_date", "valid_until")
         opportunity = self.get_object()
         quotation = opportunity.quote(request.data.get("quotation_date"), request.data.get("valid_until"))
         return Response({"quotation": quotation.pk, "quotation_number": quotation.number,
@@ -207,6 +211,7 @@ class OpportunityViewSet(OwnedMixin, AuditableViewSetMixin, viewsets.ModelViewSe
     def win(self, request, pk=None):
         from .models import SalesOrder
 
+        takes_only(request.data, "on_date", "sales_order")
         opportunity = self.get_object()
         given = request.data.get("sales_order")
         order = record_or_404(SalesOrder, given, "sales_order", optional=True)
@@ -215,6 +220,7 @@ class OpportunityViewSet(OwnedMixin, AuditableViewSetMixin, viewsets.ModelViewSe
 
     @action(detail=True, methods=["post"])
     def lose(self, request, pk=None):
+        takes_only(request.data, "on_date", "reason")
         opportunity = self.get_object()
         opportunity.lose(request.data.get("reason", ""), request.data.get("on_date"))
         return Response(self.get_serializer(opportunity).data)
@@ -291,6 +297,7 @@ class ActivityViewSet(OwnedMixin, AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def done(self, request, pk=None):
+        takes_only(request.data, "on_date")
         activity = self.get_object()
         activity.done(request.data.get("on_date"))
         return Response(self.get_serializer(activity).data)

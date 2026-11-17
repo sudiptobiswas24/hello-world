@@ -19,7 +19,7 @@ from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from rest_framework import serializers, viewsets
 
-from apps.core.api import ModelSerializer
+from apps.core.api import ModelSerializer, takes_only
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.permissions import IsAuthenticated
@@ -208,6 +208,7 @@ class PayComponentViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         from apps.core.history import EventKind, record
         from apps.core.models import lock_rows
 
+        takes_only(request.data, "statutory")
         component = self.get_object()
         new = request.data.get("statutory", None)
         if new is None or new not in dict(PayComponent._meta.get_field("statutory").choices):
@@ -280,6 +281,7 @@ class PayRunViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def calculate(self, request, pk=None):
         """{employees?: [id], hours?: {employee id: hours}} — hours for hourly pay."""
+        takes_only(request.data, "employees", "hours")
         run = self.get_object()
         ids = request.data.get("employees")
         people = None
@@ -319,6 +321,7 @@ class PayRunViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def void(self, request, pk=None):
+        takes_only(request.data, "on_date")
         run = self.get_object()
         # to_date refuses a date it cannot read; parse_date answered None,
         # and None meant today, so a typo voided the run as of today.
@@ -355,6 +358,7 @@ class PayslipViewSet(AuditableViewSetMixin, viewsets.ReadOnlyModelViewSet):
     def pay(self, request, pk=None):
         from apps.accounting.models import Payment
 
+        takes_only(request.data, "payment")
         slip = self.get_object()
         payment = get_object_or_404(Payment, pk=request.data.get("payment"))
         _run(slip.pay, payment)
@@ -386,6 +390,7 @@ class SlabViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def confirm(self, request, pk=None):
         """{bands: [{id, above, up_to, month, amount}]}: the Controller's word that the schedule, as read, is the law's."""
+        takes_only(request.data, "bands")
         band = self.get_object()
         try:
             band.confirm_schedule(request.user, request.data)

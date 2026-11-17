@@ -2,7 +2,7 @@
 
 from rest_framework import serializers, viewsets
 
-from apps.core.api import ModelSerializer
+from apps.core.api import ModelSerializer, takes_only
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.response import Response
@@ -42,6 +42,7 @@ class CustomerTdsViewSet(CustomerScopedMixin, viewsets.ReadOnlyModelViewSet):
     @action(detail=False, methods=["post"])
     def record(self, request):
         """The customer paid an invoice short by its TDS: {invoice, section, amount, date, certificate}."""
+        takes_only(request.data, "amount", "certificate", "date", "invoice", "section")
         data = request.data
         invoice = record_or_404(Invoice, data.get("invoice"), "invoice")
         rep = rep_limit(request.user)
@@ -62,11 +63,13 @@ class CustomerTdsViewSet(CustomerScopedMixin, viewsets.ReadOnlyModelViewSet):
 
     @action(detail=True, methods=["post"])
     def reverse(self, request, pk=None):
+        takes_only(request.data, "date")
         return self._do(lambda row: row.reverse(on_date=request.data.get("date") or None))
 
     @action(detail=True, methods=["post"])
     def confirm(self, request, pk=None):
         """Found in Form 26AS ({date, certificate})."""
+        takes_only(request.data, "certificate", "date")
         return self._do(lambda row: row.confirm(on_date=request.data.get("date") or None,
                                                 certificate=request.data.get("certificate") or None))
 

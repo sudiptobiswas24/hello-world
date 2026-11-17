@@ -3,7 +3,7 @@
 from django.utils.dateparse import parse_date
 from rest_framework import serializers, viewsets
 
-from apps.core.api import ModelSerializer
+from apps.core.api import ModelSerializer, takes_only
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
@@ -66,6 +66,8 @@ class TaxBlockRateViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     def confirm(self, request, pk=None):
         """{section, applies_from, rate_percent}: the figures read."""
         rate = self.get_object()
+        # The figures it confirms are the keys it takes (O579).
+        takes_only(request.data, *("section" if name == "section_id" else name for name in rate.FIGURES))
         seen = {name: request.data.get("section" if name == "section_id" else name) for name in rate.FIGURES}
         rate.confirm(request.user, seen=seen)
         return Response(self.get_serializer(rate).data)
@@ -130,11 +132,13 @@ class TaxDepreciationYearViewSet(AuditableViewSetMixin, viewsets.ReadOnlyModelVi
 
     @action(detail=False, methods=["post"])
     def file(self, request):
+        takes_only(request.data, "note", "year")
         year = TaxDepreciationYear.file(self._year(request.data.get("year")), by=request.user,
                                         note=str(request.data.get("note") or ""))
         return Response(self.get_serializer(year).data, status=201)
 
     @action(detail=True, methods=["post"])
     def withdraw(self, request, pk=None):
+        takes_only(request.data, "note")
         year = self.get_object().withdraw(by=request.user, note=str(request.data.get("note") or ""))
         return Response(self.get_serializer(year).data)

@@ -494,6 +494,7 @@ class _InwardViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def void(self, request, pk=None):
+        takes_only(request.data, "reason")
         document = self.get_object()
         _run(document.void, str(request.data.get("reason", "")))
         return Response(self.get_serializer(document).data)
@@ -628,6 +629,7 @@ class MeterReadingViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def void(self, request, pk=None):
+        takes_only(request.data, "reason")
         reading = self.get_object()
         reading.void(str(request.data.get("reason", "")))
         return Response(MeterReadingSerializer(reading).data)
@@ -755,6 +757,7 @@ class BillOfMaterialsViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         """{effective_from, reason}: a new version to edit, and the order that will put it in force."""
         from .changes import raise_change
 
+        takes_only(request.data, "effective_from", "reason")
         order = raise_change(self.get_object(), request.data.get("effective_from"),
                              str(request.data.get("reason", "")), by=request.user)
         return Response({"id": order.pk, "draft": order.draft_id}, status=201)
@@ -879,6 +882,7 @@ class CostVersionViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def publish(self, request, pk=None):
+        takes_only(request.data, "on_date")
         version = self.get_object()
         entry = _run(
             version.publish,
@@ -957,6 +961,7 @@ class MaintenanceScheduleViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def raise_job(self, request, pk=None):
+        takes_only(request.data, "due_on")
         job = _run(self.get_object().raise_job, request.data.get("due_on"))
         return Response(MaintenanceJobSerializer(job).data)
 
@@ -1001,6 +1006,7 @@ class MaintenanceJobViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def complete(self, request, pk=None):
         """{on_date, minutes} for a service; {on_date, cause, action} for a breakdown."""
+        takes_only(request.data, "action", "cause", "minutes", "on_date")
         job = self.get_object()
         _run(
             job.complete,
@@ -1014,6 +1020,7 @@ class MaintenanceJobViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def reopen(self, request, pk=None):
         """{reason}: completed in error, back on the board."""
+        takes_only(request.data, "reason")
         job = self.get_object()
         _run(job.reopen, request.data.get("reason", ""))
         return Response(self.get_serializer(job).data)
@@ -1026,6 +1033,7 @@ class MaintenanceJobViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         from .maintenance import raise_breakdown
         from .shifts import Downtime
 
+        takes_only(request.data, "downtime", "fault", "planned_minutes", "technician")
         data = request.data
         stoppage = get_object_or_404(Downtime, pk=data.get("downtime"))
         technician = (get_object_or_404(Employee, pk=data["technician"])
@@ -1041,6 +1049,7 @@ class MaintenanceJobViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
         from .maintenance import MaintenanceLabour
 
+        takes_only(request.data, "minutes", "technician", "worked_on")
         job = self.get_object()
         data = request.data
         technician = get_object_or_404(Employee, pk=data.get("technician"))
@@ -1064,6 +1073,7 @@ class MaintenanceJobViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
         from .maintenance import issue_spares
 
+        takes_only(request.data, "issued_to", "lines", "on_date", "warehouse")
         job = self.get_object()
         data = request.data
         warehouse = get_object_or_404(Warehouse, pk=data.get("warehouse"))
@@ -1087,6 +1097,7 @@ class MaintenanceJobViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     def return_spares(self, request, pk=None, issue=None):
         from .maintenance import SpareIssue, return_spares
 
+        takes_only(request.data, "on_date")
         job = self.get_object()
         row = get_object_or_404(SpareIssue, pk=issue, job=job)
         _run(return_spares, row, on_date=request.data.get("on_date"))
@@ -1095,6 +1106,7 @@ class MaintenanceJobViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def cancel(self, request, pk=None):
+        takes_only(request.data, "reason")
         job = self.get_object()
         _run(job.cancel, request.data.get("reason", ""))
         return Response(self.get_serializer(job).data)
@@ -1488,6 +1500,7 @@ class WorkOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def release(self, request, pk=None):
+        takes_only(request.data, "on_date")
         order = self.get_object()
         _run(order.release, on_date=request.data.get("on_date"))
         return self._reply(order)
@@ -1495,6 +1508,7 @@ class WorkOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=["post"], url_path="choose-routing")
     def choose_routing(self, request, pk=None):
         """{routing}: a draft run made one of its bill's other ways."""
+        takes_only(request.data, "routing")
         order = self.get_object()
         routing = get_object_or_404(Routing, pk=request.data.get("routing"))
         _run(order.choose_routing, routing)
@@ -1502,6 +1516,7 @@ class WorkOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def close(self, request, pk=None):
+        takes_only(request.data, "memo", "on_date")
         order = self.get_object()
         _run(
             order.close,
@@ -1511,6 +1526,7 @@ class WorkOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def reopen(self, request, pk=None):
+        takes_only(request.data, "memo", "on_date")
         order = self.get_object()
         _run(
             order.reopen,
@@ -1627,6 +1643,7 @@ class MaterialIssueViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         """{line}: the batch a scan named taken off it again, its quantity back on the line it came from."""
         from .scanning import unpick
 
+        takes_only(request.data, "line")
         issue = self.get_object()
         line = _run(unpick, issue, request.data.get("line"))
         return Response({"line": MaterialIssueLineSerializer(line).data})
@@ -1636,6 +1653,7 @@ class MaterialIssueViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         """A scanned batch is named on this draft's line for its item (apps.manufacturing.scanning)."""
         from .scanning import scan_into_issue
 
+        takes_only(request.data, "code", "key")
         issue = self.get_object()
         if not request.data.get("code"):
             raise DRFValidationError("code is required.")
@@ -1645,12 +1663,14 @@ class MaterialIssueViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def post(self, request, pk=None):
+        takes_only(request.data, "memo")
         issue = self.get_object()
         _run(issue.post, memo=request.data.get("memo", ""))
         return Response(self.get_serializer(issue).data)
 
     @action(detail=True, methods=["post"])
     def void(self, request, pk=None):
+        takes_only(request.data, "memo", "on_date")
         issue = self.get_object()
         _run(
             issue.void,
@@ -1681,12 +1701,14 @@ class ProductionEntryViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def post(self, request, pk=None):
+        takes_only(request.data, "memo")
         entry = self.get_object()
         _run(entry.post, memo=request.data.get("memo", ""))
         return Response(self.get_serializer(entry).data)
 
     @action(detail=True, methods=["post"])
     def void(self, request, pk=None):
+        takes_only(request.data, "memo", "on_date")
         entry = self.get_object()
         _run(
             entry.void,
@@ -1717,12 +1739,14 @@ class TimeBookingViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def post(self, request, pk=None):
+        takes_only(request.data, "memo")
         booking = self.get_object()
         _run(booking.post, memo=request.data.get("memo", ""))
         return Response(self.get_serializer(booking).data)
 
     @action(detail=True, methods=["post"])
     def void(self, request, pk=None):
+        takes_only(request.data, "memo", "on_date")
         booking = self.get_object()
         _run(
             booking.void,
@@ -1982,6 +2006,7 @@ class JobWorkChallanViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def send(self, request, pk=None):
         """Email the PDF; {"to", "subject", "body"} override the party's address and the wording."""
+        takes_only(request.data, "body", "subject", "to")
         document = self.get_object()
         recipient = document.email_to_job_worker(to=request.data.get("to") or None, subject=request.data.get("subject") or None,
                                  body=request.data.get("body") or None, user=request.user)
@@ -2137,6 +2162,7 @@ class BaleViewSet(viewsets.ReadOnlyModelViewSet):
 
         from .bales import pack
 
+        takes_only(request.data, "gross_kg", "lines", "packed_by", "packed_on", "warehouse")
         data = request.data
         warehouse = get_object_or_404(Warehouse, pk=data.get("warehouse"))
         packed_by = get_object_or_404(Employee, pk=data.get("packed_by"))
@@ -2150,6 +2176,7 @@ class BaleViewSet(viewsets.ReadOnlyModelViewSet):
     def break_(self, request, pk=None):
         from .bales import break_bale
 
+        takes_only(request.data, "reason")
         bale = self.get_object()
         _run(break_bale, bale, str(request.data.get("reason", "")))
         return Response(self._row(bale))
@@ -2169,6 +2196,7 @@ class BaleViewSet(viewsets.ReadOnlyModelViewSet):
 
         from .bales import Bale, load
 
+        takes_only(request.data, "bales", "delivery", "order_line")
         delivery = get_object_or_404(Delivery, pk=request.data.get("delivery"))
         bales = [get_object_or_404(Bale, pk=pk) for pk in request.data.get("bales") or []]
         order_line = (get_object_or_404(SalesOrderLine, pk=request.data["order_line"])
@@ -2263,6 +2291,7 @@ class OperationReportViewSet(AuditableViewSetMixin, viewsets.ReadOnlyModelViewSe
 
     @action(detail=False, methods=["post"])
     def record(self, request):
+        takes_only(request.data, "machine", "memo", "operation", "quantity_good", "reported_on")
         operation = get_object_or_404(WorkOrderOperation, pk=request.data.get("operation"))
         machine = None
         if request.data.get("machine"):
@@ -2276,6 +2305,7 @@ class OperationReportViewSet(AuditableViewSetMixin, viewsets.ReadOnlyModelViewSe
 
     @action(detail=True, methods=["post"])
     def void(self, request, pk=None):
+        takes_only(request.data, "reason")
         counted = self.get_object()
         _run(counted.void, request.data.get("reason", ""))
         return Response(self.get_serializer(counted).data)
@@ -2324,6 +2354,7 @@ class RebatchViewSet(AuditableViewSetMixin, viewsets.ReadOnlyModelViewSet):
 
         from apps.inventory.models import Item, Lot, Warehouse
 
+        takes_only(request.data, "item", "made", "reason", "rebatched_on", "taken", "warehouse")
         data = request.data
         item = get_object_or_404(Item, pk=data.get("item"))
         warehouse = get_object_or_404(Warehouse, pk=data.get("warehouse"))
@@ -2351,6 +2382,7 @@ class RebatchViewSet(AuditableViewSetMixin, viewsets.ReadOnlyModelViewSet):
 
     @action(detail=True, methods=["post"])
     def void(self, request, pk=None):
+        takes_only(request.data, "reason")
         document = self.get_object()
         _run(document.void, request.data.get("reason", ""))
         return Response(self.get_serializer(document).data)

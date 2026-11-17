@@ -13,7 +13,7 @@ from decimal import Decimal
 from django.shortcuts import get_object_or_404
 from rest_framework import serializers, viewsets
 
-from apps.core.api import ModelSerializer
+from apps.core.api import ModelSerializer, takes_only
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.response import Response
@@ -154,12 +154,14 @@ class PurchaseRequisitionViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def approve(self, request, pk=None):
+        takes_only(request.data, "note")
         requisition = self.get_object()
         requisition.approve(by=request.user, note=str(request.data.get("note", "")))
         return self._answer(requisition)
 
     @action(detail=True, methods=["post"])
     def reject(self, request, pk=None):
+        takes_only(request.data, "note")
         requisition = self.get_object()
         requisition.reject(by=request.user, note=str(request.data.get("note", "")))
         return self._answer(requisition)
@@ -173,6 +175,7 @@ class PurchaseRequisitionViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def order(self, request, pk=None):
         """{vendor, order_date?, lines?: [ids]}: what is left of it, on one order to one vendor."""
+        takes_only(request.data, "lines", "order_date", "vendor")
         requisition = self.get_object()
         vendor = get_object_or_404(Party, pk=request.data.get("vendor"))
         return _order_made(request, requisition.create_order(vendor, order_date=request.data.get("order_date"),
@@ -181,6 +184,7 @@ class PurchaseRequisitionViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def rfq(self, request, pk=None):
         """{response_due?, issue_date?, lines?: [ids]}: what is left of it, out for quotes on one request."""
+        takes_only(request.data, "issue_date", "lines", "response_due")
         requisition = self.get_object()
         rfq = requisition.create_rfq(lines=_named_lines(requisition, request.data),
                                      issue_date=request.data.get("issue_date"),
@@ -270,6 +274,7 @@ class RequestForQuotationViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def quote(self, request, pk=None):
         """{invitation, line, unit_price, lead_time_days?, notes?}: what one vendor said one line costs."""
+        takes_only(request.data, "invitation", "lead_time_days", "line", "notes", "unit_price")
         rfq = self.get_object()
         invitation = get_object_or_404(RfqInvitation, pk=request.data.get("invitation"), rfq=rfq)
         line = get_object_or_404(RfqLine, pk=request.data.get("line"), rfq=rfq)
@@ -302,6 +307,7 @@ class RequestForQuotationViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def award(self, request, pk=None):
         """{invitation, order_date?, record_prices?}: the business to one vendor, at the prices they quoted."""
+        takes_only(request.data, "invitation", "order_date", "record_prices")
         rfq = self.get_object()
         invitation = get_object_or_404(RfqInvitation, pk=request.data.get("invitation"), rfq=rfq)
         return _order_made(request, rfq.award(invitation, order_date=request.data.get("order_date"),
@@ -322,6 +328,7 @@ class RfqInvitationViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def decline(self, request, pk=None):
+        takes_only(request.data, "note")
         invitation = self.get_object()
         invitation.decline(str(request.data.get("note", "")))
         return Response(self.get_serializer(invitation).data)
@@ -397,6 +404,7 @@ class BlanketOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def release(self, request, pk=None):
         """{quantities: {"<line id>": "300"}, order_date?, expected_date?}: part of it called off as an order."""
+        takes_only(request.data, "expected_date", "order_date", "quantities")
         blanket = self.get_object()
         quantities = quantities_by_line(request.data.get("quantities"), blanket.lines.all(), "agreement")
         if not quantities:

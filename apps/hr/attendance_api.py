@@ -3,7 +3,7 @@
 
 from rest_framework import serializers, viewsets
 
-from apps.core.api import ModelSerializer
+from apps.core.api import ModelSerializer, takes_only
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
@@ -38,6 +38,7 @@ class AttendanceDayViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     @action(detail=False, methods=["post"])
     def punches(self, request):
         """The reader's file, checked whole; kept only with commit=true and no errors."""
+        takes_only(request.data, "commit", "text")
         text = request.data.get("text") or ""
         if not text.strip():
             raise ValidationError({"text": ["Paste or upload the punch file."]})

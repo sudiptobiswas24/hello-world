@@ -354,11 +354,15 @@ class AsThePeopleWhoDoItTests(MsmeTestCase):
         self.assertIn("not confirmed", found["interest_state"])
         self.assertIsNone(found["note"]["interest_accrued_unpaid"])
 
-        self.assertEqual(ap.post(f"{rates}{rate['id']}/confirm/", rate, format="json").status_code, 403)
+        # The figures as read, as the screen sends them (BankRateForm), and nothing else: the whole row this
+        # sent back before O579 was dropped but for these two, and is refused now.
+        seen = {"applies_from": rate["applies_from"], "rate_percent": rate["rate_percent"]}
+        self.assertEqual(ap.post(f"{rates}{rate['id']}/confirm/", seen, format="json").status_code, 403)
         # Confirming figures other than the row's is refused: the accountant vouches for what was read.
-        wrong = controller.post(f"{rates}{rate['id']}/confirm/", {**rate, "rate_percent": "6.75"}, format="json")
+        wrong = controller.post(f"{rates}{rate['id']}/confirm/", {**seen, "rate_percent": "6.75"}, format="json")
         self.assertEqual(wrong.status_code, 400, wrong.content)
-        confirmed = controller.post(f"{rates}{rate['id']}/confirm/", rate, format="json")
+        self.assertIn("is not what was read: its rate percent differ", str(wrong.json()))
+        confirmed = controller.post(f"{rates}{rate['id']}/confirm/", seen, format="json")
         self.assertEqual(confirmed.status_code, 200, confirmed.content)
 
         found = ap.get(statement, query).json()

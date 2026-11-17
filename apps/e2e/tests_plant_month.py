@@ -373,7 +373,7 @@ class Month:
             "item": self.tape.pk, "bom": self.tape_bom.pk, "quantity_ordered": "5000", "uom": self.kg.pk,
             "warehouse": self.store.pk, "scheduled_end": str(OCT(12))})
         base = f"/api/manufacturing/work-orders/{run['id']}/"
-        self.post(sup, base + "release/", {"date": str(OCT(11))})
+        self.post(sup, base + "release/", {"on_date": str(OCT(11))})
         issue = self.post(sup, "/api/manufacturing/material-issues/", {
             "work_order": run["id"], "issue_date": str(OCT(11)), "warehouse": self.store.pk})
         for number, (item, quantity) in enumerate(((self.pp, "4850"), (self.mb, "150")), start=1):
@@ -385,7 +385,7 @@ class Month:
             "work_order": run["id"], "entry_date": str(OCT(12)), "warehouse": self.store.pk,
             "quantity_produced": "5000", "uom": self.kg.pk})
         self.post(sup, f"/api/manufacturing/production-entries/{entry['id']}/post/")
-        self.tape_run = self.post(sup, base + "close/", {"date": str(OCT(12))})
+        self.tape_run = self.post(sup, base + "close/", {"on_date": str(OCT(12))})
 
     # -- 4. selling --------------------------------------------------------------
 
@@ -1415,8 +1415,10 @@ class PlantFloorTests(StationApiTestCase):
         [self.piece_slip] = self.ok(officer.get("/api/hr/payslips/", {"run": run["id"]}))
 
         # The runs closed.
+        # Its day is on_date: the "date" this sent was dropped without a word until O579, and the day a close takes
+        # with none (correction_date: the later of today and the run's last posting) used, the same day here.
         self.closed = [self.ok(supervisor.post(f"/api/manufacturing/work-orders/{order.pk}/close/",
-                                               {"date": str(TODAY)}, format="json"))
+                                               {"on_date": str(TODAY)}, format="json"))
                        for order in (self.run, self.tape_run)]
 
 
@@ -1569,7 +1571,7 @@ class JobWorkOutAndBackTests(JobWorkTestCase):
             "work_order": self.lamination.pk, "entry_date": str(TODAY), "warehouse": self.plant.pk,
             "quantity_produced": "1000", "uom": self.kg.pk}, format="json"))
         self.ok(supervisor.post(f"/api/manufacturing/production-entries/{entry['id']}/post/"))
-        self.closed = self.ok(supervisor.post(run + "close/", {"date": str(TODAY)}, format="json"))
+        self.closed = self.ok(supervisor.post(run + "close/", {"on_date": str(TODAY)}, format="json"))
 
 
     def test_the_challan_goes_out_numbered_with_the_job_workers_registration(self):

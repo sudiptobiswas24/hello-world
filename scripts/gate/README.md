@@ -20,9 +20,13 @@ Commit as `git -c user.name=Claude -c user.email=noreply@anthropic.com commit -F
 
 1. Make a clean worktree of the tip: `git worktree add --detach /tmp/gtree <tip>`.
    Link `.venv` and `frontend/node_modules` into it, then `export GATE_TREE=/tmp/gtree`.
-2. `scripts/gate/lane.sh <prefix> ui`. This runs tsc, the vite build,
-   vitest, names, `audit_invariants` and `makemigrations --check`. Run it
-   first: the build is what the browser tests open.
+   Run every lane from the tip's own copy, `$GATE_TREE/scripts/gate/lane.sh`: a lane takes its
+   steps, and gateline.py its rules, from the copy that is run, so a step the tip adds (g47's
+   screen check) runs only from there.
+2. `scripts/gate/lane.sh <prefix> ui`. This runs tsc, the vite build, vitest, names, the register
+   check, the screen check (`screenkeys.py`: what each screen sends against the keys its action
+   takes), `audit_invariants` and `makemigrations --check`. Run it first: the build is what the
+   browser tests open.
 3. Run the lanes two at a time, each a background job (a job may run two
    hours at most): `sqlite` with `pg-a`, then `ist` with `pg-b`, then `pg-c`.
 4. Then `mig` alone and detached, since it runs about four hours:

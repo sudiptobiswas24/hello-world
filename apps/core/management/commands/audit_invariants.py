@@ -68,6 +68,169 @@ def test_text(sources):
     )
 
 
+def _function_tree(function):
+    return ast.parse(textwrap.dedent(inspect.getsource(inspect.unwrap(function)))).body[0]
+
+
+def _takes_only_list(tree):
+    """The keys a literal takes_only names, or None: none called, or its names built at run time."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "takes_only":
+            if any(isinstance(argument, ast.Starred) for argument in node.args[1:]):
+                return None
+            return {argument.value for argument in node.args[1:] if isinstance(argument, ast.Constant)}
+    return None
+
+
+class _BodyReads:
+    """
+    The keys a function reads from a request's body (O579): body.get("x"), body["x"], "x" in body, through any
+    name the body is given (data = request.data), and through every function the body or the request is handed
+    to, found in the caller's own module or imported in the caller (from apps.x import helper inside a method).
+    A key passed in as a string (number(request.data, "net")) is followed too. A key held in a variable, a
+    method on an object the caller made, and a serializer are not: those are left to the tests.
+    """
+
+    def __init__(self):
+        self.known, self.reading = {}, set()
+
+    def keys(self, function, view, bodies, requests, given=(), depth=0):
+        """
+        What `function` reads, kept for the next caller of the same helper: a set of marks seen only stopped
+        recursion, and every action after the first that reached a shared helper read nothing from it.
+        """
+        function = inspect.unwrap(function)
+        mark = (function, view, frozenset(bodies), frozenset(requests), given)
+        if mark in self.known:
+            return self.known[mark]
+        if mark in self.reading or depth > 6:
+            return set()  # a helper calling itself back
+        self.reading.add(mark)
+        try:
+            found = self._keys(function, view, bodies, requests, given, depth)
+        finally:
+            self.reading.discard(mark)
+        self.known[mark] = found
+        return found
+
+    def _keys(self, function, view, bodies, requests, given, depth):
+        try:
+            tree = _function_tree(function)
+        except (OSError, TypeError, SyntaxError):
+            return set()
+        given, bodies = dict(given), set(bodies)
+        grown = True
+        while grown:
+            grown = False
+            for node in ast.walk(tree):
+                if (isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name)
+                        and node.targets[0].id not in bodies and self._body(node.value, bodies, requests)):
+                    bodies.add(node.targets[0].id)
+                    grown = True
+        imported = self._imported_within(tree)
+        found = set()
+        for node in ast.walk(tree):
+            key = None
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and node.func.attr in ("get", "getlist", "pop") and node.args
+                    and self._body(node.func.value, bodies, requests)):
+                key = node.args[0]
+            elif isinstance(node, ast.Subscript) and self._body(node.value, bodies, requests):
+                key = node.slice
+            elif (isinstance(node, ast.Compare) and len(node.ops) == 1 and isinstance(node.ops[0], (ast.In, ast.NotIn))
+                  and self._body(node.comparators[0], bodies, requests)):
+                key = node.left
+            if key is not None:
+                if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                    found.add(key.value)
+                elif isinstance(key, ast.Name) and key.id in given:
+                    found.add(given[key.id])
+            elif isinstance(node, ast.Call):
+                found |= self._handed_on(node, function, view, imported, bodies, requests, given, depth)
+        return found
+
+    def _handed_on(self, call, function, view, imported, bodies, requests, given, depth):
+        if getattr(call.func, "id", None) == "_run" and call.args:  # _run(helper, *args, **kwargs) calls helper
+            call = ast.Call(func=call.args[0], args=call.args[1:], keywords=call.keywords)
+        carried = [(position, argument) for position, argument in enumerate(call.args)
+                   if self._body(argument, bodies, requests) or self._request(argument, requests)]
+        carried += [(keyword.arg, keyword.value) for keyword in call.keywords
+                    if keyword.arg and (self._body(keyword.value, bodies, requests)
+                                        or self._request(keyword.value, requests))]
+        if not carried:
+            return set()
+        callee = self._resolved(call.func, function, view, imported)
+        if not inspect.isfunction(inspect.unwrap(callee) if callee is not None else None):
+            return set()
+        try:
+            parameters = [argument.arg for argument in _function_tree(callee).args.args]
+        except (OSError, TypeError, SyntaxError):
+            return set()
+        if isinstance(call.func, ast.Attribute) and parameters[:1] in (["self"], ["cls"]):
+            parameters = parameters[1:]
+        named = {}
+        for position, argument in enumerate(call.args):
+            if position < len(parameters):
+                if isinstance(argument, ast.Constant) and isinstance(argument.value, str):
+                    named[parameters[position]] = argument.value
+                elif isinstance(argument, ast.Name) and argument.id in given:
+                    named[parameters[position]] = given[argument.id]
+        for keyword in call.keywords:
+            if keyword.arg and isinstance(keyword.value, ast.Constant) and isinstance(keyword.value.value, str):
+                named[keyword.arg] = keyword.value.value
+        their_bodies, their_requests = set(), set()
+        for where, argument in carried:
+            name = parameters[where] if isinstance(where, int) else where
+            if isinstance(where, int) and where >= len(parameters):
+                continue
+            (their_bodies if self._body(argument, bodies, requests) else their_requests).add(name)
+        on_self = isinstance(call.func, ast.Attribute) and getattr(call.func.value, "id", None) in ("self", "cls")
+        return self.keys(callee, view if on_self else None, their_bodies, their_requests,
+                         tuple(sorted(named.items())), depth + 1)
+
+    @staticmethod
+    def _request(node, requests):
+        return isinstance(node, ast.Name) and node.id in requests
+
+    def _body(self, node, bodies, requests):
+        if isinstance(node, ast.Name):
+            return node.id in bodies
+        if isinstance(node, ast.Attribute) and node.attr == "data":
+            return self._request(node.value, requests)
+        if isinstance(node, ast.Call) and node.args and getattr(node.func, "id", None) == "dict":
+            return self._body(node.args[0], bodies, requests)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "copy":
+            return self._body(node.func.value, bodies, requests)
+        return False
+
+    @staticmethod
+    def _imported_within(tree):
+        import importlib
+
+        found = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+                try:
+                    module = importlib.import_module(node.module)
+                except ImportError:
+                    continue
+                for alias in node.names:
+                    found[alias.asname or alias.name] = getattr(module, alias.name, None)
+        return found
+
+    @staticmethod
+    def _resolved(expression, function, view, imported):
+        if isinstance(expression, ast.Name):
+            return imported.get(expression.id) or function.__globals__.get(expression.id)
+        if isinstance(expression, ast.Attribute) and isinstance(expression.value, ast.Name):
+            if expression.value.id in ("self", "cls"):
+                return getattr(view, expression.attr, None) if view is not None else None
+            holder = imported.get(expression.value.id) or function.__globals__.get(expression.value.id)
+            if inspect.ismodule(holder) or inspect.isclass(holder):
+                return getattr(holder, expression.attr, None)
+        return None
+
+
 class Command(BaseCommand):
     help = "Check the model-level invariants the audit checklist relies on."
 
@@ -112,6 +275,8 @@ class Command(BaseCommand):
         findings += self.unscoped_party_reads(labels)
         findings += self.bodies_read_past_the_object_parser(labels)
         findings += self.creates_reading_the_body_by_hand(labels)
+        findings += self.actions_reading_the_body_by_hand(labels)
+        findings += self.takes_only_short_of_its_reads(labels)
         findings += self.actions_named_after_a_verb(labels)
         findings += self.admin_only_rules(labels)
         findings += self.dead_class_attributes(labels, sources)
@@ -1097,7 +1262,7 @@ class Command(BaseCommand):
         A create that reads request.data itself without apps.core.api.takes_only, and hands it to no
         serializer: it reads the keys it knows and drops any other without a word (O574, O577). A self-invoice
         sent `issued_on` was dated today and refused as late; a payment voucher sent a `date` was made, the date
-        lost. Only creates: the actions that read their body by hand are many still (O577's report lists them).
+        lost. Its mirror over actions is actions_reading_the_body_by_hand (O579).
         """
         import inspect
 
@@ -1118,6 +1283,78 @@ class Command(BaseCommand):
                 "key it does not read without a word. Name every key it takes with apps.core.api.takes_only "
                 "before reading one, or read the body through a serializer.",
             ))
+        return findings
+
+    def actions_reading_the_body_by_hand(self, labels, viewsets=None):
+        """
+        The mirror of creates_reading_the_body_by_hand over a viewset's actions (O579): an action answering a
+        write that reads request.data itself, without apps.core.api.takes_only and with no serializer, drops a
+        key it does not read without a word. 245 did when it was written; each names its keys now, and a new
+        one is reported. A GET action reads its query, not a body.
+        """
+        import inspect
+
+        findings, seen, reads = [], set(), _BodyReads()
+        for view in self._routed_viewsets() if viewsets is None else viewsets:
+            if view.__module__.split(".")[0] != "apps" or view.__module__.split(".")[1] not in labels:
+                continue
+            for name in dir(view):
+                function = getattr(view, name, None)
+                if not hasattr(function, "mapping") or set(function.mapping) <= {"get"}:
+                    continue
+                owner = next((cls for cls in view.__mro__ if name in vars(cls)), None)
+                if owner is None or not owner.__module__.startswith("apps.") or (owner, name) in seen:
+                    continue
+                seen.add((owner, name))
+                # Unwrapped: an action under @transaction.atomic is the decorator's frame until it is.
+                source = inspect.getsource(inspect.unwrap(vars(owner)[name]))
+                if "takes_only(" in source or "data=request.data" in source:
+                    continue
+                # Read in the action, or in a helper it hands the request to (self._role(request), _date(request,
+                # "on_date")): granting a role and putting an asset in service escaped the check that way.
+                read = reads.keys(vars(owner)[name], view, set(), {"request"})
+                if "request.data" not in source and not read:
+                    continue
+                findings.append((
+                    "action reading its body by hand",
+                    f"{owner.__module__.split('.')[1]}.{owner.__name__}.{name} reads "
+                    f"{', '.join(sorted(read)) if read else 'request.data'} itself and drops a key it does not read "
+                    "without a word. Name every key it takes with apps.core.api.takes_only before reading one, or "
+                    "read the body through a serializer.",
+                ))
+        return findings
+
+    def takes_only_short_of_its_reads(self, labels, viewsets=None):
+        """
+        An action's takes_only against the keys it reads (O579): a key read and not named is refused whenever it
+        is sent, so the action can never be given it. The four weighing actions read `core` in _core_in_use and
+        the old-supply notes `memo`, `on_date` and `old_value` in from_request; none was named, and the station
+        could weigh no roll until the suite sent one. The reads are followed through the helpers the body or the
+        request is handed to (_BodyReads); a list built at run time is the dynamic confirms', and not checked.
+        """
+        findings, seen, reads = [], set(), _BodyReads()
+        for view in self._routed_viewsets() if viewsets is None else viewsets:
+            if view.__module__.split(".")[0] != "apps" or view.__module__.split(".")[1] not in labels:
+                continue
+            for name in dir(view):
+                function = getattr(view, name, None)
+                if not hasattr(function, "mapping") or set(function.mapping) <= {"get"}:
+                    continue
+                owner = next((cls for cls in view.__mro__ if name in vars(cls)), None)
+                if owner is None or not owner.__module__.startswith("apps.") or (owner, name) in seen:
+                    continue
+                seen.add((owner, name))
+                named = _takes_only_list(_function_tree(vars(owner)[name]))
+                if named is None:
+                    continue
+                unnamed = reads.keys(vars(owner)[name], view, set(), {"request"}) - named
+                if unnamed:
+                    findings.append((
+                        "takes_only short of its reads",
+                        f"{owner.__module__.split('.')[1]}.{owner.__name__}.{name} reads "
+                        f"{', '.join(sorted(unnamed))} from its body and its takes_only does not name "
+                        f"{'it' if len(unnamed) == 1 else 'them'}: each is refused whenever it is sent. Name it.",
+                    ))
         return findings
 
     def actions_named_after_a_verb(self, labels, viewsets=None):

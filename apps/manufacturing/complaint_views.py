@@ -14,7 +14,7 @@ from django.shortcuts import get_object_or_404
 from django.utils.dateparse import parse_date
 from rest_framework import serializers, viewsets
 
-from apps.core.api import ModelSerializer
+from apps.core.api import ModelSerializer, takes_only
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.response import Response
@@ -103,6 +103,7 @@ class ComplaintViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         from apps.core.api import money_amount, record_or_404
         from apps.sales.models import Invoice
 
+        takes_only(request.data, "invoice", "memo", "net", "reason")
         complaint = self.get_object()
         invoice = record_or_404(Invoice, request.data.get("invoice"), "invoice")
         net = money_amount(request.data, "net")
@@ -116,6 +117,7 @@ class ComplaintViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     def lots(self, request, pk=None):
         from apps.inventory.models import Lot
 
+        takes_only(request.data, "lot", "quantity")
         complaint = self.get_object()
         lot = get_object_or_404(Lot, code=request.data.get("lot"))
         _run(complaint.add_lot, lot, request.data.get("quantity"))
@@ -144,6 +146,7 @@ class ComplaintViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def close(self, request, pk=None):
+        takes_only(request.data, "by", "on_date", "root_cause")
         complaint = self.get_object()
         _run(complaint.close, request.data.get("root_cause", ""),
              _employee(request.data.get("by")), request.data.get("on_date"))
@@ -151,6 +154,7 @@ class ComplaintViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def reject(self, request, pk=None):
+        takes_only(request.data, "by", "on_date", "reason")
         complaint = self.get_object()
         _run(complaint.reject, request.data.get("reason", ""),
              _employee(request.data.get("by")), request.data.get("on_date"))
@@ -158,6 +162,7 @@ class ComplaintViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def reopen(self, request, pk=None):
+        takes_only(request.data, "reason")
         complaint = self.get_object()
         _run(complaint.reopen, request.data.get("reason", ""))
         return Response(self.get_serializer(complaint).data)
@@ -183,12 +188,14 @@ class CorrectiveActionViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def done(self, request, pk=None):
+        takes_only(request.data, "note", "on_date")
         row = self.get_object()
         _run(row.done, request.data.get("note", ""), request.data.get("on_date"))
         return Response(self.get_serializer(row).data)
 
     @action(detail=True, methods=["post"])
     def verify(self, request, pk=None):
+        takes_only(request.data, "by", "on_date")
         row = self.get_object()
         _run(row.verify, _employee(request.data.get("by")), request.data.get("on_date"))
         return Response(self.get_serializer(row).data)
@@ -251,6 +258,7 @@ class QualityAlertViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def close(self, request, pk=None):
+        takes_only(request.data, "by", "on_date", "root_cause")
         alert = self.get_object()
         _run(alert.close, request.data.get("root_cause", ""), _employee(request.data.get("by")),
              request.data.get("on_date"))
@@ -258,6 +266,7 @@ class QualityAlertViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def cancel(self, request, pk=None):
+        takes_only(request.data, "by", "on_date", "reason")
         alert = self.get_object()
         _run(alert.cancel, request.data.get("reason", ""), _employee(request.data.get("by")),
              request.data.get("on_date"))
@@ -265,6 +274,7 @@ class QualityAlertViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def reopen(self, request, pk=None):
+        takes_only(request.data, "reason")
         alert = self.get_object()
         _run(alert.reopen, request.data.get("reason", ""))
         return self._answer(alert)

@@ -15,7 +15,7 @@ from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.response import Response
 
-from apps.core.api import number, whole_number
+from apps.core.api import number, whole_number, takes_only
 from apps.core.audit import AuditableViewSetMixin
 from apps.core.models import Party, to_date
 from apps.inventory.models import Warehouse
@@ -145,6 +145,7 @@ class ForecastViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         """Work the proposal out again and keep it as forecasts."""
         from .statistical import accept
 
+        takes_only(request.data, "item", "months", "on", "trend", "warehouse")
         created, skipped = _run(accept, *self._statistical_args(request.data))
         return Response({
             "created": ForecastSerializer(created, many=True).data,
@@ -179,6 +180,7 @@ class PlanningRunViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=False, methods=["post"])
     def plan(self, request):
+        takes_only(request.data, "horizon_days", "planned_on", "warehouse")
         warehouse = _run(
             Warehouse.objects.filter(pk=request.data.get("warehouse")).first
         )
@@ -282,6 +284,7 @@ class PlannedOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def firm(self, request, pk=None):
+        takes_only(request.data, "requested_by")
         order = self.get_object()
         requester = Party.objects.filter(
             pk=request.data.get("requested_by")
@@ -444,12 +447,14 @@ class MasterScheduleViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def commit(self, request, pk=None):
+        takes_only(request.data, "accept_overload", "on")
         entry = self.get_object()
         _run(entry.commit, request.data.get("accept_overload", ""), request.data.get("on"))
         return Response(self.get_serializer(entry).data)
 
     @action(detail=True, methods=["post"])
     def withdraw(self, request, pk=None):
+        takes_only(request.data, "reason")
         entry = self.get_object()
         _run(entry.withdraw, request.data.get("reason", ""))
         return Response(self.get_serializer(entry).data)

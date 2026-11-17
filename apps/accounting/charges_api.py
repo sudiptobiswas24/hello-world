@@ -2,7 +2,7 @@
 
 from rest_framework import serializers, viewsets
 
-from apps.core.api import ModelSerializer
+from apps.core.api import ModelSerializer, takes_only
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.response import Response
@@ -39,6 +39,7 @@ class ChargeTypeViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=["post", "delete"])
     def taxes(self, request, pk=None):
         """A tax the charge carries by default added ({"tax"}), or taken off (DELETE ?tax=)."""
+        takes_only(request.data, "tax")
         charge = self.get_object()
         given = request.data.get("tax") if request.method == "POST" else request.query_params.get("tax")
         tax = record_or_404(Tax, given, "tax")

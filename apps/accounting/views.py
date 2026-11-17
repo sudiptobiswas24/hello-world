@@ -10,7 +10,7 @@ from rest_framework.permissions import IsAuthenticated
 from apps.core.permissions import ActionPermission, RequiredPermission
 from rest_framework.response import Response
 
-from apps.core.api import NOT_NEGATIVE, flag, number
+from apps.core.api import NOT_NEGATIVE, flag, number, takes_only
 from apps.core.audit import AuditableViewSetMixin
 from apps.core.models import Party
 from apps.core.scoping import scoped
@@ -88,12 +88,14 @@ class AccountingPeriodViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def close(self, request, pk=None):
         """Lock the period: nothing further posts into it ({"note"} says why or by whose sign-off)."""
+        takes_only(request.data, "note")
         period = self.get_object()
         period.close(by=request.user, note=str(request.data.get("note") or ""))
         return Response(self.get_serializer(period).data)
 
     @action(detail=True, methods=["post"])
     def reopen(self, request, pk=None):
+        takes_only(request.data, "note")
         period = self.get_object()
         period.reopen(by=request.user, note=str(request.data.get("note") or ""))
         return Response(self.get_serializer(period).data)
@@ -145,6 +147,7 @@ class RecurringJournalViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def generate(self, request, pk=None):
         """Take the next entry from this schedule ({"on_date"} dates it other than its due day)."""
+        takes_only(request.data, "next_run_date", "on_date")
         schedule = self.get_object()
         self._may_post(request, [schedule])
         entry = schedule.generate_one(on_date=request.data.get("on_date") or None,
@@ -154,6 +157,7 @@ class RecurringJournalViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     @action(detail=False, methods=["post"])
     def run(self, request):
         """Take every entry now due across the active schedules ({"as_of"} runs as of another day)."""
+        takes_only(request.data, "as_of")
         as_of = request.data.get("as_of") or None
         self._may_post(request, [s for s in RecurringJournal.objects.filter(is_active=True) if s.is_due(as_of)])
         made, refused = generate_due_journals(as_of=as_of)
@@ -270,6 +274,7 @@ class JournalEntryViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def reverse(self, request, pk=None):
+        takes_only(request.data, "memo")
         entry = self.get_object()
         try:
             reversal = entry.reverse_by_hand(memo=request.data.get("memo", ""))
@@ -310,6 +315,7 @@ class TaxViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         Compute tax on an amount without creating a document:
         {"amount": "100.00", "quantity": "1", "tax_ids": [1, 2], "party_id": 5}
         """
+        takes_only(request.data, "amount", "party_id", "quantity", "tax_ids")
         # A line's price and quantity, at their columns' places (accounting/mixins.py); a credit's line is positive too.
         amount = number(request.data, "amount", 2, sign=NOT_NEGATIVE)
         quantity = number(request.data, "quantity", 4, default="1")
@@ -413,6 +419,7 @@ class PaymentViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def send(self, request, pk=None):
         """Email it to the party; {"to", "subject", "body"} override the address and the wording."""
+        takes_only(request.data, "body", "subject", "to")
         payment = self.get_object()
         try:
             recipient = payment.email_to_party(to=request.data.get("to") or None,
@@ -433,6 +440,7 @@ class PaymentViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def void(self, request, pk=None):
+        takes_only(request.data, "date", "memo")
         payment = self.get_object()
         try:
             payment.void(memo=request.data.get("memo", ""), on_date=request.data.get("date") or None)

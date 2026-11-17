@@ -99,11 +99,16 @@ if "names: clean" not in out:
     problems.append("names check not clean")
 if "No invariant findings" not in out or "No changes detected" not in out:
     problems.append("audit_invariants or makemigrations --check not clean")
+# Both printed a failure the gate line never read until g47: a commit naming a row still open passed.
+if "REGISTER FAILED" in out or not re.search(r"^register: 0 row\(s\)", out, re.M):
+    problems.append("register check not clean: a commit names a row still open")
+if "SCREENS FAILED" in out or not re.search(r"^screens: .* 0 refused, unread or stale$", out, re.M):
+    problems.append("screen check not clean: a screen sends a key its action does not take, or one is unread")
 if problems:
     raise SystemExit("; ".join(problems))
 migration = f"{mig}, one app at a time, the {mig_pg} PostgreSQL-only on PostgreSQL"
 if unchanged:
     migration = unchanged + (f", the {mig_pg} PostgreSQL-only on PostgreSQL" if mig_pg else "")
 print(f"Gate: SQLite {sq} tests, {sq_skip} skipped; PostgreSQL {sq}; Asia/Kolkata {ist}, {ist_skip} skipped; "
-      f"migration-tagged {migration}; vitest {vitest.group(1)}; names clean; audit_invariants no findings; "
-      f"makemigrations --check no changes.")
+      f"migration-tagged {migration}; vitest {vitest.group(1)}; names clean; register clean; screens clean; "
+      f"audit_invariants no findings; makemigrations --check no changes.")

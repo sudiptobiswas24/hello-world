@@ -2,7 +2,7 @@
 
 from rest_framework import serializers, viewsets
 
-from apps.core.api import ModelSerializer
+from apps.core.api import ModelSerializer, takes_only
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
@@ -67,6 +67,7 @@ class RestatementViewSet(AuditableViewSetMixin, viewsets.ReadOnlyModelViewSet):
 
     @action(detail=False, methods=["post"])
     def restate(self, request):
+        takes_only(request.data, "as_of", "memo", "rates")
         made = Restatement.make(request.data.get("as_of") or None, by=request.user,
                                 rates=request.data.get("rates") or None, memo=str(request.data.get("memo") or ""))
         return Response(self.get_serializer(self.get_queryset().get(pk=made.pk)).data, status=201)
@@ -88,6 +89,7 @@ class RestatementViewSet(AuditableViewSetMixin, viewsets.ReadOnlyModelViewSet):
 
     @action(detail=True, methods=["post"])
     def void(self, request, pk=None):
+        takes_only(request.data, "date")
         restatement = self.get_object()
         restatement.void(on_date=request.data.get("date") or None, by=request.user)
         return Response(self.get_serializer(self.get_queryset().get(pk=restatement.pk)).data)
