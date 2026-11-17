@@ -52,6 +52,11 @@ class TdsDeduction(AsksTheRestatement, AuditModel):
         help_text="The section's rate row it was deducted at, as it stood on its day (O233); empty for a "
                   "lower-deduction certificate's rate, and for deductions made before rates were dated.")
     pan = models.CharField(max_length=10, blank=True)
+    certificate = models.CharField(
+        max_length=64, blank=True, default="", db_default="", editable=False,
+        help_text="The lower-deduction certificate (section 197) its rate was, as the vendor's profile named it on "
+                  "the day: the return lists the row as a lower deduction under it (O597). Empty at the section's "
+                  "rate and at a deductee's own class, and on deductions made before it was kept.")
     amount = models.DecimalField(max_digits=18, decimal_places=2)
     date = models.DateField()
     covered_bills = models.ManyToManyField(
@@ -92,8 +97,8 @@ class TdsDeduction(AsksTheRestatement, AuditModel):
             # challan that paid it, are facts; reverse() takes a deduction back.
             before = TdsDeduction.objects.get(pk=self.pk)
             if any(getattr(before, name) != getattr(self, name)
-                   for name in ("bill_id", "section_id", "base", "rate_percent", "rate_id", "pan", "amount", "date",
-                                "journal_entry_id", "posted_account_id", "challan_id")):
+                   for name in ("bill_id", "section_id", "base", "rate_percent", "rate_id", "pan", "certificate",
+                                "amount", "date", "journal_entry_id", "posted_account_id", "challan_id")):
                 raise ValidationError("What was deducted is a fact, and so is the challan that paid it over; "
                                       "reverse the deduction instead.")
         super().save(*args, **kwargs)
@@ -203,6 +208,11 @@ def deduct(bill, section=None, on_date=None):
         # it picked the rate before a change and landed in the quarter before (review F1).
         day = due_on(bill, on_date)
         section, rate, pan, rate_row = deduction_terms(bill.vendor, section, day)
+        # Read at the event and kept (O597): the return names the certificate a lower deduction rested on, and
+        # the profile's reference may name the next one by the time the return is filed.
+        profile = getattr(bill.vendor, "tax_profile", None)
+        certificate = (profile.tds_rate_reference
+                       if rate_row is None and profile is not None and profile.tds_rate_basis == "certificate" else "")
         if rate_row is not None:
             # Read again under its lock, which an edit of the row takes too (review F4): changed as this
             # deducted, the row waits for the accountant again and nothing is taken at it.
@@ -239,8 +249,8 @@ def deduct(bill, section=None, on_date=None):
                                    credit=amount, description=memo)
         entry.post()
         deduction = TdsDeduction.objects.create(
-            bill=bill, section=section, base=base, rate_percent=rate, rate=rate_row, pan=pan, amount=amount,
-            date=day, journal_entry=entry, posted_account=account)
+            bill=bill, section=section, base=base, rate_percent=rate, rate=rate_row, pan=pan,
+            certificate=certificate, amount=amount, date=day, journal_entry=entry, posted_account=account)
         # The earlier bills only when this deduction took them in: taxed alone
         # past the single limit, they stay untaxed for the year's limit to catch.
         deduction.covered_bills.set([bill, *untaxed] if caught_up else [bill])
@@ -351,6 +361,8 @@ def tds_return(start, end):
             "section": period_names("tds", row.date, row.section)["section"], "vendor": row.bill.vendor.name,
             "pan": row.pan or "PANNOTAVBL", "bill": row.bill.number, "base": sign * row.base,
             "rate_percent": row.rate_percent, "amount": sign * row.amount,
+            # A lower deduction under section 197 names its certificate (O597).
+            "certificate": row.certificate,
             "challan": f"{row.challan.bsr_code}/{row.challan.challan_number}" if paid else "",
             "paid_on": row.challan.date if paid else None,
             "reverses": row.date if sign < 0 else None,
