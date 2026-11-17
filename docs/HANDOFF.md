@@ -50,6 +50,111 @@ pg_isready -q || service postgresql start                              # role er
 
 ## 2. Next steps, in order
 
+**g42 to g45 are pushed together (19a9b84, 17 November 2026), all seven lanes green on one tip (gated as 2906eab).**
+Thirty-six commits from 565c724. Four rounds went through one gate: each time a tip failed and had to change, the
+next round's reviewed commits were folded in rather than gated twice.
+
+g42 (twenty commits, reviewed after g41):
+- O249 and O581: a purchase order line naming an agreement's line is checked against it when made, as an edit is,
+  and calls the agreement off only for its vendor, item and dates, through the one check release() uses.
+- O357: the credit check names a confirmed order with no exchange rate on its date, and Health lists every one.
+- O577 and O578: every create, and the six viewsets' actions, name the keys they take (takes_only), and
+  audit_invariants (creates_reading_the_body_by_hand) reports a create that does not; the e-way bill screen asks
+  the value going back on a job-work delivery.
+- O587, O588, O589: a method field returning a list is refused when sent, by the serializer's own list of them,
+  not by its name; a new lead shows New before it is saved; the bank rate's serializer goes through the dated
+  rates' one mixin.
+- O256: a withdrawn settlement discount is never dated before the discount it takes back; a withdrawal with no
+  discount taken is refused in words (deab163). O554: the reverse-charge footing counts the bills the challan
+  pays, as the return does.
+- O580: the correction-date check follows a step into the helper it posts through, and found four postings with
+  no date rule: a customer's TDS (O582), landed cost (O583), a cost version's publish (O584), a run's close (O585).
+- O586 and O591: the hr lists ask which run kept each row in one query, not one a row.
+- O590: races.stale_behind_a_lock waits on its own transaction and says at once when the second never waited.
+- O383: a salary payment that no slip, bank file, advance, remittance or payout takes reads as applied to nothing
+  (settlement.register_taking_field), so the one a refused application leaves on net pay payable is the only one
+  the Controller finds on the payments list, and voids. Before, every salary payment read so.
+
+g43 (six commits, people and locks):
+- O551: the gratuity ceiling is a dated statutory figure the Controller confirms (FigureKind.GRATUITY_CEILING),
+  read on the leaving day and kept on the payout (GratuityPayout.ceiling_figure); a row a payout kept cannot be
+  changed or deleted. **Upgrade note:** an upgraded install refuses the gratuity calculation, in words, until the
+  Controller confirms the ceiling. setup_statutory loads S.O. 1420(E)'s 20,00,000 from 29 March 2018
+  (statutory/gratuity.csv); go_live_check asks for it.
+- O365: a run worked out for some people names only those chosen with no pay set up; hr 0043 marks as entered
+  every punched day a hand corrected before O304 (a day with only a time changed cannot be told from the file's
+  and stays so).
+- O373: the lock-order survey records every site that takes a pair, not only the first.
+- O379: update_or_create() is held FOR NO KEY UPDATE through one helper, apps.core.models.update_or_create_held,
+  which takes the numbering row inside its own block (c06274f); plain_for_update reports a new plain call.
+- O380: a stoppage whose save failed gives its number back; audit_invariants (numbers_kept_past_a_rollback)
+  reports a method that numbers outside @serialised or @numbered_in_one_transaction.
+
+g44 (the backup fix, four commits from the redundant-code audit, the sweep fix):
+- The backup test drops its scratch database with a plain DROP, which stops autovacuum; WITH (FORCE) could not
+  end an autovacuum worker as the erp role and failed sqlite on deb1ab7.
+- The owner asked for a fresh agent to audit redundant code (old versions kept beside new) and to discuss before
+  anything went. The report, with the owner's decisions at its head, is docs/handoff/reports/g44_redundant.md.
+  Decisions: **remove no dead code yet** (the list stays on file); the morning checks escalate overdue quality
+  decisions (O594: escalate_overdue had no caller, so a decision left past its deadline reached nobody); the 39
+  probe and test copies under docs/handoff/reports go (a README there says the commit each is still in); the
+  merges weighed one by one.
+- Merged, no behaviour change: an allocation's save and locked_before_it (InvoicePayment and BillPayment) on
+  RealisedOnItsOwnDay; what is overdue on one mixin, settlement.LateByItsInstallments; "the party holds role X"
+  and names_another in core (33 callers); month_end in core; AuditModel.write_past_its_guard for twenty hand
+  copies of the flag, save, finally shape (twelve the audit listed, eight more its new check,
+  guard_bypasses_by_hand, found). Not merged, and why: the order viewsets' actions are view plumbing over
+  core.approvals; the pdf action is five lines; computed_by is a reflection helper in two unrelated models; the
+  aliases stay.
+- The browser sweep's plant confirms its gratuity ceiling, as an installed plant does: O551's refusal failed nine
+  sweep tests on pg-c at 8222958.
+
+g45 (three commits):
+- O388: a note's part absorbed is restated at the base it cleared, one figure on the note's side and the
+  document's (restatement.absorbed_cleared), sales and purchasing both: the receivable read a paisa off.
+- O593: a number taken inside a caller's transaction that then rolled back is given back on the object, read
+  off the row rather than Django's on-commit list.
+- O374: hr.employee is ranked between accounting.payment and accounting.account, and Payment.post asks its checks
+  before it shares the bank. g43 ranked the person after the account, on the register's word; the PostgreSQL lane
+  refused 41 tests, every one a receipt from a person (the bank shared, then hold_the_payer), which SQLite never
+  saw because it drops FOR SHARE. The rank was taken out and redone from a survey of every lock taken on
+  PostgreSQL: both orders were real, so one path had to change, and a race() on PostgreSQL proves it.
+
+Counts: SQLite 8,911 (251 skipped), PostgreSQL 4,116 + 3,701 + 1,094 = 8,911, Asia/Kolkata 8,911 (251 skipped), migration-tagged
+55 (every app ran: lock_order.py changed), vitest 83.
+
+- Tips that failed on the way, and why:
+  - bba172d (g42) failed pg-a and sqlite on one test: O256 made withdraw_discount read the discount's entry
+    first, and EveryEventAsksTheRestatementTests called it with none taken. Neither O256's agent nor its review
+    ran tests_restatement: a change to a shared settlement function runs apps.accounting whole. The same tip's ui
+    lane failed tsc on the O578 test (TS2532): vitest does not typecheck, so an agent touching frontend/ runs
+    `npm run build` as well.
+  - deb1ab7 failed sqlite on the backup test's DROP WITH (FORCE) against autovacuum (the fix above).
+  - e141989 failed pg-b on 41 LockOrderViolations (O374's first rank, above).
+  - 8222958 failed pg-c on nine sweep tests (O551's designed refusal, above).
+- Gate lessons:
+  - Two browser failures in a day ran beside the migration lane: a page crash at 12.9 of 16 GB (O592) and a button
+    that never appeared (O595). The gate now runs no browser lane (sqlite, pg-c, ist) beside mig.
+  - A rank in LOCK_ORDER is proved on PostgreSQL: SQLite drops FOR UPDATE and FOR SHARE, so the sentinel never
+    sees those locks there.
+  - Never split a hunk with `git apply --unidiff-zero`: it placed month_end inside to_date in an intermediate
+    commit, and only testing that commit alone caught it. Write the intermediate file with `git hash-object -w`
+    and `git update-index --cacheinfo`.
+  - A change to apps/core/lock_order.py, or a migration in hr, makes mig run every app: about seven and a half
+    hours, the long pole again.
+  - The container restarted twice: at 23:57 on 16 November, nineteen minutes into sqlite and pg-c, and at 01:53,
+    six minutes into ist. Each lane it killed ran again from the start; the lanes already OK kept their results,
+    on the same tip.
+- Register: O592 and O595 (browser failures beside the migration lane; whether either recurs alone is the next
+  runs' answer), O596 (hr.tests_review_audit p20 reads ledger rows a demo-loading test left in the same
+  PostgreSQL database). O593 and O374 are fixed in g45 and not added.
+- Next: g46, built in /home/user/work/g46 on 2906eab: O596 (06db2b9, the test reads only the ledger rows its own
+  post made); remove O596's row in that commit when it is replayed onto this documentation commit.
+- O564 (the demo failure only g39's whole pg-c lane showed) did not recur: still open.
+- Waiting on people, unchanged: the owner (O448, O494, O557, O558, O559, O562, O571, decision 24; O550 needs the
+  Maharashtra minimum wage notification), the tax adviser (O449, O500, O534, O559, O561), the accountant (O536,
+  O538, O562, O563, docs/STATUTORY_REVIEW.md section 14).
+
 **g41 is pushed (fe02c85, 15 November 2026), all seven lanes green on one tip (gated as 310f75e).** Ten commits, all
 register rows or defects that waited on nobody, from two agents and one gate fix:
 - O568: the TDS and TCS rate lists ask whether each rate was taken in the list's own query (DatedRate.with_taken),
