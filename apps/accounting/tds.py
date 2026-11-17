@@ -177,9 +177,10 @@ class TdsRate(DatedRate, AuditModel):
 def deduction_terms(party, section=None, day=None):
     """
     (section, rate, PAN, rate row) a party is deducted at on `day`: the
-    section given, or the one on its profile; the rate on its
-    lower-deduction certificate (no row), or the section's confirmed rate
-    standing that day (TdsRate), with a PAN or without.
+    section given, or the one on its profile; its own rate standing that day
+    (no row: an individual's, or a lower-deduction certificate's between its
+    dates, O247), or the section's confirmed rate standing that day
+    (TdsRate), with a PAN or without.
     """
     profile = getattr(party, "tax_profile", None)
     section = section or (profile.tds_section if profile else None)
@@ -188,7 +189,8 @@ def deduction_terms(party, section=None, day=None):
     if not section.is_active:
         raise ValidationError(f"{section} is no longer in use.")
     pan = profile.pan_on_file() if profile else ""
-    if profile and profile.tds_rate_percent is not None and profile.tds_section_id == section.pk:
-        return section, profile.tds_rate_percent, pan, None
+    own = profile.own_tds_rate_on(section, day) if profile else None
+    if own is not None:
+        return section, own, pan, None
     rate = section.rate_on(day)
     return section, rate.percent_for(pan), pan, rate
