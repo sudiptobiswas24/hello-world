@@ -56,7 +56,7 @@ export default function PlanForm() {
             { key: "evaluation", label: "Judged by", kind: "choice", choices: [["every", "Every reading must pass"], ["mean", "The average must pass"]] },
             { key: "aql", label: "AQL", kind: "decimal", hint: "Instead of a fixed sample, for counted defects" },
           ],
-          body: (values, record) => ({ ...values, id: undefined, plan: record.id }) },
+          body: (values, record) => ({ ...values, plan: record.id }) },
         remover: { permission: "quality.delete_planline", when: typed, url: (row) => `/api/quality/plan-lines/${row.id}/` },
       }]}
     />

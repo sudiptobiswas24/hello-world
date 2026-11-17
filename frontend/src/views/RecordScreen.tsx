@@ -17,6 +17,8 @@ import { ExtraFields } from "../forms/ExtraFields";
 import { DataTable, type Column } from "./DataTable";
 
 type Row = Record<string, unknown> & { id: number };
+/** What an action form's fields hold, by key: what a declared body is given to build what it sends. */
+export type Values = Record<string, unknown>;
 
 export type FieldKind =
   | "text" | "textarea" | "decimal" | "money" | "integer" | "date" | "time" | "bool" | "choice" | "ref" | "refs" | "pick";
@@ -75,8 +77,8 @@ export interface ActionDef {
   danger?: boolean;
   /** Where it posts, when not under the record (a repair raised on a stoppage). */
   url?: (record: Row) => string;
-  /** What it sends, when not its fields as they are. */
-  body?: (values: Row, record: Row) => unknown;
+  /** What it sends, when not its fields as they are. Given its fields' values and nothing else (Values). */
+  body?: (values: Values, record: Row) => unknown;
   /** Where to go after, given what the server answered. */
   then?: (result: Row) => string;
 }
@@ -126,7 +128,7 @@ export interface PanelDef {
     url: (record: Row) => string;
     /** Or worked out from the record: a reading's choices are its own plan's lines. */
     fields: FieldDef[] | ((record: Row) => FieldDef[]);
-    body: (values: Row, record: Row) => unknown;
+    body: (values: Values, record: Row) => unknown;
     when?: (record: Row) => boolean;
   };
   /**
@@ -371,9 +373,12 @@ function ActionForm({ action, record, endpoint, onClose }: {
   const act = useAct<Row>();
   const navigate = useNavigate();
   const run = async () => {
-    const plain: Record<string, unknown> = {};
+    // The fields' values and nothing else: the form's own state starts as blank()'s { id: 0 }, and an action that
+    // names the keys it takes (O579) refused the `id` an adder sent with it, so no count line, role or quote
+    // could be added from its panel.
+    const plain: Values = {};
     for (const field of fields) plain[field.key] = values[field.key];
-    const body = action.body ? action.body(values, record) : plain;
+    const body = action.body ? action.body(plain, record) : plain;
     const url = action.url ? action.url(record) : `${endpoint}${record.id}/${action.path}/`;
     const outcome = await act.run("POST", url, body, { done: action.done });
     if (outcome.ok) {
@@ -489,7 +494,7 @@ export function RecordScreen(props: RecordScreenProps) {
           <ActionButton key={action.path} primary={action.primary} danger={action.danger} pending={act.pending}
             onClick={() => (typeof action.fields === "function" || action.fields?.length ? setAsking(action) : void act.run(
               "POST", action.url ? action.url(saved!) : `${endpoint}${saved!.id}/${action.path}/`,
-              action.body ? action.body({ id: 0 }, saved!) : {},
+              action.body ? action.body({}, saved!) : {},
               { done: action.done, onDone: (result) => { if (action.then) navigate(action.then(result)); } }))}>
             {action.label}
           </ActionButton>

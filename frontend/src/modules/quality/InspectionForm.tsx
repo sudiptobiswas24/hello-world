@@ -1,6 +1,6 @@
 import { useAccess } from "../../auth/me";
 import { dateTime } from "../../lib/format";
-import { RecordScreen } from "../../views/RecordScreen";
+import { RecordScreen, type Values } from "../../views/RecordScreen";
 import { DISPOSITIONS, INSTRUMENT, LOT, PERSON, PLAN } from "./refs";
 
 type Row = Record<string, unknown> & { id: number };
@@ -13,7 +13,7 @@ const WHY = [{ key: "note", label: "Why", kind: "text" as const, wide: true }];
 const decision = (label: string, disposition: string, done: string) => ({
   label, path: disposition, permission: "quality.decide_inspection", when: waits, done, fields: WHY,
   url: (row: Row) => `/api/quality/inspections/${row.id}/decide/`,
-  body: (values: Row) => ({ disposition, note: values.note }),
+  body: (values: Values) => ({ disposition, note: values.note }),
 });
 
 /**
