@@ -155,8 +155,9 @@ def refuse_posting_without_a_rate(bill):
     A bill its vendor's section taxes, posted with no confirmed rate standing
     on its day, is refused in words: deducted at nothing, the plant loses the
     expense under section 40(a)(ia) (integrator's decision, g22). Asked of
-    the vendor's own section; a lower-deduction certificate's rate needs no
-    row; a bill under the section's thresholds needs none either.
+    the vendor's own section; a rate of its own standing on the bill's day needs
+    no row (a certificate's only between its dates, O247); a bill under the
+    section's thresholds needs none either.
     """
     profile = getattr(bill.vendor, "tax_profile", None)
     section = profile.tds_section if profile else None
@@ -164,12 +165,12 @@ def refuse_posting_without_a_rate(bill):
         return
     if bill.currency_id not in (None, Company.get().base_currency_id):
         return
-    if profile.tds_rate_percent is not None:
+    day = to_date(bill.bill_date)
+    if profile.own_tds_rate_on(section, day) is not None:
         return
     base, _, _, _ = _owed(bill, section, Decimal("0"))
     if base <= 0:
         return
-    day = to_date(bill.bill_date)
     try:
         section.rate_on(day)
     except ValidationError:
