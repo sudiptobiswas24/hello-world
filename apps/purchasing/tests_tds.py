@@ -202,9 +202,110 @@ class ContractTests(TdsTestCase):
         self.assertEqual(self.bill("35000", vendor=party).deduct_tds().amount, Decimal("700.00"))
 
     def test_at_the_vendors_own_rate(self):
-        party = self.contractor(pan="AAAPL1234C", tds_rate_percent=Decimal("1"), tds_rate_reference="Individual")
+        party = self.contractor(pan="AAAPL1234C", tds_rate_percent=Decimal("1"), tds_rate_reference="Individual",
+                                tds_rate_basis="deductee")
         deduction = self.bill("35000", vendor=party).deduct_tds()
         self.assertEqual((deduction.amount, deduction.rate_percent), (Decimal("350.00"), Decimal("1.0000")))
+
+
+class CertificateTests(TdsTestCase):
+    """
+    O247: a lower-deduction certificate (section 197) stands from its first day to its last. Undated, a lapsed one
+    went on deducting at its rate. 194C at 2%, a certificate at 0.5% from 1 June to 30 September 2026, one bill of
+    35,000 a day, each deducted in turn (g46_calc/o247.py): 700.00 on 31 May, 175.00 on the first and the last
+    day, 700.00 on 1 October, when the year has passed 1,00,000 with nothing left untaxed.
+    """
+
+    FROM, UNTIL = datetime.date(2026, 6, 1), datetime.date(2026, 9, 30)
+
+    def holder(self):
+        return self.contractor(pan="AAAPL1234C", tds_rate_percent=Decimal("0.5"), tds_rate_reference="197/2026/14",
+                               tds_rate_basis="certificate", tds_rate_from=self.FROM, tds_rate_until=self.UNTIL)
+
+    def profile(self, code, **terms):
+        party = Party.objects.create(code=code, name=f"Vendor {code}")
+        return PartyTaxProfile.objects.create(party=party, pan="AAAPD1234C", tds_section=self.contract,
+                                              tds_rate_percent=Decimal("0.5"), tds_rate_reference="197/2026/14",
+                                              **terms)
+
+    def test_a_rate_says_what_it_rests_on(self):
+        with self.assertRaisesMessage(ValidationError, "the deductee's own class"):
+            self.profile("V-B")
+
+    def test_a_certificate_names_both_its_days(self):
+        with self.assertRaisesMessage(ValidationError, "give both"):
+            self.profile("V-D", tds_rate_basis="certificate", tds_rate_from=self.FROM)
+
+    def test_a_certificate_ending_before_it_starts(self):
+        with self.assertRaisesMessage(ValidationError, "cannot end on 31 May 2026, before it starts on 01 Jun 2026"):
+            self.profile("V-E", tds_rate_basis="certificate", tds_rate_from=self.FROM,
+                         tds_rate_until=datetime.date(2026, 5, 31))
+
+    def test_a_certificate_is_for_one_financial_year(self):
+        with self.assertRaisesMessage(ValidationError, "starts in 2025-26, so it ends by 31 Mar 2026"):
+            self.profile("V-Y", tds_rate_basis="certificate", tds_rate_from=datetime.date(2026, 3, 1),
+                         tds_rate_until=datetime.date(2026, 4, 30))
+
+    def test_a_deductees_class_has_no_dates(self):
+        with self.assertRaisesMessage(ValidationError, "has no dates"):
+            self.profile("V-C", tds_rate_basis="deductee", tds_rate_until=self.UNTIL)
+
+    def test_a_basis_and_dates_without_a_rate(self):
+        party = Party.objects.create(code="V-N", name="No rate")
+        with self.assertRaisesMessage(ValidationError, "belong to a rate of its own"):
+            PartyTaxProfile.objects.create(party=party, pan="AAAPN1234C", tds_section=self.contract,
+                                           tds_rate_basis="certificate", tds_rate_from=self.FROM,
+                                           tds_rate_until=self.UNTIL)
+
+    def test_deducted_at_the_certificate_only_between_its_days(self):
+        party = self.holder()
+        made = [self.bill("35000", day=day, vendor=party).deduct_tds()
+                for day in (datetime.date(2026, 5, 31), self.FROM, self.UNTIL, datetime.date(2026, 10, 1))]
+        self.assertEqual([(row.base, row.rate_percent, row.amount, row.rate_id) for row in made], [
+            (Decimal("35000.00"), Decimal("2.0000"), Decimal("700.00"), self.contract_rate.pk),
+            (Decimal("35000.00"), Decimal("0.5000"), Decimal("175.00"), None),
+            (Decimal("35000.00"), Decimal("0.5000"), Decimal("175.00"), None),
+            (Decimal("35000.00"), Decimal("2.0000"), Decimal("700.00"), self.contract_rate.pk),
+        ])
+
+    def test_deducted_on_its_payment_day_at_what_stands_that_day(self):
+        # Deducted as it is paid, the rate is the payment day's (O233): a bill inside the certificate paid after it
+        # lapsed is deducted at the section's.
+        bill = self.bill("35000", day=self.UNTIL, vendor=self.holder())
+        deduction = bill.deduct_tds(on_date=datetime.date(2026, 10, 5))
+        self.assertEqual((deduction.rate_percent, deduction.amount), (Decimal("2.0000"), Decimal("700.00")))
+
+    def test_a_bill_past_the_certificate_needs_the_sections_rate_to_post(self):
+        # The mirror at posting (refuse_posting_without_a_rate): any rate of its own let every bill through, so a
+        # bill after the certificate lapsed posted where the section had no confirmed rate, and was then deducted
+        # at the lapsed 0.5%.
+        fees = TdsSection.objects.create(code="194J", name="Professional fees", mode="whole",
+                                         single_threshold=Decimal("30000"), annual_threshold=Decimal("100000"),
+                                         payable_account=self.tds_payable)
+        party = self.holder()
+        PartyTaxProfile.objects.filter(party=party).update(tds_section=fees)
+        party = Party.objects.get(pk=party.pk)
+        self.assertEqual(self.bill("35000", day=self.UNTIL, vendor=party).deduct_tds().amount, Decimal("175.00"))
+        with self.assertRaisesMessage(ValidationError, "no confirmed 194J rate stands on 01 Oct 2026"):
+            self.bill("35000", day=datetime.date(2026, 10, 1), vendor=party)
+
+    def test_a_rate_entered_before_the_basis_was_asked(self):
+        # Upgraded, it keeps its old meaning (every day) until it says, and Health lists it; its next save asks.
+        from apps.web.health import _own_tds_rates_without_a_basis
+
+        party = self.holder()
+        PartyTaxProfile.objects.filter(party=party).update(tds_rate_basis="", tds_rate_from=None,
+                                                           tds_rate_until=None)
+        party = Party.objects.get(pk=party.pk)
+        late = self.bill("35000", day=datetime.date(2026, 10, 1), vendor=party).deduct_tds()
+        self.assertEqual((late.rate_percent, late.amount), (Decimal("0.5000"), Decimal("175.00")))
+        listed = _own_tds_rates_without_a_basis(None)
+        self.assertEqual((listed["ok"], listed["count"], [row["label"] for row in listed["rows"]]),
+                         (False, 1, ["V-C - Loom Fitters: 0.5% under 194C, resting on 197/2026/14"]))
+        with self.assertRaisesMessage(ValidationError, "the deductee's own class"):
+            party.tax_profile.save()
+        PartyTaxProfile.objects.filter(party=party).update(tds_rate_basis="deductee")
+        self.assertEqual(_own_tds_rates_without_a_basis(None)["count"], 0)
 
 
 class LedgerTests(TdsTestCase):
@@ -405,11 +506,19 @@ class ApiTests(TdsTestCase):
 
     def test_the_vendors_terms_are_kept_on_its_tax_profile(self):
         profile = self.vendor.tax_profile
-        changed = self.as_("Controller").patch(f"/api/accounting/party-tax-profiles/{profile.pk}/", {
-            "tds_section": self.contract.pk, "tds_rate_percent": "1", "tds_rate_reference": "197/2026/14"},
-            format="json")
+        controller = self.as_("Controller")
+        terms = {"tds_section": self.contract.pk, "tds_rate_percent": "1", "tds_rate_reference": "197/2026/14",
+                 "tds_rate_basis": "certificate"}
+        # A certificate with no dates is refused beside the field it lacks (O247).
+        undated = controller.patch(f"/api/accounting/party-tax-profiles/{profile.pk}/", terms, format="json")
+        self.assertEqual(undated.status_code, 400, undated.content)
+        self.assertIn("tds_rate_from", undated.json())
+        changed = controller.patch(f"/api/accounting/party-tax-profiles/{profile.pk}/", {
+            **terms, "tds_rate_from": "2026-06-01", "tds_rate_until": "2026-09-30"}, format="json")
         self.assertEqual(changed.status_code, 200, changed.content)
-        self.assertEqual(changed.json()["tds_rate_percent"], "1.0000")
+        self.assertEqual([changed.json()[key] for key in ("tds_rate_percent", "tds_rate_basis", "tds_rate_from",
+                                                          "tds_rate_until")],
+                         ["1.0000", "certificate", "2026-06-01", "2026-09-30"])
 
 
 class UndoingTakesTheDecisionRightTests(TdsTestCase):

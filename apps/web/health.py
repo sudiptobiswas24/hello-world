@@ -318,6 +318,27 @@ def _orders_without_their_rate(day):
                     rows, "/settings/exchange-rates")
 
 
+def _own_tds_rates_without_a_basis(day):
+    """
+    A party's TDS rate of its own entered before the basis was asked (O247): it stands every day, as it did, so a
+    lower-deduction certificate entered so goes on deducting at its rate after it lapses. Listed until each says
+    whether it is the deductee's class or a certificate, with a certificate's dates.
+    """
+    from apps.accounting.models import PartyTaxProfile
+
+    profiles = list(PartyTaxProfile.objects.filter(tds_rate_percent__isnull=False, tds_rate_basis="")
+                    .select_related("party", "tds_section").order_by("party__name", "pk"))
+    rows = [{"label": f"{profile.party}: {profile.tds_rate_percent.normalize():f}% under "
+                      f"{profile.tds_section.code if profile.tds_section else 'no section'}, resting on "
+                      f"{profile.tds_rate_reference or 'nothing said'}",
+             "href": f"/settings/gst-registrations/{profile.pk}"} for profile in profiles[:SHOW]]
+    return _finding(not profiles, len(profiles),
+                    "Every TDS rate of a party's own says what it rests on." if not profiles
+                    else f"{len(profiles)} party TDS rate(s) of their own say nothing of what they rest on: each "
+                         "is deducted at every day, a lapsed certificate's included, until it says.",
+                    rows, "/settings/gst-registrations")
+
+
 def _closed_periods(day):
     from apps.accounting.models import AccountingPeriod, JournalEntry
 
@@ -454,6 +475,7 @@ PROBES = [
     Probe("vehicles_in", "No vehicle left without an out-entry", _vehicles_in_too_long),
     Probe("passes_not_out", "No approved pass went without its check-out", _passes_not_out),
     Probe("orders_rate", "Confirmed orders have their exchange rate", _orders_without_their_rate),
+    Probe("tds_own_rates", "Parties' own TDS rates say what they rest on", _own_tds_rates_without_a_basis),
     Probe("closed_periods", "Closed months stayed closed", _closed_periods),
     Probe("invoice_numbers", "Invoice numbers run without a gap", _invoice_numbers),
     Probe("self_invoices", "Reverse-charge supplies have their self-invoices", _self_invoices),

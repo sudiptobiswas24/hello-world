@@ -1074,6 +1074,16 @@ class PartyTaxProfile(AuditModel):
     tds_rate_reference = models.CharField(
         max_length=64, blank=True, help_text="The certificate or reason the rate of its own rests on.",
     )
+    tds_rate_basis = models.CharField(
+        max_length=12, blank=True, default="", db_default="", choices=[("deductee", "The deductee's own class"),
+                                            ("certificate", "A lower-deduction certificate (section 197)")],
+        help_text="What the rate of its own rests on. A certificate's rate stands only from its first day to its "
+                  "last; outside them the section's rate applies (O247). Empty only on a rate entered before "
+                  "the basis was asked, which Health lists.",
+    )
+    tds_rate_from = models.DateField(null=True, blank=True, help_text="A certificate's first day.")
+    tds_rate_until = models.DateField(null=True, blank=True,
+                                      help_text="A certificate's last day, in the financial year it was issued for.")
     msme_category = models.CharField(
         max_length=8, blank=True, choices=[("micro", "Micro"), ("small", "Small"), ("medium", "Medium")],
         help_text="As its Udyam registration says. A micro or small vendor is paid within 45 days, or "
@@ -1131,6 +1141,53 @@ class PartyTaxProfile(AuditModel):
             if not self.pan_on_file():
                 raise ValidationError({"tds_rate_percent": "Without a PAN the no-PAN rate applies whatever "
                                                            "else is on file."})
+        self._check_tds_basis()
+
+    def _check_tds_basis(self):
+        """
+        A rate of its own says what it rests on, and a certificate its dates (O247): undated, a lapsed
+        certificate went on deducting at its rate. A rate entered before the basis was asked keeps its
+        old meaning until it is next saved, and Health lists it.
+        """
+        from .tds import financial_year
+
+        dated = self.tds_rate_from is not None or self.tds_rate_until is not None
+        if self.tds_rate_percent is None:
+            if self.tds_rate_basis or dated:
+                raise ValidationError({"tds_rate_basis": "A basis and dates belong to a rate of its own; give the "
+                                                         "rate, or leave them empty for the section's."})
+            return
+        if not self.tds_rate_basis:
+            raise ValidationError({"tds_rate_basis": "Say whether the rate is the deductee's own class (an "
+                                                     "individual's 1% under 194C) or a lower-deduction "
+                                                     "certificate (section 197)."})
+        if self.tds_rate_basis == "deductee":
+            if dated:
+                raise ValidationError({"tds_rate_from": "A deductee's own class has no dates; a certificate does."})
+            return
+        if self.tds_rate_from is None or self.tds_rate_until is None:
+            raise ValidationError({"tds_rate_from": "A lower-deduction certificate stands from its first day to its "
+                                                    "last; give both, as the certificate says."})
+        if self.tds_rate_until < self.tds_rate_from:
+            raise ValidationError({"tds_rate_until": f"The certificate cannot end on {self.tds_rate_until:%d %b %Y}, "
+                                                     f"before it starts on {self.tds_rate_from:%d %b %Y}."})
+        if financial_year(self.tds_rate_from) != financial_year(self.tds_rate_until):
+            start, end = financial_year(self.tds_rate_from)
+            raise ValidationError({"tds_rate_until": f"A certificate is issued for one financial year: this one "
+                                                     f"starts in {start.year}-{end:%y}, so it ends by "
+                                                     f"{end:%d %b %Y}."})
+
+    def own_tds_rate_on(self, section, day):
+        """
+        The rate of its own standing under `section` on `day`, or None where the section's rate applies: a
+        certificate's only from its first day to its last (O247). A rate with no basis, entered before one was
+        asked, keeps its old meaning: it stands every day.
+        """
+        if self.tds_rate_percent is None or self.tds_section_id != getattr(section, "pk", section):
+            return None
+        if self.tds_rate_basis == "certificate" and not (self.tds_rate_from <= day <= self.tds_rate_until):
+            return None
+        return self.tds_rate_percent
 
     def _check_msme(self):
         if self.udyam_number:
