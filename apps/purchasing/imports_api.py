@@ -2,7 +2,7 @@
 
 from rest_framework import serializers, viewsets
 
-from apps.core.api import ModelSerializer
+from apps.core.api import ModelSerializer, takes_only
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
@@ -103,6 +103,7 @@ class BillOfEntryViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def clear_receipt(self, request, pk=None):
         """{receipt, bill}: the receipt's goods, as the overseas supplier's bill invoiced them."""
+        takes_only(request.data, "bill", "receipt")
         entry = self.get_object()
         receipt = record_or_404(GoodsReceipt, request.data.get("receipt"), "receipt")
         bill = record_or_404(Bill, request.data.get("bill"), "bill")
@@ -118,6 +119,7 @@ class BillOfEntryViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def void(self, request, pk=None):
+        takes_only(request.data, "on_date", "reason")
         entry = self.get_object()
         entry.void(on_date=request.data.get("on_date") or None, reason=request.data.get("reason") or "")
         return Response(self.get_serializer(entry).data)

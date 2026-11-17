@@ -6,7 +6,7 @@ paid, and reverses a write-off when the money comes after all.
 from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers, viewsets
 
-from apps.core.api import ModelSerializer
+from apps.core.api import ModelSerializer, takes_only
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.response import Response
@@ -39,6 +39,7 @@ class InvoiceWriteOffViewSet(CustomerScopedMixin, viewsets.ReadOnlyModelViewSet)
 
     @action(detail=True, methods=["post"])
     def recover(self, request, pk=None):
+        takes_only(request.data, "date")
         write_off = self.get_object()
         try:
             write_off.invoice.recover_write_off(write_off, on_date=request.data.get("date") or None)

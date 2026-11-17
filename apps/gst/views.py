@@ -106,6 +106,7 @@ class Gstr2bStatementViewSet(RowHeldViewSetMixin, mixins.ListModelMixin, mixins.
 
     @action(detail=False, methods=["post"])
     def upload(self, request):
+        takes_only(request.data, "period", "replace", "text")
         text = request.data.get("text") or ""
         if not text.strip():
             raise DRFValidationError({"text": ["Give the file's text."]})
@@ -444,6 +445,7 @@ class GstCashPaymentViewSet(viewsets.ReadOnlyModelViewSet):
 
     @action(detail=False, methods=["post"])
     def pay(self, request):
+        takes_only(request.data, "bank_account", "cash_ledger_account", "cpin", "date", "month")
         data = request.data
         bank = record_or_404(Account, data.get("bank_account"), "bank_account")
         ledger = record_or_404(Account, data.get("cash_ledger_account"), "cash_ledger_account")
@@ -453,6 +455,7 @@ class GstCashPaymentViewSet(viewsets.ReadOnlyModelViewSet):
 
     @action(detail=True, methods=["post"])
     def void(self, request, pk=None):
+        takes_only(request.data, "date")
         payment = self.get_object()
         payment.void(on_date=request.data.get("date") or None)
         return Response(self.get_serializer(payment).data)

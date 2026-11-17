@@ -2,7 +2,7 @@
 
 from rest_framework import serializers, viewsets
 
-from apps.core.api import ModelSerializer
+from apps.core.api import ModelSerializer, takes_only
 from rest_framework.decorators import action
 
 from apps.core.api import required
@@ -40,6 +40,7 @@ class LicenceViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def renew(self, request, pk=None):
+        takes_only(request.data, "licence_number", "note", "valid_from", "valid_to")
         licence = self.get_object()
         required(request.data, "licence_number", "valid_from", "valid_to", message="Say what the renewed licence reads.")
         renewal = licence.renew(request.data["licence_number"], request.data["valid_from"], request.data["valid_to"],

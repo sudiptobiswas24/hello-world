@@ -133,6 +133,8 @@ class Cost(PayrollApiTestCase):
         # void and repeat with the trail off
         run = self.client.get("/api/hr/pay-runs/").json()
         rid = (run["results"] if isinstance(run, dict) else run)[0]["id"]
-        self.client.post(f"/api/hr/pay-runs/{rid}/void/", {"reason": "probe"}, format="json")
+        # A pay run's void takes its day only: the "reason" this sent was dropped without a word until O579.
+        voided = self.client.post(f"/api/hr/pay-runs/{rid}/void/", {}, format="json")
+        self.assertEqual(voided.status_code, 200, voided.content)
         c_off, p_off = self.timed_run(True)
         print(f"\nPROBE p30 {connection.vendor}: calculate on {c_on:.2f}s off {c_off:.2f}s; post on {p_on:.2f}s off {p_off:.2f}s")

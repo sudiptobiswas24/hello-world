@@ -46,7 +46,7 @@ from django.db import transaction
 from django.db.models import Q
 from rest_framework import serializers, viewsets
 
-from apps.core.api import ModelSerializer
+from apps.core.api import ModelSerializer, takes_only
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.exceptions import ValidationError as DRFValidationError
@@ -365,6 +365,7 @@ class UserViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def set_password(self, request, pk=None):
         """A new password ({"password"}), checked as any password is; the person changes it at their next sign-in if they wish."""
+        takes_only(request.data, "password")
         user = self.get_object()
         required(request.data, "password", message="Give the new password.")
         issue_password(request.user, user, str(request.data["password"]))
@@ -388,6 +389,7 @@ class UserViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def grant(self, request, pk=None):
         """Give this login a role ({"role"}: its name or id), or propose one the keeper does not hold (roles.py)."""
+        takes_only(request.data, "role")
         user = self.get_object()
         self._not_myself(request, user, "Giving yourself a role")
         try:
@@ -398,6 +400,7 @@ class UserViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def revoke(self, request, pk=None):
+        takes_only(request.data, "role")
         user = self.get_object()
         self._not_myself(request, user, "Taking a role from yourself")
         user.groups.remove(self._role(request))

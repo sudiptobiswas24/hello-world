@@ -5,7 +5,7 @@ challan, and listed for the quarter's return.
 
 from rest_framework import serializers, viewsets
 
-from apps.core.api import ModelSerializer
+from apps.core.api import ModelSerializer, takes_only
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.response import Response
@@ -50,6 +50,7 @@ class TdsDeductionViewSet(viewsets.ReadOnlyModelViewSet):
 
     @action(detail=True, methods=["post"])
     def reverse(self, request, pk=None):
+        takes_only(request.data, "date")
         deduction = self.get_object()
         deduction.reverse(on_date=request.data.get("date") or None)
         return Response(self.get_serializer(deduction).data)
@@ -96,6 +97,7 @@ class TdsChallanViewSet(viewsets.ReadOnlyModelViewSet):
     @action(detail=False, methods=["post"])
     def pay(self, request):
         """A month's deductions under one section paid over: {section, month, date, bank_account, challan_number, bsr_code}."""
+        takes_only(request.data, "bank_account", "bsr_code", "challan_number", "date", "month", "section")
         data = request.data
         section = record_or_404(TdsSection, data.get("section"), "section")
         bank = record_or_404(Account, data.get("bank_account"), "bank_account")
@@ -106,6 +108,7 @@ class TdsChallanViewSet(viewsets.ReadOnlyModelViewSet):
 
     @action(detail=True, methods=["post"])
     def void(self, request, pk=None):
+        takes_only(request.data, "date")
         challan = self.get_object()
         challan.void(on_date=request.data.get("date") or None)
         return Response(self.get_serializer(challan).data)

@@ -97,6 +97,7 @@ class PriceIndexViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["get", "post"])
     def values(self, request, pk=None):
+        takes_only(request.data, "published_on", "valid_from", "value")
         index = self.get_object()
         if request.method == "POST":
             valid_from = parse_date(str(request.data.get("valid_from") or ""))

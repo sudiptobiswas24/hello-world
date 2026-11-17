@@ -8,7 +8,7 @@ from rest_framework.exceptions import NotFound
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.response import Response
 
-from apps.core.api import record_or_404, whole_number
+from apps.core.api import record_or_404, whole_number, takes_only
 from apps.core.audit import AuditableViewSetMixin
 from apps.core.users_api import refused_link
 
@@ -208,6 +208,7 @@ class LeaveRequestViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def approve(self, request, pk=None):
+        takes_only(request.data, "decided_by")
         leave_request = self.get_object()
         try:
             leave_request.approve(by=self._decider(request), as_hr=self._as_hr(request))
@@ -217,6 +218,7 @@ class LeaveRequestViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def reject(self, request, pk=None):
+        takes_only(request.data, "decided_by", "reason")
         leave_request = self.get_object()
         try:
             leave_request.reject(by=self._decider(request), reason=request.data.get("reason"),

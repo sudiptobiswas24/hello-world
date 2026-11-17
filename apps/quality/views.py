@@ -4,6 +4,7 @@ from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.response import Response
 
+from apps.core.api import takes_only
 from apps.core.audit import AuditableViewSetMixin
 from apps.inventory.models import Lot
 
@@ -107,6 +108,7 @@ class InspectionViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def void(self, request, pk=None):
+        takes_only(request.data, "reason")
         inspection = self.get_object()
         _run(inspection.void, reason=request.data.get("reason", ""), by=request.user)
         return Response(self.get_serializer(inspection).data)
@@ -114,6 +116,7 @@ class InspectionViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def decide(self, request, pk=None):
         """{"disposition": "concession" | "rework" | "reject", "note": "..."}: the first decision stands."""
+        takes_only(request.data, "disposition", "note")
         inspection = self.get_object()
         _run(inspection.decide, request.user, request.data.get("disposition", ""),
              request.data.get("note", ""))
@@ -179,6 +182,7 @@ class SupplierCertificateViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def void(self, request, pk=None):
+        takes_only(request.data, "date", "reason")
         certificate = self.get_object()
         _run(certificate.void, reason=request.data.get("reason", ""), on_date=request.data.get("date") or None,
              by=request.user)
@@ -246,6 +250,7 @@ class InstrumentViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         """{is_weighbridge: true|false}: whether this scale weighs vehicles at the gate."""
         from apps.core.api import flag
 
+        takes_only(request.data, "is_weighbridge")
         instrument = self.get_object()
         instrument.is_weighbridge = flag(request.data, "is_weighbridge", True)
         instrument.save(update_fields=["is_weighbridge", "updated_at"])
@@ -285,6 +290,7 @@ class CalibrationViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def void(self, request, pk=None):
+        takes_only(request.data, "reason")
         calibration = self.get_object()
         _run(calibration.void, request.data.get("reason", ""))
         return Response(self.get_serializer(calibration).data)

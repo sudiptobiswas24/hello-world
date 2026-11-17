@@ -15,7 +15,7 @@ from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from apps.core.api import flag
+from apps.core.api import flag, takes_only
 from apps.core.models import to_date
 from apps.core.permissions import RequiredPermission
 
@@ -76,6 +76,7 @@ class ImportViewSet(viewsets.ViewSet):
         "memo"} as the command's flags, none of them required. Passwords an employees file made
         come back once, here, and nowhere else.
         """
+        takes_only(request.data, "against", "commit", "date", "kind", "memo", "reason", "text")
         kind = self._kind(request, request.data)
         text = request.data.get("text") or ""
         if not text.strip():
