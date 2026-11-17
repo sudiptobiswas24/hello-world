@@ -25,6 +25,8 @@ export default function TdsReturn() {
         { key: "pan", label: "PAN", width: "8rem" },
         { key: "base", label: "Credited", kind: "money", width: "10rem" },
         { key: "amount", label: "Deducted", kind: "money", width: "9rem" },
+        // A lower deduction under section 197: the certificate it rested on, kept on the deduction (O597).
+        { key: "certificate", label: "Certificate (s.197)", width: "9rem" },
         { key: "challan", label: "Challan", width: "10rem", render: (row) => String(row.challan || "Not paid over") },
         // A reversal row gives back a deduction: the day of the one it reverses (O156).
         { key: "reverses", label: "Reverses", kind: "date", width: "8rem" },

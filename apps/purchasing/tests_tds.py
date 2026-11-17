@@ -206,6 +206,8 @@ class ContractTests(TdsTestCase):
                                 tds_rate_basis="deductee")
         deduction = self.bill("35000", vendor=party).deduct_tds()
         self.assertEqual((deduction.amount, deduction.rate_percent), (Decimal("350.00"), Decimal("1.0000")))
+        # A deductee's own class is not a lower deduction: no certificate (O597).
+        self.assertEqual(deduction.certificate, "")
 
 
 class CertificateTests(TdsTestCase):
@@ -261,11 +263,23 @@ class CertificateTests(TdsTestCase):
         party = self.holder()
         made = [self.bill("35000", day=day, vendor=party).deduct_tds()
                 for day in (datetime.date(2026, 5, 31), self.FROM, self.UNTIL, datetime.date(2026, 10, 1))]
-        self.assertEqual([(row.base, row.rate_percent, row.amount, row.rate_id) for row in made], [
-            (Decimal("35000.00"), Decimal("2.0000"), Decimal("700.00"), self.contract_rate.pk),
-            (Decimal("35000.00"), Decimal("0.5000"), Decimal("175.00"), None),
-            (Decimal("35000.00"), Decimal("0.5000"), Decimal("175.00"), None),
-            (Decimal("35000.00"), Decimal("2.0000"), Decimal("700.00"), self.contract_rate.pk),
+        self.assertEqual([(row.base, row.rate_percent, row.amount, row.rate_id, row.certificate) for row in made], [
+            (Decimal("35000.00"), Decimal("2.0000"), Decimal("700.00"), self.contract_rate.pk, ""),
+            (Decimal("35000.00"), Decimal("0.5000"), Decimal("175.00"), None, "197/2026/14"),
+            (Decimal("35000.00"), Decimal("0.5000"), Decimal("175.00"), None, "197/2026/14"),
+            (Decimal("35000.00"), Decimal("2.0000"), Decimal("700.00"), self.contract_rate.pk, ""),
+        ])
+        # The return marks the lower deductions with the certificate each was kept with (O597), whatever the
+        # profile names by the time it is filed.
+        PartyTaxProfile.objects.filter(party=party).update(tds_rate_reference="197/2027/03")
+        from .tds import tds_return
+
+        self.assertEqual([(row["date"], row["amount"], row["certificate"])
+                          for row in tds_return(datetime.date(2026, 4, 1), datetime.date(2027, 3, 31))], [
+            (datetime.date(2026, 5, 31), Decimal("700.00"), ""),
+            (self.FROM, Decimal("175.00"), "197/2026/14"),
+            (self.UNTIL, Decimal("175.00"), "197/2026/14"),
+            (datetime.date(2026, 10, 1), Decimal("700.00"), ""),
         ])
 
     def test_deducted_on_its_payment_day_at_what_stands_that_day(self):

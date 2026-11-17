@@ -27,7 +27,7 @@ class TdsDeductionSerializer(ModelSerializer):
     class Meta:
         model = TdsDeduction
         fields = ["id", "bill", "bill_number", "vendor_name", "section", "section_code", "base", "rate_percent",
-                  "pan", "amount", "date", "covered_bills", "journal_entry", "reversed_entry", "reversed",
+                  "pan", "certificate", "amount", "date", "covered_bills", "journal_entry", "reversed_entry", "reversed",
                   "challan", "challan_label"]
         read_only_fields = fields
 
