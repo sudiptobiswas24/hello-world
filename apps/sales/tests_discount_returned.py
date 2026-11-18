@@ -46,7 +46,7 @@ class DiscountReturnedTests(SalesTestCase):
         cheque.void(memo="Returned unpaid", on_date=RETURNED)
         invoice = Invoice.objects.get(pk=invoice.pk)
         self.assertEqual((invoice.amount_due(), invoice.settlement_discount_withdrawn), (Decimal("1000.00"), Decimal("20.00")))
-        self.assertEqual(invoice.settlement_discount_withdrawal_entry.date, RETURNED)
+        self.assertEqual(invoice.discounts.get().withdrawal_entry.date, RETURNED)
         self.assertEqual((self.receivable(), self.balance(self.discount_account)), (Decimal("1000.00"), Decimal("0")))
         statement = customer_statement(self.customer, as_of=datetime.date(2099, 12, 31))
         self.assertEqual(statement["closing_balance"], Decimal("1000.00"))
@@ -66,7 +66,7 @@ class DiscountReturnedTests(SalesTestCase):
         invoice.apply_settlement_discount(on_date=datetime.date(2026, 3, 11))
         cheque.void(memo="Returned unpaid", on_date=datetime.date(2026, 3, 9))
         invoice = Invoice.objects.get(pk=invoice.pk)
-        self.assertEqual(invoice.settlement_discount_withdrawal_entry.date, datetime.date(2026, 3, 11))
+        self.assertEqual(invoice.discounts.get().withdrawal_entry.date, datetime.date(2026, 3, 11))
         self.assertEqual(cheque.voided_entry.date, datetime.date(2026, 3, 9))
         for day in (datetime.date(2026, 3, 10), datetime.date(2026, 3, 11)):
             with self.subTest(day=day):
@@ -90,7 +90,7 @@ class DiscountReturnedTests(SalesTestCase):
     def test_taken_back_once(self):
         invoice, (cheque,) = self.discounted("980")
         cheque.void(memo="Returned unpaid", on_date=RETURNED)
-        self.assertIsNone(Invoice.objects.get(pk=invoice.pk).withdraw_unearned_discount(on_date=RETURNED))
+        self.assertEqual(Invoice.objects.get(pk=invoice.pk).withdraw_unearned_discount(on_date=RETURNED), [])
         self.assertEqual(self.balance(self.discount_account), Decimal("0"))
 
     def test_what_a_credit_note_undid_is_not_withdrawn_again(self):

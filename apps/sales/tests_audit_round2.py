@@ -82,7 +82,7 @@ class SettlementDiscountTests(SalesTestCase):
         invoice = self.bill(self.make_order("10", "100"))
         invoice.apply_settlement_discount(on_date=datetime.date(2026, 3, 8))
 
-        entry = invoice.settlement_discount_entry
+        entry = invoice.discounts.get().journal_entry
         self.assertEqual(entry.lines.get(account=self.discount_account).debit, Decimal("20.00"))
         self.assertEqual(entry.lines.get(account=self.ar).credit, Decimal("20.00"))
         self.assertEqual(entry.total_debit(), entry.total_credit())
@@ -352,7 +352,7 @@ class SettlementDiscountOnTheReceiptTests(SalesTestCase):
         answer = self.take(receipt)
         self.assertEqual(answer.status_code, 200, answer.content)
         self.invoice.refresh_from_db()
-        entry = self.invoice.settlement_discount_entry
+        entry = self.invoice.discounts.get().journal_entry
         self.assertEqual((self.invoice.amount_due(), self.balance(self.ar), entry.date),
                          (Decimal("0.00"), Decimal("0.00"), datetime.date(2026, 3, 8)))
         # A financial discount: the discount account and the receivable, no tax line.

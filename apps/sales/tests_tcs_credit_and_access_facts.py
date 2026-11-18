@@ -12,6 +12,7 @@ from django.core.management import call_command
 from rest_framework.test import APIClient
 
 from apps.accounting.models import JournalLine
+from apps.core.tests_claims import say
 from apps.gst import tests_einvoice as ein
 from apps.sales import tests_tcs as tcs
 from apps.sales.models import Invoice, InvoiceLine, SalesOrder, SalesOrderLine, outstanding_balance
@@ -20,11 +21,6 @@ from apps.sales.tcs import TcsChallan, TcsCollection, TcsRate
 D = Decimal
 SEP10, SEP20, OCT5, OCT8 = (datetime.date(2026, 9, 10), datetime.date(2026, 9, 20),
                             datetime.date(2026, 10, 5), datetime.date(2026, 10, 8))
-
-
-def say(ok, claim, detail=""):
-    print(("PASS " if ok else "FAIL ") + claim + (f"  [{detail}]" if detail else ""))
-    return ok
 
 
 class TcsOnAScrapAdvance(tcs.TcsTestCase):

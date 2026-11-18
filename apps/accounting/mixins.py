@@ -15,7 +15,7 @@ from django.db import models, transaction
 
 from apps.core.models import Company, correction_date
 
-from .models import Tax, compute_taxes, round_money
+from .models import JournalEntry, Payment, Tax, compute_taxes, round_money
 
 
 def refuse_included(taxes):
@@ -1131,3 +1131,53 @@ class PostedTaxDocumentMixin(models.Model):
             type(line).objects.filter(pk=line.pk).update(
                 hsn_code=line.hsn_code, posted_net=line.posted_net)
         self.taxes_recorded = True
+
+
+class SettlementDiscountTaken(models.Model):
+    """
+    One discount for paying early taken on an invoice or a bill: on the payment that earned it, or by
+    date or forced with none named. A row each (O250), as a write-off is: the document kept a single
+    discount, so a second payment inside the discount days earned nothing, and 490 + 490 paid by the
+    10th on 1,000 at 2/10 left 10.00 owing that no one owed. Each keeps its own day, entry and
+    withdrawal, because a returned payment takes back its own discount and no other. The document's
+    settlement_discount_amount and settlement_discount_withdrawn are their totals, kept as each is
+    written (settlement.take_settlement_discount, settlement.withdraw_discount).
+    """
+
+    payment = models.ForeignKey(
+        Payment, null=True, blank=True, on_delete=models.PROTECT, related_name="+", editable=False,
+        help_text="The payment that earned it; blank for one taken by date or forced, or taken before "
+                  "each payment's discount was kept.")
+    date = models.DateField(editable=False)
+    amount = models.DecimalField(max_digits=18, decimal_places=2, editable=False)
+    journal_entry = models.ForeignKey(JournalEntry, on_delete=models.PROTECT, related_name="+", editable=False)
+    withdrawn_amount = models.DecimalField(
+        max_digits=18, decimal_places=2, default=Decimal("0"), editable=False,
+        help_text="What was taken back of it when a payment that settled the document was returned.")
+    withdrawal_entry = models.ForeignKey(
+        JournalEntry, null=True, blank=True, on_delete=models.PROTECT, related_name="+", editable=False)
+
+    class Meta:
+        abstract = True
+        ordering = ["date", "id"]
+        constraints = [
+            models.CheckConstraint(
+                check=models.Q(amount__gt=0, withdrawn_amount__gte=0, withdrawn_amount__lte=models.F("amount")),
+                name="%(app_label)s_%(class)s_amounts",
+            ),
+        ]
+
+    WITHDRAWING = {"withdrawn_amount", "withdrawal_entry", "updated_at"}
+
+    def standing(self):
+        """What of it was not taken back."""
+        return self.amount - self.withdrawn_amount
+
+    def save(self, *args, **kwargs):
+        # Posted with its entry: what it took stands, and only a withdrawal is written to it after.
+        if self.pk is not None and not set(kwargs.get("update_fields") or ("all",)) <= self.WITHDRAWING:
+            raise ValidationError("A settlement discount taken is posted: it is withdrawn, never edited.")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError("A settlement discount taken is posted: it is withdrawn, never deleted.")

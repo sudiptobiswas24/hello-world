@@ -429,7 +429,7 @@ class EveryEventAsksTheRestatementTests(RestatementTestCase):
         """
         from apps.core.models import PaymentTerms
 
-        from .settlement import take_settlement_discount, withdraw_discount
+        from .settlement import take_settlement_discount, withdraw_discount, withdraw_unearned
 
         def take(document, on_date):
             return take_settlement_discount(document, control_account=self.ar, party=self.customer,
@@ -438,15 +438,15 @@ class EveryEventAsksTheRestatementTests(RestatementTestCase):
 
         self.inv.payment_terms = PaymentTerms.objects.create(code="2-10", name="2/10 net 30", net_days=30,
                                                              discount_percent=Decimal("2"), discount_days=10)
-        with self.assertRaisesMessage(ValidationError, "has no settlement discount taken to withdraw"):
-            withdraw_discount(self.inv, self.ar, self.customer, Decimal("20"), D(2026, 3, 10), "withdrawn")
+        self.assertEqual(withdraw_unearned(self.inv, None, self.ar, self.customer, D(2026, 3, 10)), [])
         take(self.inv, D(2026, 3, 10))
         other = self.invoice()
         self.restate()
         with self.assertRaisesMessage(ValidationError, self.REFUSED):
             take(other, YEAR_END)
         with self.assertRaisesMessage(ValidationError, self.REFUSED):
-            withdraw_discount(self.inv, self.ar, self.customer, Decimal("20"), YEAR_END, "withdrawn")
+            withdraw_discount(self.inv, self.inv.discounts.get(), self.ar, self.customer, Decimal("20"), YEAR_END,
+                              "withdrawn")
 
     def test_every_path_that_settles_a_document_asks_it(self):
         models = [model for model in settling_models() if model._meta.label_lower not in NEED_NOT_ASK]

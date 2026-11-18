@@ -14,6 +14,7 @@ from apps.accounting.restatement import AsksTheRestatement
 from apps.accounting.money import refuse_money_kept_as
 from apps.accounting.mixins import (
     PostedLineMixin,
+    SettlementDiscountTaken,
     PostedTaxDocumentMixin,
     RecordedLineTax,
     TaxedDocumentMixin,
@@ -100,7 +101,11 @@ from apps.accounting.settlement import (
     last_of_held,
     entries_that_settled,
     slice_of,
+    discount_base_moved,
+    discount_history,
+    discount_left,
     take_settlement_discount as settle_discount,
+    withdraw_unearned,
     spent_undoing,
     booked_by,
     post_drawdown,
@@ -110,7 +115,6 @@ from apps.accounting.settlement import (
     refuse_other_control_account,
     booked_beside,
     settlement_discount_to_take,
-    withdraw_discount,
     undone_by_note,
 )
 from apps.inventory.availability import check_available
@@ -3568,19 +3572,13 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxesTakenUnder, TaxedDocumentMix
     )
     settlement_discount_amount = models.DecimalField(
         max_digits=18, decimal_places=2, null=True, blank=True, editable=False,
-        help_text="Early-settlement discount taken against this bill.",
-    )
-    settlement_discount_entry = models.ForeignKey(
-        JournalEntry, null=True, blank=True, on_delete=models.PROTECT,
-        related_name="+", editable=False,
+        help_text="Early-settlement discount taken against this bill: its discounts' total (BillDiscount, a row "
+                  "each).",
     )
     settlement_discount_withdrawn = models.DecimalField(
         max_digits=18, decimal_places=2, default=Decimal("0"), editable=False,
         help_text="Of the discount for paying early, what was taken back when the payment that earned it "
-                  "was returned.",
-    )
-    settlement_discount_withdrawal_entry = models.ForeignKey(
-        JournalEntry, null=True, blank=True, on_delete=models.PROTECT, related_name="+", editable=False,
+                  "was returned: its discounts' withdrawals in total.",
     )
     # On a debit note: the settlement discount on its bill it undid, rather than claim it back from
     # the vendor as cash we never paid. Facts of the note's posting.
@@ -3944,7 +3942,7 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxesTakenUnder, TaxedDocumentMix
         deadline = self.discount_due_date()
         if not self.posted or self.is_debit_note() or not deadline:
             return False
-        if self.settlement_discount_amount:
+        if discount_left(self) <= 0:
             return False
         return (to_date(as_of) or timezone.localdate()) <= deadline
 
@@ -3953,26 +3951,21 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxesTakenUnder, TaxedDocumentMix
         undone = sum((note.reversed_discount for note in self.debit_notes.filter(posted=True)), Decimal("0"))
         return (self.settlement_discount_amount or Decimal("0")) - undone - self.settlement_discount_withdrawn
 
-    @serialised("settlement_discount_withdrawn", "settlement_discount_withdrawal_entry")
+    @serialised("settlement_discount_withdrawn")
     @takes_back
-    def withdraw_unearned_discount(self, on_date=None):
+    def withdraw_unearned_discount(self, on_date=None, payment=None):
         """
-        Take back the discount for paying early once the payment that earned it is returned and the
-        bill owes again; None where nothing stands or other payments still settle it. Asked under the
-        lock: two returns at once take it back once.
+        `payment` returned: take back the discount it earned, and one taken with no payment named once
+        the bill owes again (settlement.withdraw_unearned). The entries, none where nothing stands or
+        other payments still settle it. Asked under the lock: two returns at once take it back once.
         """
-        standing = self.settlement_discount_standing()
-        if standing <= 0 or self.amount_due() <= 0:
-            return None
-        entry = withdraw_discount(self, self.payable_account, self.vendor, standing, to_date(on_date) or timezone.localdate(),
-                                  f"Settlement discount on {self.number} withdrawn: its payment was returned")
-        self.settlement_discount_withdrawn += standing
-        self.settlement_discount_withdrawal_entry = entry
-        super(Bill, self).save(update_fields=[
-            "settlement_discount_withdrawn", "settlement_discount_withdrawal_entry", "updated_at"])
-        return entry
+        entries = withdraw_unearned(self, payment, self.payable_account, self.vendor,
+                                    to_date(on_date) or timezone.localdate())
+        if entries:
+            super(Bill, self).save(update_fields=["settlement_discount_withdrawn", "updated_at"])
+        return entries
 
-    @serialised("settlement_discount_amount", "settlement_discount_entry")
+    @serialised("settlement_discount_amount")
     def take_settlement_discount(self, on_date=None, force=False, payment=None):
         """
         Take the early-payment discount the vendor's terms offer, on the
@@ -3989,7 +3982,7 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxesTakenUnder, TaxedDocumentMix
             self, control_account=self.payable_account, party=self.vendor,
             discount_account=Company.get().settlement_discount_received_account,
             account_label="settlement discount received", is_receivable=False, on_date=on_date, payment=payment, force=force)
-        super(Bill, self).save(update_fields=["settlement_discount_amount", "settlement_discount_entry", "updated_at"])
+        super(Bill, self).save(update_fields=["settlement_discount_amount", "updated_at"])
         return entry
 
     def date_for_discount(self):
@@ -4044,12 +4037,7 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxesTakenUnder, TaxedDocumentMix
             rows.append((row.date, row.amount, [row.journal_entry], "TDS deducted"))
             if row.reversed_entry_id:
                 rows.append((row.reversed_entry.date, -row.amount, [row.reversed_entry], "TDS reversed"))
-        if self.settlement_discount_amount and self.settlement_discount_entry_id:
-            rows.append((self.settlement_discount_entry.date, self.settlement_discount_amount,
-                         [self.settlement_discount_entry], "a settlement discount"))
-        if self.settlement_discount_withdrawn and self.settlement_discount_withdrawal_entry_id:
-            rows.append((self.settlement_discount_withdrawal_entry.date, -self.settlement_discount_withdrawn,
-                         [self.settlement_discount_withdrawal_entry], "a settlement discount withdrawn"))
+        rows += discount_history(self)
         return rows
 
     def settled_by_entries(self):
@@ -4122,18 +4110,22 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxesTakenUnder, TaxedDocumentMix
         lock_rows(bill)
         earlier = list(bill.debit_notes.filter(posted=True).exclude(pk=self.pk))
         taken = bill.settlement_discount_amount or Decimal("0")
+        standing = taken - bill.settlement_discount_withdrawn - sum((note.reversed_discount for note in earlier),
+                                                                     Decimal("0"))
         _, discount = undone_by_note(
-            self.total(), self.amount_absorbed(), write_off=Decimal("0"),
-            discount=taken - bill.settlement_discount_withdrawn
-            - sum((note.reversed_discount for note in earlier), Decimal("0")),
+            self.total(), self.amount_absorbed(), write_off=Decimal("0"), discount=standing,
             discount_taken=taken, document_total=bill.total(),
             whole=sum((note.total() for note in earlier), self.total()) >= bill.total())
         if not discount:
             return
-        base = round_money(discount * (bill.exchange_rate or Decimal("1")))
+        # At the step in the rounded base of what stands of it (settlement.discount_base_moved).
+        base = discount_base_moved(bill, standing, standing - discount)
         memo = f"{self.number} undoes the discount taken on {bill.number}"
         entry = JournalEntry.objects.create(date=self.bill_date, reference=self.number, memo=memo)
-        JournalLine.objects.create(entry=entry, account=booked_beside(bill.settlement_discount_entry, bill.payable_account),
+        # The newest discount still standing: where the last one was booked.
+        booked = next((row.journal_entry for row in bill.discounts.filter(withdrawal_entry__isnull=True)
+                       .order_by("-date", "-pk")), None)
+        JournalLine.objects.create(entry=entry, account=booked_beside(booked, bill.payable_account),
                                    party=self.vendor, debit=base, description=memo[:255])
         JournalLine.objects.create(entry=entry, account=bill.payable_account, party=self.vendor, credit=base,
                                    description=memo[:255])
@@ -6091,6 +6083,23 @@ class PrepaymentApplication(AsksTheRestatement, AuditModel):
         return f"{self.prepayment} -> {self.bill} ({self.amount})"
 
 
+class BillDiscount(AsksTheRestatement, SettlementDiscountTaken, AuditModel):
+    """A discount for paying early taken on a bill (accounting.mixins.SettlementDiscountTaken, O250)."""
+    RESTATES = ("bill",)
+
+    bill = models.ForeignKey(Bill, on_delete=models.PROTECT, related_name="discounts", editable=False)
+
+    class Meta(SettlementDiscountTaken.Meta):
+        constraints = [
+            *SettlementDiscountTaken.Meta.constraints,
+            models.UniqueConstraint(fields=["bill", "payment"], condition=Q(payment__isnull=False),
+                                    name="purchasing_billdiscount_once_a_payment"),
+        ]
+
+    def __str__(self):
+        return f"Settlement discount {self.amount} on {self.bill}"
+
+
 class BillPayment(RealisedOnItsOwnDay, AuditModel):
     """
     Applies part (or all) of a Payment to a Bill — the mirror of Sales'
@@ -6696,8 +6705,8 @@ def undo_what_it_settled(payment, on_date):
     """
     for allocation in payment.bill_allocations.select_related("bill", "fx_entry"):
         allocation.release_exchange_difference(on_date)
-        if allocation.bill.settlement_discount_entry_id:
-            allocation.bill.withdraw_unearned_discount(on_date=on_date)
+        if allocation.bill.discounts.exists():
+            allocation.bill.withdraw_unearned_discount(on_date=on_date, payment=payment)
 
 
 def payable_accounts():

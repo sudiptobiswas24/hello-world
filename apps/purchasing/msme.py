@@ -331,7 +331,7 @@ def _settled_without_money(bill, other):
     [(day, amount)]: what settled the bill other than money paid out, each
     on the day of its own document: a debit note on its date, tax deducted
     on the deduction's, a prepayment drawn down on the drawdown's, a
-    settlement discount on its entry's. Oldest first, and no more than
+    settlement discount on its entry's, each discount its own (O250). Oldest first, and no more than
     `other` in all, as amount_due() counts them (a note past what the bill
     still owed is cash owed back, not settlement). A part settled wholly by
     a debit note was paid on the note's day (O188), not never.
@@ -339,10 +339,7 @@ def _settled_without_money(bill, other):
     dated = [(to_date(note.bill_date), note.total()) for note in bill.debit_notes.all() if note.posted]
     dated += [(to_date(row.date), row.amount) for row in bill.tds_deductions.all() if row.reversed_entry_id is None]
     dated += [(to_date(row.date), row.amount) for row in bill.prepayment_applications.all()]
-    discount = (bill.settlement_discount_amount or Decimal("0")) - bill.settlement_discount_withdrawn
-    if discount > 0:
-        entry = bill.settlement_discount_entry
-        dated.append((to_date(entry.date) if entry else to_date(bill.bill_date), discount))
+    dated += [(to_date(row.journal_entry.date), row.standing()) for row in bill.discounts.all() if row.standing() > 0]
     out, left = [], other
     for day, amount in sorted(dated, key=lambda row: row[0]):
         take = min(amount, left)
@@ -433,7 +430,8 @@ def _parts(start, end, as_of, rates):
     bills = Bill.objects.filter(
         posted=True, debits__isnull=True, is_prepayment=False, bill_date__gte=to_date(start),
         bill_date__lte=to_date(end), msme_category__in=COVERED,
-    ).select_related("vendor__tax_profile", "payment_terms").prefetch_related(*BILL_FIGURES).order_by(
+    ).select_related("vendor__tax_profile", "payment_terms").prefetch_related(
+        *BILL_FIGURES, "discounts__journal_entry").order_by(
         "bill_date", "pk")
     for bill in bills:
         # What settles it other than money paid out (debit notes, tax

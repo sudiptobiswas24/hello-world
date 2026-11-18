@@ -8,6 +8,7 @@ from django.test import tag
 
 from apps.accounting.models import (BankStatement, BankStatementLine, JournalEntry, Payment, PaymentDirection)
 from apps.core.models import PaymentTerms
+from apps.core.tests_claims import say
 from apps.e2e import tests_races as r
 from apps.sales import tests_base as sales_fixture
 from apps.sales import tests_tcs_credit_and_access_facts as probes
@@ -15,10 +16,6 @@ from apps.sales.models import Invoice, InvoiceLine, InvoicePayment
 
 D = Decimal
 MAR1, MAR5 = datetime.date(2026, 3, 1), datetime.date(2026, 3, 5)
-
-
-def say(ok, claim, detail=""):
-    print(("PASS " if ok else "FAIL ") + claim + (f"  [{detail}]" if detail else ""))
 
 
 @tag("race")
@@ -42,7 +39,8 @@ class MoneyRaces(r.RaceCase):
         payment.post()
         return payment
 
-    def test_a_discount_taken_as_the_last_of_the_invoice_is_allocated(self):
+    def discounted_invoice(self):
+        """1,000 on 2/10 net 30, posted, with an account for the discount."""
         from apps.accounting.models import Account, AccountType
         from apps.core.models import Company
         disc = Account.objects.create(code="5990", name="Discount allowed", account_type=AccountType.EXPENSE)
@@ -53,6 +51,10 @@ class MoneyRaces(r.RaceCase):
         Invoice.objects.filter(pk=invoice.pk).update(payment_terms=terms)
         invoice = Invoice.objects.get(pk=invoice.pk)
         invoice.post()
+        return invoice
+
+    def test_a_discount_taken_as_the_last_of_the_invoice_is_allocated(self):
+        invoice = self.discounted_invoice()
         a, b = self.payment("980"), self.payment("20")
         InvoicePayment.objects.create(invoice=invoice, payment=a, amount=D("980"))
         outcomes = r.race((JournalEntry, InvoicePayment),
@@ -63,6 +65,23 @@ class MoneyRaces(r.RaceCase):
             "RACE discount vs allocation: exactly one of them fills the last 20 of the invoice", f"{outcomes} due {due}")
         self.once(outcomes)
         self.assertEqual(due, 0)
+
+    def test_two_payments_earn_their_discounts_at_once_on_the_running_total(self):
+        """
+        O250: two receipts of 400 on 1,000 at 2/10 each take their discount at once. Totalled, 800 earns 16.33,
+        so 8.16 and 8.17; deciding before either wrote, each would take 8.16 off its own 400 and leave the paisa.
+        """
+        from apps.sales.models import InvoiceDiscount
+        invoice = self.discounted_invoice()
+        payments = [self.payment("400"), self.payment("400")]
+        for pay in payments:
+            InvoicePayment.objects.create(invoice=invoice, payment=pay, amount=D("400"))
+        outcomes = r.race(JournalEntry, *[
+            lambda pay=pay: Invoice.objects.get(pk=invoice.pk).apply_settlement_discount(payment=pay)
+            for pay in payments])
+        earned = sorted(row.amount for row in InvoiceDiscount.objects.filter(invoice=invoice))
+        self.assertEqual((outcomes, earned, Invoice.objects.get(pk=invoice.pk).settlement_discount_amount),
+                         (["done", "done"], [D("8.16"), D("8.17")], D("16.33")))
 
     def test_a_statement_line_matched_as_its_payment_is_voided(self):
         payment = self.payment("1000")

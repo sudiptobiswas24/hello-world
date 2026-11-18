@@ -17,13 +17,14 @@ neither may import the other — the same reason the tax mixins and
 ChargeType ended up here.
 """
 
+from collections import defaultdict
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
 
-from apps.core.models import Company, correction_date, lock_rows, to_date
+from apps.core.models import Company, correction_date, lock_rows, takes_back, to_date
 
 from .models import JournalEntry, JournalLine, PaymentDirection, round_money
 
@@ -878,43 +879,75 @@ def standing_on_account(payments):
     return received, paid_out
 
 
+def discount_base_moved(document, before, after):
+    """
+    The base a discount for paying early moves when what stands of `document`'s discounts goes from
+    `before` to `after` (its own currency): each at the document's rate, rounded, subtracted, as an
+    exchange difference is. Taken, withdrawn or undone by a note, each one's base rounded on its own
+    left a paisa nothing explained: two discounts of 10.00 at 1.12345 booked 11.23 + 11.23, and the
+    note that undid both booked 22.47 (O250). So the books hold the rounded base of what stands.
+    """
+    rate = document.exchange_rate or Decimal("1")
+    return abs(round_money(after * rate) - round_money(before * rate))
+
+
+def discount_left(document):
+    """Of the whole discount for paying early its terms offer, what no discount still standing has taken."""
+    return document.settlement_discount() - sum((row.standing() for row in document.discounts.all()), Decimal("0"))
+
+
 def discount_earned_by(document, payment):
     """
     What `payment` earns of `document`'s early-settlement discount (review F2): applied within the
-    discount days at rate d, its P settles P/(1-d) of the document and earns P*d/(1-d), no more than is
-    still due after it, so that what it settles is never more than was outstanding. Paid after the
-    days, or a document whose discount is taken or that offers none: nothing. 980 on 1,000 at 2/10
-    earns 20.00; 100 earns 2.04, not the 20.00 the whole invoice's discount would be.
+    discount days at rate d, its P settles P/(1-d) of the document and earns P*d/(1-d), no more than
+    the discount left nor what is still due after it, so that what it settles is never more than was
+    outstanding. 980 on 1,000 at 2/10 earns 20.00; 100 earns 2.04, not the 20.00 the whole invoice's
+    discount would be. Paid after the days, terms that offer none, or a payment that earned its
+    discount here already: nothing.
+
+    Every payment inside the days earns (O250), worked as a running total: what the payments that
+    earned here and this one settle together, at the rate, less what those took. Each payment's
+    share rounded on its own left a paisa nothing explained (400 + 400 + 180 earned 8.16 three ways
+    and left 0.01 owing); totalled first it is 8.16, 8.17 and 3.67, and nothing owed.
     """
     terms = document.payment_terms
-    if (terms is None or not terms.discount_percent or document.settlement_discount_amount
-            or document.settlement_discount_entry_id or not payment.posted or payment.is_voided()):
+    if terms is None or not terms.discount_percent or not payment.posted or payment.is_voided():
         return Decimal("0")
     deadline = document.discount_due_date()
     if deadline is None or to_date(payment.payment_date) > deadline:
         return Decimal("0")
-    applied = sum((row.amount for row in standing_allocations(document) if row.payment_id == payment.pk),
-                  Decimal("0"))
+    rows = list(document.discounts.all())
+    if any(row.payment_id == payment.pk for row in rows):
+        return Decimal("0")
+    applied = defaultdict(Decimal)
+    for row in standing_allocations(document):
+        applied[row.payment_id] += row.amount
+    if applied[payment.pk] <= 0:
+        return Decimal("0")
+    earners = [row for row in rows if row.payment_id is not None and row.standing() > 0]
+    settled = sum((applied[row.payment_id] for row in earners), applied[payment.pk])
     rate = terms.discount_percent / Decimal("100")
-    earned = round_money(applied * rate / (1 - rate))
-    return max(min(earned, document.amount_due()), Decimal("0"))
+    earned = round_money(settled * rate / (1 - rate)) - sum((row.standing() for row in earners), Decimal("0"))
+    return max(min(earned, discount_left(document), document.amount_due()), Decimal("0"))
 
 
 def settlement_discount_to_take(document, on_date, force=False):
     """
-    The early-settlement discount an invoice or a bill may take now: once,
-    whatever `force` says (forcing waives the deadline, not the once),
-    something, and no more than is still owed.
+    The early-settlement discount an invoice or a bill may take now, with
+    no payment named: what is left of the whole once the payments that
+    earned theirs took them (discount_left), whatever `force` says (forcing
+    waives the deadline, not the whole), something, and no more than is
+    still owed.
 
     Each side kept its own copy and each lacked a rule the other had: a
     forced second call took a discount twice, and an invoice already paid
     in full was discounted into credit the customer was never owed.
     """
-    if document.settlement_discount_entry_id is not None or document.settlement_discount_amount:
+    amount = discount_left(document)
+    if amount <= 0 < document.settlement_discount():
         raise ValidationError(f"{document.number}'s settlement discount is taken already.")
     if not force and not document.discount_is_available(on_date):
         raise ValidationError(f"No settlement discount is available on {document.number} at that date.")
-    amount = document.settlement_discount()
     if amount <= 0:
         raise ValidationError("These payment terms offer no settlement discount.")
     due = document.amount_due()
@@ -936,8 +969,11 @@ def take_settlement_discount(document, *, control_account, party, discount_accou
     posting and neither was ever called.
 
     Taken on a payment (`payment`): standing, applied to the document, made
-    within the discount days unless `force`, and the discount is dated that
-    day when no other is given. The caller saves the two fields it sets. Terms that reduce the GST value instead
+    within the discount days unless `force`, not one that earned its
+    discount here already, and the discount is dated that day when no other
+    is given. Each discount is a row of its own (document.discounts, O250);
+    the caller saves the running total this adds it to,
+    settlement_discount_amount. Terms that reduce the GST value instead
     (section 15(3)(b): agreed before the supply, the accountant's choice) are
     refused here: that discount is a credit note, not this entry.
     """
@@ -955,6 +991,10 @@ def take_settlement_discount(document, *, control_account, party, discount_accou
             raise ValidationError(f"{payment.number} does not stand: a discount is earned by money that arrived.")
         if not any(row.payment_id == payment.pk for row in standing_allocations(document)):
             raise ValidationError(f"{payment.number} is not applied to {document.number}: apply it first.")
+        earned = document.discounts.filter(payment=payment).first()
+        if earned is not None:
+            raise ValidationError(f"{payment.number} earned its settlement discount on {document.number} already "
+                                  f"({earned.amount} on {earned.date:%d-%m-%Y}).")
         deadline = document.discount_due_date()
         if not force and (deadline is None or to_date(payment.payment_date) > deadline):
             raise ValidationError(f"{payment.number} was made on {to_date(payment.payment_date)}, after the "
@@ -970,7 +1010,8 @@ def take_settlement_discount(document, *, control_account, party, discount_accou
         amount = settlement_discount_to_take(document, on_date, force)
     if discount_account is None:
         raise ValidationError(f"The company has no {account_label} account configured.")
-    base_amount = round_money(amount * (document.exchange_rate or Decimal("1")))
+    standing = document.settlement_discount_standing()
+    base_amount = discount_base_moved(document, standing, standing + amount)
     memo = f"Settlement discount on {document.number}"
     entry = JournalEntry.objects.create(date=on_date, reference=document.number, memo=memo)
     JournalLine.objects.create(entry=entry, account=discount_account if is_receivable else control_account,
@@ -978,8 +1019,8 @@ def take_settlement_discount(document, *, control_account, party, discount_accou
     JournalLine.objects.create(entry=entry, account=control_account if is_receivable else discount_account,
                                party=party, credit=base_amount, description=memo)
     entry.post()
-    document.settlement_discount_amount = amount
-    document.settlement_discount_entry = entry
+    document.discounts.create(payment=payment, date=on_date, amount=amount, journal_entry=entry)
+    document.settlement_discount_amount = (document.settlement_discount_amount or Decimal("0")) + amount
     return entry
 
 
@@ -1019,20 +1060,57 @@ def spent_undoing(note):
     return (getattr(note, "reversed_write_off", None) or Decimal("0")) + (note.reversed_discount or Decimal("0"))
 
 
-def withdraw_discount(document, control_account, party, amount, on_date, memo):
+def discount_history(document):
     """
-    Put `amount` of `document`'s settlement discount back on it: the
-    discount's own entry turned round, at the document's rate, on the day
-    the payment that earned it came back, never before the discount itself
-    (correction_date). Returns the entry. Shared by invoices and bills, so
-    one rule dates both.
+    Each discount for paying early on `document` and each withdrawal of one, as its history() rows
+    [(day, amount, entries, words)]: a row each, on its own day (O250). Shared by invoices and bills.
+    """
+    rows = []
+    for row in document.discounts.select_related("journal_entry", "withdrawal_entry"):
+        rows.append((row.journal_entry.date, row.amount, [row.journal_entry], "a settlement discount"))
+        if row.withdrawal_entry_id:
+            rows.append((row.withdrawal_entry.date, -row.withdrawn_amount, [row.withdrawal_entry],
+                         "a settlement discount withdrawn"))
+    return rows
+
+
+@takes_back
+def withdraw_unearned(document, payment, control_account, party, on_date):
+    """
+    `payment` returned (Payment.void asks, through each side's withdraw_unearned_discount): what it
+    earned of `document`'s discount for paying early is taken back, and so is a discount taken with
+    no payment named once the document owes again. A discount another payment earned stands: that
+    money arrived (O250). Never more than stands of the discount after what notes undid of it, and
+    each discount is withdrawn once. Returns the entries; the caller saves the running total.
+    """
+    entries = []
+    for row in document.discounts.filter(withdrawal_entry__isnull=True).order_by("-date", "-pk"):
+        if row.payment_id is None and document.amount_due() <= 0:
+            continue
+        if row.payment_id is not None and row.payment_id != getattr(payment, "pk", None):
+            continue
+        amount = min(row.standing(), document.settlement_discount_standing())
+        if amount <= 0:
+            continue
+        entries.append(withdraw_discount(
+            document, row, control_account, party, amount, on_date,
+            f"Settlement discount on {document.number} withdrawn: its payment was returned"))
+    return entries
+
+
+@takes_back
+def withdraw_discount(document, row, control_account, party, amount, on_date, memo):
+    """
+    Put `amount` of the settlement discount `row` took on `document` back
+    on it: the discount's own entry turned round, at the document's rate,
+    on the day the payment that earned it came back, never before the
+    discount itself (correction_date). Returns the entry, and adds `amount`
+    to the row's withdrawal and the document's running total. Shared by
+    invoices and bills, so one rule dates both.
     """
     from .restatement import refuse_behind_a_restatement
 
-    taken = document.settlement_discount_entry
-    if taken is None:
-        # The callers ask what stands first; this says so where one did not, rather than an AttributeError below.
-        raise ValidationError(f"{document.number} has no settlement discount taken to withdraw.")
+    taken = row.journal_entry
     # Not before the discount it takes back (O256). A cheque of the 8th returned on the 9th, its discount taken on
     # the 11th: withdrawn on the 9th, the discount account read -20 and receivables 1,020 against 1,000 owed until
     # the 11th. Then it is withdrawn on the discount's own day, where the two cancel; the void is not refused.
@@ -1040,7 +1118,8 @@ def withdraw_discount(document, control_account, party, amount, on_date, memo):
                               f"{document.number}'s settlement discount is not withdrawn on", "it was taken")
     refuse_behind_a_restatement([document], on_date, f"{document.number}'s settlement discount is not withdrawn")
     credited = any(line.credit for line in taken.lines.all() if line.account_id == control_account.pk)
-    base = round_money(amount * (document.exchange_rate or Decimal("1")))
+    standing = document.settlement_discount_standing()
+    base = discount_base_moved(document, standing, standing - amount)
     to_control, to_other = (base, Decimal("0")) if credited else (Decimal("0"), base)
     entry = JournalEntry.objects.create(date=on_date, reference=document.number, memo=memo)
     JournalLine.objects.create(entry=entry, account=control_account, party=party, debit=to_control,
@@ -1048,6 +1127,10 @@ def withdraw_discount(document, control_account, party, amount, on_date, memo):
     JournalLine.objects.create(entry=entry, account=booked_beside(taken, control_account), party=party,
                                debit=to_other, credit=to_control, description=memo[:255])
     entry.post()
+    row.withdrawn_amount += amount
+    row.withdrawal_entry = entry
+    row.save(update_fields=["withdrawn_amount", "withdrawal_entry", "updated_at"])
+    document.settlement_discount_withdrawn += amount
     return entry
 
 

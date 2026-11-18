@@ -78,6 +78,7 @@ from apps.accounting.defaults import default_account
 from apps.accounting.money import refuse_money_kept_as
 from apps.accounting.mixins import (
     PostedLineMixin,
+    SettlementDiscountTaken,
     PostedTaxDocumentMixin,
     RecordedLineTax,
     TaxedDocumentMixin,
@@ -121,8 +122,11 @@ from apps.accounting.settlement import (
     booked_beside,
     settlement_discount_to_take,
     entries_that_settled,
+    discount_base_moved,
+    discount_history,
+    discount_left,
     take_settlement_discount,
-    withdraw_discount,
+    withdraw_unearned,
     undone_by_note,
     unapplied,
 )
@@ -2000,19 +2004,13 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxesTa
     )
     settlement_discount_amount = models.DecimalField(
         max_digits=18, decimal_places=2, null=True, blank=True, editable=False,
-        help_text="Early-settlement discount written off against this invoice.",
-    )
-    settlement_discount_entry = models.ForeignKey(
-        JournalEntry, null=True, blank=True, on_delete=models.PROTECT,
-        related_name="+", editable=False,
+        help_text="Early-settlement discount written off against this invoice: its discounts' total "
+                  "(InvoiceDiscount, a row each).",
     )
     settlement_discount_withdrawn = models.DecimalField(
         max_digits=18, decimal_places=2, default=Decimal("0"), editable=False,
         help_text="Of the discount for paying early, what was taken back when the payment that earned it "
-                  "was returned.",
-    )
-    settlement_discount_withdrawal_entry = models.ForeignKey(
-        JournalEntry, null=True, blank=True, on_delete=models.PROTECT, related_name="+", editable=False,
+                  "was returned: its discounts' withdrawals in total.",
     )
     tcs_amount = models.DecimalField(
         max_digits=18, decimal_places=2, default=Decimal("0"), editable=False,
@@ -2352,7 +2350,7 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxesTa
         deadline = self.discount_due_date()
         if not self.posted or self.is_credit_note() or not deadline:
             return False
-        if self.settlement_discount_amount:
+        if discount_left(self) <= 0:
             return False
         return (to_date(as_of) or timezone.localdate()) <= deadline
 
@@ -2361,26 +2359,21 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxesTa
         undone = sum((note.reversed_discount for note in self.credit_notes.filter(posted=True)), Decimal("0"))
         return (self.settlement_discount_amount or Decimal("0")) - undone - self.settlement_discount_withdrawn
 
-    @serialised("settlement_discount_withdrawn", "settlement_discount_withdrawal_entry")
+    @serialised("settlement_discount_withdrawn")
     @takes_back
-    def withdraw_unearned_discount(self, on_date=None):
+    def withdraw_unearned_discount(self, on_date=None, payment=None):
         """
-        Take back the discount for paying early once the payment that earned it is returned and the
-        invoice owes again; None where nothing stands or other payments still settle it. Asked under the
-        lock: two returns at once take it back once.
+        `payment` returned: take back the discount it earned, and one taken with no payment named once
+        the invoice owes again (settlement.withdraw_unearned). The entries, none where nothing stands or
+        other payments still settle it. Asked under the lock: two returns at once take it back once.
         """
-        standing = self.settlement_discount_standing()
-        if standing <= 0 or self.amount_due() <= 0:
-            return None
-        entry = withdraw_discount(self, self.receivable_account, self.customer, standing, to_date(on_date) or timezone.localdate(),
-                                  f"Settlement discount on {self.number} withdrawn: its payment was returned")
-        self.settlement_discount_withdrawn += standing
-        self.settlement_discount_withdrawal_entry = entry
-        super(Invoice, self).save(update_fields=[
-            "settlement_discount_withdrawn", "settlement_discount_withdrawal_entry", "updated_at"])
-        return entry
+        entries = withdraw_unearned(self, payment, self.receivable_account, self.customer,
+                                    to_date(on_date) or timezone.localdate())
+        if entries:
+            super(Invoice, self).save(update_fields=["settlement_discount_withdrawn", "updated_at"])
+        return entries
 
-    @serialised("settlement_discount_amount", "settlement_discount_entry")
+    @serialised("settlement_discount_amount")
     def apply_settlement_discount(self, on_date=None, force=False, payment=None):
         """
         Write off the early-settlement discount, on the receipt that earned it
@@ -2397,7 +2390,7 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxesTa
             self, control_account=self.receivable_account, party=self.customer,
             discount_account=Company.get().settlement_discount_account, account_label="settlement discount",
             is_receivable=True, on_date=on_date, payment=payment, force=force)
-        super(Invoice, self).save(update_fields=["settlement_discount_amount", "settlement_discount_entry", "updated_at"])
+        super(Invoice, self).save(update_fields=["settlement_discount_amount", "updated_at"])
         return entry
 
     def date_for_discount(self):
@@ -2536,18 +2529,21 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxesTa
         lock_rows(invoice)
         earlier = list(invoice.credit_notes.filter(posted=True).exclude(pk=self.pk))
         taken = invoice.settlement_discount_amount or Decimal("0")
+        standing_discount = (taken - invoice.settlement_discount_withdrawn
+                             - sum((note.reversed_discount for note in earlier), Decimal("0")))
         write_off, discount = undone_by_note(
             self.total(), self.amount_absorbed(),
             write_off=invoice.amount_written_off() - sum((note.reversed_write_off for note in earlier), Decimal("0")),
-            discount=taken - invoice.settlement_discount_withdrawn
-            - sum((note.reversed_discount for note in earlier), Decimal("0")),
+            discount=standing_discount,
             discount_taken=taken, document_total=invoice.total(),
             whole=sum((note.total() for note in earlier), self.total()) >= invoice.total())
         undone = {kind: amount for kind, amount in (("write_off", write_off), ("discount", discount)) if amount}
         if not undone:
             return
         booked = {
-            "discount": invoice.settlement_discount_entry,
+            # The newest discount still standing, as the write-off below: where the last one was booked.
+            "discount": next((row.journal_entry for row in invoice.discounts.filter(withdrawal_entry__isnull=True)
+                              .order_by("-date", "-pk")), None),
             "write_off": next((row.journal_entry for row in invoice.write_offs.filter(recovered_entry__isnull=True)
                                .order_by("-pk")), None),
         }
@@ -2555,7 +2551,9 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxesTa
         memo = f"{self.number} undoes what settled {invoice.number} without money"
         entry = JournalEntry.objects.create(date=self.invoice_date, reference=self.number, memo=memo)
         for kind, amount in undone.items():
-            base = round_money(amount * rate)
+            # A discount at the step in the rounded base of what stands of it (settlement.discount_base_moved).
+            base = (discount_base_moved(invoice, standing_discount, standing_discount - amount) if kind == "discount"
+                    else round_money(amount * rate))
             JournalLine.objects.create(entry=entry, account=invoice.receivable_account, party=self.customer,
                                        debit=base, description=memo[:255])
             JournalLine.objects.create(entry=entry, account=booked_beside(booked[kind], invoice.receivable_account),
@@ -2846,12 +2844,7 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxesTa
             rows.append((row.date, row.amount, [row.journal_entry], "TDS deducted"))
             if row.reversed_entry_id:
                 rows.append((row.reversed_entry.date, -row.amount, [row.reversed_entry], "TDS reversed"))
-        if self.settlement_discount_amount and self.settlement_discount_entry_id:
-            rows.append((self.settlement_discount_entry.date, self.settlement_discount_amount,
-                         [self.settlement_discount_entry], "a settlement discount"))
-        if self.settlement_discount_withdrawn and self.settlement_discount_withdrawal_entry_id:
-            rows.append((self.settlement_discount_withdrawal_entry.date, -self.settlement_discount_withdrawn,
-                         [self.settlement_discount_withdrawal_entry], "a settlement discount withdrawn"))
+        rows += discount_history(self)
         return rows
 
     def absorbed_into(self):
@@ -3996,6 +3989,23 @@ class DepositTaxReversal(models.Model):
         return f"{self.tax} {self.amount} on {self.application}"
 
 
+class InvoiceDiscount(AsksTheRestatement, SettlementDiscountTaken, AuditModel):
+    """A discount for paying early taken on an invoice (accounting.mixins.SettlementDiscountTaken, O250)."""
+    RESTATES = ("invoice",)
+
+    invoice = models.ForeignKey(Invoice, on_delete=models.PROTECT, related_name="discounts", editable=False)
+
+    class Meta(SettlementDiscountTaken.Meta):
+        constraints = [
+            *SettlementDiscountTaken.Meta.constraints,
+            models.UniqueConstraint(fields=["invoice", "payment"], condition=Q(payment__isnull=False),
+                                    name="sales_invoicediscount_once_a_payment"),
+        ]
+
+    def __str__(self):
+        return f"Settlement discount {self.amount} on {self.invoice}"
+
+
 class InvoiceWriteOff(AsksTheRestatement, AuditModel):
     RESTATES = ("invoice",)
     """
@@ -4097,8 +4107,8 @@ def undo_what_it_settled(payment, on_date):
     """
     for allocation in payment.invoice_allocations.select_related("invoice", "fx_entry"):
         allocation.release_exchange_difference(on_date)
-        if allocation.invoice.settlement_discount_entry_id:
-            allocation.invoice.withdraw_unearned_discount(on_date=on_date)
+        if allocation.invoice.discounts.exists():
+            allocation.invoice.withdraw_unearned_discount(on_date=on_date, payment=payment)
 
 
 def receivable_accounts():
@@ -4354,10 +4364,9 @@ def customer_statement(customer, as_of=None, since=None, currency=None):
     entries = []
     invoices = (
         Invoice.objects.filter(customer=customer, posted=True, currency=currency)
-        .select_related("credits", "settlement_reversal_entry", "settlement_discount_entry",
-                        "settlement_discount_withdrawal_entry")
+        .select_related("credits", "settlement_reversal_entry")
         .prefetch_related(
-            "lines__taxes", "payment_allocations__payment__voided_entry", "write_offs",
+            "lines__taxes", "payment_allocations__payment__voided_entry", "write_offs", "discounts__withdrawal_entry",
             "deposit_applications__deposit", "tds_withheld__section", "tds_withheld__reversed_entry",
         )
     )
@@ -4423,20 +4432,16 @@ def customer_statement(customer, as_of=None, since=None, currency=None):
                     to_date(tds.reversed_entry.date), "TDS reversed", invoice.number, tds.section.code,
                     debit=tds.amount,
                 ))
-        if invoice.settlement_discount_amount and invoice.settlement_discount_entry_id:
-            discounted_on = to_date(invoice.settlement_discount_entry.date)
-            if discounted_on <= as_of:
+        for discount in invoice.discounts.all():
+            if to_date(discount.date) <= as_of:
                 entries.append(StatementEntry(
-                    discounted_on, "Settlement discount", invoice.number, "",
-                    credit=invoice.settlement_discount_amount,
+                    to_date(discount.date), "Settlement discount", invoice.number, "", credit=discount.amount,
                 ))
-        # Its payment returned, the discount for paying early is owed again from that day.
-        if invoice.settlement_discount_withdrawal_entry_id:
-            withdrawn_on = to_date(invoice.settlement_discount_withdrawal_entry.date)
-            if withdrawn_on <= as_of:
+            # Its payment returned, the discount for paying early is owed again from that day.
+            if discount.withdrawal_entry_id and to_date(discount.withdrawal_entry.date) <= as_of:
                 entries.append(StatementEntry(
-                    withdrawn_on, "Discount withdrawn", invoice.number, "Its payment was returned",
-                    debit=invoice.settlement_discount_withdrawn,
+                    to_date(discount.withdrawal_entry.date), "Discount withdrawn", invoice.number,
+                    "Its payment was returned", debit=discount.withdrawn_amount,
                 ))
 
     # Money in or out that no document has taken yet is in receivables all the same: left off, the

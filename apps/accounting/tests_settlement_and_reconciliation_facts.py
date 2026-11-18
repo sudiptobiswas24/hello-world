@@ -13,15 +13,11 @@ from apps.accounting import tests_fx_settlement as base
 from apps.accounting.models import (Account, AccountType, BankStatement, BankStatementLine, Payment,
                                     PaymentDirection)
 from apps.core.models import Currency, ExchangeRate, PaymentTerms
+from apps.core.tests_claims import say
 
 D = Decimal
 JAN5 = datetime.date(2026, 1, 5)
 FEB1, MAR1 = datetime.date(2026, 2, 1), datetime.date(2026, 3, 1)
-
-
-def say(ok, claim, detail=""):
-    print(("PASS " if ok else "FAIL ") + claim + (f"  [{detail}]" if detail else ""))
-    return ok
 
 
 class AllocationsInEveryOrder(base.FxSettlementTestCase):
@@ -252,20 +248,118 @@ class SettlementDiscountOnAPartPayment(base.FxSettlementTestCase):
             inv.apply_settlement_discount(payment=pay)
         say(True, "O109 sales: a receipt applied elsewhere earns no discount here")
 
-    def test_the_discount_is_taken_once_with_two_payments(self):
-        from apps.sales.models import Invoice, InvoicePayment
-        inv = self.invoice("1000")
-        Invoice.objects.filter(pk=inv.pk).update(payment_terms=self.terms)
+    # O250, worked by hand in /home/user/work/g48_calc/scenarios.py: 1,000 at 2/10, rate d = 2%. Every payment
+    # inside the days earns, on the running total of what the payments that earned here settle: round(total x
+    # d / (1 - d)) less what they took, no more than the discount left nor what is due.
+
+    def discounted(self, side="sales"):
+        from apps.purchasing.models import Bill
+        from apps.sales.models import Invoice
+        document = self.invoice("1000") if side == "sales" else self.bill("1000")
+        model = Invoice if side == "sales" else Bill
+        model.objects.filter(pk=document.pk).update(payment_terms=self.terms)
+        return model.objects.get(pk=document.pk)
+
+    def paid(self, document, *amounts, on=datetime.date(2026, 1, 10)):
+        from apps.purchasing.models import BillPayment
+        from apps.sales.models import InvoicePayment
+        receipt = not hasattr(document, "vendor")
+        payments = []
+        for amount in amounts:
+            pay = self.euro_payment(PaymentDirection.RECEIPT if receipt else PaymentDirection.DISBURSEMENT, amount, on=on)
+            if receipt:
+                InvoicePayment.objects.create(invoice=document, payment=pay, amount=D(amount))
+            else:
+                BillPayment.objects.create(bill=document, payment=pay, amount=D(amount))
+            payments.append(pay)
+        return payments
+
+    def earn(self, document, payment):
+        take = document.apply_settlement_discount if hasattr(document, "customer") else document.take_settlement_discount
+        take(payment=payment)
+        document.refresh_from_db()
+        return document.discounts.get(payment=payment).amount
+
+    def test_each_payment_inside_the_days_earns_its_share(self):
+        inv = self.discounted()
+        p1, p2 = self.paid(inv, "490", "490")
+        earned = [self.earn(inv, p2), self.earn(inv, p1)]
+        say(inv.amount_due() == 0, "O250 sales: 490 + 490 within the days earn 10 + 10 and settle 1,000",
+            f"earned {earned} due {inv.amount_due()}")
+        self.assertEqual((earned, inv.settlement_discount_amount, inv.amount_due()),
+                         ([D("10.00"), D("10.00")], D("20.00"), D("0.00")))
+
+    def test_a_payment_earns_once(self):
+        inv = self.discounted()
+        (pay,) = self.paid(inv, "490")
+        self.earn(inv, pay)
+        with self.assertRaisesMessage(ValidationError, "earned its settlement discount"):
+            inv.apply_settlement_discount(payment=pay)
         inv.refresh_from_db()
-        p1 = self.euro_payment(PaymentDirection.RECEIPT, "490", on=datetime.date(2026, 1, 10))
-        p2 = self.euro_payment(PaymentDirection.RECEIPT, "490", on=datetime.date(2026, 1, 10))
-        InvoicePayment.objects.create(invoice=inv, payment=p1, amount=D("490"))
-        InvoicePayment.objects.create(invoice=inv, payment=p2, amount=D("490"))
-        inv.apply_settlement_discount(payment=p2)
-        with self.assertRaises(ValidationError):
-            inv.apply_settlement_discount(payment=p1)
+        self.assertEqual((inv.settlement_discount_amount, inv.discounts.count()), (D("10.00"), 1))
+
+    def test_three_payments_earn_on_their_running_total_and_leave_no_paisa(self):
+        # Each share rounded on its own: 8.16 three times and 0.01 owing that nothing explains.
+        inv = self.discounted()
+        payments = self.paid(inv, "400", "400", "180")
+        earned = [self.earn(inv, pay) for pay in payments]
+        self.assertEqual((earned, inv.amount_due()), ([D("8.16"), D("8.17"), D("3.67")], D("0.00")))
+
+    def test_a_payment_after_the_days_earns_nothing_and_its_share_is_owed(self):
+        inv = self.discounted()
+        (early,) = self.paid(inv, "490")
+        (late,) = self.paid(inv, "490", on=datetime.date(2026, 2, 15))
+        self.assertEqual(self.earn(inv, early), D("10.00"))
+        with self.assertRaisesMessage(ValidationError, "after the discount days"):
+            inv.apply_settlement_discount(payment=late)
         inv.refresh_from_db()
-        say(inv.amount_due() == 0, "O109 sales: 490 + 490 within the days + the 20 discount settle 1,000 once", f"due {inv.amount_due()}")
+        self.assertEqual(inv.amount_due(), D("10.00"))
+
+    def test_a_returned_payment_takes_back_its_own_discount_and_no_other(self):
+        for side in ("sales", "purchasing"):
+            with self.subTest(side=side):
+                document = self.discounted(side)
+                p1, p2 = self.paid(document, "490", "490")
+                self.earn(document, p1)
+                self.earn(document, p2)
+                p1.void(memo="Returned unpaid", on_date=datetime.date(2026, 1, 20))
+                document.refresh_from_db()
+                rows = {row.payment_id: (row.amount, row.withdrawn_amount) for row in document.discounts.all()}
+                # p1's 490 never arrived and nor did its 10; p2 paid inside the days and keeps its 10.
+                self.assertEqual(rows, {p1.pk: (D("10.00"), D("10.00")), p2.pk: (D("10.00"), D("0.00"))})
+                self.assertEqual((document.settlement_discount_withdrawn, document.amount_due()),
+                                 (D("10.00"), D("500.00")))
+
+    def test_the_bill_earns_the_same(self):
+        bill = self.discounted("purchasing")
+        p1, p2 = self.paid(bill, "490", "490")
+        earned = [self.earn(bill, p1), self.earn(bill, p2)]
+        self.assertEqual((earned, bill.amount_due()), ([D("10.00"), D("10.00")], D("0.00")))
+
+    def test_the_history_and_the_statement_show_each_discount_on_its_day(self):
+        from apps.sales.models import customer_statement
+        inv = self.discounted()
+        (p1,) = self.paid(inv, "490", on=datetime.date(2026, 1, 8))
+        (p2,) = self.paid(inv, "490", on=datetime.date(2026, 1, 10))
+        self.earn(inv, p1)
+        self.earn(inv, p2)
+        discounts = [(day, amount) for day, amount, _entries, words in inv.settled_otherwise_on()
+                     if words == "a settlement discount"]
+        self.assertEqual(discounts, [(datetime.date(2026, 1, 8), D("10.00")), (datetime.date(2026, 1, 10), D("10.00"))])
+        statement = customer_statement(self.customer, as_of=datetime.date(2026, 12, 31))
+        self.assertEqual([(entry.date, entry.credit) for entry in statement["entries"] if entry.kind == "Settlement discount"],
+                         [(datetime.date(2026, 1, 8), D("10.00")), (datetime.date(2026, 1, 10), D("10.00"))])
+
+    def test_a_credit_note_of_the_whole_undoes_both_discounts(self):
+        inv = self.discounted()
+        p1, p2 = self.paid(inv, "490", "490")
+        self.earn(inv, p1)
+        self.earn(inv, p2)
+        note = inv.create_credit_note()
+        inv.refresh_from_db()
+        self.assertEqual((note.reversed_discount, note.refund_due(), inv.settlement_discount_standing()),
+                         (D("20.00"), D("980.00"), D("0.00")))
+        self.assertEqual(self.balance(self.disc), D("0.00"))
 
 
 class AEEFCAccount(base.FxSettlementTestCase):

@@ -462,7 +462,7 @@ class VendorSettlementDiscountTests(AuditTestCase):
         paying.void(memo="Recalled", on_date=datetime.date(2026, 1, 25))
         bill = Bill.objects.get(pk=bill.pk)
         self.assertEqual((bill.amount_due(), bill.settlement_discount_withdrawn), (Decimal("50.00"), Decimal("1.00")))
-        self.assertEqual(bill.settlement_discount_withdrawal_entry.date, datetime.date(2026, 1, 25))
+        self.assertEqual(bill.discounts.get().withdrawal_entry.date, datetime.date(2026, 1, 25))
         self.assertEqual((self.balance(self.payable), self.balance(self.discount_received)), (Decimal("-50.00"), Decimal("0")))
         # Paid again less the discount, then debited in full: the 49 comes back, and the withdrawn
         # discount is not undone a second time.
@@ -495,7 +495,7 @@ class VendorSettlementDiscountTests(AuditTestCase):
         bill.take_settlement_discount(on_date=datetime.date(2026, 1, 20))
         paying.void(memo="Recalled", on_date=datetime.date(2026, 1, 16))
         bill = Bill.objects.get(pk=bill.pk)
-        self.assertEqual(bill.settlement_discount_withdrawal_entry.date, datetime.date(2026, 1, 20))
+        self.assertEqual(bill.discounts.get().withdrawal_entry.date, datetime.date(2026, 1, 20))
         self.assertEqual((bill.amount_due(), bill.settlement_discount_withdrawn), (Decimal("50.00"), Decimal("1.00")))
         self.assertEqual((self.balance(self.payable), self.balance(self.discount_received)), (Decimal("-50.00"), Decimal("0")))
 

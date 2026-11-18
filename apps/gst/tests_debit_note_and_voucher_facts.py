@@ -4,6 +4,8 @@ g22 review of fix_money, GST side: O235 (debit note), O238 (vouchers). Probes as
 import datetime
 from decimal import Decimal
 
+from apps.core.tests_claims import say
+
 from . import tests_advances as adv
 from . import tests_einvoice as ein
 from .einvoice import build
@@ -12,11 +14,6 @@ from .returns import gstr1, gstr1_json, gstr3b, month
 D = Decimal
 SEPTEMBER, OCTOBER = month("2026-09"), month("2026-10")
 OCT5 = datetime.date(2026, 10, 5)
-
-
-def say(ok, claim, detail=""):
-    print(("PASS " if ok else "FAIL ") + claim + (f"  [{detail}]" if detail else ""))
-    return ok
 
 
 class DebitNoteInTheReturn(ein.EInvoiceTestCase):
