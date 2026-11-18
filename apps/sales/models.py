@@ -100,6 +100,7 @@ from apps.accounting.mixins import (
 
 from apps.accounting.settlement import (
     entries_booked,
+    undo_discounts,
     allocated_on,
     base_or_none,
     in_base,
@@ -122,7 +123,6 @@ from apps.accounting.settlement import (
     booked_beside,
     settlement_discount_to_take,
     entries_that_settled,
-    discount_base_moved,
     discount_history,
     discount_left,
     take_settlement_discount,
@@ -2480,7 +2480,8 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxesTa
         if write_off.invoice_id != self.pk:
             raise ValidationError("That write-off belongs to a different invoice.")
         # Read again under its lock: two recoveries of one write-off both
-        # saw it standing and reversed it twice.
+        # saw it standing and reversed it twice. After the invoice (@serialised),
+        # as a credit note undoing write-offs holds it before it writes theirs (O600).
         lock_rows(write_off)
         if write_off.recovered_entry_id:
             raise ValidationError("That write-off has already been recovered.")
@@ -2490,7 +2491,9 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxesTa
         # undone by a credit note, the other 300 paid after all could not be
         # recovered, and no receipt could be applied to it either.
         undone = sum((note.reversed_write_off for note in self.credit_notes.filter(posted=True)), Decimal("0"))
-        recovering = min(write_off.amount, self.amount_written_off() - undone)
+        # What notes undid of this one is off bad debt already (O600): the newest, undone by a note, was recovered
+        # whole again, and the older one, never undone, could not be recovered at all.
+        recovering = min(write_off.amount - write_off.undone_amount, self.amount_written_off() - undone)
         if recovering <= 0:
             raise ValidationError(f"Credit notes have undone {undone} of what was written off on {self.number}; "
                                   "that is not recovered again.")
@@ -2541,24 +2544,36 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxesTa
         undone = {kind: amount for kind, amount in (("write_off", write_off), ("discount", discount)) if amount}
         if not undone:
             return
-        booked = {
-            # The newest discount still standing, as the write-off below: where the last one was booked.
-            "discount": next((row.journal_entry for row in invoice.discounts.filter(withdrawal_entry__isnull=True)
-                              .order_by("-date", "-pk")), None),
-            "write_off": next((row.journal_entry for row in invoice.write_offs.filter(recovered_entry__isnull=True)
-                               .order_by("-pk")), None),
-        }
-        rate = invoice.exchange_rate or Decimal("1")
         memo = f"{self.number} undoes what settled {invoice.number} without money"
         entry = JournalEntry.objects.create(date=self.invoice_date, reference=self.number, memo=memo)
-        for kind, amount in undone.items():
-            # A discount at the step in the rounded base of what stands of it (settlement.discount_base_moved).
-            base = (discount_base_moved(invoice, standing_discount, standing_discount - amount) if kind == "discount"
-                    else round_money(amount * rate))
+        # Each write-off on the account it was booked to, newest first, at the invoice's rate (O600): all of it
+        # went beside the newest, so two write-offs to two bad debt accounts left one over and one under.
+        left = undone.get("write_off", Decimal("0"))
+        write_offs = list(invoice.write_offs.select_related("journal_entry").order_by("-date", "-pk")) if left else []
+        # Written newest first, so held first in key order (apps.core.lock_order) and read again under the lock:
+        # a recovery at the same moment takes from the same rows.
+        lock_rows(*write_offs)
+        for row in write_offs:
+            here = min(row.on_the_books(), left)
+            if here <= 0:
+                continue
+            base = round_money(here * (invoice.exchange_rate or Decimal("1")))
             JournalLine.objects.create(entry=entry, account=invoice.receivable_account, party=self.customer,
                                        debit=base, description=memo[:255])
-            JournalLine.objects.create(entry=entry, account=booked_beside(booked[kind], invoice.receivable_account),
-                                       party=self.customer, credit=base, description=memo[:255])
+            JournalLine.objects.create(entry=entry, party=self.customer, credit=base, description=memo[:255],
+                                       account=booked_beside(row.journal_entry, invoice.receivable_account))
+            row.undone_amount += here
+            row.save(update_fields=["undone_amount", "updated_at"])
+            left -= here
+            if not left:
+                break
+        if left:
+            raise ValidationError(f"{invoice.number}'s write-offs hold {undone['write_off'] - left} in bad debt, and "
+                                  f"{self.number} would undo {undone['write_off']}: they disagree, and nothing is "
+                                  "posted.")
+        # Each discount on the account it was booked to, newest first (O600).
+        undo_discounts(invoice, undone.get("discount", Decimal("0")), standing_discount, invoice.receivable_account,
+                       self.customer, entry, memo)
         entry.post()
         self.reversed_write_off = undone.get("write_off", Decimal("0"))
         self.reversed_discount = undone.get("discount", Decimal("0"))
@@ -4037,11 +4052,17 @@ class InvoiceWriteOff(AsksTheRestatement, AuditModel):
         help_text="What the recovery put back: less than the write-off when a credit note had undone part of it. "
                   "Blank on a recovery made before it was kept, which put back the whole.",
     )
+    undone_amount = models.DecimalField(
+        max_digits=18, decimal_places=2, default=Decimal("0"), editable=False,
+        help_text="What credit notes undid of it, on the account it was booked to, newest write-off first (O600).",
+    )
 
     class Meta:
         ordering = ["-date", "-id"]
         constraints = [
             models.CheckConstraint(check=Q(amount__gt=0), name="write_off_amount_positive"),
+            models.CheckConstraint(check=Q(undone_amount__gte=0, undone_amount__lte=models.F("amount")),
+                                   name="write_off_undone_within_it"),
         ]
 
     def __str__(self):
@@ -4055,6 +4076,10 @@ class InvoiceWriteOff(AsksTheRestatement, AuditModel):
         if not self.recovered_entry_id:
             return Decimal("0")
         return self.amount if self.recovered_amount is None else self.recovered_amount
+
+    def on_the_books(self):
+        """What of it bad debt still holds: not recovered, and not undone by a credit note (O600)."""
+        return self.amount - self.amount_recovered() - self.undone_amount
 
 
 def bad_debt_report(start=None, end=None):
