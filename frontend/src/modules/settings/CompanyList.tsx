@@ -5,7 +5,7 @@ type Row = Record<string, unknown> & { id: number };
 const columns: Column<Row>[] = [
   { key: "name", label: "Name" },
   { key: "legal_name", label: "Legal name" },
-  { key: "tax_id", label: "GSTIN" },
+  { key: "tax_id", label: "Other tax number" },
 ];
 
 export default function CompanyList() {

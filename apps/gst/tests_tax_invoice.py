@@ -66,7 +66,9 @@ class IntraStateTests(TaxInvoiceTestCase):
         self.assertEqual(printed["supplier"], {
             "name": "Deccan Polysacks Private Limited", "trade_name": "Deccan Polysacks",
             "address": ["Plot 12, MIDC Chakan", "Pune Maharashtra 410501"],
-            "gstin": self.settings.gstin, "state": "27", "tax_id": "", "state_name": "Maharashtra (27)",
+            # The foot's tax number is the registration's too, though the company keeps none of its own (O603).
+            "gstin": self.settings.gstin, "state": "27", "tax_id": self.settings.gstin,
+            "state_name": "Maharashtra (27)",
             # The fixture's company has no email, phone or website to keep (O566).
             "contacts": []})
         self.assertEqual(printed["recipient"], {

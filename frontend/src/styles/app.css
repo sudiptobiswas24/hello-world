@@ -521,6 +521,10 @@ span.tax-chosen.none { display: inline-block; line-height: 28px; cursor: default
 .chatter { margin-top: 14px; }
 .chatter table.data { width: 100%; margin-bottom: 10px; }
 .chatter table.data td { vertical-align: top; }
+/* A long value (an address, an entry's name) wraps inside the panel instead of running past its edge. */
+ul.changes li { overflow-wrap: anywhere; }
+details.kept { display: inline-block; vertical-align: top; max-width: 100%; }
+details.kept pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 20rem; overflow: auto; font-size: 12px; margin: 4px 0 0; }
 .chatter .note-form { display: flex; gap: 10px; align-items: flex-start; margin-bottom: 10px; }
 .chatter .note-form textarea { flex: 1; }
 .chatter ul.notes li { display: block; border-top: 1px solid var(--line); padding-top: 8px; }

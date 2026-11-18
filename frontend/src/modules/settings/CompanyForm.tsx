@@ -18,7 +18,7 @@ export default function CompanyForm() {
       fields={[
         { key: "name", label: "Name" },
         { key: "legal_name", label: "Legal name" },
-        { key: "tax_id", label: "GSTIN" },
+        { key: "tax_id", label: "Other tax number", hint: "Printed only where the plant has no GST registration: the GSTIN is kept under Plant's GST registration (O603)" },
         { key: "tan", label: "TAN", hint: "Four letters, five digits and a letter: printed on TDS and TCS challans and returns" },
         { key: "email", label: "Email" },
         { key: "phone", label: "Phone" },

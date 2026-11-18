@@ -33,3 +33,14 @@ class AccountingConfig(AppConfig):
 
         register_booked_in_base(posted_entries)
         register_company_check(money_settings)
+
+        from apps.core.documents import register_company_gstin
+
+        from .gst import GstSettings
+
+        def registered(company):
+            # The registration the tax invoice and the returns name: every other document's letterhead too (O603).
+            registration = GstSettings.active()
+            return registration.gstin if registration else ""
+
+        register_company_gstin(registered)

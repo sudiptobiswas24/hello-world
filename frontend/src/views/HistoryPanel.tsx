@@ -4,11 +4,23 @@ import { dateTime } from "../lib/format";
 export interface Change { field: string; label: string; from: unknown; to: unknown; secret?: boolean }
 interface HistoryRow { id: number; at: string; who: string; through: string; kind: string; label: string; summary: string; changes?: Change[] }
 
-/** A value as the log kept it: exact text, as it came. */
-function shown(value: unknown): string {
-  if (value === null || value === undefined || value === "") return "nothing";
-  if (typeof value === "object") return JSON.stringify(value);
-  return String(value);
+/**
+ * A value as the log kept it: exact text, as it came. A record kept whole (what an invoice was issued as)
+ * is folded, and opens laid out: on one line it read as raw JSON and ran past the panel's edge. The server
+ * gives a relation as its label and a list as text, so an object here is only ever such a record.
+ */
+function Shown({ value }: { value: unknown }) {
+  if (value === null || value === undefined || value === "") return <>nothing</>;
+  if (typeof value === "object") {
+    const size = Object.keys(value as object).length;
+    return (
+      <details className="kept">
+        <summary>{size} {size === 1 ? "detail" : "details"} kept</summary>
+        <pre>{JSON.stringify(value, null, 2)}</pre>
+      </details>
+    );
+  }
+  return <>{String(value)}</>;
 }
 
 /** Each field a change touched, with what it was and what it became; a secret only as changed. */
@@ -18,7 +30,7 @@ export function ChangeList({ changes }: { changes?: Change[] }) {
     <ul className="changes">
       {changes.map((change) => (
         <li key={change.field}>
-          {change.label}: {change.secret ? "changed" : `${shown(change.from)} → ${shown(change.to)}`}
+          {change.label}: {change.secret ? "changed" : <><Shown value={change.from} /> → <Shown value={change.to} /></>}
         </li>
       ))}
     </ul>

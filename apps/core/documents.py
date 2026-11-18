@@ -338,15 +338,39 @@ def letterhead(company):
     return printed_letterhead(issuer(company))
 
 
+# The GSTIN the company is registered under now, asked of whoever keeps the registration: accounting registers
+# its active GST registration from its ready(). Core keeps the question and imports none of them.
+_REGISTERED_GSTIN = []
+
+
+def register_company_gstin(ask):
+    """ask(company) -> the GSTIN the company is registered under now, or ""."""
+    if ask not in _REGISTERED_GSTIN:
+        _REGISTERED_GSTIN.append(ask)
+
+
+def registered_gstin(company):
+    """The GST registration's GSTIN where there is one; else the company's own tax ID, for a plant not registered."""
+    for ask in _REGISTERED_GSTIN:
+        gstin = ask(company)
+        if gstin:
+            return gstin
+    return company.tax_id or ""
+
+
 def issuer(company):
     """
     The company as a page's head and foot print it, as plain values: what a document that prints what it was
     issued as keeps at the event (O552), so a company renamed, moved or re-registered later does not reprint it.
     printed_letterhead() and printed_footer() print it as letterhead() and render_document print the company.
+
+    Its GSTIN is the GST registration's, the one the tax invoice, the returns and the e-invoice name (O603): read
+    from the company's own tax ID, every other document printed none where only the registration had it (the
+    demo plant's purchase orders and challans), and a different one where the two disagreed.
     """
     return {"name": company.name, "legal_name": company.legal_name or "",
             "address": company.address.formatted().splitlines() if company.address_id else [],
-            "tax_id": company.tax_id or "", "contacts": contacts(company)}
+            "tax_id": registered_gstin(company), "contacts": contacts(company)}
 
 
 def contacts(company):

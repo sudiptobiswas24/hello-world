@@ -11,7 +11,8 @@ from reportlab.lib.units import mm
 
 from apps.accounting.trade_terms import freight_meta
 from apps.core.documents import (
-    bold, contacts, counted, lines, money, printed_footer, render_document, rupees_in_words)
+    bold, contacts, counted, lines, money, printed_footer, registered_gstin, render_document, rupees_in_words,
+)
 from apps.core.models import Company, to_date
 
 
@@ -91,7 +92,7 @@ def issued_particulars(invoice, posting=False):
             "address": _address_lines(company.address),
             "gstin": registration.gstin if registration else "",
             "state": registration.state if registration else _state_of(company.address),
-            "tax_id": company.tax_id,
+            "tax_id": registered_gstin(company),
             # Kept with the rest, so the foot of a reprint is what was issued, not today's phone (O566).
             "contacts": contacts(company),
         },
