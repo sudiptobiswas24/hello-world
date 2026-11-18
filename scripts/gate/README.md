@@ -28,7 +28,10 @@ Commit as `git -c user.name=Claude -c user.email=noreply@anthropic.com commit -F
    takes), `audit_invariants` and `makemigrations --check`. Run it first: the build is what the
    browser tests open.
 3. Run the lanes two at a time, each a background job (a job may run two
-   hours at most): `sqlite` with `pg-a`, then `ist` with `pg-b`, then `pg-c`.
+   hours at most): `ist` with `pg-c`, then `mig` (step 4) with `pg-a` and then `pg-b` beside it.
+   No browser lane (`ist`, `pg-c`) beside `mig`. The full suite runs on SQLite under Asia/Kolkata and
+   on PostgreSQL under UTC; a third run, SQLite under UTC, was dropped in g51 (owner, 18 November):
+   each of its halves is in one of the two, and it cost about 110 minutes a gate.
 4. Then `mig` alone and detached, since it runs about four hours:
    `setsid nohup scripts/gate/lane.sh <prefix> mig > <logs>/mig_driver.txt 2>&1 < /dev/null &`.
    It runs one app at a time and records each app that passes on this HEAD,
@@ -94,14 +97,14 @@ them all, and so does a base that cannot be read.
   run, which then errors by the thousand. lane.sh does this.
 - **Split the PostgreSQL lane.** Whole, it exceeds the two-hour limit
   when anything else uses the CPU. lane.sh runs it as two halves on
-  separate databases. gateline.py checks that the halves add up to the
-  SQLite count.
+  separate databases. gateline.py checks that the parts add up to the
+  Asia/Kolkata count.
 - **Never edit a script a running job is executing.** Bash reads it as
   it runs, and the job executes shifted lines.
 - **Check skip counts before trusting a lane.** A lane run elsewhere (in
   another cloud session) once skipped its browser tests and still looked
-  green: 154 skipped against 46. gateline.py refuses an Asia/Kolkata lane
-  that skips more than SQLite.
+  green: 154 skipped against 46. In a gate lane (GATE_BROWSERS=1) a browser
+  test that cannot run now fails instead of skipping.
 - **Keep agents off the machine during a gate.** Agents running tests,
   even at nice 19, roughly doubled lane times.
 - **The migration-tagged tests take minutes each on PostgreSQL.** The mig

@@ -144,8 +144,14 @@ def _one_call_at_a_time(on):
             (lambda self, name=None: self.connection.cursor(factory=OneCallAtATime)) if on else _PLAIN_CURSOR)
 
 
-@unittest.skipIf(sync_playwright is None, "Playwright is not installed")
-@unittest.skipIf(not finders.find("web/index.html"), "The office application is not built (npm run build)")
+# In a gate lane (GATE_BROWSERS=1, scripts/gate/lane.sh) a browser test that cannot run fails: skipped, it
+# left the lane OK with none of them run (g27: 159 skipped, unseen). Elsewhere it skips, saying why.
+GATE_BROWSERS = os.environ.get("GATE_BROWSERS") == "1"
+CANNOT_RUN = ("Playwright is not installed" if sync_playwright is None else
+              "The office application is not built (npm run build)" if not finders.find("web/index.html") else None)
+
+
+@unittest.skipIf(CANNOT_RUN is not None and not GATE_BROWSERS, CANNOT_RUN or "")
 class BrowserMixin:
     """
     A browser on the running server, and people to sign in as. Put in
@@ -185,6 +191,8 @@ class BrowserMixin:
 
     @classmethod
     def setUpClass(cls):
+        if CANNOT_RUN is not None:
+            raise RuntimeError(f"GATE_BROWSERS is set and a browser test cannot run: {CANNOT_RUN}")
         os.environ["DJANGO_ALLOW_ASYNC_UNSAFE"] = "true"
         _one_call_at_a_time(True)
         super().setUpClass()
@@ -201,6 +209,8 @@ class BrowserMixin:
             cls.playwright.stop()
             super().tearDownClass()
             _one_call_at_a_time(False)
+            if GATE_BROWSERS:
+                raise RuntimeError(f"GATE_BROWSERS is set and there is no usable Chromium: {error}") from error
             raise unittest.SkipTest(f"No usable Chromium: {str(error).splitlines()[0]}")
         cls.in_flight = InFlight()
         request_started.connect(cls.in_flight.started, weak=False, dispatch_uid=f"in-flight-started-{id(cls)}")

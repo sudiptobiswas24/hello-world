@@ -85,14 +85,15 @@ jobs:
         run: python manage.py makemigrations --check --dry-run
 
   tests:
-    # lane.sh: sqlite and ist. Both open the built office application in Chromium.
+    # lane.sh: ist, the full suite on SQLite under Asia/Kolkata, opening the built office application in
+    # Chromium. The SQLite run under UTC was dropped in g51: PostgreSQL (pg) runs the suite under UTC.
     name: ${{ matrix.lane }}
     runs-on: ubuntu-latest
     timeout-minutes: 150
     strategy:
       fail-fast: false
       matrix:
-        lane: [sqlite, ist]
+        lane: [ist]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -116,20 +117,18 @@ jobs:
           python -m playwright install --with-deps chromium
           test -f apps/web/static/web/index.html
           python -c "from playwright.sync_api import sync_playwright as s; p = s().start(); p.chromium.launch().close(); p.stop()"
-      - name: SQLite
-        if: matrix.lane == 'sqlite'
-        run: python manage.py test apps --exclude-tag migration --parallel 2
       - name: Asia/Kolkata
         if: matrix.lane == 'ist'
         env:
           DJANGO_TIME_ZONE: Asia/Kolkata
+          GATE_BROWSERS: "1"
           PYTHONPATH: scripts/gate
           DJANGO_SETTINGS_MODULE: fastsettings
         run: python manage.py test apps --parallel 2 --exclude-tag migration --settings=fastsettings
 
   pg:
     # lane.sh: pg-a, pg-b, pg-c. The three parts together are every app; gateline.py checks that
-    # locally by adding the counts up against SQLite's, and nothing here does.
+    # locally by adding the counts up against Asia/Kolkata's, and nothing here does.
     name: pg-${{ matrix.part }}
     runs-on: ubuntu-latest
     timeout-minutes: 200
