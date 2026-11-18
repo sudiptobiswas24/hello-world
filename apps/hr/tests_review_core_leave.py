@@ -3,7 +3,6 @@ Review probes for fix_core's O32 (g22 review_core): LeaveRequest.cancel is a dat
 taken is not given back ("only the future can be given back"), whatever day the cancel is dated.
 """
 import datetime
-from decimal import Decimal
 
 from django.core.exceptions import ValidationError
 from django.utils import timezone

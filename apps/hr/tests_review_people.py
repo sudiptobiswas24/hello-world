@@ -11,7 +11,6 @@ import datetime
 import io
 from decimal import Decimal
 
-from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
 
 from apps.accounting.models import Account, AccountType, JournalLine, Payment, PaymentDirection
@@ -31,8 +30,8 @@ from .payroll import (
     Statutory,
 )
 from .statutory import FigureKind, StatutoryFigure
-from .statutory_files import ecr_rows, lwf_register, pt_register
-from .tests_dated_figures import DatedFiguresTestCase, month
+from .statutory_files import ecr_rows, lwf_register
+from .tests_dated_figures import DatedFiguresTestCase
 
 D = datetime.date
 JULY1 = D(2026, 7, 1)
@@ -360,7 +359,6 @@ class TheLawsFigures(DatedFiguresTestCase):
         self.assertTrue(refused(self.month_run, 2026, 9, post=False, employees=[person]))
 
     def test_L5_hours_a_day_of_nought_is_refused_in_words(self):
-        from .models import Employee
         person = self.worker("Z")
         person.hours_a_day = Decimal("0")
         self.assertTrue(refused(person.save),

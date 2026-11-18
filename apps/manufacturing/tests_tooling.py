@@ -6,7 +6,6 @@ number of bags and then has to be re-chromed. A plant that loses track
 finds out in the middle of a fifty-thousand-sack run.
 """
 
-import datetime
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
@@ -24,7 +23,6 @@ from .tooling import (
     Tool,
     ToolKind,
     ToolStatus,
-    ToolUsage,
     tools_for,
     wearing_out,
 )

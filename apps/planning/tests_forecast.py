@@ -7,7 +7,6 @@ tonnes of demand, of which twenty-five is now real. Adding the two is
 how a forecast doubles a plant's stock and then gets switched off.
 """
 
-import datetime
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError

@@ -7,12 +7,11 @@ import itertools
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
-from django.db.models import Sum
 
 from apps.accounting import tests_fx_settlement as base
 from apps.accounting.models import (Account, AccountType, BankStatement, BankStatementLine, Payment,
                                     PaymentDirection)
-from apps.core.models import Currency, ExchangeRate, PaymentTerms
+from apps.core.models import ExchangeRate, PaymentTerms
 from apps.core.tests_claims import say
 
 D = Decimal
@@ -106,7 +105,6 @@ class AllocationsInEveryOrder(base.FxSettlementTestCase):
                     rows[i] = InvoicePayment.objects.create(invoice=invs[i], payment=receipt, amount=invs[i].total())
                 rows[k].delete()
                 rows[k] = InvoicePayment.objects.create(invoice=invs[k], payment=receipt, amount=invs[k].total())
-                booked = sum((D(a) for a in ("0.07", "1.57", "98.45")), D("0"))
                 residue = self.balance(self.ar) - ar0
                 fx = self.fx() - fx0
                 expected = sum((i.journal_entry.lines.get(account=self.ar).debit for i in invs), D("0")) - receipt.base_amount()
@@ -816,7 +814,6 @@ class AnAdvanceInEuros(base.FxSettlementTestCase):
             InvoicePayment.objects.create(invoice=inv, payment=pays[0], amount=half)
             # the advance itself is an invoice on AR that nobody paid: take it out of the sum
             deposit.refresh_from_db()
-            owed_on_deposit = deposit.amount_due()
             ar_net = self.balance(self.ar) - ar0 - (deposit.journal_entry.lines.get(account=self.ar).debit - 0)
             if inv.amount_due() != 0 or self.balance(self.deposits) - dep0 != 0 or ar_net != 0:
                 bad.append((percent, price, str(inv.amount_due()), str(self.balance(self.deposits) - dep0), str(ar_net)))

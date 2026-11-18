@@ -17,7 +17,7 @@ from rest_framework.test import APIClient
 
 from .history import EventKind, RecordEvent, acting_as, edit_logged, installed
 from .ledger_log import LedgerChange, create as create_ledger_log
-from .models import AuditModel, Currency, ExchangeRate, Party
+from .models import AuditModel, Currency, ExchangeRate
 from .tests_second_factor import staff_session
 
 

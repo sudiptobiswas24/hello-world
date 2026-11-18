@@ -4,11 +4,10 @@ import datetime
 from decimal import Decimal
 
 from django.contrib.auth.models import Group, User
-from django.core.exceptions import ValidationError
 from django.core.management import call_command
 from rest_framework.test import APIClient
 
-from .adjustments import StockAdjustment, StockAdjustmentLine, StockCount, StockCountLine
+from .adjustments import StockAdjustmentLine, StockCount, StockCountLine
 from .tests_adjustments import AdjustmentTestCase
 
 D = Decimal

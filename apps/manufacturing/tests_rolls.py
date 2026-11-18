@@ -7,7 +7,6 @@ a tube laid flat is two thicknesses. At 87 GSM that is 104.4 kg, and
 104.4 kg over 1,000 m is 9.578544 metres a kilo.
 """
 
-import datetime
 from decimal import Decimal
 
 from django.db import IntegrityError
@@ -362,7 +361,7 @@ class WeighingIsAMeasurementTests(RollTestCase):
         self.assertEqual(reading["measured"], Decimal("87.0259"))
 
     def test_a_run_with_no_rolls_says_nothing(self):
-        from .orders import ProductionEntry, WorkOrder
+        from .orders import WorkOrder
 
         spec = self.specification()
         self.stock(spec.warp_tape.tape_item, "500", "120")

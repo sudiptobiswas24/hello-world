@@ -7,7 +7,7 @@ from django.core.exceptions import ValidationError
 from django.test import TestCase
 from django.utils import timezone
 
-from apps.accounting.models import Account, AccountType, Payment, PaymentDirection, Tax
+from apps.accounting.models import Account, AccountType, Payment, PaymentDirection
 from apps.core.models import (
     Company,
     Currency,

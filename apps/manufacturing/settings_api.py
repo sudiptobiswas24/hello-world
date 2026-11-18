@@ -1,6 +1,6 @@
 """Where the manufacturing side of the ledger lands: one record, kept by the controller."""
 
-from rest_framework import serializers, viewsets
+from rest_framework import viewsets
 
 from apps.core.api import ModelSerializer
 

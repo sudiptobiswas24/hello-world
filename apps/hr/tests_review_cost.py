@@ -1,7 +1,6 @@
 """review_cost probes: O5/O6 statutory files read what the month's slips kept."""
 
 import datetime
-from decimal import Decimal
 
 from .statutory_files import ecr_rows, esi_rows
 from .tests_statutory_files import FilesTestCase

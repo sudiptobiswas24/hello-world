@@ -335,7 +335,7 @@ class MaintenanceTakesTheMachineOutTests(PlanningTestCase):
 class TheLoadPictureTests(PlanningTestCase):
     def test_a_week_reports_what_is_asked_against_what_there_is(self):
         self.sell(self.fabric, "1000", self.day(30))
-        run = self.plan()
+        self.plan()
         book = LoadBook(self.plant, TODAY, self.day(60))
         rows = load_profile(book, [self.loom], TODAY, self.day(7))
         self.assertTrue(rows)

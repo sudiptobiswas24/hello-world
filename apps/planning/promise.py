@@ -37,7 +37,7 @@ from django.core.exceptions import ValidationError
 from django.utils import timezone
 
 from .capacity import LoadBook, schedule_make
-from .leadtime import buy_lead_days, calendar_offset, plant_calendar
+from .leadtime import buy_lead_days, plant_calendar
 
 ZERO = Decimal("0")
 
@@ -177,7 +177,7 @@ def capable_to_promise(item, warehouse, quantity, planned_on=None,
     module docstring on what a quotation does and does not reserve.
     """
     from .models import PlanningSettings
-    from .mrp import _make_or_buy, safety_stock
+    from .mrp import _make_or_buy
 
     settings = settings or PlanningSettings.get()
     planned_on = planned_on or timezone.localdate()

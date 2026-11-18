@@ -3,7 +3,6 @@ Audit 2, floor lane: probes that assert what SHOULD be true. Each failing one is
 Figures come from calc_audit2_floor/ (plain Python), never from output.
 """
 
-import datetime
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
@@ -123,7 +122,6 @@ from .tests_station_tape import NOON, ON, TapeTestCase  # noqa: E402
 class F6BobbinsAtABridgedStationTests(TapeTestCase):
     def test_a_bobbin_count_that_is_not_a_number_is_a_refusal_not_a_crash(self):
         """A net frame asks for the tare through a lambda that runs int(bobbins) before it is checked."""
-        from django.utils import timezone
 
         LoomStation.objects.filter(pk=self.tx.pk).update(scale_code="SC-9", scale_bridged=True)
         self.tx.refresh_from_db()

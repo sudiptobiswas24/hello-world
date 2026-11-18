@@ -177,6 +177,6 @@ class FifoThreeLayers(AdjustmentTestCase):
         shelf0 = item.valuation_at(self.warehouse)[1]
         self.assertEqual(shelf0, D("10.01") + D("33.33") + D("383.34"))
         first = self.adjust("-5", reason=self.shrink, item=item)
-        second = self.adjust("-6", reason=self.shrink, item=item)
+        self.adjust("-6", reason=self.shrink, item=item)
         self.assertEqual(item.valuation_at(self.warehouse), (D("3"), shelf0 - D("19.53") - D("119.65")))
         self.assertEqual(-first.lines.get().posted_value, D("19.53"), "worked by hand for layers booked 10.01, 33.33, 383.34")

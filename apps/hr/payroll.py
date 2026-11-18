@@ -64,7 +64,6 @@ from .statutory import (
     Confirmed,
     FigureKind,
     bonus_ceiling,
-    figure_as_of,
     pension_stops,
     read_figure,
     refuse_if_kept,

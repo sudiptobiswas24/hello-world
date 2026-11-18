@@ -20,7 +20,7 @@ class DebitNoteInTheReturn(ein.EInvoiceTestCase):
     def test_the_hsn_summary_takes_the_debit_notes_value_without_a_new_unit_or_quantity(self):
         invoice = self.s1()
         before = gstr1(*SEPTEMBER)
-        note = invoice.debit("1000", "Rate agreed at 126", on_date=ein.DAY)
+        invoice.debit("1000", "Rate agreed at 126", on_date=ein.DAY)
         after = gstr1(*SEPTEMBER)
         rows = after["hsn_b2b"]
         uqcs = sorted({row["uqc"] for row in rows})
@@ -41,7 +41,7 @@ class DebitNoteInTheReturn(ein.EInvoiceTestCase):
         self.address(buyer, "9 Bazaar Road", "Pune", "Maharashtra", "411001")
         invoice = self.invoice(buyer, [(self.sack, "100", "150", "0", self.pair)])
         before = gstr1(*SEPTEMBER)
-        note = invoice.debit("500", "Price rise", on_date=ein.DAY)
+        invoice.debit("500", "Price rise", on_date=ein.DAY)
         after = gstr1(*SEPTEMBER)
         b2cs_before = sum((row["taxable"] for row in before["b2cs"]), D("0"))
         b2cs_after = sum((row["taxable"] for row in after["b2cs"]), D("0"))
@@ -140,7 +140,6 @@ class VouchersInTheReturn(adv.AdvanceTestCase):
         deposit = self.advance(order, day=adv.OCT)
         note = deposit.create_credit_note(amount=D("1180"), on_date=adv.OCT + datetime.timedelta(days=10))
         result = gstr1(*OCTOBER)
-        kinds = [(row["kind"], row.get("from"), row.get("to"), row.get("count")) for row in result["documents"]]
         names = " ".join(str(row) for row in result["documents"])
         ok = (deposit.number not in names and note.number not in names) or any(
             "receipt" in row["kind"] or "refund" in row["kind"] for row in result["documents"])
@@ -151,7 +150,7 @@ class VouchersInTheReturn(adv.AdvanceTestCase):
     def test_table_11_has_the_advance_and_takes_off_the_refund(self):
         order = self.job_work()
         deposit = self.advance(order, day=adv.OCT)
-        note = deposit.create_credit_note(amount=D("1180"), on_date=adv.OCT + datetime.timedelta(days=10))
+        deposit.create_credit_note(amount=D("1180"), on_date=adv.OCT + datetime.timedelta(days=10))
         result = gstr1(*OCTOBER)
         rows = result["advances_received"]
         taxable = sum((r["taxable"] for r in rows), D("0"))
@@ -163,7 +162,7 @@ class VouchersInTheReturn(adv.AdvanceTestCase):
         self.assertTrue(ok)
 
     def test_the_receipt_voucher_is_a_voucher_in_the_right_series_and_says_the_tax(self):
-        from apps.sales.documents import render_invoice_pdf, tax_invoice
+        from apps.sales.documents import render_invoice_pdf
         from .tests_tax_invoice import printed_text
 
         deposit = self.advance(self.job_work(), day=adv.OCT)
@@ -195,7 +194,7 @@ class DebitNoteReversePathsAndGuards(ein.EInvoiceTestCase):
         try:
             note = invoice.debit("100", "Price rise", on_date=ein.DAY)
             outcome = f"raised {note.number}"
-        except ValidationError as exc:
+        except ValidationError:
             outcome = None
         say(outcome is None, "O235 a debit note on an invoice whose IRN is cancelled is refused", outcome or "refused")
         self.assertIsNone(outcome)
@@ -221,7 +220,7 @@ class DebitNoteReversePathsAndGuards(ein.EInvoiceTestCase):
         before = -self.ledger("1100")
         record = self.registered(note)
         record.cancellation("2", "Wrong rate")
-        reversal = record.record_cancellation(timezone.now())
+        record.record_cancellation(timezone.now())
         result = gstr1(*SEPTEMBER)
         docs = {r["kind"]: (r["total"], r["cancelled"]) for r in result["documents"]}
         ok = (-self.ledger("1100") == before - note.total() and not result["cdnr"] and

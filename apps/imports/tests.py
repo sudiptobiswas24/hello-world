@@ -754,7 +754,7 @@ class GoLiveCheckTests(ImportTestCase):
         """_making() was written and never asked (O439): a sack with no specification went unmentioned."""
         from apps.manufacturing.bom import BillOfMaterials
 
-        sack = Item.objects.create(sku="SACK-50", name="50 kg sack", uom=self.uom, stock_class="finished")
+        Item.objects.create(sku="SACK-50", name="50 kg sack", uom=self.uom, stock_class="finished")
         fabric = Item.objects.create(sku="FAB-90", name="Fabric 90 cm", uom=self.uom, stock_class="semi_finished")
         BillOfMaterials.objects.create(item=fabric, name="Woven", quantity_produced=Decimal("1"), uom=self.uom)
         _ready, said = self.check()

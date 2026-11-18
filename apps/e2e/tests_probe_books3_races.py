@@ -7,7 +7,7 @@ from apps.accounting.models import JournalEntry, Payment, PaymentDirection
 from apps.core.tests_claims import say
 from apps.e2e import tests_races as r
 from apps.e2e.tests_races_settlement import MoneyRaces as _M
-from apps.sales.models import Invoice, InvoicePayment, InvoiceLine
+from apps.sales.models import Invoice, InvoicePayment
 
 
 @tag("race")

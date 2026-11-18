@@ -9,13 +9,12 @@ missed its GSM is not scrap — it is re-wound, which consumes it and
 produces good fabric in its place.
 """
 
-import datetime
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
 
 from apps.quality.tests import quality_manager
-from apps.inventory.models import Lot, TrackingMode
+from apps.inventory.models import Lot
 from apps.quality.models import (
     Characteristic,
     Disposition,

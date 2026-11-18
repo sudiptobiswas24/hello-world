@@ -95,14 +95,14 @@ class RfqLifecycleTests(RfqTestCase):
 
 class QuotingTests(RfqTestCase):
     def test_a_vendor_quotes_a_line(self):
-        rfq = self.rfq()
+        self.rfq()
         quote = self.invitations[0].quote(self.line, "4.50", lead_time_days=10)
 
         self.assertEqual(quote.unit_price, Decimal("4.50"))
         self.assertIsNotNone(self.invitations[0].responded_at)
 
     def test_requoting_replaces_rather_than_duplicates(self):
-        rfq = self.rfq()
+        self.rfq()
         self.invitations[0].quote(self.line, "4.50")
         self.invitations[0].quote(self.line, "4.20")
 
@@ -110,36 +110,36 @@ class QuotingTests(RfqTestCase):
         self.assertEqual(self.line.quotes.get().unit_price, Decimal("4.20"))
 
     def test_declining_is_an_answer_worth_keeping(self):
-        rfq = self.rfq()
+        self.rfq()
         self.invitations[2].decline(note="No capacity this quarter")
 
         self.assertTrue(self.invitations[2].declined)
         self.assertEqual(self.invitations[2].notes, "No capacity this quarter")
 
     def test_a_declined_vendor_cannot_then_quote(self):
-        rfq = self.rfq()
+        self.rfq()
         self.invitations[2].decline()
         with self.assertRaisesMessage(ValidationError, "declined to quote"):
             self.invitations[2].quote(self.line, "4")
 
     def test_nor_is_a_quote_entered_against_their_decline(self):
         # Entered as a quote rather than through quote(): refused by the quote's own save.
-        rfq = self.rfq()
+        self.rfq()
         self.invitations[2].decline()
         with self.assertRaisesMessage(ValidationError, "declined this request"):
             RfqQuote.objects.create(invitation=self.invitations[2], line=self.line, unit_price=Decimal("4"))
         self.assertFalse(self.line.quotes.exists())
 
     def test_a_vendor_who_quoted_cannot_then_decline(self):
-        rfq = self.rfq()
+        self.rfq()
         self.invitations[0].quote(self.line, "4")
         with self.assertRaisesMessage(ValidationError, "already quoted"):
             self.invitations[0].decline()
 
     def test_another_rfq_s_line_is_refused(self):
-        first = self.rfq()
+        self.rfq()
         first_line = self.line
-        second = self.rfq()
+        self.rfq()
         with self.assertRaisesMessage(ValidationError, "different RFQ"):
             self.invitations[0].quote(first_line, "4")
 

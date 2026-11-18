@@ -18,7 +18,6 @@ the books say, and the officer reads the waiting figure beside it.
 
 import datetime
 import json
-import re
 from collections import OrderedDict
 from decimal import ROUND_HALF_UP, Decimal
 

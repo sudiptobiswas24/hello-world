@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.db import IntegrityError, transaction
+from django.db import IntegrityError
 from django.shortcuts import get_object_or_404
 from rest_framework import viewsets
 
@@ -65,7 +65,6 @@ from .models import (
     ar_aging,
     commission_report,
     generate_due_invoices,
-    outstanding_balance,
     orders_to_ship,
     revenue_report,
     run_dunning,

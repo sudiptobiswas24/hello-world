@@ -1,6 +1,5 @@
 """The planner's view, which is the only thing that calls these."""
 
-from decimal import Decimal
 from io import StringIO
 
 from django.core.management import CommandError, call_command

@@ -16,7 +16,6 @@ from apps.accounting.models import Account, AccountType, JournalLine
 from apps.core.models import Company, Party, PartyRole, PartyRoleAssignment, UnitOfMeasure
 from apps.inventory.gate import GateVisit, Weighing
 from apps.inventory.models import Item, ItemUnit, Warehouse
-from apps.manufacturing.station_scale import post_reading
 
 from .models import Bill, BillLine, BillPolicy, GoodsReceipt, GoodsReceiptLine, PurchaseOrder, PurchaseOrderLine
 from .weight_claims import ClaimStatus, WeightClaim

@@ -295,8 +295,6 @@ class StatementsAgainstRealDocumentsTests(ReportTestCase):
 
     def test_a_full_trading_cycle_still_balances(self):
         from apps.purchasing.models import (
-            Bill,
-            BillLine,
             GoodsReceipt,
             GoodsReceiptLine,
             PurchaseOrder,

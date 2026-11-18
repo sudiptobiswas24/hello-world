@@ -13,7 +13,7 @@ from decimal import Decimal
 from django.core.exceptions import ValidationError
 
 from apps.core.models import Party, PartyRole, PartyRoleAssignment
-from apps.inventory.models import Lot, TrackingMode
+from apps.inventory.models import Lot
 from apps.sales.models import SalesOrder, SalesOrderLine
 
 from .demand import consumed_lots, coverage, genealogy, runs_that_made, uncovered
@@ -198,7 +198,7 @@ class FromASackBackToThePolymerTests(DemandTestCase):
         # A fabric lot leads back to a tape lot that leads back to a
         # regrind lot that came off the fabric. A walk with no limit
         # does not come back.
-        run = self.make_the_tape()
+        self.make_the_tape()
         self.assertLess(len(genealogy(self.tape_lot, depth=4)), 40)
 
 
@@ -226,7 +226,7 @@ class LinesThatAreNotThePlannersProblemTests(DemandTestCase):
 
         # Patched where every shipped figure comes from - the line's own
         # count - so what is open, and in stock units, both follow it.
-        line = self.sold("4000")
+        self.sold("4000")
         with patch.object(
             SalesOrderLine, "quantity_shipped", return_value=Decimal("4000"),
         ):

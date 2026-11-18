@@ -8,7 +8,7 @@ from django.test import tag
 
 from apps.accounting.models import Payment
 from apps.accounting.restatement import Restatement
-from apps.e2e.tests_races import RaceCase, fixture, race, race_in_order
+from apps.e2e.tests_races import RaceCase, fixture, race_in_order
 from apps.sales.models import Invoice, InvoicePayment
 
 D = datetime.date

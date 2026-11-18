@@ -85,7 +85,7 @@ class P2Roll(StationApiTestCase):
         try:
             roll.save()
             print("P2 model save length: ALLOWED")
-        except ValidationError as e:
+        except ValidationError:
             print("P2 model save length refused")
         # void booking then delete
         entry = roll.entry
@@ -163,7 +163,6 @@ class P3Shifts(StationTestCase):
             print("P3 NEXT WEIGH FAILED", type(e).__name__, str(e)[:200])
 
     def test_midnight(self):
-        night = self.night
         r = self.weigh(when=at(TODAY + datetime.timedelta(days=1), 1, 5))
         print("P3 after midnight", r.lot.code, r.shift.code, r.shift_date)
         r = self.weigh(when=at(TODAY + datetime.timedelta(days=1), 1, 15))
@@ -176,7 +175,7 @@ class P4Lock(StationApiTestCase):
     def test_two_people(self):
         other = self.employee("EMP-0200", "Other"); other_pin = other.issue_pin()
         wrong = [p for p in ("111111", "222222", "333333", "444444", "555555", "666666") if p not in (self.pin, other_pin, self.supervisor_pin)]
-        t = at(TODAY, 10, 42)
+        at(TODAY, 10, 42)
         print("P4 op wrong x3", [self.sign_in(wrong[i]).status_code for i in range(3)])
         print("P4 right between", self.sign_in(self.pin).status_code)
         print("P4 other wrong x2", [self.sign_in(wrong[3 + i]).status_code for i in range(2)])
@@ -189,12 +188,11 @@ class P4Lock(StationApiTestCase):
         print("P4 locked count", self.station.is_locked(at(TODAY, 10, 42)))
 
 
-from django.test import override_settings
 from .tests_backflush import ReworkTestCase
 from .bom import BillOfMaterials, BomComponent
 from .orders import WorkOrder
 from .tests_costing import CostingTestCase
-from .costing import CostVersion, StandardCost
+from .costing import CostVersion
 from .tests_tape_loads import TapeLoadTestCase
 from .tape_loads import CreelSide
 
@@ -226,7 +224,7 @@ class P5Rework(ReworkTestCase):
         line = self.rework_bom.components.get(item=self.tape)
         try:
             line.delete(); print("P5 deleted eating line of released run")
-        except ValidationError as e:
+        except ValidationError:
             print("P5 delete refused")
         # a draft bill saved is_rework with later line then deleted via queryset
         BomComponent.objects.filter(pk=line.pk).delete()
@@ -244,7 +242,6 @@ class P6Promise(TapeLoadTestCase):
         from apps.inventory.models import Warehouse
         from apps.inventory.transfers import move_stock
         from django.utils import timezone
-        out = {}
         # D-1 has 100 on hand, 100 promised: free = 0
         from apps.inventory.tracking import promised_to, refuse_drawing_what_is_promised
         print("P6 promised", promised_to(self.d1, self.plant))
@@ -336,7 +333,6 @@ class P7Version(CostingTestCase):
                 r = c.post(url, data); print("P7 admin delete", r.status_code, CostVersion.objects.filter(pk=v.pk).exists())
             except Exception as e:
                 print("P7 admin delete raised", type(e).__name__, str(e)[:120])
-        from django.contrib import admin
         try:
             r = c.get(f"/admin/manufacturing/costversion/{v.pk}/change/"); print("P7 admin change get", r.status_code)
         except Exception as e:

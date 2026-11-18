@@ -2,7 +2,7 @@ from django.conf import settings
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, transaction
 from django.contrib.auth.models import Group
-from rest_framework import serializers, viewsets
+from rest_framework import viewsets
 
 from apps.core.api import ModelSerializer
 from rest_framework.decorators import action

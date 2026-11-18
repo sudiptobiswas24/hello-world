@@ -18,7 +18,6 @@ raw one.
 """
 
 import datetime
-from collections import defaultdict
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
@@ -26,7 +25,7 @@ from django.db.models import Sum
 
 from apps.core.models import Company, to_date
 
-from .models import Account, AccountType, JournalLine, round_money
+from .models import Account, AccountType, JournalLine
 
 # Which side of the balance sheet, and which way round it reads.
 DEBIT_TYPES = (AccountType.ASSET, AccountType.EXPENSE)

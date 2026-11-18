@@ -52,7 +52,7 @@ class TraceOnALoop(RunTestCase):
         entry.post()
 
     def test_trace_recall_ends_on_a_loop(self):
-        from apps.inventory.models import Item, Lot
+        from apps.inventory.models import Lot
 
         from .trace import recall
 

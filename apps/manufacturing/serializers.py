@@ -358,9 +358,6 @@ class EnergyMeterSerializer(ModelSerializer):
 
     def get_serves(self, obj):
         return str(obj.serves())
-        # The model's own save says why a pair is wrong; the serializer's
-        # generic unique-together message would not.
-        validators = []
 
 
 class MeterReadingSerializer(ModelSerializer):

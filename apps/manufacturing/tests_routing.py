@@ -15,7 +15,7 @@ from django.test import TestCase
 
 from apps.core.models import UnitOfMeasure, UnitOfMeasureCategory
 
-from .orders import WorkCentre, WorkOrder, WorkOrderOperation, WorkOrderStatus
+from .orders import WorkCentre, WorkOrderOperation, WorkOrderStatus
 from .routing import Routing, RoutingOperation, capacity_report
 from .tests_orders import TODAY, RunTestCase
 

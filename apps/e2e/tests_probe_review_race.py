@@ -13,7 +13,7 @@ from decimal import Decimal
 from unittest import mock
 
 from django.db import connection
-from django.test import TransactionTestCase, tag
+from django.test import tag
 
 from apps.accounting.models import JournalEntry, JournalLine, Payment, PaymentDirection
 from apps.e2e import tests_races as R
@@ -178,7 +178,6 @@ class ReservationProbe(RaceCase):
     setUp = R.sales_fixture.SalesTestCase.setUp
 
     def test_two_claims_of_one_source_to_two_shelves_leave_one_claim(self):
-        from apps.core.models import Party
         from apps.inventory.models import Warehouse
         from apps.inventory.reservations import StockReservation
         from apps.inventory.models import Item
@@ -202,7 +201,7 @@ class ChatterProbe(RaceCase):
     """O17: a note deleted twice at once."""
 
     def test_a_note_deleted_by_two_clicks_answers_204_and_404_never_500(self):
-        from django.contrib.auth.models import Group, User
+        from django.contrib.auth.models import User
         from django.test import Client
 
         from apps.core import chatter_api
@@ -273,7 +272,7 @@ class MoreLedgerProbe(RaceCase):
     def test_a_line_is_not_deleted_from_an_entry_as_it_posts(self):
         self.books()
         entry = JournalEntry.objects.create(date=datetime.date(2026, 9, 2), memo="By hand")
-        keep = JournalLine.objects.create(entry=entry, account=self.ar, debit=Decimal("100"))
+        JournalLine.objects.create(entry=entry, account=self.ar, debit=Decimal("100"))
         JournalLine.objects.create(entry=entry, account=self.bank, credit=Decimal("100"))
         extra = JournalLine.objects.create(entry=entry, account=self.ar, debit=Decimal("50"))
         JournalLine.objects.create(entry=entry, account=self.bank, credit=Decimal("50"))

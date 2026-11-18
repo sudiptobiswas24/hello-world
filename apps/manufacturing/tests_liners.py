@@ -22,7 +22,7 @@ from decimal import Decimal
 
 from django.core.exceptions import ValidationError
 
-from apps.inventory.models import Item, Lot
+from apps.inventory.models import Item
 
 from .conversion import BagCount, bags_converted, record_bags, void_bags
 from .liners import FilmSpecification, LinerSpecification
@@ -484,7 +484,6 @@ class WhichSpecificationTests(LinerTestCase):
             self.seal()
 
     def test_a_film_changed_after_the_day_cannot_be_costed_on_it(self):
-        import datetime
 
         from django.utils import timezone
 

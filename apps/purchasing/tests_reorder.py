@@ -16,7 +16,7 @@ from django.utils import timezone
 
 from apps.accounting.models import Account, AccountType
 from apps.core.models import Party, PartyRole, PartyRoleAssignment
-from apps.inventory.models import Item, MovementType, StockMovement, Warehouse
+from apps.inventory.models import MovementType, StockMovement, Warehouse
 from apps.sales.models import SalesOrder, SalesOrderLine
 
 from .models import (
@@ -63,7 +63,7 @@ class ProjectionTests(ReorderTestCase):
 
     def test_falling_to_the_minimum_suggests_topping_up(self):
         self.stock("15")
-        rule = self.rule("20", "100")
+        self.rule("20", "100")
 
         rows = reorder_suggestions()
 

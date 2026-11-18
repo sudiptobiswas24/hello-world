@@ -22,7 +22,6 @@ from apps.core.models import (
     Address,
     AddressType,
     Currency,
-    DocumentSequence,
     ExchangeRate,
     Party,
     PartyRole,

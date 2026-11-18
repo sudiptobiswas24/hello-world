@@ -264,7 +264,7 @@ class WhenThePlantIsShutTests(PlanningTestCase):
                 name="Shutdown", date=datetime.date(2026, 6, day)
             )
         self.sell(self.fabric, "1000", self.day(7))
-        fabric = self.orders()["FAB-10X10"]
+        self.orders()["FAB-10X10"]
         # Monday the 8th back one working day is the Friday still, but
         # the tape below it now steps over the shut Wednesday and
         # Thursday.

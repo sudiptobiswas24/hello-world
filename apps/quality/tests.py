@@ -32,7 +32,7 @@ from .models import (
     ReleaseStatus,
     Result,
 )
-from .release import check_released, plan_for, release_status
+from .release import check_released, release_status
 
 TODAY = datetime.date(2026, 6, 1)
 

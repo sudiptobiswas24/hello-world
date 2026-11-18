@@ -20,17 +20,16 @@ from unittest import mock
 
 import pyotp
 from django.contrib.auth.models import Group, Permission, User
-from django.core.management import call_command
-from django.test import Client, TestCase, override_settings
+from django.test import Client, override_settings
 from django.urls import URLResolver, get_resolver
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from . import api_keys, second_factor, session_limits
+from . import second_factor, session_limits
 from .api_keys import ApiKey, ApiKeyUse
 from .history import RecordEvent
-from .second_factor import SESSION_KEY, RecoveryCode, SecondFactor
-from .tests_second_factor import ME, PW, SecondFactorCase, for_tests, staff_session
+from .second_factor import SecondFactor
+from .tests_second_factor import ME, PW, SecondFactorCase, staff_session
 from .tests_users_api import PW as KEEPER_PW
 from .tests_users_api import USERS, KeeperAndHolder
 
@@ -167,7 +166,7 @@ class TwoFactorProbes(Probe):
         answer = web.post(second_factor.STEP_URL, {"code": "٣٣٣٣٣٣"})
         self.assertEqual(answer.status_code, 200, f"a code of Arabic-Indic digits answered {answer.status_code}")
         # and in the enrolment page
-        fresh = self.person("fresh", "Controller")
+        self.person("fresh", "Controller")
         web2 = Client(raise_request_exception=False)
         web2.post("/accounts/login/", {"username": "fresh", "password": PW})
         answer2 = web2.post(second_factor.STEP_URL, {"code": "٣٣٣٣٣٣"})
@@ -175,7 +174,7 @@ class TwoFactorProbes(Probe):
 
     def test_p06_after_a_reset_the_old_session_cannot_enrol_a_new_phone_without_the_password(self):
         ctl = self.person("ctl", "Controller")
-        factor = self.enrolled(ctl)
+        self.enrolled(ctl)
         stolen = self.passed_client(ctl)  # a live session that passed the old phone's code
         self.assertEqual(stolen.get(ME).status_code, 200)
         reset = self.api(self.root()).post(f"{USERS}{ctl.pk}/reset_second_factor/", {}, format="json")
@@ -267,7 +266,7 @@ class TwoFactorProbes(Probe):
         basic.credentials(HTTP_AUTHORIZATION="Basic " + __import__("base64").b64encode(f"ctl:{PW}".encode()).decode())
         self.assertIn(basic.get("/api/accounting/payments/").status_code, (401, 403))
         # an ordinary login with no factor is unchanged
-        sm = self.person("sm", "Stores Manager")
+        self.person("sm", "Stores Manager")
         basic.credentials(HTTP_AUTHORIZATION="Basic " + __import__("base64").b64encode(f"sm:{PW}".encode()).decode())
         self.assertEqual(basic.get(ME).status_code, 200)
 

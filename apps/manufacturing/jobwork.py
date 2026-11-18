@@ -34,7 +34,6 @@ is a plant that has not started using them, and is left as it was.
 """
 
 import datetime
-from collections import defaultdict
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
