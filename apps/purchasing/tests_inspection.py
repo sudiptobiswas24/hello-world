@@ -24,7 +24,6 @@ from .models import (
     PurchaseOrder,
     PurchaseOrderLine,
     ReceiptInspection,
-    vendor_performance,
 )
 from .tests_lifecycle import PurchasingLifecycleTestCase
 

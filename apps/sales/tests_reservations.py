@@ -199,7 +199,7 @@ class ShippingAgainstAHoldTests(ReservationTestCase):
         order = SalesOrder.objects.create(
             customer=self.customer, order_date=datetime.date(2026, 3, 1), currency=self.usd
         )
-        holder = SalesOrderLine.objects.create(
+        SalesOrderLine.objects.create(
             order=order, item=self.item, uom=self.item.uom, quantity=Decimal("10"),
             unit_price=Decimal("10"), revenue_account=self.revenue, warehouse=backorders,
         )

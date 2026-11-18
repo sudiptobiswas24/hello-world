@@ -20,7 +20,7 @@ from django.utils import timezone
 
 from apps.core.models import Party, PartyRole, PartyRoleAssignment
 
-from .calendars import PublicHoliday, working_days
+from .calendars import PublicHoliday
 from .models import (
     Employee,
     EmploymentStatus,

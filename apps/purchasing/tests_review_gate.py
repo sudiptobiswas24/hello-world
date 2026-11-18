@@ -1,6 +1,5 @@
 """Reviewer probes for the gate and the weighbridge (review_gate). Each asserts what SHOULD be true."""
 import datetime
-from decimal import Decimal
 
 from django.contrib.auth.models import Group, User
 from django.core.exceptions import ValidationError
@@ -13,9 +12,7 @@ from apps.inventory.gate import GatePass, GatePassLine, GateVisit, Weighing
 from apps.inventory.models import Item
 from apps.manufacturing.station_scale import post_reading, weigh_from_bridge
 
-from .models import GoodsReceipt
 from .tests_weight_claims import DAY, D, WeighedReceiptTestCase
-from .weight_claims import WeightClaim
 
 
 class ClaimProbes(WeighedReceiptTestCase, TestCase):
@@ -258,9 +255,9 @@ class RoleProbes(WeighedReceiptTestCase, TestCase):
         # build data: a posted weighed receipt, a claim, a pass with an item line
         line = self.order(); received = self.receipt(line, "9940", self.weighing())
         self.raise_claim(received, against="supplier")
-        item = Item.objects.create(sku="R1", name="Roller", uom=self.kg, standard_cost=D("123.45")) if hasattr(Item, "standard_cost") else self.polymer
+        Item.objects.create(sku="R1", name="Roller", uom=self.kg, standard_cost=D("123.45")) if hasattr(Item, "standard_cost") else self.polymer
         g = self.as_role("Security Guard")
-        from django.urls import URLPattern, URLResolver, get_resolver
+        from django.urls import URLResolver, get_resolver
 
         def walk(patterns, prefix=""):
             for each in patterns:
@@ -270,8 +267,8 @@ class RoleProbes(WeighedReceiptTestCase, TestCase):
                 elif "<" not in text and "(?P" not in text and "\\." not in text:
                     yield text.replace("^", "").replace("$", "")
         root = {u: "/" + u for u in set(walk(get_resolver().url_patterns)) if u.startswith("api/") and "format" not in u}
-        seen, leaks, readable = 0, [], []
-        money = re.compile(r"(price|cost|value|amount|rate|total|balance|credit_limit|salary)", re.I)
+        _seen, leaks, readable = 0, [], []
+        re.compile(r"(price|cost|value|amount|rate|total|balance|credit_limit|salary)", re.I)
         for name, url in root.items():
             r = g.get(url)
             if r.status_code != 200 or not hasattr(r, "data"):
@@ -322,7 +319,6 @@ class MoreProbes(WeighedReceiptTestCase, TestCase):
         self.assertEqual(v.status, "in"); self.assertIsNone(v.out_at); self.assertGreater(v.in_at.year, 2024)
 
     def test_p5_a_user_holding_add_and_approve_cannot_approve_the_pass_they_made_over_the_api(self):
-        from django.contrib.auth.models import Permission
         u = User.objects.create_user("sm2"); u.groups.add(Group.objects.get(name="Stores Manager"))
         u.groups.add(Group.objects.get(name="Security Guard"))
         c = APIClient(); c.force_authenticate(u)

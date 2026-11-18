@@ -77,8 +77,8 @@ from .bom import (
     drawn,
     planned_cost,
 )
-from .shifts import Downtime, DowntimeReason, Shift
-from .tooling import Tool, ToolUsage
+from .shifts import Shift
+from .tooling import ToolUsage
 
 
 from apps.core.models import takes_back  # noqa: E402  (O354: a correction step)

@@ -1,6 +1,6 @@
 """The one quality policy that is a choice rather than a rule, kept by the quality manager."""
 
-from rest_framework import serializers, viewsets
+from rest_framework import viewsets
 
 from apps.core.api import ModelSerializer
 

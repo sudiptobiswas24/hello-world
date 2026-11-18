@@ -6,7 +6,7 @@ import datetime
 from decimal import Decimal
 from unittest import mock
 
-from django.db import connection, transaction
+from django.db import connection
 from django.test import tag
 
 from apps.accounting.models import JournalEntry, TdsRate

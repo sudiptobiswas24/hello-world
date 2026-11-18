@@ -35,7 +35,6 @@ from .orders import (
 from .routing import Routing, RoutingOperation
 from .shifts import Downtime, DowntimeReason, Shift
 from .bom import BomSubstitute
-from .orders import WorkOrderSubstitute
 from .changeover import ChangeoverRule, SetupFamily
 from .machines import Machine
 from .costing import CostVersion, StandardCost

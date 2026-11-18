@@ -12,7 +12,6 @@ order agrees 2.10. Hand-checked: 1,000 kg back is 2,100 accrued, and a
 bill at 2.10 clears exactly that.
 """
 
-import datetime
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError

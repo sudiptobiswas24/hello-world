@@ -8,10 +8,9 @@ import importlib
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
-from django.db.models import Sum
 
 from apps.accounting.models import (
-    Account, AccountType, JournalLine, PartyTaxProfile, Tax, TaxGroup, TaxScope, TdsRate, TdsSection,
+    Account, AccountType, PartyTaxProfile, Tax, TaxGroup, TaxScope, TdsRate, TdsSection,
 )
 from apps.core.models import Party, PartyRole, PartyRoleAssignment
 from apps.purchasing import tests_msme, tests_vendor_prices
@@ -668,7 +667,6 @@ class UnbilledGoodsReturnedDebitNoBillTests(ProbeCase):
             rnd = random.Random(seed)
             with transaction.atomic():
                 sid = transaction.savepoint()
-                from apps.purchasing.models import GoodsReceipt
                 order = self.order("40", "5", vendor=self.vendor)
                 line = order.lines.get()
                 receipts, day = [], 2

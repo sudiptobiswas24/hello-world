@@ -20,7 +20,6 @@ from apps.core.audit import AuditableViewSetMixin
 
 from .appraisals import Appraisal
 from .expenses import ExpenseClaim, ExpenseLine
-from .models import Employee
 from .recruitment import Applicant, JobOpening
 from .timesheets import Timesheet, TimesheetEntry, TimesheetStatus
 from .views import _employee_of

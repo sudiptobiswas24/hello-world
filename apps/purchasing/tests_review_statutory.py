@@ -1,9 +1,7 @@
 """Review probes for g24: the TDS and TCS challans and the 2025 Act's names."""
 
 import datetime
-from decimal import Decimal
 
-from django.core.exceptions import ValidationError
 
 from apps.accounting.models import TcsSection
 from apps.core.models import Company, Party

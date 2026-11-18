@@ -26,7 +26,7 @@ from django.db.models import Sum
 
 from apps.core.models import AuditModel
 
-from .models import Item, Warehouse
+from .models import Warehouse
 
 
 class StorageBin(AuditModel):

@@ -115,10 +115,9 @@ class TcsRaces(r.RaceCase):
                                               revenue_account=made.revenue, order_line=order.lines.get())
             line.taxes.set(made.pair)
         outcomes = r.race((JournalEntry,), *[lambda pk=pk: Invoice.objects.get(pk=pk).post() for pk in (first.pk, second.pk)])
-        from apps.sales.tcs import TcsAdvanceCount, TcsCollection
+        from apps.sales.tcs import TcsAdvanceCount
         counted = sum((c.base for c in TcsAdvanceCount.objects.all()), D("0"))
         posted = [i for i in Invoice.objects.filter(pk__in=[first.pk, second.pk]) if i.posted]
-        gross = sum((i.total() - i.tcs_amount for i in posted), D("0")) + 0
         payable = made.ledger("2290")
         # 1% of what was sold: the advance's 270 plus the invoices' own, whichever of them posted
         expected = D("270") + sum((i.tcs_amount for i in posted), D("0"))

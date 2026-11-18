@@ -17,8 +17,6 @@ from django.core.exceptions import ValidationError
 from apps.accounting.models import Account, AccountType, ChargeType, Tax, TaxGroup, TaxScope
 
 from .models import (
-    Bill,
-    BillPolicy,
     FulfilmentStatus,
     GoodsReceipt,
     GoodsReceiptLine,

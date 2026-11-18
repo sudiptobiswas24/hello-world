@@ -6,10 +6,8 @@ from decimal import Decimal
 
 from django.apps import apps as django_apps
 from django.contrib.auth.models import Group, User
-from django.core.management import call_command
 from django.db import connection
 from django.test import TestCase, TransactionTestCase
-from rest_framework.test import APIClient
 
 from .history import RecordEvent, SECRET, edit_logged
 from .models import Currency, ExchangeRate, Party, PartyBankAccount
@@ -199,7 +197,7 @@ class AppRoleProbes(TransactionTestCase):
                 c.execute(statement)
 
     def test_p13_the_application_layer_log_is_append_only_for_the_application_role(self):
-        usd = Currency.objects.create(code="USD", name="US Dollar")
+        Currency.objects.create(code="USD", name="US Dollar")
         self.as_role(self.role, self.password)
         self.refused("UPDATE core_recordevent SET changes = '{}'")
         self.refused("DELETE FROM core_recordevent")

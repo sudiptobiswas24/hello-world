@@ -13,7 +13,6 @@ question read from the other side — which agreed price applies to this
 party, this item, this quantity, on this date.
 """
 
-from decimal import Decimal
 
 
 def applicable_prices(item, vendor, quantity=None, currency=None, on_date=None, uom=None):

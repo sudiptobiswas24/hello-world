@@ -8,13 +8,12 @@ Every test is a claim about money or a document; a failure is a finding. Not par
 import datetime
 from decimal import Decimal as D
 
-from django.core import mail
 from django.core.exceptions import ValidationError
 from django.db.models import Sum
 from django.utils import timezone
 
 from apps.accounting.models import (
-    Account, AccountType, JournalLine, Payment, PaymentDirection, TcsDeclaration, TcsRate,
+    JournalLine, Payment, PaymentDirection, TcsDeclaration, TcsRate,
 )
 from apps.gst.einvoice import EInvoice
 from apps.gst.returns import gstr1, gstr3b

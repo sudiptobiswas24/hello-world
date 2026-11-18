@@ -8,7 +8,6 @@ short; the Purchase Manager settles the claim. Numbers from /home/user/work/calc
 import datetime
 from decimal import Decimal
 
-from django.contrib.auth.models import Permission, User
 from django.contrib.staticfiles.testing import StaticLiveServerTestCase
 
 try:

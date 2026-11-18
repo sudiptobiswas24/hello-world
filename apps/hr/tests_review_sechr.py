@@ -37,7 +37,7 @@ class P_O262(Base):
     def test_receipt_larger_than_a_payment_part_each(self):
         """Part receipt, part write-off, where the write-off's date precedes the receipt: allowed? and void order."""
         self.settle("receipt", "1000.00", payment=self.paid_back("1000.00"))
-        w = self.settle("write_off", "2860.00")
+        self.settle("write_off", "2860.00")
         from .shortfalls import ShortfallSettlement
         # void the receipt first while the write-off stands: books must still foot
         r = ShortfallSettlement.objects.get(kind="receipt")
@@ -48,7 +48,7 @@ class P_O262(Base):
 
 
 from .tests_people import AClaimIsChargedToExpenseAccountsOnlyTests as ClaimBase
-from apps.accounting.models import Account, AccountType
+from apps.accounting.models import Account
 
 
 class P_O360(ClaimBase):

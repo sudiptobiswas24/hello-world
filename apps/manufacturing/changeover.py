@@ -38,7 +38,6 @@ of wash-down and misses a customer's lorry is not a saving.
 
 from decimal import Decimal
 
-from django.core.exceptions import ValidationError
 from django.db import models
 from django.db.models import F, Q
 

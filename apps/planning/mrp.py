@@ -53,7 +53,6 @@ from collections import defaultdict, namedtuple
 from decimal import ROUND_CEILING, ROUND_DOWN, Decimal
 
 from django.core.exceptions import ValidationError
-from django.db.models import Q
 from django.db import transaction
 from django.utils import timezone
 

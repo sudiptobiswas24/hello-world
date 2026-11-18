@@ -6,7 +6,6 @@ import datetime
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
-from django.db.models import Sum
 
 from apps.accounting.models import (
     Account, AccountingPeriod, AccountType, BooksOpening, JournalEntry, JournalLine,

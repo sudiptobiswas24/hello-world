@@ -27,7 +27,6 @@ from apps.core.models import (
 from apps.inventory.models import Item
 from apps.sales.models import (
     DunningLevel,
-    Invoice,
     InvoicePayment,
     SalesOrder,
     SalesOrderLine,

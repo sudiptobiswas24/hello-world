@@ -67,7 +67,6 @@ class Crawl(TestCase):
                         if k2 - set(keys):
                             seen[url + "{id}"] = sorted(k2)
             out[role] = (seen, len(urls))
-        import json
         for role in ("Warehouse Staff", "Quality Inspector"):
             print("=====", role, out[role][1], "urls")
             for u, k in out[role][0].items():

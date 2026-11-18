@@ -2,12 +2,11 @@
 review_yearend probes: what SHOULD be true of the closing-rate restatement. Figures in
 /home/user/work/calc_review_yearend/calc.py.
 """
-import datetime
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
 
-from .models import Account, AccountType, AccountingPeriod, PaymentDirection
+from .models import Account, AccountType, PaymentDirection
 from .restatement import Restatement
 from .tests_restatement import YEAR_END, D, RestatementTestCase
 

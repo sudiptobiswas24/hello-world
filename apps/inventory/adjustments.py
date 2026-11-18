@@ -29,7 +29,7 @@ from django.utils import timezone
 from apps.accounting.models import AccountType, JournalEntry, JournalLine, round_money
 from apps.core.models import AuditModel, DocumentSequence, correction_date, serialised, to_date
 
-from .locking import lock_position, lock_positions
+from .locking import lock_positions
 from .costing import to_paisa
 from .models import Item, MovementType, StockMovement, Warehouse
 from .valuation import inventory_account_for

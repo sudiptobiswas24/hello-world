@@ -191,7 +191,6 @@ def deduct(bill, section=None, on_date=None):
     Locks the vendor: the year's other bills are read, and two deductions
     at once could both catch up the same untaxed ones.
     """
-    from .models import Bill
 
     with transaction.atomic():
         lock_rows(bill.vendor, bill)

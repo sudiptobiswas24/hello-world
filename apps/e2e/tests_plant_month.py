@@ -1310,7 +1310,7 @@ class PlantFloorTests(StationApiTestCase):
         return self.ok(self.client.post(f"/api/manufacturing/stations/{station}/{path}", data, format="json"))
 
     def floor(self):
-        from apps.inventory.models import Item, Lot
+        from apps.inventory.models import Lot
         from apps.manufacturing.station import LoomStation
         from apps.quality.models import InspectionPlan
 

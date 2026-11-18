@@ -47,7 +47,6 @@ class NumberingPairsDoNotDeadlock(RaceCase):
         return lambda: Quotation.objects.get(pk=q.pk).accept(order_date=datetime.date(2026, 3, 2))
 
     def count(self):
-        from django.db.models import Sum
         reason = AdjustmentReason.objects.filter(code="CNT").first() or AdjustmentReason.objects.create(
             code="CNT", name="Count", account=self.bad_debt)
         c = StockCount.objects.create(count_date=datetime.date(2026, 3, 5), warehouse=self.warehouse, reason=reason)

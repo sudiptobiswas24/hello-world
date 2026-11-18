@@ -18,7 +18,6 @@ to charge and a free-text reference, which is enough for cost analysis
 and honest about where the line is.
 """
 
-import datetime
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
@@ -26,10 +25,9 @@ from django.db import models, transaction
 from django.db.models import Q, Sum
 from django.utils import timezone
 
-from apps.core.models import (AuditModel, answer_to_its_document, documents_it_answers_to, lock_rows, serialised,
+from apps.core.models import (AuditModel, answer_to_its_document, documents_it_answers_to, serialised,
                               to_date)
 
-from .calendars import parse_working_days
 from .models import Employee, LeaveRequest, LeaveStatus, hold_the_employee
 
 # A day has twenty-four hours and nobody works all of them. The cap is

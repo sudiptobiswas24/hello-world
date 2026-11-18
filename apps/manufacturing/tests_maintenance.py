@@ -13,7 +13,6 @@ from django.db import IntegrityError
 from django.core.exceptions import ValidationError
 
 from .maintenance import MaintenanceJob, MaintenanceSchedule, due_now
-from .shifts import Downtime, DowntimeReason
 from .tests_orders import TODAY, RunTestCase
 
 

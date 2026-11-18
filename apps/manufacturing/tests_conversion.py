@@ -15,11 +15,10 @@ from decimal import Decimal
 
 from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
-from django.test import TestCase
 from rest_framework.test import APIClient
 
 from apps.accounting.models import Account, AccountType
-from apps.inventory.models import Lot, TrackingMode
+from apps.inventory.models import Lot
 from apps.quality.models import (
     Characteristic,
     Evaluation,
@@ -35,7 +34,6 @@ from .orders import (
     MaterialIssueLine,
     TimeBooking,
     WorkCentre,
-    WorkOrderOperation,
     WorkOrderStatus,
 )
 from .explain import explains

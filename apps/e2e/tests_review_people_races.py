@@ -12,7 +12,7 @@ from decimal import Decimal
 from django.db import connection
 from django.test import tag
 
-from apps.accounting.models import JournalEntry, Payment, PaymentDirection
+from apps.accounting.models import JournalEntry, Payment
 from apps.hr import tests_pay_outputs
 from apps.hr.advances import SalaryAdvance
 from apps.hr.bank_file import SalaryTransferFile

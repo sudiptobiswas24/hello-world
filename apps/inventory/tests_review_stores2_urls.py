@@ -3,7 +3,7 @@ from django.contrib.auth.models import Group, User
 from django.core.management import call_command
 from django.test import TestCase
 from rest_framework.test import APIClient
-from apps.inventory.models import Item, ItemTemplate, StockMovement, Lot
+from apps.inventory.models import Item, ItemTemplate, Lot
 from apps.web.tests_load_demo import load
 
 class U(TestCase):

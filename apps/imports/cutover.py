@@ -111,7 +111,6 @@ def _open_orders(side):
     """Open orders, one per party and reference across their rows, confirmed once all are in."""
 
     def handler(rows, report, options):
-        from apps.accounting.models import Tax
         from apps.core.models import Currency, Party, PaymentTerms, UnitOfMeasure
         from apps.inventory.models import Item, Warehouse
 

@@ -150,7 +150,7 @@ class ReleaseTests(BlanketTestCase):
                             order_date=datetime.date(2026, 2, 1))
 
     def test_another_agreement_s_line_is_refused(self):
-        first = self.agreement("1000", "4")
+        self.agreement("1000", "4")
         first_line = self.line
         self.agreement("500", "6")
 

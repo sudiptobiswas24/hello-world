@@ -5,7 +5,6 @@ Reachability, and refusals arriving as answers rather than crashes.
 The netting has its own tests.
 """
 
-from decimal import Decimal
 
 from django.contrib.auth import get_user_model
 from rest_framework.test import APIClient

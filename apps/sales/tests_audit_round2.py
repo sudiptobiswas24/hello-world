@@ -9,32 +9,24 @@ from decimal import Decimal
 
 from django.core import mail
 from django.core.exceptions import ValidationError
-from django.test import TestCase, override_settings
-from django.utils import timezone
+from django.test import override_settings
 
 from apps.accounting.models import (
     Account,
     AccountType,
-    JournalLine,
     Payment,
     PaymentDirection,
 )
 from apps.core.models import (
-    Company,
-    Currency,
     Party,
     PartyRole,
     PartyRoleAssignment,
     PaymentTerms,
-    UnitOfMeasure,
 )
-from apps.inventory.models import Item, MovementType, StockMovement, Warehouse
 
 from .models import (
     CommissionBasis,
     CommissionPlan,
-    Delivery,
-    DeliveryLine,
     DunningLevel,
     DunningNotice,
     Invoice,
@@ -43,8 +35,6 @@ from .models import (
     InvoicePolicy,
     Quotation,
     QuotationLine,
-    SalesOrder,
-    SalesOrderLine,
     SalesRep,
     commission_report,
     run_dunning,
@@ -517,7 +507,6 @@ class ADunningReminderOnlyGoesUpTests(SalesTestCase):
     def test_after_the_60_day_notice_neither_the_30_nor_the_7_day_one_follows(self):
         """Levels 7, 30, 60. Run first at 70 days overdue: the 60-day notice. Run again next day: nothing
         (or a higher level), never the 30-day and then the 7-day reminder after the final notice."""
-        from django.core import mail
         from .models import DunningLevel, DunningNotice, run_dunning
 
         for name, days in (("First", 7), ("Second", 30), ("Final", 60)):

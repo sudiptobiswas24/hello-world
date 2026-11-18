@@ -31,7 +31,6 @@ from apps.core.models import (
 from .costing import unit_cost_for
 from .models import (
     AdjustmentReason,
-    CostingMethod,
     Item,
     MovementType,
     StockAdjustment,

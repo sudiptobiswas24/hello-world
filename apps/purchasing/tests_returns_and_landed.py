@@ -19,7 +19,6 @@ from .models import (
     BillPolicy,
     GoodsReceipt,
     GoodsReceiptLine,
-    LandedCostApplication,
     PurchaseOrder,
     PurchaseOrderLine,
     billed_not_held,
@@ -97,7 +96,7 @@ class PartialReturnTests(ReturnTestCase):
 
     def test_another_receipt_s_line_is_refused(self):
         order, first = self.received("10", "5")
-        second = self.receive(order, "0.5") if False else None
+        self.receive(order, "0.5") if False else None
         other_order, other = self.received("4", "5")
         with self.assertRaisesMessage(ValidationError, "different receipt"):
             first.create_return(quantities={other.lines.get(): Decimal("1")})
@@ -860,7 +859,7 @@ class LandedWhereTheGoodsAreTests(ThirdPartyLandedCostTests):
         # Seen #9, end to end: ten at 5 received as L-1, 80 of freight landed on them, then L-1
         # split into L-2 (6) and L-3 (4). Released, the 80 comes off L-2 and L-3, not out of cost of
         # sales while they keep it, and the shelf foots to the ledger: 50 on each.
-        from apps.inventory.models import Item, Lot
+        from apps.inventory.models import Lot
         from apps.inventory.reports import reconcile_to_ledger
         from apps.manufacturing.rebatch import rebatch
 

@@ -17,7 +17,6 @@ from django.core.exceptions import ValidationError
 from apps.core.models import Party, PartyRole, PartyRoleAssignment
 
 from .models import (
-    OrderStatus,
     PurchaseRequisition,
     PurchaseRequisitionLine,
     RequisitionStatus,

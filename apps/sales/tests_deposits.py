@@ -13,7 +13,6 @@ from django.core.exceptions import ValidationError
 from django.utils import timezone
 
 from .models import (
-    DepositApplication,
     Invoice,
     InvoicePolicy,
     SalesOrder,
@@ -100,7 +99,7 @@ class DepositDrawdownTests(SalesTestCase):
 
     def test_posting_the_real_invoice_draws_it_down(self):
         order = self.make_order("10", "100")
-        deposit = self.deposit_on(order)
+        self.deposit_on(order)
         invoice = self.bill(order)
 
         self.assertEqual(invoice.total(), Decimal("1000"))

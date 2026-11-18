@@ -4,7 +4,6 @@ The Letter of Undertaking and what setup seeded, kept from the office as the con
 
 import datetime
 import re
-from decimal import Decimal
 
 try:
     from playwright.sync_api import expect

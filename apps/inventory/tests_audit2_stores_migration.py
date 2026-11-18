@@ -7,7 +7,6 @@ row gets a whole-paisa value, and each shelf's sum is the old replay's within th
 import datetime
 from decimal import Decimal
 
-from django.db import connection
 from django.test import tag
 from django.utils import timezone
 

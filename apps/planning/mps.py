@@ -28,7 +28,7 @@ import datetime
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
-from django.db import models, transaction
+from django.db import models
 from django.utils import timezone
 
 from apps.core.models import AuditModel, lock_rows, serialised, to_date

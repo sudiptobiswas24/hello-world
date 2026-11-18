@@ -26,7 +26,7 @@ from .bom import (
     net_requirements,
     planned_cost,
 )
-from .orders import ProductionEntry, WorkOrder, WorkOrderStatus
+from .orders import ProductionEntry, WorkOrder
 from .tests_orders import TODAY, RunTestCase
 
 

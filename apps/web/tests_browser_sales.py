@@ -376,7 +376,7 @@ class SalesInTheBrowserTests(BrowserTestCase):
         def account(code, kind):
             return Account.objects.create(code=code, name=code, account_type=kind)
 
-        gst = Tax.objects.create(code="GST18", name="GST 18%", rate=Decimal("18"),
+        Tax.objects.create(code="GST18", name="GST 18%", rate=Decimal("18"),
                                  collected_account=account("2210", AccountType.LIABILITY),
                                  paid_account=account("1310", AccountType.ASSET))
         old = Invoice.objects.create(customer=self.customer, invoice_date="2026-09-10", reference="OLD/1",

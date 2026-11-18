@@ -15,7 +15,7 @@ from django.core.exceptions import ValidationError
 
 from apps.core.models import Company
 
-from .models import Bill, BillLine, BillPolicy, FulfilmentStatus, PurchaseOrder
+from .models import Bill, BillLine, BillPolicy, FulfilmentStatus
 from .tests_lifecycle import PurchasingLifecycleTestCase
 
 

@@ -295,7 +295,6 @@ class ALoopThroughRuns(RunTestCase):
     def test_two_lots_that_feed_each_other_through_runs_do_not_crash_the_gate(self):
         from apps.inventory.tracking import held_because
 
-        from apps.inventory.models import Item
 
         rg1, rg2 = (Lot.objects.create(item=self.regrind, code=code) for code in ("RG-1", "RG-2"))
         for lot in (rg1, rg2):
@@ -316,7 +315,6 @@ class ALoopOfThreeThroughRuns(ALoopThroughRuns):
     """RG-1 into a run that makes RG-2, RG-2 into one that makes RG-3, RG-3 into one that makes RG-1."""
 
     def test_three_lots_that_feed_each_other_through_three_runs_do_not_crash_the_gate(self):
-        from apps.inventory.models import Item
         from apps.inventory.tracking import held_because
 
         from .trace import descendants

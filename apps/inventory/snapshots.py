@@ -35,7 +35,6 @@ one DELETE per write, and that one is not negotiable — it is what
 keeps a stale fold from ever being read.
 """
 
-from decimal import Decimal
 
 from django.db import models
 from django.db.models import Q

@@ -21,7 +21,7 @@ from rest_framework.test import APIClient
 
 from apps.core.chatter import FollowUp
 from apps.core.models import Party, PartyRole, PartyRoleAssignment
-from apps.inventory.models import Item, Lot
+from apps.inventory.models import Lot
 from apps.quality.models import Inspection, InspectionPlan, Reading, ReleaseStatus
 from apps.quality.release import release_status, why_held
 from apps.sales.models import Delivery, DeliveryLine, SalesOrder, SalesOrderLine
@@ -29,7 +29,7 @@ from apps.sales.models import Delivery, DeliveryLine, SalesOrder, SalesOrderLine
 from .process_rolls import mount_roll
 from .station import LineKind, LoomStation
 from .tape_loads import CreelSide, load_tape
-from .tests_bag_counts import IN, ConversionTestCase
+from .tests_bag_counts import ConversionTestCase
 from .tests_orders import TODAY
 from .tests_station import at
 

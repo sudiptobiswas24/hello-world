@@ -133,7 +133,7 @@ class TheComponentsComeOffTheBomTests(JobWorkTestCase):
     def test_a_typed_line_is_still_a_typed_line(self):
         # The hand-written route has to go on working: plenty of job
         # work is a one-off nobody writes a bill of materials for.
-        order = self.subcontract_order(confirm=False)
+        self.subcontract_order(confirm=False)
         row = self.line.components.get(item=self.frame)
         self.assertFalse(row.is_computed)
         row.quantity_per = Decimal("3")

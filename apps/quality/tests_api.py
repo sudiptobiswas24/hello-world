@@ -10,8 +10,8 @@ from decimal import Decimal
 from django.contrib.auth import get_user_model
 from rest_framework.test import APIClient
 
-from .models import Disposition, Evaluation
-from .tests import TODAY, QualityTestCase
+from .models import Disposition
+from .tests import QualityTestCase
 
 
 class QualityApiTests(QualityTestCase):

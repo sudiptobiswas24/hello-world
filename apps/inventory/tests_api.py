@@ -33,7 +33,6 @@ from .models import (
     StockMovement,
     StockTransfer,
     StockTransferLine,
-    StorageBin,
     TrackingMode,
     Warehouse,
 )

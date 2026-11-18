@@ -353,7 +353,7 @@ class PaidThenDebitedTests(AuditTestCase):
         self.assertEqual(vendor_balance(self.vendor), Decimal("-50"))
 
     def test_the_refund_clears_when_the_vendor_pays_it_back(self):
-        from apps.accounting.models import Account, AccountType, Payment, PaymentDirection
+        from apps.accounting.models import Account, Payment, PaymentDirection
 
         from .models import BillPayment, vendor_balance
 

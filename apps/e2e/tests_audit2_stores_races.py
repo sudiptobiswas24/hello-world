@@ -29,7 +29,7 @@ class TwoDocumentsOneShelf(RaceCase):
         made = stock_fixture.AdjustmentTestCase()
         made.setUp()
         self.addCleanup(made.doCleanups)
-        up = made.adjust("2", reason=made.found, cost="10.005")
+        made.adjust("2", reason=made.found, cost="10.005")
         a = made.adjust("-1", reason=made.shrink, post=False)
         b = made.adjust("-1", reason=made.shrink, post=False)
         outcomes = race(StockMovement, lambda: StockAdjustment.objects.get(pk=a.pk).post(),

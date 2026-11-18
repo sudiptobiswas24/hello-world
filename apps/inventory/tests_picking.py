@@ -31,7 +31,6 @@ from apps.core.models import (
 )
 from apps.sales.models import (
     Delivery,
-    DeliveryAllocation,
     DeliveryLine,
     SalesOrder,
     SalesOrderLine,

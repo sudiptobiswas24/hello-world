@@ -14,7 +14,7 @@ from django.core.exceptions import ValidationError
 from django.db import models
 
 from .audit import RowHeldViewSetMixin
-from rest_framework import serializers, viewsets
+from rest_framework import viewsets
 
 from apps.core.api import ModelSerializer
 from rest_framework.permissions import IsAuthenticated

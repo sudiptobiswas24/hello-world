@@ -7,12 +7,10 @@ respects a limit somebody else set: a vendor's minimum, a bag size, a
 silo.
 """
 
-import datetime
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
 
-from .models import PlannedOrderKind
 from .tests_base import TODAY
 from .tests_mrp import PlanningTestCase
 

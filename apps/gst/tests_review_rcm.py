@@ -11,9 +11,9 @@ from django.core.management import call_command
 from django.test import override_settings
 from rest_framework.test import APIClient
 
-from apps.accounting.models import Payment, PaymentDirection
+from apps.accounting.models import Payment
 from apps.core.models import ExchangeRate, PartyRole
-from apps.purchasing.models import Bill, BillLine, BillPayment
+from apps.purchasing.models import Bill, BillLine
 from apps.web.health import _self_invoices
 
 from .returns import gstr3b

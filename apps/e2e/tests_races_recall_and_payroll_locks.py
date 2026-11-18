@@ -260,7 +260,7 @@ class ThePayrollLocks(TransactionTestCase):
 class TheMonthsFiguresAtOnce(TransactionTestCase):
     def test_two_fortnights_of_one_month_posted_at_once_take_the_welfare_fund_once(self):
         from apps.hr import tests_dated_figures
-        from apps.hr.payroll import PayRun, PayslipLine
+        from apps.hr.payroll import PayRun
         from apps.hr.statutory_files import lwf_register, pt_register
 
         made = fixture(self, tests_dated_figures.TheMonthsFiguresAreOwedOnceTests)

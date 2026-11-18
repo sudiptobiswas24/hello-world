@@ -9,7 +9,7 @@ import datetime
 from decimal import Decimal
 
 from apps.accounting.models import Account, AccountType, JournalLine
-from apps.hr.payroll import ComponentBasis, ComponentKind, PayComponent, PayRun, Statutory
+from apps.hr.payroll import ComponentBasis, ComponentKind, PayComponent, Statutory
 
 from .tests_piecework import SEP, PieceworkTestCase
 
