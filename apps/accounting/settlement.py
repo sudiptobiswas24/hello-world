@@ -1136,7 +1136,9 @@ def withdraw_unearned(document, payment, control_account, party, on_date, its_ow
             continue
         if row.payment_id is not None and row.payment_id != getattr(payment, "pk", None):
             continue
-        amount = min(row.standing(), document.settlement_discount_standing())
+        # What notes undid of it is off the books already: a payment returned after a note undid its discount
+        # took it back a second time, and the document owed what its other payment had earned (O600).
+        amount = min(row.on_the_books(), document.settlement_discount_standing())
         if amount <= 0:
             continue
         entries.append(withdraw_discount(
@@ -1164,21 +1166,57 @@ def withdraw_discount(document, row, control_account, party, amount, on_date, me
     on_date = correction_date(max(to_date(on_date), to_date(taken.date)), taken.date,
                               f"{document.number}'s settlement discount is not withdrawn on", "it was taken")
     refuse_behind_a_restatement([document], on_date, f"{document.number}'s settlement discount is not withdrawn")
-    credited = any(line.credit for line in taken.lines.all() if line.account_id == control_account.pk)
     standing = document.settlement_discount_standing()
-    base = discount_base_moved(document, standing, standing - amount)
-    to_control, to_other = (base, Decimal("0")) if credited else (Decimal("0"), base)
     entry = JournalEntry.objects.create(date=on_date, reference=document.number, memo=memo)
-    JournalLine.objects.create(entry=entry, account=control_account, party=party, debit=to_control,
-                               credit=to_other, description=memo[:255])
-    JournalLine.objects.create(entry=entry, account=booked_beside(taken, control_account), party=party,
-                               debit=to_other, credit=to_control, description=memo[:255])
+    _turn_round(entry, row, control_account, party, discount_base_moved(document, standing, standing - amount), memo)
     entry.post()
     row.withdrawn_amount += amount
     row.withdrawal_entry = entry
     row.save(update_fields=["withdrawn_amount", "withdrawal_entry", "updated_at"])
     document.settlement_discount_withdrawn += amount
     return entry
+
+
+def undo_discounts(document, amount, standing, control_account, party, entry, memo):
+    """
+    `amount` of `document`'s settlement discounts undone by a credit or debit note (undone_by_note), written
+    into the note's `entry`: newest discount first, each turned round on the account it was booked to, at the
+    step in the rounded base of what stands (`standing` before the note). Each row keeps what was undone of it,
+    so a payment returned later takes back only what is left of its own (withdraw_unearned). Shared by the
+    credit note and the debit note (O600): each booked the whole beside the newest discount, so two discounts
+    booked to two accounts (the company's discount account changed between them) left one over and one under.
+    """
+    if amount <= 0:
+        return
+    left, moved = amount, Decimal("0")
+    rows = list(document.discounts.select_related("journal_entry").order_by("-date", "-pk"))
+    # Written newest first, so held first in key order, as rows of one model are taken (apps.core.lock_order),
+    # and read again under the lock: a payment returned at the same moment withdraws from the same rows.
+    lock_rows(*rows)
+    for row in rows:
+        here = min(row.on_the_books(), left)
+        if here <= 0:
+            continue
+        _turn_round(entry, row, control_account, party,
+                    discount_base_moved(document, standing - moved, standing - moved - here), memo)
+        row.undone_amount += here
+        row.save(update_fields=["undone_amount", "updated_at"])
+        moved, left = moved + here, left - here
+        if not left:
+            return
+    raise ValidationError(f"{document.number}'s discounts hold {amount - left} on the books, and the note would "
+                          f"undo {amount}: its discounts and its notes disagree, and nothing is posted.")
+
+
+def _turn_round(entry, row, control_account, party, base, memo):
+    """A discount's own entry turned round for `base` in `entry`: between the control account and where it went."""
+    taken = row.journal_entry
+    credited = any(line.credit for line in taken.lines.all() if line.account_id == control_account.pk)
+    to_control, to_other = (base, Decimal("0")) if credited else (Decimal("0"), base)
+    JournalLine.objects.create(entry=entry, account=control_account, party=party, debit=to_control,
+                               credit=to_other, description=memo[:255])
+    JournalLine.objects.create(entry=entry, account=booked_beside(taken, control_account), party=party,
+                               debit=to_other, credit=to_control, description=memo[:255])
 
 
 def booked_beside(entry, control_account):

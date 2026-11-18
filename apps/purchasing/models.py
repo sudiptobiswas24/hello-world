@@ -89,6 +89,7 @@ from apps.inventory.models import (
 )
 from apps.accounting.settlement import (
     entries_booked,
+    undo_discounts,
     allocated_on,
     base_or_none,
     in_base,
@@ -101,7 +102,6 @@ from apps.accounting.settlement import (
     last_of_held,
     entries_that_settled,
     slice_of,
-    discount_base_moved,
     discount_history,
     discount_left,
     take_settlement_discount as settle_discount,
@@ -113,7 +113,6 @@ from apps.accounting.settlement import (
     standing_paid,
     RealisedOnItsOwnDay,
     refuse_other_control_account,
-    booked_beside,
     settlement_discount_to_take,
     undone_by_note,
 )
@@ -4104,7 +4103,7 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxesTakenUnder, TaxedDocumentMix
         Past what it clears of its bill, a debit note undoes the settlement
         discount still standing on it before the vendor owes anything back:
         the discount was never paid, so it is not claimed back as cash.
-        The mirror of the credit note's. Dr where the discount was booked /
+        The mirror of the credit note's. Dr where each discount was booked /
         Cr payables, at the bill's rate.
         """
         bill = self.debits
@@ -4119,17 +4118,11 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxesTakenUnder, TaxedDocumentMix
             whole=sum((note.total() for note in earlier), self.total()) >= bill.total())
         if not discount:
             return
-        # At the step in the rounded base of what stands of it (settlement.discount_base_moved).
-        base = discount_base_moved(bill, standing, standing - discount)
         memo = f"{self.number} undoes the discount taken on {bill.number}"
         entry = JournalEntry.objects.create(date=self.bill_date, reference=self.number, memo=memo)
-        # The newest discount still standing: where the last one was booked.
-        booked = next((row.journal_entry for row in bill.discounts.filter(withdrawal_entry__isnull=True)
-                       .order_by("-date", "-pk")), None)
-        JournalLine.objects.create(entry=entry, account=booked_beside(booked, bill.payable_account),
-                                   party=self.vendor, debit=base, description=memo[:255])
-        JournalLine.objects.create(entry=entry, account=bill.payable_account, party=self.vendor, credit=base,
-                                   description=memo[:255])
+        # Each discount on the account it was booked to, newest first, at the step in the rounded base of what
+        # stands (settlement.undo_discounts, shared with the credit note: O600).
+        undo_discounts(bill, discount, standing, bill.payable_account, self.vendor, entry, memo)
         entry.post()
         self.reversed_discount = discount
         self.settlement_reversal_entry = entry

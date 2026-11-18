@@ -361,6 +361,106 @@ class SettlementDiscountOnAPartPayment(base.FxSettlementTestCase):
                          (D("20.00"), D("980.00"), D("0.00")))
         self.assertEqual(self.balance(self.disc), D("0.00"))
 
+    # O600, worked by hand in /home/user/work/g51_calc/o600_table.py: a note undoes the discounts newest first, each
+    # on the account it was booked to. At 1.12345, 10.00 then 10.00 book 11.23 and 11.24 (the step in the rounded
+    # base of what stands); undone, each account goes back to nothing. The note booked the whole beside the newest,
+    # so with the company's discount account changed between the two, one account read -11.23 and the other 11.23.
+
+    def two_accounts(self, side):
+        """p1 earns on the company's discount account, which then changes, and p2 earns on the new one."""
+        from apps.core.models import Company
+        document = self.discounted(side)
+        p1, p2 = self.paid(document, "490", "490")
+        self.earn(document, p1)
+        first = self.disc if side == "sales" else self.recv
+        later = Account.objects.create(code="5991" if side == "sales" else "4992", name="Discount, from June",
+                                       account_type=first.account_type)
+        Company.objects.update(**{"settlement_discount_account" if side == "sales"
+                                  else "settlement_discount_received_account": later})
+        self.earn(document, p2)
+        self.assertEqual((self.balance(first), self.balance(later)),
+                         ((D("11.23"), D("11.24")) if side == "sales" else (D("-11.23"), D("-11.24"))))
+        return document, (p1, p2), (first, later)
+
+    def note(self, document, quantity=None):
+        line = document.lines.get()
+        if hasattr(document, "customer"):
+            return document.create_credit_note(quantities={line: D(quantity)} if quantity else None)
+        return document.create_debit_note(quantities={line: D(quantity)} if quantity else None)
+
+    def undone(self, document):
+        return {row.payment_id: row.undone_amount for row in document.discounts.all()}
+
+    def test_a_note_undoes_each_discount_on_the_account_it_was_booked_to(self):
+        for side in ("sales", "purchasing"):
+            with self.subTest(side=side):
+                document, (p1, p2), (first, later) = self.two_accounts(side)
+                note = self.note(document)
+                self.assertEqual((note.reversed_discount, self.undone(document)),
+                                 (D("20.00"), {p1.pk: D("10.00"), p2.pk: D("10.00")}))
+                self.assertEqual((self.balance(first), self.balance(later)), (D("0.00"), D("0.00")))
+
+    def test_two_half_notes_undo_the_newer_discount_then_the_older(self):
+        for side in ("sales", "purchasing"):
+            with self.subTest(side=side):
+                document, (p1, p2), (first, later) = self.two_accounts(side)
+                sign = 1 if side == "sales" else -1
+                self.note(document, "0.5")
+                self.assertEqual(self.undone(document), {p1.pk: D("0.00"), p2.pk: D("10.00")})
+                self.assertEqual((self.balance(first), self.balance(later)), (sign * D("11.23"), D("0.00")))
+                self.note(document, "0.5")
+                self.assertEqual(self.undone(document), {p1.pk: D("10.00"), p2.pk: D("10.00")})
+                self.assertEqual((self.balance(first), self.balance(later)), (D("0.00"), D("0.00")))
+
+    def test_a_payment_returned_after_a_note_undid_its_discount_takes_nothing_more(self):
+        # The half note undid p2's discount with the goods it gave back. p2 returned, its discount took 10.00 more
+        # off the books and the document owed 10.00 that p1's discount, earned and kept, had settled.
+        for side in ("sales", "purchasing"):
+            with self.subTest(side=side):
+                document, (p1, p2), (first, later) = self.two_accounts(side)
+                self.note(document, "0.5")
+                p2.void(memo="Returned unpaid", on_date=datetime.date(2026, 1, 20))
+                document.refresh_from_db()
+                self.assertEqual((document.settlement_discount_withdrawn, document.amount_due()),
+                                 (D("0.00"), D("0.00")))
+                sign = 1 if side == "sales" else -1
+                self.assertEqual((self.balance(first), self.balance(later)), (sign * D("11.23"), D("0.00")))
+
+    # O600's write-offs, the same shape on the sales side: 300.00 at 1.12345 books 337.04, twice. A whole note undid
+    # 600.00 as 674.07 beside the newer: its account read -337.03 and the older one's 337.04.
+
+    def written_off_twice(self):
+        from apps.core.models import Company
+        inv = self.invoice("1000")
+        accounts = [Account.objects.create(code=code, name=name, account_type=AccountType.EXPENSE)
+                    for code, name in (("5980", "Bad debts"), ("5981", "Bad debts, from June"))]
+        for account, day in zip(accounts, (datetime.date(2026, 2, 1), datetime.date(2026, 2, 2))):
+            Company.objects.update(bad_debt_account=account)
+            inv.write_off(amount="300", on_date=day)
+        inv.refresh_from_db()
+        self.assertEqual([self.balance(account) for account in accounts], [D("337.04"), D("337.04")])
+        return inv, accounts
+
+    def test_a_note_undoes_each_write_off_on_the_account_it_was_booked_to(self):
+        inv, accounts = self.written_off_twice()
+        note = inv.create_credit_note()
+        self.assertEqual(note.reversed_write_off, D("600.00"))
+        self.assertEqual([row.undone_amount for row in inv.write_offs.order_by("date")], [D("300.00"), D("300.00")])
+        self.assertEqual([self.balance(account) for account in accounts], [D("0.00"), D("0.00")])
+
+    def test_a_write_off_a_note_undid_is_not_recovered_again_and_the_older_one_is(self):
+        # 700 credited of 1,000 with 400 owed: 300 of it undoes the newer write-off. Recovered, the newer came off
+        # bad debt a second time, and the older, which nothing had undone, could not be recovered.
+        inv, accounts = self.written_off_twice()
+        self.note(inv, "0.7")
+        older, newer = inv.write_offs.order_by("date")
+        self.assertEqual((older.undone_amount, newer.undone_amount), (D("0.00"), D("300.00")))
+        with self.assertRaisesMessage(ValidationError, "that is not recovered again"):
+            inv.recover_write_off(newer, on_date=datetime.date(2026, 3, 1))
+        inv.refresh_from_db()
+        inv.recover_write_off(older, on_date=datetime.date(2026, 3, 1))
+        self.assertEqual([self.balance(account) for account in accounts], [D("0.00"), D("0.00")])
+
     # O599, worked by hand in /home/user/work/g49_calc/scenarios.py: what a payment earned rests on what it applied.
     # Re-sized, re-pointed or deleted, its allocation takes the discount back on the day of the change; still on the
     # same document, the payment earns again on what it applies now. 5 at 1.12345 is 5.62 in the books.

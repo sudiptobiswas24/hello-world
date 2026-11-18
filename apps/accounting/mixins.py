@@ -1156,26 +1156,39 @@ class SettlementDiscountTaken(models.Model):
         help_text="What was taken back of it when a payment that settled the document was returned.")
     withdrawal_entry = models.ForeignKey(
         JournalEntry, null=True, blank=True, on_delete=models.PROTECT, related_name="+", editable=False)
+    undone_amount = models.DecimalField(
+        max_digits=18, decimal_places=2, default=Decimal("0"), editable=False,
+        help_text="What credit or debit notes undid of it, on the account it was booked to, newest discount "
+                  "first (settlement.undo_discounts, O600).")
 
     class Meta:
         abstract = True
         ordering = ["date", "id"]
         constraints = [
             models.CheckConstraint(
-                check=models.Q(amount__gt=0, withdrawn_amount__gte=0, withdrawn_amount__lte=models.F("amount")),
+                check=models.Q(amount__gt=0, withdrawn_amount__gte=0, undone_amount__gte=0,
+                               amount__gte=models.F("withdrawn_amount") + models.F("undone_amount")),
                 name="%(app_label)s_%(class)s_amounts",
             ),
         ]
 
-    WITHDRAWING = {"withdrawn_amount", "withdrawal_entry", "updated_at"}
+    # Written after it is taken: a withdrawal, and what notes undid of it.
+    WRITTEN_AFTER = {"withdrawn_amount", "withdrawal_entry", "undone_amount", "updated_at"}
 
     def standing(self):
-        """What of it was not taken back."""
+        """
+        What of it was not taken back: what its payment earned and keeps, which the next payment's earning
+        counts (discount_earned_by). What a note undid with the goods it gave back is not earned again.
+        """
         return self.amount - self.withdrawn_amount
 
+    def on_the_books(self):
+        """What of it the books still hold: not withdrawn, and not undone by a note (O600)."""
+        return self.amount - self.withdrawn_amount - self.undone_amount
+
     def save(self, *args, **kwargs):
-        # Posted with its entry: what it took stands, and only a withdrawal is written to it after.
-        if self.pk is not None and not set(kwargs.get("update_fields") or ("all",)) <= self.WITHDRAWING:
+        # Posted with its entry: what it took stands, and only a withdrawal or a note's undo is written to it after.
+        if self.pk is not None and not set(kwargs.get("update_fields") or ("all",)) <= self.WRITTEN_AFTER:
             raise ValidationError("A settlement discount taken is posted: it is withdrawn, never edited.")
         super().save(*args, **kwargs)
 
