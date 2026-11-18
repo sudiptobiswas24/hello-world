@@ -4,10 +4,12 @@ Print a gate's Gate line from its lane logs, or say what is missing.
     python3 scripts/gate/gateline.py <prefix>
 
 Reads $GATE_LOGS (default /tmp/gate-logs). Every lane must say "Ran N
-tests" and "OK". The three PostgreSQL parts must add up to the SQLite
-lane's count, so an app left out of every part cannot pass unnoticed.
-Asia/Kolkata must skip no more than SQLite: a lane whose browser tests
-skipped (no build, no Chromium) looks green otherwise.
+tests" and "OK". The three PostgreSQL parts must add up to the Asia/Kolkata
+lane's count, so an app left out of every part cannot pass unnoticed. A
+browser test that cannot run (no build, no Chromium) fails in a gate lane
+(GATE_BROWSERS=1, lane.sh) rather than skipping under an OK; until g51 the
+check was that Asia/Kolkata skipped no more than a SQLite lane under UTC,
+which the gate no longer runs.
 
 A mig lane run with GATE_BASE leaves needed.txt: the apps it ran and the
 ones it skipped. The list is worked out again here from the same range
@@ -37,7 +39,6 @@ def result(name):
     return int(ran.group(1)), int(ok.group(1) or 0)
 
 
-sq, sq_skip = result(f"{P}_suite.log")
 pg_a, _ = result(f"{P}_pg_A.log")
 pg_b, _ = result(f"{P}_pg_B.log")
 pg_c, _ = result(f"{P}_pg_C.log")
@@ -89,10 +90,8 @@ if mig_pg != len(pg_only) or mig_pg_skip:
 out = open(os.path.join(LOGS, f"gate_{P}.out")).read()
 vitest = re.search(r"Tests\s+(\d+) passed", out)
 problems = []
-if pg_a + pg_b + pg_c != sq:
-    problems.append(f"PostgreSQL parts ran {pg_a}+{pg_b}+{pg_c}, SQLite {sq}: an app is missing from a part")
-if ist != sq or ist_skip > sq_skip:
-    problems.append(f"Asia/Kolkata ran {ist} skipping {ist_skip}; SQLite ran {sq} skipping {sq_skip}")
+if pg_a + pg_b + pg_c != ist:
+    problems.append(f"PostgreSQL parts ran {pg_a}+{pg_b}+{pg_c}, Asia/Kolkata {ist}: an app is missing from a part")
 if not vitest or "UI FAILED" in out:
     problems.append("UI lane not clean")
 if "names: clean" not in out:
@@ -109,6 +108,6 @@ if problems:
 migration = f"{mig}, one app at a time, the {mig_pg} PostgreSQL-only on PostgreSQL"
 if unchanged:
     migration = unchanged + (f", the {mig_pg} PostgreSQL-only on PostgreSQL" if mig_pg else "")
-print(f"Gate: SQLite {sq} tests, {sq_skip} skipped; PostgreSQL {sq}; Asia/Kolkata {ist}, {ist_skip} skipped; "
+print(f"Gate: SQLite under Asia/Kolkata {ist} tests, {ist_skip} skipped; PostgreSQL {pg_a + pg_b + pg_c}; "
       f"migration-tagged {migration}; vitest {vitest.group(1)}; names clean; register clean; screens clean; "
       f"audit_invariants no findings; makemigrations --check no changes.")

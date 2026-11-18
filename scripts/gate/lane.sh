@@ -1,7 +1,7 @@
 #!/bin/bash
 # One lane of the release gate, run as its own background job.
 #
-#   scripts/gate/lane.sh <prefix> ui|sqlite|ist|pg-a|pg-b|pg-c|mig
+#   scripts/gate/lane.sh <prefix> ui|ist|pg-a|pg-b|pg-c|mig
 #
 # GATE_TREE  the worktree to gate (default: this repository's root). Keep it
 #            clean and do not edit it while a lane runs.
@@ -13,18 +13,19 @@
 # A background job may run two hours at most, and a lane killed at the limit
 # has no verdict. Each lane runs two workers on a four-core machine, so run
 # two lanes at a time, never more: five at once (g25) ran every one past the
-# limit. Beside one other lane, sqlite and ist take about 100 minutes each
-# and pg-a about 65. Order, as two slots:
-#   slot 1: mig, then pg-c
-#   slot 2: ui, then pg-a, sqlite, pg-b, ist
-# Start mig at minute zero, detached: it is the longest lane (over three
-# hours in g31) and builds nothing the others need. ui must still finish
-# before sqlite or ist start: it builds the office app the browser tests
-# need. g31 ran ui alone and mig last and took eight and a half hours;
-# this order keeps two lanes busy throughout, about five.
-# mig counts as a lane. g26 ran sqlite beside ist and mig: sqlite passed
-# its own 9000-second limit twice with no verdict, and each rerun cost two
-# hours. So mig runs beside at most one other lane.
+# limit. Beside one other lane, ist takes about 100 minutes, pg-c 90 and
+# pg-a 65. Order: ui alone (it builds the office app the browser tests
+# open); ist with pg-c; then mig, detached, with pg-a and then pg-b beside
+# it. No browser lane (ist, pg-c) beside mig: mig's two workers take about
+# 8 GB, and a browser page crashed for want of memory beside it (O592).
+# mig counts as a lane. g26 ran a third full suite beside ist and mig: it
+# passed its own 9000-second limit twice with no verdict, and each rerun
+# cost two hours. So mig runs beside at most one other lane.
+# The full suite runs twice: on SQLite under Asia/Kolkata (ist) and on
+# PostgreSQL under UTC (pg-a, pg-b, pg-c). A third run, SQLite under UTC,
+# was dropped in g51 (owner, 18 November): each of its halves runs in one
+# of the two, the plant runs PostgreSQL, and it cost about 110 minutes a
+# gate. Migrations still run on SQLite, in mig.
 # A lane run detached (setsid nohup) is not a job the session tracks, and a
 # session with no tracked job running is reclaimed with its container: g26
 # lost three detached lanes that way. Keep a tracked watcher job running for
@@ -35,11 +36,12 @@
 # end and runs to its timeout (g28 missed pg-a's finish by 40 minutes). Give that job the Bash tool's own timeout
 # of 7200000 too: its default ends the job at 30 minutes (g27).
 # A test lane refuses to start without the built office app, or while a ui
-# lane is building it: g27 started sqlite beside ui, the build emptied
-# apps/web/static/web as sqlite began, and 159 browser tests skipped under
-# an OK (400 skipped, not 241). Read the skip count, not only the OK.
+# lane is building it: g27 started a lane beside ui, the build emptied
+# apps/web/static/web as it began, and 159 browser tests skipped under
+# an OK (400 skipped, not 241). GATE_BROWSERS=1 (in PW below) makes a
+# browser test that cannot run fail instead (apps/web/tests_browser.py).
 # A lane run again keeps the last run's log as <log>.prev: read it first. g26
-# reran sqlite before reading a line its timed-out log had, and lost it.
+# reran a lane before reading a line its timed-out log had, and lost it.
 # Never edit this file while a lane is running from it: bash reads a
 # script as it runs, and the lane then executes shifted lines.
 set -u
@@ -49,7 +51,7 @@ LOGS="${GATE_LOGS:-/tmp/gate-logs}"
 mkdir -p "$LOGS"
 cd "$TREE" || exit 2
 P=$1
-PW="PLAYWRIGHT_CHROMIUM_EXECUTABLE=/opt/pw-browsers/chromium"
+PW="PLAYWRIGHT_CHROMIUM_EXECUTABLE=/opt/pw-browsers/chromium GATE_BROWSERS=1"
 echo "HEAD $(git rev-parse HEAD) dirty=$(git status --short | wc -l) lane=$2"
 built() {  # a test lane needs the office app built, and not being rebuilt under it
     if pgrep -f "lane.sh [^ ]+ ui$" > /dev/null; then
@@ -87,12 +89,6 @@ ui)
         .venv/bin/python manage.py makemigrations --check --dry-run 2>&1 | tail -2
     } > "$LOGS/gate_${P}.out" 2>&1
     cat "$LOGS/gate_${P}.out"
-    ;;
-sqlite)
-    built sqlite
-    keep "$LOGS/${P}_suite.log"
-    timeout 9000 env $PW .venv/bin/python manage.py test apps --exclude-tag migration --parallel 2 > "$LOGS/${P}_suite.log" 2>&1
-    rc=$?; echo "sqlite exit=$rc"; [ $rc = 124 ] && echo "sqlite: TIMED OUT, no verdict"; grep -E "^Found|^Ran|^OK|^FAILED" "$LOGS/${P}_suite.log"
     ;;
 ist)
     built ist
