@@ -356,7 +356,7 @@ class Month:
         payment = self.post("AP Manager", "/api/accounting/payments/", {
             "party": self.mb_vendor.pk, "direction": "disbursement", "payment_date": str(OCT(20)),
             "amount": "159300.00", "currency": self.inr.pk, "bank_account": self.acct["1200"].pk,
-            "counterpart_account": self.acct["2000"].pk, "method": "neft", "reference": "UTR SBIN226293001"})
+            "counterpart_account": self.acct["2000"].pk, "reference": "UTR SBIN226293001"})
         self.post("AP Manager", f"/api/accounting/payments/{payment['id']}/post_payment/")
         self.post("AP Manager", "/api/purchasing/bill-payments/", {
             "bill": self.mb_bill["id"], "payment": payment["id"], "amount": "159300.00"})
@@ -416,12 +416,12 @@ class Month:
             self.refuse("R5 an invoice posted by the Sales Rep", "Sales Rep", url)
         return self.post(ar, url)
 
-    def receive_money(self, party, day, amount, currency, method, reference, invoice=None, allocate=None):
+    def receive_money(self, party, day, amount, currency, reference, invoice=None, allocate=None):
         ar = "AR Manager"
         payment = self.post(ar, "/api/accounting/payments/", {
             "party": party.pk, "direction": "receipt", "payment_date": str(day), "amount": amount,
             "currency": currency.pk, "bank_account": self.acct["1200"].pk,
-            "counterpart_account": self.acct["1100"].pk, "method": method, "reference": reference})
+            "counterpart_account": self.acct["1100"].pk, "reference": reference})
         self.post(ar, f"/api/accounting/payments/{payment['id']}/post_payment/")
         if invoice is not None:
             self.post(ar, "/api/sales/invoice-payments/", {
@@ -458,7 +458,7 @@ class Month:
             self.advance = self.post("AR Manager", f"/api/sales/sales-orders/{self.dom_so['id']}/down_payment/", {
                 "receivable_account": self.acct["1100"].pk, "invoice_date": str(OCT(10)), "amount": "100000"})
             self.advance = self.post("AR Manager", f"/api/sales/invoices/{self.advance['id']}/post_invoice/")
-            self.advance_paid = self.receive_money(self.hooghly, OCT(10), "100000.00", self.inr, "neft",
+            self.advance_paid = self.receive_money(self.hooghly, OCT(10), "100000.00", self.inr,
                                                    "UTR HDFC226283310", self.advance)
             self.statement_line(OCT(10), "NEFT HOOGHLY CEMENT ADVANCE", "100000.00", self.advance_paid)
         with on(OCT(15)):
@@ -486,7 +486,7 @@ class Month:
                 note = self.post("AR Manager", f"/api/sales/invoices/{note['id']}/post_invoice/")
             self.credit_note = self.get("AR Manager", f"/api/sales/invoices/{note['id']}/")
         with on(OCT(25)):
-            self.cheque = self.receive_money(self.hooghly, OCT(25), "300000.00", self.inr, "cheque",
+            self.cheque = self.receive_money(self.hooghly, OCT(25), "300000.00", self.inr,
                                              "Chq 004512 UCO Bank", self.dom_invoice)
         with on(OCT(26)):
             self.statement_line(OCT(26), "CLG CHQ 004512 HOOGHLY CEMENT", "300000.00", self.cheque)
@@ -510,7 +510,7 @@ class Month:
             self.exp_delivery = self.ship(self.exp_so, OCT(16), "1000")
             self.exp_invoice = self.invoice(self.exp_so, OCT(16))
         with on(OCT(30)):
-            self.exp_paid = self.receive_money(self.importer, OCT(30), "2000.00", self.usd, "swift",
+            self.exp_paid = self.receive_money(self.importer, OCT(30), "2000.00", self.usd,
                                                "SWIFT MT103 BOFAUS3N 7781", self.exp_invoice)
             self.statement_line(OCT(30), "INWARD REMIT USD 2000 GULF COAST SACKS", "169000.00", self.exp_paid)
         self.exp_invoice = self.get("AR Manager", f"/api/sales/invoices/{self.exp_invoice['id']}/")
@@ -555,7 +555,7 @@ class Month:
             self.gst_documents(self.scrap_invoice, "WB39B7704")
         with on(OCT(29)):
             self.scrap_paid = self.receive_money(self.recycler, OCT(29), self.scrap_invoice["total"], self.inr,
-                                                 "neft", "UTR AXIS226302114", self.scrap_invoice)
+                                                 "UTR AXIS226302114", self.scrap_invoice)
             self.statement_line(OCT(29), "NEFT ASANSOL POLYMER RECYCLERS", self.scrap_invoice["total"],
                                 self.scrap_paid)
         with on(OCT(31)):
@@ -644,7 +644,7 @@ class Month:
         payment = self.post("Controller", "/api/accounting/payments/", {
             "party": party, "direction": "disbursement", "payment_date": str(day), "amount": amount,
             "currency": self.inr.pk, "bank_account": self.acct["1200"].pk,
-            "counterpart_account": self.acct["1400"].pk, "method": "neft"})
+            "counterpart_account": self.acct["1400"].pk})
         self.post("Controller", f"/api/accounting/payments/{payment['id']}/post_payment/")
         self.statement_line(day, f"NEFT SALARY ADVANCE {number}", f"-{amount}", payment)
         return self.post("Controller", "/api/hr/salary-advances/", {
@@ -698,7 +698,7 @@ class Month:
                 "party": Employee.objects.get(pk=self.staff["M1"]["id"]).party_id, "direction": "disbursement",
                 "payment_date": "2026-10-31", "amount": transfer["total"], "currency": self.inr.pk,
                 "bank_account": self.acct["1200"].pk, "counterpart_account": self.acct["2400"].pk,
-                "method": "neft", "reference": transfer["number"]})
+                "reference": transfer["number"]})
             self.post("Controller", f"/api/accounting/payments/{payment['id']}/post_payment/")
             self.post("Controller", f"/api/hr/salary-files/{transfer['id']}/mark_paid/", {"payment": payment["id"]})
             self.statement_line(OCT(31), f"BULK NEFT SALARY {transfer['number']}", f"-{transfer['total']}", payment)
@@ -709,7 +709,7 @@ class Month:
                 "party": Employee.objects.get(pk=self.staff["D1"]["id"]).party_id, "direction": "receipt",
                 "payment_date": "2026-10-31", "amount": "9352.00", "currency": self.inr.pk,
                 "bank_account": self.acct["1200"].pk, "counterpart_account": self.acct["2400"].pk,
-                "method": "neft", "reference": "RTN A/C CLOSED"})
+                "reference": "RTN A/C CLOSED"})
             self.post("Controller", f"/api/accounting/payments/{back['id']}/post_payment/")
             self.post("Controller", f"/api/hr/salary-files/{transfer['id']}/return_transfer/",
                       {"row": row["id"], "receipt": back["id"]})
@@ -975,7 +975,7 @@ class PlantMonthTests(TestCase):
         payment = self.post("Controller", "/api/accounting/payments/", {
             "party": party, "direction": "disbursement", "payment_date": str(day), "amount": amount,
             "currency": self.inr.pk, "bank_account": self.acct["1200"].pk,
-            "counterpart_account": self.acct["1400"].pk, "method": "neft"})
+            "counterpart_account": self.acct["1400"].pk})
         self.post("Controller", f"/api/accounting/payments/{payment['id']}/post_payment/")
         self.statement_line(day, f"NEFT SALARY ADVANCE {number}", f"-{amount}", payment)
         return self.post("Controller", "/api/hr/salary-advances/", {
@@ -1029,7 +1029,7 @@ class PlantMonthTests(TestCase):
                 "party": Employee.objects.get(pk=self.staff["M1"]["id"]).party_id, "direction": "disbursement",
                 "payment_date": "2026-10-31", "amount": transfer["total"], "currency": self.inr.pk,
                 "bank_account": self.acct["1200"].pk, "counterpart_account": self.acct["2400"].pk,
-                "method": "neft", "reference": transfer["number"]})
+                "reference": transfer["number"]})
             self.post("Controller", f"/api/accounting/payments/{payment['id']}/post_payment/")
             self.post("Controller", f"/api/hr/salary-files/{transfer['id']}/mark_paid/", {"payment": payment["id"]})
             self.statement_line(OCT(31), f"BULK NEFT SALARY {transfer['number']}", f"-{transfer['total']}", payment)
@@ -1040,7 +1040,7 @@ class PlantMonthTests(TestCase):
                 "party": Employee.objects.get(pk=self.staff["D1"]["id"]).party_id, "direction": "receipt",
                 "payment_date": "2026-10-31", "amount": "9352.00", "currency": self.inr.pk,
                 "bank_account": self.acct["1200"].pk, "counterpart_account": self.acct["2400"].pk,
-                "method": "neft", "reference": "RTN A/C CLOSED"})
+                "reference": "RTN A/C CLOSED"})
             self.post("Controller", f"/api/accounting/payments/{back['id']}/post_payment/")
             self.post("Controller", f"/api/hr/salary-files/{transfer['id']}/return_transfer/",
                       {"row": row["id"], "receipt": back["id"]})

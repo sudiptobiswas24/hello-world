@@ -5,7 +5,8 @@
 // Prints one JSON line a write: {file, line, shape, endpoint, action, url, keys, open}. `keys` are the body's
 // keys; `open` says what could not be read, and screenkeys.py asks for each such write to have been read by
 // hand. A body is read through an object literal, a conditional spread, an action's `fields` and `body`, a
-// variable set from ask() or useState() or assigned an object in the same function, and `values`.
+// variable set from ask() or useState() or assigned an object in the same function, and a declared body's first
+// parameter, which holds its fields' values where it has fields.
 import { createRequire } from "node:module";
 import fs from "node:fs";
 import path from "node:path";
@@ -161,7 +162,10 @@ function objectKeys(node, keys, open, fieldsKeys, parents) {
         try { return objectKeys(given.node, keys, open, fieldsKeys, given.parents); }
         finally { SUBST.set(node.name, given); }
       }
-      if ((node.name === "values" || node.name === "_values") && fieldsKeys) { fieldsKeys.forEach((k) => keys.add(k)); return; }
+      // The body's first parameter, where its declaration has fields: ActionForm gives it the fields' values and
+      // nothing else (RecordScreen.tsx run(), held by CountForm.test.tsx). Not a name: a row action's `values` is
+      // its whole row (O601).
+      if (fieldsKeys && node.name === fieldsKeys.bound) { fieldsKeys.keys.forEach((k) => keys.add(k)); return; }
       return variableKeys(node.name, parents, keys, open);
     default:
       open.push(node.type);
@@ -265,7 +269,8 @@ for (const file of files) {
         }
         const keys = new Set(), open = [];
         if (n.arguments[2]) objectKeys(n.arguments[2], keys, open, null, parents);
-        rows.push({ file: rel, line: lineOf(text, n.start), shape: name, endpoint, action, url, keys: [...keys].sort(), open });
+        rows.push({ file: rel, line: lineOf(text, n.start), shape: name, method: method.value, endpoint, action, url,
+                    keys: [...keys].sort(), open });
       }
     }
     // A request held to send later: {method?, path, body} (the offline scan queue, an undo's request)
@@ -301,9 +306,42 @@ for (const file of files) {
       const fieldsKeys = own.fields ? fieldKeys(own.fields) : [];
       const keys = new Set(), open = [];
       if (own.fields && own.fields.type === "Identifier") variableFields(own.fields.name, ast, fieldsKeys, open);
-      if (own.body) objectKeys(own.body, keys, open, fieldsKeys, [...parents, n]);
+      const first = own.fields && /Function/.test(own.body?.type ?? "") ? own.body.params[0] : null;
+      const bound = first && first.type === "Identifier" ? { bound: first.name, keys: fieldsKeys } : null;
+      if (own.body) objectKeys(own.body, keys, open, bound, [...parents, n]);
       else fieldsKeys.forEach((k) => keys.add(k));
       rows.push({ file: rel, line: lineOf(text, n.start), shape: "declared", endpoint, action, keys: [...keys].sort(), open });
+    }
+    // <RecordScreen endpoint fields>: its create posts every field a person fills in, its save the changed ones
+    // (bodyFor in RecordScreen.tsx); each is checked against the serializer behind it (O573).
+    if (n.type === "JSXOpeningElement" && n.name.name === "RecordScreen") {
+      const attrs = Object.fromEntries(n.attributes.filter((a) => a.type === "JSXAttribute").map((a) => [a.name.name, a.value]));
+      const literal = (value) => !value ? null : value.type === "Literal" ? value.value
+        : value.type === "JSXExpressionContainer" && value.expression.type === "Literal" ? value.expression.value
+        : value.type === "JSXExpressionContainer" && value.expression.type === "Identifier" ? apiConst(value.expression.name, parents, consts)
+        : undefined;
+      const endpoint = literal(attrs.endpoint), createUrl = literal(attrs.createUrl);
+      const open = [], defs = [];
+      if (!attrs.fields || attrs.fields.type !== "JSXExpressionContainer") open.push("fields");
+      else screenFields(attrs.fields.expression, ast, defs, open);
+      if (endpoint === undefined || createUrl === undefined) open.push("endpoint");
+      const extra = attrs.extras ? ["extra"] : [];
+      const onNew = defs.filter((d) => !d.readOnly && !d.existingOnly).map((d) => d.key);
+      const onSave = defs.filter((d) => !d.readOnly && !d.createOnly).map((d) => d.key);
+      const line = lineOf(text, n.start);
+      // A create needs permissions.add and a save permissions.change (mayEdit): a screen naming neither never sends
+      // that write. Permissions not written as an object here are taken to name both.
+      const given = attrs.permissions && attrs.permissions.type === "JSXExpressionContainer"
+        && attrs.permissions.expression.type === "ObjectExpression" ? props(attrs.permissions.expression) : null;
+      if (!given || given.add) {
+        rows.push({ file: rel, line, shape: "record create", method: "POST", endpoint: createUrl || endpoint, action: null,
+                    keys: [...new Set([...onNew, ...extra])].sort(), open: [...open] });
+      }
+      if (!given || given.change) {
+        rows.push({ file: rel, line, shape: "record save", method: "PATCH", endpoint, action: null,
+                    keys: [...new Set([...onSave, ...extra])].sort(), open: [...open] });
+      }
+      return;
     }
     // <Component path="x">: the component posts its own body to `${endpoint}${id}/${path}/`
     if (n.type === "JSXOpeningElement") {
@@ -363,6 +401,44 @@ function variableFields(name, ast, fieldsKeys, open) {
     }
   }
   if (!found) open.push(`fields ${name}`);
+}
+
+// A record screen's field definitions under `node`: {key, readOnly, existingOnly, createOnly}, following a spread
+// or a name of a constant (this file's or an exported one's). A flag that is not a literal true counts as unset:
+// such a field is taken to be sent, so a key the serializer lacks is reported rather than passed.
+function screenFields(node, ast, defs, open, depth = 0) {
+  if (!node || depth > 4) return;
+  const flag = (own, name) => Boolean(own[name] && own[name].type === "Literal" && own[name].value === true);
+  const named = (name) => {
+    let found = null;
+    walkNode(ast, (d) => { if (!found && d.type === "VariableDeclarator" && d.id.type === "Identifier" && d.id.name === name && d.init) found = d.init; });
+    if (found) return [found, ast];
+    for (const file of files) {
+      const text = fs.readFileSync(file, "utf8");
+      if (!new RegExp(`export const ${name}\\b`).test(text)) continue;
+      const other = parseAst(text, { lang: file.endsWith(".tsx") ? "tsx" : "ts" });
+      walkNode(other, (d) => { if (!found && d.type === "VariableDeclarator" && d.id.type === "Identifier" && d.id.name === name && d.init) found = d.init; });
+      if (found) return [found, other];
+    }
+    return [null, null];
+  };
+  walkNode(node, (n) => {
+    if (n.type === "ObjectExpression") {
+      const own = props(n);
+      if (own.key && own.key.type === "Literal" && own.label) {
+        defs.push({ key: own.key.value, readOnly: flag(own, "readOnly"), existingOnly: flag(own, "existingOnly"),
+                    createOnly: flag(own, "createOnly") });
+      }
+    }
+    if ((n.type === "SpreadElement" && n.argument.type === "Identifier")
+        || (n === node && n.type === "Identifier")) {
+      const name = n.type === "Identifier" ? n.name : n.argument.name;
+      const [init, where] = named(name);
+      if (init) screenFields(init, where, defs, open, depth + 1);
+      else open.push(`fields ${name}`);
+    }
+    if (n.type === "SpreadElement" && n.argument.type === "CallExpression") open.push("fields from a call");
+  });
 }
 
 // A component given a `path` posts through a URL ending in ${path}: its own call's body is the write's.

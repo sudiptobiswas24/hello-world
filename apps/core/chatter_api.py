@@ -29,7 +29,7 @@ from rest_framework.exceptions import NotFound, PermissionDenied, ValidationErro
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from .api import flag, record_or_404, takes_only
+from .api import Serializer, flag, record_or_404, takes_only
 from .chatter import FollowUp, FollowUpKind, Note
 from .endpoints import may_read, model_named
 
@@ -129,7 +129,7 @@ class NoteViewSet(viewsets.ViewSet):
         return Response(status=204)
 
 
-class FollowUpInput(serializers.Serializer):
+class FollowUpInput(Serializer):
     kind = serializers.ChoiceField(choices=FollowUpKind.choices, required=False)
     summary = serializers.CharField(max_length=255, required=False)
     note = serializers.CharField(required=False, allow_blank=True)
@@ -168,7 +168,8 @@ class FollowUpViewSet(viewsets.ViewSet):
         if not request.user.has_perm("core.add_followup"):
             raise PermissionDenied("Planning follow-ups is not yours.")
         model, pk = _record(request, request.data)
-        given = FollowUpInput(data=request.data)
+        # The record it is about is read beside it (_record), and named so the input does not refuse it.
+        given = FollowUpInput(data=request.data, context={"body_beside": ("model", "id")})
         given.is_valid(raise_exception=True)
         data = given.validated_data
         missing = {key: ["Say this."] for key in ("summary", "due_on") if not data.get(key)}

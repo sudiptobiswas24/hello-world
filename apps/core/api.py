@@ -577,9 +577,11 @@ class Search(SearchFilter):
 
 
 
-class RefusesWhatItReadsBackOnly(serializers.Serializer):
+class RefusesWhatItWouldDrop(serializers.Serializer):
     """
-    A list a record reads back only (its lines), sent to it, is refused beside it with a 400 (O555, O565).
+    What a serializer would drop without a word, sent to it, is refused beside it with a 400: a key it has no
+    field for (O573, not_a_field), and a list a record reads back only (its lines; O555, O565). The rest of this
+    is about the second.
 
     DRF drops a read-only field it is sent without a word. A bill posted with `lines` instead of `new_lines` was
     made with none and refused only at posting, for having no value (O555); a quotation posted with one line of
@@ -598,7 +600,7 @@ class RefusesWhatItReadsBackOnly(serializers.Serializer):
     """
 
     def to_internal_value(self, data):
-        refused = self.read_back_only(data)
+        refused = {**self.not_a_field(data), **self.read_back_only(data)}
         try:
             value = super().to_internal_value(data)
         except DRFValidationError as exc:
@@ -608,6 +610,34 @@ class RefusesWhatItReadsBackOnly(serializers.Serializer):
         if refused:
             raise DRFValidationError(refused)
         return value
+
+    # Sent by the browsable API's own form with every post; not the record's.
+    NOT_THE_RECORDS = frozenset({"csrfmiddlewaretoken"})
+
+    def not_a_field(self, data):
+        """
+        Each key `data` names that is no field of this serializer, with the words it is refused in (O573).
+
+        DRF drops a key its serializer does not declare without a word, so a typo (`quantiy`) saved the record
+        without the quantity and answered 201. A key read beside the serializer from the same body is named
+        where it is read, and taken: on the viewset, body_beside_its_serializer, by the action reading it (a new
+        party's `role`, read on create and refused on a change); in the context, body_beside, for a serializer an
+        action makes itself (a coating's `lamination_gsm`). audit_invariants (body_read_beside_its_serializer)
+        reports a key read there and not named. Asked of the serializer given the body only: a nested one's keys
+        are its own fields.
+        """
+        if not hasattr(data, "keys"):
+            return {}
+        taken = set(self.fields) | self.NOT_THE_RECORDS
+        if self.parent is None:
+            beside = self.context.get("body_beside")
+            if beside is None:
+                view = self.context.get("view")
+                beside = getattr(view, "body_beside_its_serializer", {}).get(getattr(view, "action", None), ())
+            taken |= set(beside)
+        fields = ", ".join(f"`{name}`" for name in sorted(self.fields) if not self.fields[name].read_only)
+        return {key: [f"`{key}` is not a field of this record, and would be dropped without a word. It takes "
+                      f"{fields or 'nothing'}."] for key in sorted(set(data.keys()) - taken)}
 
     def read_back_lists(self):
         """The method fields this serializer names as returning a list (Meta.read_back_lists)."""
@@ -637,5 +667,15 @@ class RefusesWhatItReadsBackOnly(serializers.Serializer):
                 "then add each one to it on its own.")
 
 
-class ModelSerializer(RefusesWhatItReadsBackOnly, serializers.ModelSerializer):
-    """The ModelSerializer every serializer here is written on (O565): a list it reads back only, sent, is refused."""
+class ModelSerializer(RefusesWhatItWouldDrop, serializers.ModelSerializer):
+    """
+    The ModelSerializer every serializer here is written on: a key it has no field for (O573) and a list it reads
+    back only (O565), sent, are refused.
+    """
+
+
+class Serializer(RefusesWhatItWouldDrop, serializers.Serializer):
+    """
+    The plain Serializer every one given a body is written on (O573): a follow-up sent `asigned_to` was planned for
+    nobody, 201. audit_invariants (serializers_off_the_shared_base) reports one that is not on it.
+    """
