@@ -380,7 +380,8 @@ class BagSpecificationViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
             if len(kept) == len(blend):
                 raise DRFValidationError({"item": [f"{item.sku} is not in the coating."]})
         else:
-            line = CoatingLineSerializer(data=request.data)
+            # A plain sack's first coating says its lamination, read beside the line below.
+            line = CoatingLineSerializer(data=request.data, context={"body_beside": ("lamination_gsm",)})
             line.is_valid(raise_exception=True)
             item, parts = line.validated_data["item"], line.validated_data["parts"]
             if any(each.pk == item.pk for each, _parts in blend):

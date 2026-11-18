@@ -19,7 +19,6 @@ export default function LeavePolicies() {
       rowKey={(row) => row.id}
       rowHref={(row) => `/payroll/leave-policies/${row.id}`}
       searchHint="Code or name"
-      create={{ href: "/payroll/leave-policies/new", permission: "hr.add_leavepolicy" }}
     />
   );
 }

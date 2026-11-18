@@ -1146,7 +1146,8 @@ export const MODULES: Module[] = [
         detail: () => import("../modules/payroll/PayComponentForm"),
       },
       {
-        path: "leave-policies", label: "Leave policies", permission: "hr.view_leavepolicy", create: "hr.add_leavepolicy",
+        // Read here, kept in the admin: the API takes no write (O602).
+        path: "leave-policies", label: "Leave policies", permission: "hr.view_leavepolicy",
         keywords: "leave entitlement days", load: () => import("../modules/payroll/LeavePolicies"),
         detail: () => import("../modules/payroll/LeavePolicyForm"),
       },

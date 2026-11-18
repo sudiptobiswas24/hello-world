@@ -185,6 +185,8 @@ class PartyViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     search_fields = ["code", "name", "legal_name", "email", "phone", "tax_id"]
     filter_fields = ["is_active", "role_assignments__role"]
     ordering_fields = ["code", "name"]
+    # Read beside the serializer by perform_create: what the new party is (O573). Not taken on a change.
+    body_beside_its_serializer = {"create": ("role",)}
     # ?gst=unknown: customers whose GST standing nobody has recorded, or
     # registered with no GSTIN (the morning check's list).
     extra_params = ("gst",)

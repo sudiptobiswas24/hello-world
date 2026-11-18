@@ -2,7 +2,7 @@ from decimal import Decimal
 
 from rest_framework import serializers
 
-from apps.core.api import ModelSerializer
+from apps.core.api import ModelSerializer, Serializer
 
 from apps.inventory.serializers import HidesStockMoney
 
@@ -158,7 +158,7 @@ class FoldAllowanceDefault:
         return attrs
 
 
-class CoatingLineSerializer(serializers.Serializer):
+class CoatingLineSerializer(Serializer):
     item = serializers.PrimaryKeyRelatedField(queryset=Item.objects.all())
     item_label = serializers.SerializerMethodField()
     parts = serializers.DecimalField(max_digits=10, decimal_places=3)
@@ -427,7 +427,7 @@ class CostSheetSerializer(ModelSerializer):
         return str(obj.order_value())
 
 
-class CostSheetRequestSerializer(serializers.Serializer):
+class CostSheetRequestSerializer(Serializer):
     specification = serializers.PrimaryKeyRelatedField(queryset=BagSpecification.objects.all())
     quantity = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal("1"))
     costed_on = serializers.DateField(required=False)
@@ -445,7 +445,7 @@ class CarriedQuotationField(serializers.PrimaryKeyRelatedField):
         return quotations if rep is UNLIMITED else quotations.filter(carried_by(rep, "customer"))
 
 
-class QuoteRequestSerializer(serializers.Serializer):
+class QuoteRequestSerializer(Serializer):
     quotation = CarriedQuotationField()
     # Required, if only as an empty list: a line's taxes are its own,
     # and none is a statement, not a default.

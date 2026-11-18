@@ -48,8 +48,16 @@ REVIEWED = {
         "the new party's create (POST to its list)",
     ("frontend/src/modules/stores/ScanInto.tsx", "?", ()):
         "the offline queue sending a held scan: its body is the one held at the count screen, read there",
+    ("frontend/src/modules/accounts/Challans.tsx", "?",
+     ("bank_account", "bsr_code", "challan_number", "date", "month", "section")):
+        "a TDS or TCS challan's create, to ${kind.endpoint}pay/: both pay actions take all six (O573)",
+    ("frontend/src/modules/plant/JobForm.tsx", "?", ("due_on", "fault", "notes", "planned_minutes", "technician")):
+        "a maintenance job's create and save; the create adds SERVES (work_centre, machine), createOnly through a "
+        "map: the serializer has all seven (O573)",
 }
-REVIEWED_COUNT = {("frontend/src/views/RecordScreen.tsx", "?", ()): 2}
+REVIEWED_COUNT = {("frontend/src/views/RecordScreen.tsx", "?", ()): 2,
+                  ("frontend/src/modules/plant/JobForm.tsx", "?",
+                   ("due_on", "fault", "notes", "planned_minutes", "technician")): 2}
 
 
 def write_actions():
@@ -109,6 +117,32 @@ def taken(owner, name, view=None):
     return keys
 
 
+def made_keys(owner, name, view):
+    """
+    A create or a save that makes its serializer itself, given request.data (a follow-up's, on a plain ViewSet):
+    that serializer's fields and the keys its context names in body_beside. None if it makes none, or more than one.
+    """
+    from apps.core.management.commands.audit_invariants import Command
+
+    function = inspect.unwrap(vars(owner)[name])
+    found = []
+    for node in ast.walk(_function_tree(function)):
+        given = next((keyword.value for keyword in getattr(node, "keywords", ()) if keyword.arg == "data"), None)
+        if not (isinstance(node, ast.Call) and isinstance(given, ast.Attribute) and given.attr == "data"
+                and getattr(given.value, "id", None) == "request" and isinstance(node.func, ast.Name)):
+            continue
+        fields = Command._fields_of(function.__globals__.get(node.func.id))
+        if fields is None:
+            return None
+        for keyword in node.keywords:
+            if keyword.arg == "context" and isinstance(keyword.value, ast.Dict):
+                for key, value in zip(keyword.value.keys, keyword.value.values):
+                    if getattr(key, "value", None) == "body_beside" and isinstance(value, (ast.Tuple, ast.List)):
+                        fields |= {each.value for each in value.elts if isinstance(each, ast.Constant)}
+        found.append(fields)
+    return found[0] if len(found) == 1 else None
+
+
 def action_at(url):
     try:
         match = resolve(url.split("?")[0])
@@ -119,10 +153,38 @@ def action_at(url):
     name = actions.get("post") or actions.get("patch") or actions.get("put")
     if view is None or name is None:
         return None
-    if name in ("create", "update", "partial_update"):
-        return view, name, None
     owner = next((cls for cls in view.__mro__ if name in vars(cls)), None)
+    if name in ("create", "update", "partial_update"):
+        return view, name, record_keys(view, name, owner)
     return view, name, taken(owner, name, view)
+
+
+def record_keys(view, name, owner):
+    """
+    What a create or a save takes (O573): a create read by hand names its keys (takes_only); otherwise the
+    serializer's fields, which refuse any other key, and what the view reads beside them for that action
+    (body_beside_its_serializer). None where the serializer cannot be worked out without a request.
+    """
+    from apps.core.api import RefusesWhatItWouldDrop
+
+    if owner is not None and owner.__module__.startswith("apps."):
+        listed = taken(owner, name, view)
+        if listed is not None:
+            return listed
+        listed = made_keys(owner, name, view)
+        if listed is not None:
+            return listed
+    made = view()
+    made.action, made.request, made.kwargs, made.format_kwarg = name, None, {}, None
+    try:
+        serializer = made.get_serializer_class()
+        fields = set(serializer(context={"view": made}).fields)
+    except Exception:
+        return None
+    if not issubclass(serializer, RefusesWhatItWouldDrop):
+        return None  # audit_invariants (serializers_off_the_shared_base) reports it
+    return fields | set(getattr(view, "body_beside_its_serializer", {}).get(name, ())) \
+        | RefusesWhatItWouldDrop.NOT_THE_RECORDS
 
 
 def main():
@@ -151,10 +213,16 @@ def main():
         elif named and (row.get("endpoint") or "").startswith("/api/"):
             endpoint = row["endpoint"]
             found = action_at(f"{endpoint}1/{action}/") or action_at(f"{endpoint}{action}/")
+            if found and found[1] in ("create", "update", "partial_update"):
+                found = None  # `${endpoint}void-theirs/` read as a record whose id is the action's name
+        elif action is None and (row.get("endpoint") or "").startswith("/api/") and row.get("method"):
+            # A POST to a list is its create, a PATCH or PUT to `${endpoint}${id}/` its save (O573).
+            endpoint = row["endpoint"]
+            found = action_at(endpoint if row["method"] == "POST" else f"{endpoint}1/")
         if found:
             view, name, listed = found
             if listed is None:
-                continue  # a create or a save, or an action that names no list
+                continue  # an action that names no list, or a serializer that needs a request to be built
             if row["open"]:
                 found = None  # its body is not all read: by hand, below
             else:
@@ -166,8 +234,11 @@ def main():
                     problems.append(f"{where} sends {sorted(set(keys) - listed)} to {view.__name__}.{name}, which "
                                     f"takes only {sorted(listed)}: refused on its first click.")
                 continue
-        if action is None:
-            continue  # a POST to a list or a PATCH to a record: the serializer's fields, whatever the body
+        if action is None and not row["shape"].startswith("record "):
+            continue  # a POST to a list or a PATCH to a record this cannot resolve: a route that is not ours
+        if row["shape"].startswith("record ") and not row["open"] and found is None:
+            problems.append(f"{where} {row['shape']} to {row.get('endpoint')}: no create or save of ours answers it.")
+            continue
         if not named or row["open"]:
             key = (row["file"], action or "?", keys)
             if key in REVIEWED:

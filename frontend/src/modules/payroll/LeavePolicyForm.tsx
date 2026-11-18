@@ -1,6 +1,9 @@
 import { RecordScreen } from "../../views/RecordScreen";
 
-/** A kind of leave and how many days of it a year brings. */
+/**
+ * A kind of leave and how many days of it a year brings: read here, kept in the admin (LeavePolicyViewSet takes
+ * no write). The screen offered New and Save to whoever held the model's permissions, and each answered 405 (O602).
+ */
 export default function LeavePolicyForm() {
   return (
     <RecordScreen
@@ -10,7 +13,7 @@ export default function LeavePolicyForm() {
       newTitle="New leave policy"
       heading={(row) => String(row.code ?? "") + " · " + String(row.name ?? "")}
       state={(row) => (row.is_active === false ? { label: "Inactive", tone: "draft" } : null)}
-      permissions={{ add: "hr.add_leavepolicy", change: "hr.change_leavepolicy", delete: "hr.delete_leavepolicy" }}
+      permissions={{}}
       fields={[
         { key: "code", label: "Code" },
         { key: "name", label: "Name" },

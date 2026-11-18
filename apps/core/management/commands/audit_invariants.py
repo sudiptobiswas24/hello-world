@@ -190,6 +190,8 @@ class _BodyReads:
 
     @staticmethod
     def _request(node, requests):
+        if isinstance(node, ast.Attribute) and node.attr == "request":  # self.request, in a view's perform_create
+            return isinstance(node.value, ast.Name) and node.value.id == "self" and "self.request" in requests
         return isinstance(node, ast.Name) and node.id in requests
 
     def _body(self, node, bodies, requests):
@@ -277,6 +279,7 @@ class Command(BaseCommand):
         findings += self.creates_reading_the_body_by_hand(labels)
         findings += self.actions_reading_the_body_by_hand(labels)
         findings += self.takes_only_short_of_its_reads(labels)
+        findings += self.body_read_beside_its_serializer(labels)
         findings += self.actions_named_after_a_verb(labels)
         findings += self.admin_only_rules(labels)
         findings += self.dead_class_attributes(labels, sources)
@@ -1086,15 +1089,20 @@ class Command(BaseCommand):
 
     def serializers_off_the_shared_base(self, labels, serializers=None):
         """
-        A ModelSerializer of ours not written on apps.core.api.ModelSerializer (O565).
+        A ModelSerializer of ours not written on apps.core.api.ModelSerializer (O565), and a plain Serializer not
+        written on apps.core.api.Serializer (O573).
 
         DRF drops a read-only field it is sent without a word: a quotation posted with its lines was made with
-        none, 201. The shared base refuses a read-only list beside it; a serializer on DRF's own base drops it
-        again. Read from every ModelSerializer the routes import, by the app its module is in.
+        none, 201. It drops a key it has no field for the same way: a follow-up sent `asigned_to` was planned for
+        nobody. The shared bases refuse both beside the other errors; a serializer on DRF's own base drops them
+        again. Read from every serializer the routes import, by the app its module is in. A plain Serializer
+        named a mixin is mixed into ModelSerializers, which are on the base already, and is given no body itself.
         """
+        from rest_framework.serializers import ListSerializer
         from rest_framework.serializers import ModelSerializer as DrfModelSerializer
+        from rest_framework.serializers import Serializer as DrfSerializer
 
-        from apps.core.api import ModelSerializer
+        from apps.core.api import ModelSerializer, RefusesWhatItWouldDrop
 
         def every(cls):
             for sub in cls.__subclasses__():
@@ -1104,7 +1112,8 @@ class Command(BaseCommand):
         scanned = serializers is None
         if scanned:
             self._routed_viewsets()  # imports every module a route reaches, and the serializers with them
-            serializers = set(every(DrfModelSerializer))
+            serializers = {cls for cls in every(DrfSerializer)
+                           if not issubclass(cls, ListSerializer) and not cls.__name__.endswith("Mixin")}
         findings = []
         for cls in sorted(serializers, key=lambda each: (each.__module__, each.__name__)):
             parts = cls.__module__.split(".")
@@ -1112,11 +1121,17 @@ class Command(BaseCommand):
                 continue
             if scanned and any(part.startswith("tests") for part in parts):
                 continue
-            if not issubclass(cls, ModelSerializer):
+            if issubclass(cls, DrfModelSerializer) and not issubclass(cls, ModelSerializer):
                 findings.append((
                     "serializer off the shared base",
                     f"{cls.__module__}.{cls.__name__} is written on DRF's ModelSerializer, which drops a read-only "
                     "list it is sent without a word: write it on apps.core.api.ModelSerializer.",
+                ))
+            elif not issubclass(cls, (DrfModelSerializer, RefusesWhatItWouldDrop)):
+                findings.append((
+                    "serializer off the shared base",
+                    f"{cls.__module__}.{cls.__name__} is written on DRF's Serializer, which drops a key it has no "
+                    "field for without a word: write it on apps.core.api.Serializer.",
                 ))
         return findings
 
@@ -1356,6 +1371,130 @@ class Command(BaseCommand):
                         f"{'it' if len(unnamed) == 1 else 'them'}: each is refused whenever it is sent. Name it.",
                     ))
         return findings
+
+    # A view's own write, by the action whose names (body_beside_its_serializer) it is read under.
+    WRITES_BESIDE = {"create": ("create",), "perform_create": ("create",),
+                     "update": ("update", "partial_update"), "partial_update": ("partial_update",),
+                     "perform_update": ("update", "partial_update")}
+
+    def body_read_beside_its_serializer(self, labels, viewsets=None):
+        """
+        A key read from a body that a serializer is also given, and not named where it is read (O573).
+
+        The shared serializer bases refuse a key that is no field of theirs, so a key the view reads itself beside
+        the serializer is named, or it is refused whenever it is sent: on the viewset, body_beside_its_serializer,
+        by the action reading it (a new party's `role` in perform_create), or in the context of a serializer an
+        action makes itself, body_beside (a coating's `lamination_gsm`). A name listed for an action that does not
+        read it is reported too, though another action reads it: it takes a key nothing reads, which is the drop
+        the rule is there to refuse. The reads are followed
+        through helpers as for takes_only (_BodyReads).
+        """
+        findings, seen, reads = [], set(), _BodyReads()
+        for view in self._routed_viewsets() if viewsets is None else viewsets:
+            if view.__module__.split(".")[0] != "apps" or view.__module__.split(".")[1] not in labels:
+                continue
+            where = f"{view.__module__.split('.')[1]}.{view.__name__}"
+            named = getattr(view, "body_beside_its_serializer", {})
+            fields = self._fields_of(getattr(view, "serializer_class", None))
+            read_by = {}  # each action's reads beside the serializer, for a name listed and not read by it
+            for method, actions in self.WRITES_BESIDE.items():
+                owner = next((cls for cls in view.__mro__ if method in vars(cls)), None)
+                if owner is None or not owner.__module__.startswith("apps.") or fields is None:
+                    continue
+                function = vars(owner)[method]
+                if not inspect.isfunction(inspect.unwrap(function)):
+                    continue
+                if "takes_only(" in inspect.getsource(inspect.unwrap(function)):
+                    continue  # read by hand, and named there (creates_reading_the_body_by_hand)
+                read = reads.keys(function, view, set(), {"request", "self.request"}) - fields
+                for action in actions:
+                    read_by.setdefault(action, set()).update(read)
+                    unnamed = read - set(named.get(action, ()))
+                    if unnamed:
+                        findings.append((
+                            "body read beside its serializer",
+                            f"{where}.{method} reads {', '.join(sorted(unnamed))} from the body its serializer is "
+                            f"given, and its body_beside_its_serializer does not name it for {action}: the "
+                            "serializer refuses it whenever it is sent. Name it there.",
+                        ))
+            for action in sorted(named):
+                # Per action: a name read on create and listed for update too is taken and dropped on a change.
+                stale = set(named[action]) - read_by.get(action, set())
+                if stale:
+                    findings.append((
+                        "body read beside its serializer",
+                        f"{where}.body_beside_its_serializer names {', '.join(sorted(stale))} for {action}, which "
+                        f"its {action} does not read: a key taken and read by nothing is dropped without a word. "
+                        "Take it off.",
+                    ))
+            for name in dir(view):
+                function = getattr(view, name, None)
+                # An action answering a write, or a plain ViewSet's own create or change (a follow-up's).
+                if name not in self.WRITES_BESIDE and (not hasattr(function, "mapping")
+                                                       or set(function.mapping) <= {"get"}):
+                    continue
+                owner = next((cls for cls in view.__mro__ if name in vars(cls)), None)
+                if owner is None or not owner.__module__.startswith("apps.") or (owner, name) in seen:
+                    continue
+                if not inspect.isfunction(inspect.unwrap(vars(owner)[name])):
+                    continue
+                seen.add((owner, name))
+                findings += self._read_beside_made_serializers(vars(owner)[name], view, f"{where}.{name}", reads)
+        return findings
+
+    def _read_beside_made_serializers(self, function, view, where, reads):
+        """An action making a serializer with data=request.data, against the keys it reads beside it."""
+        tree = _function_tree(function)
+        made = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            given = next((keyword.value for keyword in node.keywords if keyword.arg == "data"), None)
+            if not (isinstance(given, ast.Attribute) and given.attr == "data"
+                    and getattr(given.value, "id", None) == "request"):
+                continue
+            cls = _BodyReads._resolved(node.func, inspect.unwrap(function), view, {})
+            fields = self._fields_of(cls)
+            if fields is None:
+                continue
+            beside = set()
+            for keyword in node.keywords:
+                if keyword.arg == "context" and isinstance(keyword.value, ast.Dict):
+                    for key, value in zip(keyword.value.keys, keyword.value.values):
+                        if getattr(key, "value", None) == "body_beside" and isinstance(value, (ast.Tuple, ast.List)):
+                            beside |= {each.value for each in value.elts if isinstance(each, ast.Constant)}
+            made.append((cls, fields, beside))
+        if not made or "takes_only(" in inspect.getsource(inspect.unwrap(function)):
+            return []
+        read = reads.keys(function, view, set(), {"request"})
+        findings = []
+        for cls, fields, beside in made:
+            unnamed = read - fields - beside
+            if unnamed:
+                findings.append((
+                    "body read beside its serializer",
+                    f"{where} reads {', '.join(sorted(unnamed))} beside {cls.__name__}, which it gives the same body "
+                    "and which refuses it whenever it is sent. Name it in that serializer's body_beside.",
+                ))
+            if beside - read:
+                findings.append((
+                    "body read beside its serializer",
+                    f"{where} names {', '.join(sorted(beside - read))} in {cls.__name__}'s body_beside and reads it "
+                    "nowhere: a key taken and read by nothing is dropped without a word. Take it off.",
+                ))
+        return findings
+
+    @staticmethod
+    def _fields_of(cls):
+        """A serializer class's field names, or None for anything that is not one of ours."""
+        from apps.core.api import RefusesWhatItWouldDrop
+
+        if not (inspect.isclass(cls) and issubclass(cls, RefusesWhatItWouldDrop)):
+            return None
+        try:
+            return set(cls(context={}).fields)
+        except Exception:  # a serializer whose fields need a request to be built: left to the tests
+            return None
 
     def actions_named_after_a_verb(self, labels, viewsets=None):
         """
