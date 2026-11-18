@@ -50,6 +50,94 @@ pg_isready -q || service postgresql start                              # role er
 
 ## 2. Next steps, in order
 
+**g46, g47 and g48 are pushed together (39b78af, 18 November 2026), all seven lanes green on one tip (gated as 8d289dc).**
+Six commits from 5a2e1b0. g46's tip failed the migration lane, g47's first tip failed three browser tests, and
+finalize refused g47's fixed tip on its migration lane's base (below), so each was folded into the next and the six
+gated once.
+
+g46 (three commits):
+- O596: the pay-run poster test reads the ledger log's rows from its own post, not those earlier tests left in the
+  same PostgreSQL database (the log refuses TRUNCATE, so a TransactionTestCase's flush cannot clear it).
+- O247: a party's TDS rate of its own says what it rests on (tds_rate_basis): the deductee's own class, with no
+  dates, or a lower-deduction certificate (section 197), which stands only from its first day to its last inside
+  one financial year. own_tds_rate_on() is the one reading, asked by the deduction on the day tax falls due and by
+  the posting check, which let every bill through for a vendor with any rate of its own. **Upgrade note:** a rate
+  entered before keeps its old meaning, every day, until it is next saved, which asks; Health lists each one.
+- O597 (found building O247, fixed in it, not registered): a deduction keeps the certificate its rate was
+  (TdsDeduction.certificate, one of its facts), and the quarter's return names it. Deductions made before say
+  none; it is not guessed from the profile.
+
+g47 (one commit), O579:
+- 252 actions that read their body by hand name the keys they take (apps.core.api.takes_only), and a key not taken
+  is refused beside it rather than dropped. audit_invariants reports an action reading its body without the list,
+  in its own source or in a helper it hands the request to (actions_reading_the_body_by_hand), and a list short of
+  a key the action or its helpers read (takes_only_short_of_its_reads).
+- **The first lists broke two screens, and only the suite said so:** the station's four weighing actions read
+  `core` in a helper, and the tablet sends it with every roll; the old-supply credit and debit notes read `memo`,
+  `on_date` and `old_value` in from_request, which OldSupplyNote sends. A screen check by pattern had called 180
+  calls clean and missed both. Seven more actions read their body only through a helper given the request
+  (granting and revoking a role, approving leave, four asset actions) and escaped the first form of the check.
+- The ui lane now runs scripts/gate/screenkeys.py: every write the office app and the station tablet make, read
+  from oxc's syntax tree, against the keys its action takes (281 checked; nine generic runners listed with why,
+  and a new unreadable one fails). gateline.py now reads it and the register check, whose failure it never read.
+- **Gate a tip with its own scripts** (GATE_TREE/scripts/gate/lane.sh), or a new step in it does not run: lane.sh
+  takes its steps from the copy that is run, and this gate was the first to need it.
+
+g48 (one commit), O250:
+- Every payment inside the discount days earns its share of the settlement discount, a row each
+  (accounting.mixins.SettlementDiscountTaken; sales.InvoiceDiscount, purchasing.BillDiscount). 1,000 at 2/10 paid
+  490 + 490 by the 10th left 10.00 owing that no one owed: a document kept one discount, so the second payment
+  earned nothing. A payment earns on the running total of what the payments that earned here settle, so
+  400 + 400 + 180 earns 8.16, 8.17 and 3.67 and leaves no paisa. A returned payment takes back its own discount and
+  no other. Each discount event books the step in the rounded base of what stands (discount_base_moved). A migration
+  each side copies the discount taken before into its row, naming no payment; back, a document holding two refuses.
+- **Every lane since g40 printed "FAIL O109 ... [due 10.00]" and stayed green.** The fact tests' say() printed PASS or
+  FAIL and returned, in four modules, so a false claim was a line in a log. It is one helper now
+  (apps/core/tests_claims.py) and raises; run with it first, the O250 claim was the only one to fail.
+- A PostgreSQL race of two payments earning at once (8.16 and 8.17, not 8.16 twice) and a MigrationExecutor test
+  each side.
+
+Counts: SQLite 8,937 (252 skipped), PostgreSQL 4,141 + 3,701 + 1,095 = 8,937, Asia/Kolkata 8,937 (252 skipped),
+migration-tagged 58 and the one PostgreSQL-only (every app ran: the range touches scripts/gate), vitest 84.
+
+- **O579's lists refused the adders' `id`, and only the browser tests said so.** c14ebc7 (g47) failed three
+  browser tests on SQLite and on PostgreSQL alike: a count line, a party's second role and an RFQ's quote could not
+  be added from their panels. ActionForm gave a declared body the form's own state, which blank() starts as
+  { id: 0 }, so `body: (values) => values` sent an `id` that the three actions, now naming their keys, refused. The
+  screen check took `values` to be the fields and called the three clean. 05e24d6 gives a body the fields' values and
+  nothing else, with a rendered test of the count's adder that failed with the screen as it was.
+- **finalize refused 05e24d6 with all seven lanes green.** Its migration lane ran with GATE_BASE=c14ebc7, and a
+  skip rests on a commit a whole gate passed: c14ebc7 had failed three browser tests. Only office-app files changed
+  after it, but that is the doubt the gate README says to settle by running every app, and the guard was kept. The
+  range from 5a2e1b0 touches scripts/gate, so every app runs either way (about five hours); g48 was built, so it was
+  folded in and one gate run on its tip, rather than five hours for g47 alone and then g48's own gate.
+- **A watcher's `pgrep -f "lane.sh g48 ui"` matches its own `bash -c` line**, so it waits out its timeout, not the
+  lane: ist's watcher in g47 and ui's in g48 each did, and pg-a started 80 minutes late. Write `[l]ane.sh`. The rest
+  of g48's order ran from one detached chain script, launching each lane as its turn came.
+- The container restarted twice (01:36 UTC in g47's ist lane, 07:48 in g48's mig lane), killing every lane and
+  watcher with no word. The mig lane carried on from its `.done` markers; a chain started again from its top re-ran
+  a lane that had passed. A chain written for a gate should skip a lane whose driver file says exit=0 on the HEAD,
+  so it can be started again as it is. Not in scripts/gate yet: a change there runs every app's migration tests at
+  the next gate.
+- The tip that failed on the way: aee7ff3 (g46) failed the migration lane on purchasing's
+  CategoryKeptMigrationTests: O247 added tds_rate_basis NOT NULL with no database default, and the test, which
+  rolls purchasing back and leaves accounting at its newest, made a tax profile through an older model that knew
+  no basis. The field now has db_default "" (migration 0040 edited, never pushed). The same change had given the
+  deduction's certificate a db_default and not the profile's basis: the pre-flight rule on AddField says why both.
+- Register: O598 (a certificate's amount limit is not kept: past the amount it names, its rate goes on to its last
+  day; a bill crossing it wants two rates, which one deduction per bill and section cannot hold); O601 (the screen
+  check reads `body: (values) => values` as the fields' keys, true only because of 05e24d6, and nothing checks
+  ActionForm's call); O599 (an allocation deleted or cut after its payment earned keeps the discount, older than
+  O250); O600 (a note undoing discounts booked to two accounts books beside the newest). O579 and O250 are fixed.
+- Left open, and why: O389 (no live plant holds a disposal from before g24, so a backfill helps nobody yet); O600
+  (a note's discount undo split across the accounts the discounts went to needs what each earlier note undid on
+  each account: notes keep one total, and their one entry holds the write-off's undo beside the discount's, so the
+  books cannot tell the two apart when both went to one account. Wants a record per note and account, not a
+  replay).
+- Waiting on people, unchanged: the owner (O448, O494, O557, O558, O559, O562, O571, decision 24; O550 needs the
+  Maharashtra minimum wage notification), the tax adviser (O449, O500, O534, O559, O561), the accountant (O536,
+  O538, O562, O563, docs/STATUTORY_REVIEW.md section 14).
+
 **g42 to g45 are pushed together (19a9b84, 17 November 2026), all seven lanes green on one tip (gated as 2906eab).**
 Thirty-six commits from 565c724. Four rounds went through one gate: each time a tip failed and had to change, the
 next round's reviewed commits were folded in rather than gated twice.
