@@ -10,7 +10,6 @@ half the earning.
 import datetime
 from decimal import Decimal
 
-from django.core.exceptions import ValidationError
 
 from apps.accounting.models import Account, AccountType, JournalLine
 from apps.hr.payroll import ComponentBasis, ComponentKind, EmployeeCompensation, PayComponent, PayRun, Payslip

@@ -1,6 +1,5 @@
 """Review probes (review_rcm): the reverse-charge screens as people without the right."""
 
-import re
 
 from django.contrib.staticfiles.testing import StaticLiveServerTestCase
 

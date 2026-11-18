@@ -16,7 +16,7 @@ from django.core.management import call_command
 from django.test import TestCase
 from rest_framework.test import APIClient
 
-from apps.accounting.models import Account, AccountType, BooksOpening, JournalLine
+from apps.accounting.models import Account, AccountType, BooksOpening
 from apps.core.models import Company, Currency
 
 from .management.commands.load_tax_depreciation_rates import load

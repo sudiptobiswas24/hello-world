@@ -27,7 +27,6 @@ from apps.inventory.models import Item
 from .models import (
     CustomerProfile,
     DunningLevel,
-    DunningNotice,
     Invoice,
     InvoiceLine,
     Quotation,

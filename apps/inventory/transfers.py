@@ -27,7 +27,7 @@ from django.utils import timezone
 
 from apps.core.models import AuditModel, DocumentSequence, serialised, to_date
 
-from .locking import lock_position, lock_positions
+from .locking import lock_positions
 from .models import Item, MovementType, StockMovement, Warehouse
 
 

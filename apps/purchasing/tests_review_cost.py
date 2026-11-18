@@ -8,11 +8,11 @@ import datetime
 from decimal import Decimal
 
 from apps.accounting.models import Account, AccountType, ChargeType
-from apps.core.models import Company, Party, PartyRole, PartyRoleAssignment
+from apps.core.models import Company
 from apps.inventory.reports import reconcile_to_ledger
 
 from . import tests_returns_and_landed as base
-from .models import Bill, BillLine, BillPolicy, GoodsReceipt, GoodsReceiptLine
+from .models import BillLine, BillPolicy
 
 D = Decimal
 JAN = lambda day: datetime.date(2026, 1, day)  # noqa: E731
@@ -614,7 +614,7 @@ class SubcontractReturnProbes(SubcontractTestCase):
     def lots(self):
         import datetime as dt
 
-        from apps.inventory.models import Item, Lot, MovementType, StockMovement
+        from apps.inventory.models import Lot, MovementType, StockMovement
         from django.utils import timezone
 
         for code, quantity, expires in (("F-1", "1.11", dt.date(2026, 12, 31)), ("F-2", "98.89", dt.date(2027, 6, 30))):

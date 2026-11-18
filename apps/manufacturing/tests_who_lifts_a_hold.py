@@ -289,7 +289,7 @@ class TraceOnALoop(RunTestCase):
         return order
 
     def test_trace_recall_ends_on_a_loop_and_lists_each_lot_once(self):
-        from apps.inventory.models import Item, Lot
+        from apps.inventory.models import Lot
 
         from .trace import descendants, recall
 

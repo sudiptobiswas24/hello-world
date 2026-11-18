@@ -11,7 +11,6 @@ it. These tests check that the template holds the product together
 without changing what a plain item does.
 """
 
-import datetime
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError

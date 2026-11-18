@@ -12,11 +12,9 @@ from decimal import Decimal
 
 from django.core.exceptions import ValidationError
 
-from apps.accounting.models import Payment, PaymentDirection
 
 from .models import (
     DunningLevel,
-    InvoiceWriteOff,
     SettlementStatus,
     ar_aging,
     bad_debt_report,

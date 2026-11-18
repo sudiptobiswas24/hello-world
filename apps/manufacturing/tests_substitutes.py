@@ -13,7 +13,7 @@ from django.core.exceptions import ValidationError
 from apps.inventory.models import Item
 
 from .bom import BomComponent, BomSubstitute
-from .orders import MaterialIssue, MaterialIssueLine, WorkOrderStatus
+from .orders import MaterialIssue, MaterialIssueLine
 from .tests_orders import TODAY, RunTestCase
 
 
@@ -155,7 +155,6 @@ class IssuingTheStandInTests(SubstituteTestCase):
         self.assertEqual(component.quantity_issued(), Decimal("0"))
 
     def test_returning_the_stand_in_takes_it_back(self):
-        from .orders import IssueDirection
 
         self.allow()
         self.stock(self.other_white, "100", "210")

@@ -24,7 +24,7 @@ from apps.core.models import (
 )
 from apps.inventory.models import Item, Warehouse
 
-from .models import Delivery, DeliveryLine, Invoice, SalesOrder, SalesOrderLine, SettlementStatus
+from .models import Delivery, DeliveryLine, SalesOrder, SalesOrderLine, SettlementStatus
 
 
 class ReturnsTestCase(TestCase):

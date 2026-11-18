@@ -34,7 +34,6 @@ class PlanLineSerializer(ModelSerializer):
 
     def get_characteristic_label(self, line):
         return f"{line.characteristic.code} · {line.characteristic.name}"
-        read_only_fields = ["derived_from"]
 
 
 class InspectionPlanSerializer(ModelSerializer):
@@ -162,7 +161,6 @@ class CalibrationSerializer(ModelSerializer):
         return [{"id": inspection.pk, "inspection": inspection.number, "lot": inspection.lot.code,
                  "inspected_on": str(inspection.inspected_on)}
                 for inspection in calibration.suspect_inspections()]
-        read_only_fields = ["number", "posted", "posted_at", "voided_at", "voided_reason"]
 
 
 class SupplierCertificateLineSerializer(ModelSerializer):

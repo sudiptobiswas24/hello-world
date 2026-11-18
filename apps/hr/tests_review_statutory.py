@@ -3,7 +3,6 @@ Review probes for g24 (fix_statutory, d76ef6f..0cca92e): each test asserts what 
 Hand numbers are in /home/user/work/calc_review_statutory/calc.py.
 """
 
-import datetime
 from decimal import Decimal
 
 from django.contrib.auth.models import User
@@ -13,7 +12,7 @@ from .payroll import PayComponent, Statutory
 from .pay_details import EmployeePayDetails
 from .statutory import BONUS_CEILING, FigureKind, MinimumWage, Skill, StatutoryFigure
 from .statutory_check import statutory_gaps
-from .tests_statutory_seed import D, LoadedTestCase, PayComponentSlab
+from .tests_statutory_seed import D, LoadedTestCase
 from .payroll import ComponentBasis, ComponentKind, Rounding
 
 

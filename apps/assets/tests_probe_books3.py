@@ -22,7 +22,7 @@ class O353(CapitalisationFixture):
         from django.core.exceptions import ValidationError
         try:
             line.capitalise_as_asset(self.category); third = "capitalised"
-        except ValidationError as e:
+        except ValidationError:
             third = "refused"
         ok.append(self.check("third unit can be capitalised after the draft is deleted", third, "capitalised"))
         ok.append(self.check("plant == sum of asset costs", self.balance(self.plant),
@@ -49,7 +49,7 @@ class O353(CapitalisationFixture):
         from django.core.exceptions import ValidationError
         try:
             dl.save(); note.refresh_from_db(); note.post(); res = "posted 2 units"
-        except ValidationError as e:
+        except ValidationError:
             res = "refused"
         # the books may not take back more than the two assets left in the account
         self.check("editing the counted draft to 2 units and posting", res, "refused")
@@ -74,8 +74,8 @@ class O353Foreign(CapitalisationFixture):
                 line = BillLine.objects.create(bill=bill, description="M", quantity=D(qty), unit_price=D(price), expense_account=self.expense)
                 bill.post()
                 note = bill.create_debit_note(quantities={line: D(dq)}, post=False)
-                before_plant, before_exp = self.balance(self.plant), self.balance(self.expense)
-                assets = line.capitalise_as_asset(self.category)
+                _before_plant, _before_exp = self.balance(self.plant), self.balance(self.expense)
+                line.capitalise_as_asset(self.category)
                 note.post()
                 n += 1
                 exp = self.balance(self.expense)

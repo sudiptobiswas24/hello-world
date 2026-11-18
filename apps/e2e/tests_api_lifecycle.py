@@ -12,7 +12,6 @@ Six go on the first truck, four are left for the backorder. The order is
 invoiced in full, 1,000.00; two are credited, 800.00; 300.00 comes in.
 """
 
-import datetime
 from decimal import Decimal
 
 from django.contrib.auth.models import Group, User

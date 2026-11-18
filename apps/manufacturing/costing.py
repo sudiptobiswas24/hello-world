@@ -34,8 +34,7 @@ disagreed. Publishing now posts the difference, or refuses.
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
-from django.db import models, transaction
-from django.db.models import Q
+from django.db import models
 from django.utils import timezone
 
 from apps.accounting.models import round_money
@@ -141,7 +140,7 @@ class CostVersion(AuditModel):
                 f"{self} was published on {self.published_on}. Published costs "
                 "are what stock is valued at; roll up a new version instead."
             )
-        from .bom import BillOfMaterials, default_bom_for
+        from .bom import BillOfMaterials
 
         wanted = items
         if wanted is None:

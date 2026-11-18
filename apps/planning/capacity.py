@@ -47,7 +47,6 @@ import datetime
 from collections import defaultdict
 from decimal import Decimal
 
-from django.core.exceptions import ValidationError
 
 MINUTES_PER_HOUR = Decimal("60")
 ZERO = Decimal("0")

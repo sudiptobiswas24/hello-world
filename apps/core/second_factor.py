@@ -40,7 +40,7 @@ from urllib.parse import quote
 
 import pyotp
 from django.conf import settings
-from django.contrib.auth import get_user, login
+from django.contrib.auth import get_user
 from django.contrib.auth.models import AnonymousUser, Permission
 from django.contrib.auth.forms import PasswordChangeForm
 from django.contrib.auth.views import LoginView, PasswordChangeView

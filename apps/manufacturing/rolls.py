@@ -427,7 +427,6 @@ def unrolled_stock(item, warehouse):
     reading `metres_on_hand` is being told about less fabric than the
     plant owns — and silently, which is the worst way to be short.
     """
-    from apps.inventory.tracking import lots_at
 
     total = Decimal(item.on_hand_at(warehouse))
     rolled = sum(

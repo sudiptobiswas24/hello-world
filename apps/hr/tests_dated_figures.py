@@ -610,7 +610,7 @@ class TheMonthsFiguresAreOwedOnceTests(DatedFiguresTestCase):
 
     def test_the_earlier_run_voided_after_the_later_one_leaves_the_month_to_the_next_run_of_it(self):
         """The later run keeps what it took (nothing) and why; the month reads nothing until a run of June takes it."""
-        first, second = self.fortnight(1), self.fortnight(16)
+        first, _second = self.fortnight(1), self.fortnight(16)
         first.void(on_date=D(2026, 7, 1))
         self.assertEqual(self.june_register(), (Decimal("0"), Decimal("0")))
         again = self.fortnight(1)

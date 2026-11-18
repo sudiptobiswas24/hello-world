@@ -6,7 +6,6 @@ raise a purchase order — the company buying what it already has and
 paying to store it twice.
 """
 
-import datetime
 from decimal import Decimal
 
 from django.db import IntegrityError

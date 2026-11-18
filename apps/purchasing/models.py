@@ -81,7 +81,6 @@ from apps.inventory.models import (
     MovementType,
     StockMovement,
     Warehouse,
-    lock_position,
     lock_positions,
     move_stock,
     plan_issue,
@@ -100,7 +99,6 @@ from apps.accounting.settlement import (
     held_base_left,
     last_of_held,
     entries_that_settled,
-    slice_of,
     discount_base_moved,
     discount_history,
     discount_left,
@@ -109,12 +107,10 @@ from apps.accounting.settlement import (
     spent_undoing,
     booked_by,
     post_drawdown,
-    standing_allocations,
     standing_paid,
     RealisedOnItsOwnDay,
     refuse_other_control_account,
     booked_beside,
-    settlement_discount_to_take,
     undone_by_note,
 )
 from apps.inventory.availability import check_available
@@ -1412,7 +1408,7 @@ class BlanketOrder(TaxesTakenUnder, AuditModel):
             taxes_taken_under=self.taxes_taken_under,  # its lines' taxes are the agreement's (O446)
         )
         for line, quantity in selected:
-            order_line = PurchaseOrderLine.objects.create(
+            PurchaseOrderLine.objects.create(
                 order=order, blanket_line=line, item=line.item, uom=line.uom,
                 # At the discount agreed with the price (O97): dropped, 10 @ 100
                 # less 5% was released at 1,000.00, not 950.00.
@@ -2371,7 +2367,7 @@ class PurchaseOrder(Extensible, TaxesTakenUnder, TaxedDocumentMixin, ChangesWith
             payment_terms=self.payment_terms,
         )
         for line, remaining in outstanding:
-            bill_line = BillLine.objects.create(
+            BillLine.objects.create(
                 bill=bill,
                 order_line=line,
                 item=line.item,
@@ -7648,7 +7644,6 @@ class GoodsReceipt(AuditModel):
         # goods is not told to decide; `quality_told` says who was.
         held = self.held_assemblies()
         if held:
-            from apps.core.approvals import authors
             from apps.quality.decisions import tell_the_quality_manager
 
             self.quality_told = tell_the_quality_manager(

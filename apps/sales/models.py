@@ -27,7 +27,7 @@ from apps.core.approvals import (
     told,
     ApprovableMixin, ApprovalStatus, ChangesWithinItsApproval, asks_its_policy_when_taxes_change, authors,
 )
-from apps.core.documents import grouped, in_words_of_money, money
+from apps.core.documents import grouped, in_words_of_money
 from apps.core.history import EventKind, record
 from apps.core.recurrence import RecurrenceInterval, add_interval, follow_the_start, run_date, still_to_take
 from apps.core.models import (
@@ -111,7 +111,6 @@ from apps.accounting.settlement import (
     owed_beyond,
     held_base_left,
     last_of_held,
-    slice_of,
     spent_undoing,
     booked_by,
     post_drawdown,
@@ -120,7 +119,6 @@ from apps.accounting.settlement import (
     RealisedOnItsOwnDay,
     refuse_other_control_account,
     booked_beside,
-    settlement_discount_to_take,
     entries_that_settled,
     discount_base_moved,
     discount_history,
@@ -1188,7 +1186,7 @@ class SalesOrder(PlacedWhereTheGoodsGo, Extensible, TaxesTakenUnder, TaxedDocume
             sales_rep=self.sales_rep,
         )
         for line, remaining in outstanding:
-            invoice_line = InvoiceLine.objects.create(
+            InvoiceLine.objects.create(
                 invoice=invoice,
                 order_line=line,
                 item=line.item,
@@ -3311,7 +3309,7 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxesTa
             # At what is left of the line's value: after a claim, not its whole price (O185).
             for quantity, price, discount in priced_to_give_back(
                     line, wanted, "credits_line", InvoiceLine.quantity_credited, on="invoice"):
-                credit_line = InvoiceLine.objects.create(
+                InvoiceLine.objects.create(
                     invoice=credit_note,
                     order_line=line.order_line,
                     credits_line=line,
@@ -6075,7 +6073,7 @@ class Quotation(PlacedWhereTheGoodsGo, TaxesTakenUnder, TaxedDocumentMixin, Audi
             created_by=by, updated_by=by,
         )
         for line in self.lines.all():
-            revision_line = QuotationLine.objects.create(
+            QuotationLine.objects.create(
                 quotation=revision, item=line.item, charge=line.charge,
                 description=line.description, uom=line.uom,
                 quantity=line.quantity, unit_price=line.unit_price,
@@ -6154,7 +6152,7 @@ class Quotation(PlacedWhereTheGoodsGo, TaxesTakenUnder, TaxedDocumentMixin, Audi
             sales_rep=self.sales_rep,
         )
         for line in self.lines.all():
-            order_line = SalesOrderLine.objects.create(
+            SalesOrderLine.objects.create(
                 order=order, item=line.item, charge=line.charge,
                 description=line.description, uom=line.uom,
                 quantity=line.quantity, unit_price=line.unit_price,
@@ -6551,7 +6549,7 @@ class RecurringInvoice(TaxesTakenUnder, AuditModel):
             reference=self.code,
         )
         for line in self.lines.all():
-            invoice_line = InvoiceLine.objects.create(
+            InvoiceLine.objects.create(
                 invoice=invoice, item=line.item, description=line.description,
                 quantity=line.quantity, unit_price=line.unit_price,
                 discount_percent=line.discount_percent, revenue_account=line.revenue_account,

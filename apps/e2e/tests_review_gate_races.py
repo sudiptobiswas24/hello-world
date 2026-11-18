@@ -1,5 +1,4 @@
 """Reviewer races for the gate (review_gate), PostgreSQL only."""
-import datetime
 import unittest
 from decimal import Decimal as D
 
@@ -16,7 +15,7 @@ from apps.purchasing import tests_weight_claims as fx
 class GateReviewRaces(fx.WeighedReceiptTestCase, RaceCase):
     def test_x1_one_reading_two_vehicles_at_once(self):
         from apps.inventory.gate import GateVisit, Weighing
-        from apps.manufacturing.station_scale import ScaleReading, post_reading, weigh_from_bridge
+        from apps.manufacturing.station_scale import post_reading, weigh_from_bridge
         post_reading("WB-1", "25860", True)
         ws = []
         for n in ("MH12AB1", "MH12AB2"):

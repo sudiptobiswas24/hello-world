@@ -14,7 +14,6 @@ from decimal import Decimal as D
 
 from django.core.exceptions import ValidationError
 
-from apps.core.models import PartyRole
 from apps.sales.models import Invoice, InvoiceLine, claims
 
 from .returns import gstr1

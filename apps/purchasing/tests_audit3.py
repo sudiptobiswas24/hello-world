@@ -124,7 +124,7 @@ class ReorderReleaseTests(AuditThreeTestCase):
         receipt = GoodsReceipt.objects.create(
             purchase_order=order, receipt_date=datetime.date(2026, 1, 5)
         )
-        receipt_line = GoodsReceiptLine.objects.create(
+        GoodsReceiptLine.objects.create(
             receipt=receipt, order_line=line, warehouse=quarantine,
             quantity_received=Decimal("10"),
         )

@@ -36,7 +36,7 @@ class O347(TestCase):
         if valid:
             try:
                 ma.save_model(req, item, form, True); outcome += "; saved"
-            except ValidationError as e:
+            except ValidationError:
                 outcome += "; save_model raised ValidationError (admin 500)"
         print("admin form cogs=liability:", outcome, "errors:", dict(form.errors))
         self.assertFalse(valid and "500" in outcome, outcome)

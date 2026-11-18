@@ -22,7 +22,7 @@ from decimal import Decimal
 from django.core.exceptions import ValidationError
 from django.db.models import Sum
 
-from .bins import bins_holding, suggest_pick, suggest_putaway, unbinned
+from .bins import suggest_pick, suggest_putaway, unbinned
 from .tracking import allocate, lot_held
 
 

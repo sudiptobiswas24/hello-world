@@ -217,7 +217,6 @@ class ReviewSechrProceedsPlacesProbe(ApiTestCase):
         self.client.force_authenticate(controller)
         asset = self.asset()
         self.client.raise_request_exception = False
-        import traceback
         answers = {}
         for big in ("99999999999999999.00", "10000000000000000"):
             r = self.post(f"assets/{asset.pk}/dispose/", {"on_date": "2026-04-15", "proceeds": big})

@@ -14,7 +14,7 @@ from django.core.exceptions import ValidationError
 from apps.accounting.models import Account, AccountType
 from apps.core.models import Company, Party, PartyRole, PartyRoleAssignment
 
-from .models import Bill, BillPolicy, PrepaymentApplication, vendor_balance
+from .models import Bill, vendor_balance
 from .tests_lifecycle import PurchasingLifecycleTestCase
 
 

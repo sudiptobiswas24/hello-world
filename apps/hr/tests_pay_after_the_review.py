@@ -4,16 +4,14 @@ Each test states a fact about money; a failure is a finding.
 Run: PYTHONPATH=scripts/gate .venv/bin/python manage.py test apps.hr.tests_pay_after_the_review --settings=fastsettings
 """
 
-import datetime
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
 
 from apps.accounting.models import Account, AccountType, PaymentDirection
 
-from .advances import SalaryAdvance
 from .bank_file import SalaryTransferFile
-from .payroll import ComponentBasis, ComponentKind, PayComponent, PayRun, PayslipLine
+from .payroll import PayComponent, PayRun
 from .statutory_files import lwf_register, pt_register
 from . import tests_dated_figures, tests_pay_outputs
 from .tests_pay_outputs import D, OutputsTestCase

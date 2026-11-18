@@ -10,7 +10,7 @@ from decimal import Decimal
 from apps.accounting.models import Account, AccountType
 from apps.inventory.costing import CostingMethod, replay
 from apps.inventory.models import (
-    AdjustmentDirection, AdjustmentReason, Item, StockAdjustment, StockAdjustmentLine, Warehouse)
+    AdjustmentDirection, AdjustmentReason, StockAdjustment, StockAdjustmentLine, Warehouse)
 from apps.core.models import UnitOfMeasure, UnitOfMeasureCategory
 
 from .models import (GoodsReceipt, GoodsReceiptLine, PurchaseOrder, PurchaseOrderLine)
@@ -67,15 +67,14 @@ class ShelfAgainstLedger(LandedCostTestCase):
                 line = r.lines.get()
                 r.create_return(quantities={line: D(q) / 3}, debit_bills=False)
                 self.agree(f"partial return {price} {q}")
-                r2 = r
             self.write_off("1.0001")
             self.agree("write off")
 
     def test_landed_cost_then_a_sale_then_a_take_back(self):
         order = self.make_order("7", "4.01")
         order.lines.create(charge=self.freight, description=self.freight.name, quantity=1, unit_price=D("10.00"))
-        r1 = self.receive_part(order, "3")
-        r2 = self.receive_part(order, "4")
+        self.receive_part(order, "3")
+        self.receive_part(order, "4")
         self.agree("received")
         self.write_off("2")
         self.agree("written off")
@@ -90,7 +89,7 @@ class ShelfAgainstLedger(LandedCostTestCase):
         order = self.make_order("7", "4.01")
         order.lines.create(charge=self.freight, description=self.freight.name, quantity=1, unit_price=D("10.00"))
         r1 = self.receive_part(order, "3")
-        r2 = self.receive_part(order, "4")
+        self.receive_part(order, "4")
         bill = order.create_bill(self.payable)
         bill.post()
         self.agree("landed")
@@ -111,9 +110,6 @@ class ShelfAgainstLedgerStandard(ShelfAgainstLedger):
         super().test_landed_cost_then_a_sale_then_a_take_back()
 
 
-from .tests_subcontract import SubcontractTestCase
-from apps.core.models import Company
-from apps.inventory.models import StockMovement
 
 
 class InCases(LandedCostTestCase):

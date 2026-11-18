@@ -11,12 +11,11 @@ from django.core.exceptions import ValidationError
 from django.core.management import call_command
 from rest_framework.test import APIClient
 
-from apps.accounting.models import JournalLine
 from apps.core.tests_claims import say
 from apps.gst import tests_einvoice as ein
 from apps.sales import tests_tcs as tcs
 from apps.sales.models import Invoice, InvoiceLine, SalesOrder, SalesOrderLine, outstanding_balance
-from apps.sales.tcs import TcsChallan, TcsCollection, TcsRate
+from apps.sales.tcs import TcsChallan, TcsRate
 
 D = Decimal
 SEP10, SEP20, OCT5, OCT8 = (datetime.date(2026, 9, 10), datetime.date(2026, 9, 20),
@@ -164,8 +163,8 @@ class TheReturnAndTheChallan(tcs.TcsTestCase):
     def test_an_edited_section_name_does_not_change_a_filed_collection_or_its_challan_or_the_ledger_memo(self):
         from apps.sales.tcs import tcs_return
 
-        invoice = self.t1()
-        challan = TcsChallan.pay(self.section, datetime.date(2026, 9, 1), datetime.date(2026, 10, 5), self.bank,
+        self.t1()
+        TcsChallan.pay(self.section, datetime.date(2026, 9, 1), datetime.date(2026, 10, 5), self.bank,
                                  "00042", "0510308")
         before = tcs_return(datetime.date(2026, 7, 1), datetime.date(2026, 9, 30))
         self.section.name, self.section.code = "Scrap (renamed)", "206C(1H)"

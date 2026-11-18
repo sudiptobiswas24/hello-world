@@ -12,7 +12,7 @@ from django.contrib.auth.models import User
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from apps.inventory.models import Lot, MovementType, StockMovement, TrackingMode
+from apps.inventory.models import Lot, MovementType, StockMovement
 from apps.sales.models import (
     Delivery, DeliveryAllocation, DeliveryLine, SalesOrder, SalesOrderLine,
 )

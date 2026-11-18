@@ -15,7 +15,7 @@ from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from rest_framework.test import APIClient
 
-from .station import LineKind, LoomStation
+from .station import LoomStation
 from .station_scale import ScaleReading, post_reading
 from .station_tape import record_tape
 from .tests_orders import TODAY

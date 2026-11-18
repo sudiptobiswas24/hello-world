@@ -102,7 +102,7 @@ class Doors(RolesTestCase):
         except ValidationError as e:
             print("O324 std reval refused", e.messages)
         # stock count post with bad reason
-        from .adjustments import StockCount, StockCountLine
+        from .adjustments import StockCount
         sc = StockCount.objects.create(count_date=datetime.date(2026, 3, 2), warehouse=self.store, reason=r2)
         print("count fields ok", sc.pk)
 
@@ -155,7 +155,6 @@ class Doors(RolesTestCase):
     # ---- O326 / O327
     def test_writers(self):
         out = {}
-        now = "timezone.now()"
         pre = "from django.utils import timezone\nfrom apps.inventory.models import StockMovement, MovementType\nfrom decimal import Decimal as D\n"
         base = "item=item, warehouse=store, movement_type=MovementType.RECEIPT, uom=kg, quantity=D('3'), occurred_at=timezone.now()"
         spellings = {
@@ -181,7 +180,7 @@ class Doors(RolesTestCase):
                 with transaction.atomic():
                     app_code(pre + code, item=self.item, store=self.store, kg=self.kg)
                 out[name] = f"WRITTEN +{StockMovement.objects.count() - n0}"
-            except ValidationError as e:
+            except ValidationError:
                 out[name] = "refused"
             except Exception as e:
                 out[name] = f"{type(e).__name__}: {str(e)[:60]}"
@@ -234,15 +233,14 @@ class StaleRead(Doors):
 
 class FloorReadsAdjustments(Doors):
     def test_ws_reads_money_of_documents(self):
-        from .models import set_standard_cost
         inc = Account.objects.create(code="4100", name="Found", account_type=AccountType.INCOME)
         r = AdjustmentReason.objects.create(code="F", name="found", account=inc, direction="both")
         adj = StockAdjustment.objects.create(adjustment_date=datetime.date(2026, 3, 1), warehouse=self.store, reason=r)
         StockAdjustmentLine.objects.create(adjustment=adj, item=self.item, uom=self.kg, quantity=D("2"), unit_cost=D("9"))
         StockAdjustmentLine.objects.create(adjustment=adj, item=self.item, uom=self.kg, quantity=D("0"), revaluation=D("7"))
         adj.post()
-        from .adjustments import StockCount, StockCountLine
-        sc = StockCount.objects.create(count_date=datetime.date(2026, 3, 2), warehouse=self.store, reason=r)
+        from .adjustments import StockCount
+        StockCount.objects.create(count_date=datetime.date(2026, 3, 2), warehouse=self.store, reason=r)
         for role in ("Warehouse Staff", "Quality Inspector", "Stores Manager"):
             c = self.as_(role)
             for url in ("/api/inventory/stock-adjustments/", f"/api/inventory/stock-adjustments/{adj.pk}/", "/api/inventory/stock-adjustment-lines/",
@@ -334,7 +332,7 @@ class Mirror(Doors):
         print("MIRROR item.inventory_account=payable:", resp.status_code)
         reason = AdjustmentReason.objects.create(code="SH", name="s", account=self.cogs, direction="both")
         adj = sm.post("/api/inventory/stock-adjustments/", {"adjustment_date": "2026-03-01", "warehouse": self.store.pk, "reason": reason.pk}, format="json").json()
-        line = sm.post("/api/inventory/stock-adjustment-lines/", {"adjustment": adj["id"], "item": fresh.pk, "quantity": "4", "unit_cost": "12.5"}, format="json")
+        sm.post("/api/inventory/stock-adjustment-lines/", {"adjustment": adj["id"], "item": fresh.pk, "quantity": "4", "unit_cost": "12.5"}, format="json")
         posted = sm.post(f"/api/inventory/stock-adjustments/{adj['id']}/post/")
         debit = sum((l.debit - l.credit for l in JournalLine.objects.filter(account=self.payable)), D(0))
         print("MIRROR posted:", posted.status_code, "payables net debit with no vendor:", debit)

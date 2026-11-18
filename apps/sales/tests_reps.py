@@ -11,7 +11,7 @@ from decimal import Decimal
 from django.contrib.auth.models import Group, Permission, User
 from django.core.exceptions import ValidationError
 from django.core.management import call_command
-from django.test import TestCase, TransactionTestCase, tag
+from django.test import TransactionTestCase, tag
 from rest_framework.test import APIClient
 
 from apps.core.management.commands.setup_roles import ROLES

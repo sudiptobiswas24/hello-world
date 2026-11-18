@@ -5,10 +5,9 @@ costs that do not come out even, the shelf moving with the inventory account aft
 
 from decimal import Decimal
 
-from django.core.exceptions import ValidationError
 
 from apps.inventory.costing import CostingMethod, replay
-from apps.inventory.models import Item, StockMovement
+from apps.inventory.models import Item
 
 from .orders import IssueDirection
 from .tests_orders import RunTestCase, TODAY

@@ -146,7 +146,6 @@ class ReversalTests(AccountingTestCase):
 # Regression tests from the second money audit (docs/handoff/reports/g23_audit2_money.md).
 import datetime  # noqa: E402
 
-from django.utils import timezone  # noqa: E402
 
 from apps.core.models import Company, Currency  # noqa: E402
 

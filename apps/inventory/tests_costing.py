@@ -61,7 +61,7 @@ class CostingTestCase(TestCase):
         self.variance = acc("5100", "Purchase price variance", AccountType.EXPENSE)
         self.revaluation = acc("5200", "Stock revaluation", AccountType.EXPENSE)
         self.purchases = acc("5300", "Purchases", AccountType.EXPENSE)
-        company = Company.objects.create(
+        Company.objects.create(
             name="Test Co", base_currency=self.usd,
             default_inventory_account=self.inventory, default_cogs_account=self.cogs,
             grni_account=self.grni, purchase_price_variance_account=self.variance,
@@ -475,7 +475,7 @@ class LandedCostUnderFifoTests(CostingTestCase):
 
     def test_it_raises_the_layer_it_was_incurred_on(self):
         widget = self.item(CostingMethod.FIFO)
-        old = self.receive(widget, "100", "4")
+        self.receive(widget, "100", "4")
         new = self.receive(widget, "100", "6")
         StockMovement.objects.create(
             item=widget, warehouse=self.warehouse,

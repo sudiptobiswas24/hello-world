@@ -14,12 +14,10 @@ try:
 except ImportError:  # pragma: no cover - the base class skips, saying why
     expect = None
 
-import datetime
 
 import pyotp
 from django.contrib.auth.models import Group, User
 from django.test import override_settings
-from django.utils import timezone
 
 from .tests_browser import PASSWORD, BrowserTestCase
 

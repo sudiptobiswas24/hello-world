@@ -11,7 +11,6 @@ from django.core.management import call_command
 from rest_framework.test import APIClient
 
 from apps.inventory.models import Lot
-from apps.inventory.tracking import TrackingMode
 
 from .tests_orders import TODAY, RunTestCase
 

@@ -1226,8 +1226,7 @@ def set_standard_cost(item, new_cost, warehouse=None, on_date=None, reason=None)
     The revaluation is written as an adjustment, so it reverses the same
     way everything else here does.
     """
-    from .adjustments import AdjustmentReason, StockAdjustment, StockAdjustmentLine
-    from apps.core.models import Company
+    from .adjustments import StockAdjustment, StockAdjustmentLine
 
     new_cost = Decimal(new_cost)
     if item.costing_method != "standard":
