@@ -335,6 +335,8 @@ class RealisedOnItsOwnDay:
 
     # The field naming what this allocation settles: "invoice" or "bill".
     document_field = None
+    # The document's method that takes a discount for paying early on a payment (O599).
+    discount_taker = None
 
     def settles(self):
         raise NotImplementedError
@@ -346,7 +348,16 @@ class RealisedOnItsOwnDay:
         difference (apps.core.models.lock_for_change).
         """
         named = getattr(self, f"{self.document_field}_id")
-        return [self.payment if self.payment_id else None, getattr(self, self.document_field) if named else None]
+        documents = [getattr(self, self.document_field)] if named else []
+        # Moved to another document, the one it leaves gives back the discount its payment earned there
+        # (restate_discount, O599): held with the one it joins, the two in key order, as lock_in_turn takes
+        # them in the order given (an edit over the API, apps.core.models.lock_for_change).
+        left = (type(self).objects.filter(pk=self.pk).values_list(f"{self.document_field}_id", flat=True).first()
+                if self.pk is not None else None)
+        if left is not None and left != named:
+            documents.append(self._meta.get_field(self.document_field).related_model.objects.get(pk=left))
+        return [self.payment if self.payment_id else None,
+                *(sorted(documents, key=lambda document: document.pk) or [None])]
 
     @transaction.atomic
     def save(self, *args, **kwargs):
@@ -363,10 +374,38 @@ class RealisedOnItsOwnDay:
         # has to move with it or the control account keeps the old one. Both
         # on the allocation's own day.
         previous = self.fx_entry if self.fx_entry_id else None
+        stored = type(self).objects.select_related("payment").filter(pk=self.pk).first() if self.pk else None
         self.date = self.day_applied()
         self.fx_entry = None
         super().save(*args, **kwargs)
         self.realise_exchange_difference(previous)
+        self.restate_discount(stored, self.date)
+
+    def restate_discount(self, stored, on_date):
+        """
+        What this allocation's payment earned of its document's discount for paying early rests on
+        what it applied there (O599). Re-sized, re-pointed or deleted (`stored` is the allocation as it
+        was), that discount is taken back, as the exchange difference is re-stated: on the day of the
+        change, or the discount's own day when that is later. Still applied to the same document, the
+        payment earns again on what it applies now, that day. Moved to another document, it earns
+        there only when someone takes it. Left standing, 490 cut to 245 kept a discount of 10.00 that
+        245 earns 5.00 of, and a deleted allocation left the document owing what its discount covered.
+        """
+        if stored is None:
+            return
+        document = stored.settles()[0]
+        same = stored.payment_id == self.payment_id and stored.settles()[0].pk == self.settles()[0].pk
+        if same and stored.amount == self.amount and self.pk is not None:
+            return
+        held = list(document.discounts.filter(payment_id=stored.payment_id, withdrawal_entry__isnull=True))
+        if not held:
+            return
+        day = max([to_date(on_date), *(row.date for row in held)])
+        document.withdraw_unearned_discount(on_date=day, payment=stored.payment, its_own_only=True,
+                                           why=f"what {stored.payment.number} applied there changed")
+        if same and self.pk is not None and self.payment.posted and not self.payment.is_voided():
+            if discount_earned_by(document, self.payment) > 0:
+                getattr(document, self.discount_taker)(on_date=day, payment=self.payment)
 
     def outstanding_for_it(self):
         """
@@ -495,7 +534,11 @@ class RealisedOnItsOwnDay:
             self.fx_entry.create_reversal(
                 entry_date=max(timezone.localdate(), self.fx_entry.date),
                 memo=f"Releasing exchange difference on {self}")
-        return super().delete(*args, **kwargs)
+        stored = type(self).objects.select_related("payment").filter(pk=self.pk).first() if self.pk else None
+        done = super().delete(*args, **kwargs)
+        self.pk = None
+        self.restate_discount(stored, timezone.localdate())
+        return done
 
     def release_exchange_difference(self, on_date):
         """
@@ -902,8 +945,8 @@ def discount_earned_by(document, payment):
     discount days at rate d, its P settles P/(1-d) of the document and earns P*d/(1-d), no more than
     the discount left nor what is still due after it, so that what it settles is never more than was
     outstanding. 980 on 1,000 at 2/10 earns 20.00; 100 earns 2.04, not the 20.00 the whole invoice's
-    discount would be. Paid after the days, terms that offer none, or a payment that earned its
-    discount here already: nothing.
+    discount would be. Paid after the days, terms that offer none, or a payment whose discount here
+    still stands: nothing. One withdrawn because its allocation changed may be earned again (O599).
 
     Every payment inside the days earns (O250), worked as a running total: what the payments that
     earned here and this one settle together, at the rate, less what those took. Each payment's
@@ -917,7 +960,7 @@ def discount_earned_by(document, payment):
     if deadline is None or to_date(payment.payment_date) > deadline:
         return Decimal("0")
     rows = list(document.discounts.all())
-    if any(row.payment_id == payment.pk for row in rows):
+    if any(row.payment_id == payment.pk and row.withdrawal_entry_id is None for row in rows):
         return Decimal("0")
     applied = defaultdict(Decimal)
     for row in standing_allocations(document):
@@ -969,8 +1012,8 @@ def take_settlement_discount(document, *, control_account, party, discount_accou
     posting and neither was ever called.
 
     Taken on a payment (`payment`): standing, applied to the document, made
-    within the discount days unless `force`, not one that earned its
-    discount here already, and the discount is dated that day when no other
+    within the discount days unless `force`, not one whose discount here
+    still stands, and the discount is dated that day when no other
     is given. Each discount is a row of its own (document.discounts, O250);
     the caller saves the running total this adds it to,
     settlement_discount_amount. Terms that reduce the GST value instead
@@ -991,7 +1034,7 @@ def take_settlement_discount(document, *, control_account, party, discount_accou
             raise ValidationError(f"{payment.number} does not stand: a discount is earned by money that arrived.")
         if not any(row.payment_id == payment.pk for row in standing_allocations(document)):
             raise ValidationError(f"{payment.number} is not applied to {document.number}: apply it first.")
-        earned = document.discounts.filter(payment=payment).first()
+        earned = document.discounts.filter(payment=payment, withdrawal_entry__isnull=True).first()
         if earned is not None:
             raise ValidationError(f"{payment.number} earned its settlement discount on {document.number} already "
                                   f"({earned.amount} on {earned.date:%d-%m-%Y}).")
@@ -1075,17 +1118,21 @@ def discount_history(document):
 
 
 @takes_back
-def withdraw_unearned(document, payment, control_account, party, on_date):
+def withdraw_unearned(document, payment, control_account, party, on_date, its_own_only=False,
+                      why="its payment was returned"):
     """
     `payment` returned (Payment.void asks, through each side's withdraw_unearned_discount): what it
     earned of `document`'s discount for paying early is taken back, and so is a discount taken with
     no payment named once the document owes again. A discount another payment earned stands: that
     money arrived (O250). Never more than stands of the discount after what notes undid of it, and
     each discount is withdrawn once. Returns the entries; the caller saves the running total.
+
+    `its_own_only`: the payment still stands and only what it applied here changed (O599,
+    RealisedOnItsOwnDay.restate_discount), so a discount taken with no payment named is not its to take.
     """
     entries = []
     for row in document.discounts.filter(withdrawal_entry__isnull=True).order_by("-date", "-pk"):
-        if row.payment_id is None and document.amount_due() <= 0:
+        if row.payment_id is None and (its_own_only or document.amount_due() <= 0):
             continue
         if row.payment_id is not None and row.payment_id != getattr(payment, "pk", None):
             continue
@@ -1094,7 +1141,7 @@ def withdraw_unearned(document, payment, control_account, party, on_date):
             continue
         entries.append(withdraw_discount(
             document, row, control_account, party, amount, on_date,
-            f"Settlement discount on {document.number} withdrawn: its payment was returned"))
+            f"Settlement discount on {document.number} withdrawn: {why}"))
     return entries
 
 

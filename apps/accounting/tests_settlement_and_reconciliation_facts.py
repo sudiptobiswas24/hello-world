@@ -361,6 +361,140 @@ class SettlementDiscountOnAPartPayment(base.FxSettlementTestCase):
                          (D("20.00"), D("980.00"), D("0.00")))
         self.assertEqual(self.balance(self.disc), D("0.00"))
 
+    # O599, worked by hand in /home/user/work/g49_calc/scenarios.py: what a payment earned rests on what it applied.
+    # Re-sized, re-pointed or deleted, its allocation takes the discount back on the day of the change; still on the
+    # same document, the payment earns again on what it applies now. 5 at 1.12345 is 5.62 in the books.
+
+    def standing_of(self, document, payment):
+        document.refresh_from_db()
+        return [row.amount for row in document.discounts.filter(payment=payment, withdrawal_entry__isnull=True)]
+
+    def facts(self, document, payment):
+        return self.standing_of(document, payment), document.settlement_discount_standing(), document.amount_due()
+
+    def test_an_allocation_cut_earns_again_on_what_it_applies_now(self):
+        for side in ("sales", "purchasing"):
+            with self.subTest(side=side):
+                document = self.discounted(side)
+                (pay,) = self.paid(document, "490")
+                self.earn(document, pay)
+                allocation = document.payment_allocations.get(payment=pay)
+                allocation.amount = D("245")
+                allocation.save()
+                self.assertEqual(self.facts(document, pay), ([D("5.00")], D("5.00"), D("750.00")))
+        self.assertEqual((self.balance(self.disc), self.balance(self.recv)), (D("5.62"), D("-5.62")))
+
+    def test_an_allocation_deleted_takes_its_discount_back(self):
+        for side in ("sales", "purchasing"):
+            with self.subTest(side=side):
+                document = self.discounted(side)
+                (pay,) = self.paid(document, "490")
+                self.earn(document, pay)
+                document.payment_allocations.get(payment=pay).delete()
+                self.assertEqual(self.facts(document, pay), ([], D("0.00"), D("1000.00")))
+        self.assertEqual((self.balance(self.disc), self.balance(self.recv)), (D("0.00"), D("0.00")))
+
+    def test_a_cut_beside_another_payments_discount_earns_on_the_running_total(self):
+        inv = self.discounted()
+        p1, p2 = self.paid(inv, "490", "490")
+        self.earn(inv, p1)
+        self.earn(inv, p2)
+        allocation = inv.payment_allocations.get(payment=p1)
+        allocation.amount = D("245")
+        allocation.save()
+        # 735 settled earns 15.00 at 2/10; p2 holds 10.00 of it, so p1 earns 5.00 and 250.00 is owed.
+        self.assertEqual((self.standing_of(inv, p1), self.standing_of(inv, p2), inv.amount_due()),
+                         ([D("5.00")], [D("10.00")], D("250.00")))
+        self.assertEqual(self.balance(self.disc), D("16.85"))
+
+    def test_an_allocation_moved_to_another_invoice_takes_its_discount_back_and_earns_there_when_taken(self):
+        x, y = self.discounted(), self.discounted()
+        (pay,) = self.paid(x, "490")
+        self.earn(x, pay)
+        allocation = x.payment_allocations.get(payment=pay)
+        allocation.invoice = y
+        allocation.save()
+        self.assertEqual((self.facts(x, pay), self.facts(y, pay)),
+                         (([], D("0.00"), D("1000.00")), ([], D("0.00"), D("510.00"))))
+        self.assertEqual((self.earn(y, pay), y.amount_due()), (D("10.00"), D("500.00")))
+
+    def test_an_allocation_raised_earns_on_the_whole_of_it(self):
+        from apps.sales.models import InvoicePayment
+        inv = self.discounted()
+        pay = self.euro_payment(PaymentDirection.RECEIPT, "980", on=datetime.date(2026, 1, 10))
+        allocation = InvoicePayment.objects.create(invoice=inv, payment=pay, amount=D("490"))
+        self.earn(inv, pay)
+        allocation.amount = D("980")
+        allocation.save()
+        self.assertEqual(self.facts(inv, pay), ([D("20.00")], D("20.00"), D("0.00")))
+        self.assertEqual(inv.discounts.filter(payment=pay).count(), 2)
+        with self.assertRaisesMessage(ValidationError, "earned its settlement discount"):
+            inv.apply_settlement_discount(payment=pay)
+        self.assertEqual(self.balance(self.disc), D("22.47"))
+
+    def test_an_allocation_saved_unchanged_leaves_its_discount(self):
+        inv = self.discounted()
+        (pay,) = self.paid(inv, "490")
+        self.earn(inv, pay)
+        inv.payment_allocations.get(payment=pay).save()
+        self.assertEqual((self.facts(inv, pay), inv.discounts.count()), (([D("10.00")], D("10.00"), D("500.00")), 1))
+
+    def test_a_payment_returned_after_its_cut_takes_back_what_it_earns_now(self):
+        from django.utils import timezone
+        for side in ("sales", "purchasing"):
+            with self.subTest(side=side):
+                document = self.discounted(side)
+                (pay,) = self.paid(document, "490")
+                self.earn(document, pay)
+                allocation = document.payment_allocations.get(payment=pay)
+                allocation.amount = D("245")
+                allocation.save()
+                pay.void(memo="Returned unpaid", on_date=timezone.localdate())
+                self.assertEqual(self.facts(document, pay), ([], D("0.00"), D("1000.00")))
+        self.assertEqual((self.balance(self.disc), self.balance(self.recv)), (D("0.00"), D("0.00")))
+
+    def test_an_allocation_deleted_over_the_api_by_the_ar_manager_takes_its_discount_back(self):
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        call_command("setup_roles", verbosity=0)
+        inv = self.discounted()
+        (pay,) = self.paid(inv, "490")
+        self.earn(inv, pay)
+        user = User.objects.create_user("ar")
+        user.groups.add(Group.objects.get(name="AR Manager"))
+        client = APIClient()
+        client.force_authenticate(user)
+        allocation = inv.payment_allocations.get(payment=pay)
+        response = client.patch(f"/api/sales/invoice-payments/{allocation.pk}/", {"amount": "245"}, format="json")
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(self.facts(inv, pay), ([D("5.00")], D("5.00"), D("750.00")))
+        response = client.delete(f"/api/sales/invoice-payments/{allocation.pk}/")
+        self.assertEqual(response.status_code, 204, response.content)
+        self.assertEqual(self.facts(inv, pay), ([], D("0.00"), D("1000.00")))
+
+    def test_an_allocation_moved_over_the_api_holds_both_invoices_in_order_and_takes_its_discount_back(self):
+        # The edit holds what save() will before the row (lock_for_change): the invoice it leaves beside the one
+        # it joins, in key order. Appended after it, a move from the earlier invoice to the later was a 500.
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        call_command("setup_roles", verbosity=0)
+        x, y = self.discounted(), self.discounted()
+        (pay,) = self.paid(x, "490")
+        self.earn(x, pay)
+        user = User.objects.create_user("ar")
+        user.groups.add(Group.objects.get(name="AR Manager"))
+        client = APIClient()
+        client.force_authenticate(user)
+        allocation = x.payment_allocations.get(payment=pay)
+        response = client.patch(f"/api/sales/invoice-payments/{allocation.pk}/", {"invoice": y.pk}, format="json")
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual((self.facts(x, pay), self.facts(y, pay)),
+                         (([], D("0.00"), D("1000.00")), ([], D("0.00"), D("510.00"))))
+
 
 class AEEFCAccount(base.FxSettlementTestCase):
     """O24: an EEFC account moves only its currency; every way money moves through it."""
