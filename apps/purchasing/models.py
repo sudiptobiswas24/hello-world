@@ -3953,14 +3953,15 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxesTakenUnder, TaxedDocumentMix
 
     @serialised("settlement_discount_withdrawn")
     @takes_back
-    def withdraw_unearned_discount(self, on_date=None, payment=None):
+    def withdraw_unearned_discount(self, on_date=None, payment=None, its_own_only=False,
+                                   why="its payment was returned"):
         """
         `payment` returned: take back the discount it earned, and one taken with no payment named once
         the bill owes again (settlement.withdraw_unearned). The entries, none where nothing stands or
         other payments still settle it. Asked under the lock: two returns at once take it back once.
         """
         entries = withdraw_unearned(self, payment, self.payable_account, self.vendor,
-                                    to_date(on_date) or timezone.localdate())
+                                    to_date(on_date) or timezone.localdate(), its_own_only, why)
         if entries:
             super(Bill, self).save(update_fields=["settlement_discount_withdrawn", "updated_at"])
         return entries
@@ -6092,8 +6093,9 @@ class BillDiscount(AsksTheRestatement, SettlementDiscountTaken, AuditModel):
     class Meta(SettlementDiscountTaken.Meta):
         constraints = [
             *SettlementDiscountTaken.Meta.constraints,
-            models.UniqueConstraint(fields=["bill", "payment"], condition=Q(payment__isnull=False),
-                                    name="purchasing_billdiscount_once_a_payment"),
+            models.UniqueConstraint(fields=["bill", "payment"],
+                                        condition=Q(payment__isnull=False, withdrawal_entry__isnull=True),
+                                        name="purchasing_billdiscount_one_standing_a_payment"),
         ]
 
     def __str__(self):
@@ -6112,6 +6114,7 @@ class BillPayment(RealisedOnItsOwnDay, AuditModel):
     pointing back.
     """
     document_field = "bill"  # what it settles (RealisedOnItsOwnDay.locked_before_it)
+    discount_taker = "take_settlement_discount"  # RealisedOnItsOwnDay.restate_discount (O599)
 
     bill = models.ForeignKey(Bill, on_delete=models.CASCADE, related_name="payment_allocations")
     payment = models.ForeignKey(Payment, on_delete=models.CASCADE, related_name="bill_allocations")

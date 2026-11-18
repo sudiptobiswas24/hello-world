@@ -2361,14 +2361,15 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxesTa
 
     @serialised("settlement_discount_withdrawn")
     @takes_back
-    def withdraw_unearned_discount(self, on_date=None, payment=None):
+    def withdraw_unearned_discount(self, on_date=None, payment=None, its_own_only=False,
+                                   why="its payment was returned"):
         """
         `payment` returned: take back the discount it earned, and one taken with no payment named once
         the invoice owes again (settlement.withdraw_unearned). The entries, none where nothing stands or
         other payments still settle it. Asked under the lock: two returns at once take it back once.
         """
         entries = withdraw_unearned(self, payment, self.receivable_account, self.customer,
-                                    to_date(on_date) or timezone.localdate())
+                                    to_date(on_date) or timezone.localdate(), its_own_only, why)
         if entries:
             super(Invoice, self).save(update_fields=["settlement_discount_withdrawn", "updated_at"])
         return entries
@@ -3836,6 +3837,7 @@ class InvoicePayment(RealisedOnItsOwnDay, AuditModel):
     different invoice is a bookkeeping correction, not a ledger change.
     """
     document_field = "invoice"  # what it settles (RealisedOnItsOwnDay.locked_before_it)
+    discount_taker = "apply_settlement_discount"  # RealisedOnItsOwnDay.restate_discount (O599)
 
     invoice = models.ForeignKey(Invoice, on_delete=models.CASCADE, related_name="payment_allocations")
     payment = models.ForeignKey(Payment, on_delete=models.CASCADE, related_name="invoice_allocations")
@@ -3998,8 +4000,9 @@ class InvoiceDiscount(AsksTheRestatement, SettlementDiscountTaken, AuditModel):
     class Meta(SettlementDiscountTaken.Meta):
         constraints = [
             *SettlementDiscountTaken.Meta.constraints,
-            models.UniqueConstraint(fields=["invoice", "payment"], condition=Q(payment__isnull=False),
-                                    name="sales_invoicediscount_once_a_payment"),
+            models.UniqueConstraint(fields=["invoice", "payment"],
+                                        condition=Q(payment__isnull=False, withdrawal_entry__isnull=True),
+                                        name="sales_invoicediscount_one_standing_a_payment"),
         ]
 
     def __str__(self):
