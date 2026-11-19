@@ -188,3 +188,29 @@ class AGuardPassedByHandIsReportedTests(SimpleTestCase):
         from apps.core.management.commands.audit_invariants import OUR_APPS, app_sources
 
         self.assertEqual(Command().guard_bypasses_by_hand(list(OUR_APPS), app_sources()), [])
+
+
+def asked_lookup(text, name="views.py"):
+    return Command().lookups_that_answer_500(["quality"], {"quality": {Path("apps/quality") / name: text}})
+
+
+class ALookupThatAnswers500IsReportedTests(SimpleTestCase):
+    """O609: Django's get_object_or_404 raised ValueError on an id that is not a number, a 500."""
+
+    def test_djangos_lookup_is_reported_at_any_depth(self):
+        (top, inside) = asked_lookup("from django.shortcuts import get_object_or_404, render\n\n\ndef chart(request):\n"
+                                     "    from django.shortcuts import get_object_or_404\n")
+        self.assertEqual(top[0], "lookup that answers 500")
+        self.assertIn("quality/views.py:1 imports django.shortcuts.get_object_or_404", top[1])
+        self.assertIn("quality/views.py:5 ", inside[1])
+
+    def test_drfs_lookup_and_a_test_module_are_not(self):
+        self.assertEqual(asked_lookup("from rest_framework.generics import get_object_or_404\n"
+                                      "from django.shortcuts import render\n"), [])
+        self.assertEqual(asked_lookup("from django.shortcuts import get_object_or_404\n", name="tests_spc.py"), [])
+
+    def test_the_tree_holds_none(self):
+        from apps.core.management.commands.audit_invariants import app_sources, source_of
+
+        everywhere = {**app_sources(), "web": source_of("web"), "imports": source_of("imports")}
+        self.assertEqual(Command().lookups_that_answer_500(list(everywhere), everywhere), [])

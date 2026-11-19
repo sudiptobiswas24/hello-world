@@ -462,7 +462,7 @@ class MasterScheduleViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     @action(detail=False, methods=["get"])
     def weeks(self, request):
         """?item=&warehouse=&start=&weeks=8: wanted, coming, scheduled, projected."""
-        from django.shortcuts import get_object_or_404
+        from rest_framework.generics import get_object_or_404
 
         from apps.inventory.models import Item
 

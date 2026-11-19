@@ -312,7 +312,7 @@ class ControlChartViewSet(viewsets.ViewSet):
     queryset = Inspection.objects.none()
 
     def list(self, request):
-        from django.shortcuts import get_object_or_404
+        from rest_framework.generics import get_object_or_404
 
         from apps.inventory.models import Item
 

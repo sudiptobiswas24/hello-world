@@ -15,7 +15,8 @@ Fabric GSM, three samples a roll, limits 83.125 to 91.875.
 import datetime
 from decimal import Decimal
 
-from django.contrib.auth.models import User
+from django.contrib.auth.models import Group, User
+from django.core.management import call_command
 from django.core.exceptions import ValidationError
 from rest_framework.test import APIClient
 
@@ -192,3 +193,14 @@ class ChartApiTests(ChartTestCase):
         self.assertEqual(client.get("/api/quality/spc/", {
             "item": self.fabric.pk, "characteristic": "GSM", "end": "2026-02-01"}).status_code,
             400)
+
+    def test_an_item_that_is_not_an_id_is_not_found_not_a_fault(self):
+        """O609: Django's get_object_or_404 raised ValueError on "abc", "1.5" or a blank picker, a 500."""
+        call_command("setup_roles", verbosity=0)
+        inspector = User.objects.create_user("qi")
+        inspector.groups.add(Group.objects.get(name="Quality Inspector"))
+        client = APIClient()
+        client.force_authenticate(inspector)
+        answers = [client.get("/api/quality/spc/", {"item": given, "characteristic": "GSM"}).status_code
+                   for given in ("abc", "1.5", "")]
+        self.assertEqual(answers, [404, 404, 404])

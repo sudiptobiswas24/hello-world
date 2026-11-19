@@ -312,8 +312,9 @@ class Command(BaseCommand):
         others = [] if options["apps"] else sorted(
             path.name for path in Path("apps").iterdir()
             if path.is_dir() and (path / "__init__.py").exists() and path.name not in OUR_APPS)
-        findings += self.numbers_read_around_the_reader(
-            [*labels, *others], {**sources, **{label: source_of(label) for label in others}})
+        everywhere = {**sources, **{label: source_of(label) for label in others}}
+        findings += self.numbers_read_around_the_reader([*labels, *others], everywhere)
+        findings += self.lookups_that_answer_500([*labels, *others], everywhere)
 
         if not findings:
             self.stdout.write(self.style.SUCCESS("No invariant findings."))
@@ -2140,6 +2141,31 @@ class Command(BaseCommand):
                 if isinstance(node, ast.Call) and is_decimal(node) and any(read(arg, taken) for arg in node.args):
                     found.add((function.name, node.lineno))
         return sorted(found, key=lambda pair: pair[1])
+
+    DJANGO_LOOKUP = re.compile(r"^[ \t]*from django\.shortcuts import [^\n]*\bget_object_or_404\b", re.M)
+
+    def lookups_that_answer_500(self, labels, sources):
+        """
+        Django's get_object_or_404 in the application (O609). Handed an id a request sent, it raises ValueError on
+        "abc", "1.5" or a picker left blank, and that was a 500. Sixteen files called it 79 times, 47 of them on a
+        field the request sent (the control chart's item among them) and others on a URL's id an action looked up
+        itself rather than through get_object(). DRF's own (rest_framework.generics) answers 404 for those; where
+        the id is a field of the body, apps.core.api.record_or_404 says so beside the field, which is better still.
+        """
+        findings = []
+        for label in labels:
+            for path, text in sorted(sources[label].items()):
+                if "test" in path.name or "migrations" in path.parts:
+                    continue
+                for match in self.DJANGO_LOOKUP.finditer(text):
+                    line = text.count("\n", 0, match.start()) + 1
+                    findings.append((
+                        "lookup that answers 500",
+                        f"{label}/{path.name}:{line} imports django.shortcuts.get_object_or_404, a 500 on an id that "
+                        "is not a number: import it from rest_framework.generics, or read a field of the body with "
+                        "apps.core.api.record_or_404.",
+                    ))
+        return findings
 
     def greenwich_dates(self, labels, sources):
         """

@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError
-from django.shortcuts import get_object_or_404
+from rest_framework.generics import get_object_or_404
 from rest_framework import viewsets
 
 from decimal import Decimal, InvalidOperation

@@ -9,7 +9,7 @@ holds no right to read the item master or the asset register, both of which carr
 from decimal import Decimal
 
 from django.db.models import Q
-from django.shortcuts import get_object_or_404
+from rest_framework.generics import get_object_or_404
 from rest_framework import serializers, viewsets
 
 from apps.core.api import ModelSerializer, takes_only
