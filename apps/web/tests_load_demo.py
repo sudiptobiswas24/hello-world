@@ -556,7 +556,8 @@ class TheTradingListsShowTheDemoTests(SignsInAsTheDemo, TestCase):
     for post, so nothing is emailed; the monthly charge for Sahyadri's printing cylinders starts next month. The
     year's raffia granule is on a blanket agreement with the first 18,000 kg called off as a draft, and the UV
     masterbatch has a reorder rule. The latest invoice in rupees has its e-invoice and e-way bill built, waiting for
-    the portals. Read by the AR Manager, the buyer and the accountant.
+    the portals. An atta sack is costed for a quote from the month's rates, and next year's standards are drafted.
+    Read by the AR Manager, the buyer and the accountant.
     """
 
     @classmethod
@@ -621,3 +622,17 @@ class TheTradingListsShowTheDemoTests(SignsInAsTheDemo, TestCase):
         (bill,) = self.read("/api/gst/eway-bills/", "anita")
         self.assertEqual((bill["document_number"], bill["number"], bill["required"], bill["vehicle_number"]),
                          (latest.number, "", True, "MH12RT5508"))
+
+    def test_an_atta_sack_is_costed_for_a_quote_and_next_years_standards_drafted(self):
+        (sheet,) = self.read("/api/manufacturing/cost-sheets/")
+        # Material 8.560159 (the rate sheet over the walked recipe), conversion 2.798376 (four stages a kilogramme
+        # and packing a sack), less 0.258835 of regrind back: 11.099700; 8% overhead 0.887976; cost 11.987676;
+        # 12% margin, 13.426197, quoted at 13.43.
+        self.assertEqual([sheet[key] for key in ("specification_code", "quantity", "material", "conversion", "credit",
+                                                 "overhead", "cost", "price", "quoted_price")],
+                         ["B-ATTA25", "100000.00", "8.560159", "2.798376", "0.258835", "0.887976", "11.987676",
+                          "13.426197", "13.43"])
+        (version,) = self.read("/api/manufacturing/cost-versions/", "anita")
+        self.assertEqual((version["is_published"], version["effective_from"][5:]), (False, "04-01"))
+        self.assertGreater(version["items"], 0)
+        self.assertEqual(len(self.read("/api/manufacturing/standard-costs/", "anita")), version["items"])

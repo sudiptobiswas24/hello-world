@@ -1086,6 +1086,29 @@ class Command(BaseCommand):
             book(sacks, press, printer, [mahesh], yesterday, 6, "13", "1050")
             book(sacks, conv, stitcher, [ganesh], yesterday, 6, "14", "1000")
 
+        with step("Costing: this month's rates, an atta sack costed for a quote, next year's standards drafted"):
+            # O613: the rate sheet, cost sheets and standard costs answered nothing on the demo. The sales office's
+            # rates from the first of last month, an atta sack costed for 100,000 the way a quotation is, and next
+            # year's standard costs rolled up for review: drafted, not published, as publishing revalues the shelf.
+            from apps.manufacturing.quoting import cost as cost_a_sack
+
+            since = day(-30)
+            M("manufacturing.QuotePolicy").objects.create(valid_from=since, overhead_percent=D("8"),
+                                                          margin_percent=D("12"), note="As the price committee set")
+            for it, rate in ((virgin, "109"), (regrind, "60"), (filler, "104"), (uv, "305"), (thread, "260"),
+                             (ink, "415"), (ldpe, "118")):
+                M("manufacturing.MaterialRate").objects.create(item=it, rate=D(rate), valid_from=since,
+                                                               note="This month's market")
+            for stage, rate in (("tape", "14"), ("weaving", "11"), ("printing", "6"), ("cutting", "7"),
+                                ("packing", "0.05")):
+                M("manufacturing.StageRate").objects.create(stage=stage, rate=D(rate), valid_from=since)
+            cost_a_sack(atta_spec, D("100000"), on_date=TODAY, by=suresh.user)
+            april = datetime.date(TODAY.year + (1 if TODAY.month >= 4 else 0), 4, 1)  # the next financial year's
+            next_year = M("manufacturing.CostVersion").objects.create(
+                code=f"STD-{april.year}", name=f"Standards for {april.year}-{str(april.year + 1)[2:]}",
+                effective_from=april, notes="Drafted for the price committee; published in March")
+            next_year.roll_up()
+
         with step("Stoppages"):
             for code, when, reason, minutes, shift, note in (
                     ("LOOM-03", day(-6), "BRK", 95, 0, "Shuttle wheel bearing seized"),
