@@ -238,6 +238,12 @@ class MoneyLineSerializerMixin(serializers.Serializer):
     net_amount = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
     tax_total = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
     total = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
+    # What the line is charged, beside `taxes`, what was chosen on it (O610): read back only, refused if sent.
+    charged_taxes = serializers.ListField(child=serializers.CharField(), source="charged_tax_codes", read_only=True)
+
+    def get_field_names(self, declared_fields, info):
+        names = list(super().get_field_names(declared_fields, info))
+        return names if "charged_taxes" in names else [*names, "charged_taxes"]
 
     def create(self, validated_data):
         """A line that names no taxes takes its item's for its side (O395); one that names none on purpose, []."""

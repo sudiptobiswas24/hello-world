@@ -5,6 +5,8 @@ The Letter of Undertaking and what setup seeded, kept from the office as the con
 import datetime
 import re
 
+from django.contrib.staticfiles.testing import StaticLiveServerTestCase
+
 try:
     from playwright.sync_api import expect
 except ImportError:  # pragma: no cover - the base class skips, saying why
@@ -13,8 +15,10 @@ except ImportError:  # pragma: no cover - the base class skips, saying why
 from apps.accounting.gst import GstSettings, LetterOfUndertaking
 from apps.accounting.models import FiscalPosition
 from apps.accounting.tcs import SeededDefault
+from apps.core.models import Country
+from apps.gst.tests_einvoice import EInvoiceTestCase
 
-from .tests_browser import BrowserTestCase
+from .tests_browser import BrowserMixin, BrowserTestCase
 
 
 class LutAndSeededDefaultsInTheBrowserTests(BrowserTestCase):
@@ -44,4 +48,36 @@ class LutAndSeededDefaultsInTheBrowserTests(BrowserTestCase):
         expect(page.get_by_role("button", name="Mark reviewed")).to_have_count(0)
         seeded.refresh_from_db()
         self.assertEqual((seeded.reviewed_by, seeded.reviewed_on is not None), (controller, True))
+        self.assertEqual(self.problems, [])
+
+
+class ChargedTaxesInTheBrowserTests(BrowserMixin, EInvoiceTestCase, StaticLiveServerTestCase):
+    """
+    O610: a line shows the taxes it is charged. An export under the LUT keeps the item's CGST9 and SGST9 as chosen
+    and is charged IGST0: posted, the line said CGST9, SGST9 beside a tax of 0.00, and its print said IGST0.
+    """
+
+    def export(self, post):
+        abroad = self.party("EXPORT", currency=self.usd, gst_registration="overseas", fiscal_position=self.lut)
+        uae = Country.objects.get_or_create(code="AE", defaults={"name": "United Arab Emirates"})[0]
+        self.address(abroad, "Jebel Ali Free Zone", "Dubai", "", "", country=uae)
+        # The GST fixture's invoice, with its lines' taxes: BrowserMixin.invoice comes first and takes neither.
+        return EInvoiceTestCase.invoice(self, abroad, [(self.sack, "1000", "1.37", "0", self.pair)],
+                                        currency=self.usd, post=post)
+
+    def test_a_posted_export_shows_what_it_is_charged(self):
+        invoice = self.export(post=True)
+        page = self.sign_in(self.login_for("AR Manager"), f"/app/sales/invoices/{invoice.pk}")
+        line = page.get_by_role("row", name=re.compile("Woven sack"))
+        expect(line).to_contain_text("IGST0")
+        expect(line).not_to_contain_text("CGST9")
+        self.assertEqual(self.problems, [])
+
+    def test_a_draft_export_says_what_its_choice_is_charged(self):
+        invoice = self.export(post=False)
+        page = self.sign_in(self.login_for("AR Manager"), f"/app/sales/invoices/{invoice.pk}")
+        line = page.get_by_role("row", name=re.compile("Woven sack"))
+        # The choice stays the item's, to change; beside it, what that choice is charged here.
+        expect(line).to_contain_text("CGST9, SGST9")
+        expect(line).to_contain_text("Charged IGST0")
         self.assertEqual(self.problems, [])
