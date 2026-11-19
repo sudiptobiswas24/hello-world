@@ -134,6 +134,26 @@ class WhatARollWeighsTests(RollTestCase):
             self.roll(code="R-0", length="0")
 
 
+class WhatTheRollsScreenCallsItsFabricTests(RollTestCase):
+    """O605: the Fabric column read the specification's name, which is optional; a spec given a code alone showed
+    no fabric on any of its rolls. It reads the name, else the code, else nothing for a roll of no specification."""
+
+    def fabric_of(self, roll):
+        from .serializers import FabricRollSerializer
+
+        return FabricRollSerializer(roll).data["specification_name"]
+
+    def test_a_specification_with_a_code_alone_is_read_by_its_code(self):
+        self.assertEqual(self.fabric_of(self.roll(spec=self.specification(code="F-60"))), "F-60")
+
+    def test_a_named_one_by_its_name(self):
+        self.assertEqual(self.fabric_of(self.roll(spec=self.specification(code="F-60", name="Cement sack cloth"))),
+                         "Cement sack cloth")
+
+    def test_a_roll_of_no_specification_names_none(self):
+        self.assertEqual(self.fabric_of(self.roll()), "")
+
+
 class AgainstWhatItShouldHaveBeenTests(RollTestCase):
     def test_a_roll_on_target_is_within_tolerance(self):
         roll = self.roll(spec=self.specification())

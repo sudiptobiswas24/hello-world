@@ -944,6 +944,11 @@ class Command(BaseCommand):
             tape_1000.save()
             fabric_50 = item("FAB-50-87", "Circular woven fabric, 50 cm, 87.5 GSM", kg, "141", hsn="54074200")
             atta = item("SACK-ATTA25", "Atta flour sack 25 kg, 2-colour print", nos, "6.40", "8.90", "63053300")
+            # A roll off the loom and a bundle off the stitching line are each a batch (O605), and kept so from the
+            # start: tracking is fixed once stock has moved.
+            for by_batch in (fabric_50, atta):
+                by_batch.tracking = "lot"
+                by_batch.save()
             ldpe = item("LDPE-GRAN", "LDPE granule, film grade", kg, "118", hsn="39011010")
             film_40 = item("FILM-LF40", "LDPE lay-flat film, 40 micron", kg, "132", hsn="39201019")
             t1000 = Tape.objects.create(
@@ -983,6 +988,103 @@ class Command(BaseCommand):
                         M("quality.Reading").objects.create(inspection=inspection, plan_line=line, value=D(value),
                                                             sample_reference=f"S{number}")
                 inspection.post(by=meena.user)
+
+        with step("The floor: rolls weighed, bundles counted and baled, steps and scrap, time booked"):
+            # O605: the floor's screens had nothing on the demo. The 50 cm fabric is woven on LOOM-05 from the
+            # inspected tape and its rolls weighed at the loom exit, one typed while the scale was being calibrated
+            # and one declaring metres its weight does not support. Two are measured for GSM and cut into atta
+            # sacks on STITCH-1: the press counts what it printed, the stitching tables count and weigh bundles and
+            # book their scrap, and two bundles are pressed into a bale. The crews book their hours.
+            from apps.manufacturing.bales import pack
+            from apps.manufacturing.conversion import record_bags
+            from apps.manufacturing.scrap import report as report_step
+            from apps.manufacturing.station import record_roll
+            from apps.manufacturing.station_floor import book_scrap
+
+            Station, Booking, Lot = M("manufacturing.LoomStation"), M("manufacturing.TimeBooking"), M("inventory.Lot")
+            loom_exit, tables = Station.objects.get(code="LOOM-EXIT"), Station.objects.get(code="CONV-1")
+            core = M("manufacturing.CoreType").objects.create(code="PC-3", name="Paper core, 3 inch", tare_kg=D("2.40"))
+            loom, stitcher, printer = machines["LOOM-05"], machines["STITCH-1"], machines["PRN-1"]
+            yesterday = day(-1)
+            f50.refresh_from_db()
+            atta_spec = Bag.objects.get(code="B-ATTA25")
+            held = [(fabric_50, plant), (atta, plant), (regrind, plant)] + [
+                (row.item, plant) for b in (f50.bom, atta_spec.bom) for row in b.components.all()]
+            lock_positions(list(dict.fromkeys(held)))
+
+            def on_its_machine(run, centre, machine):
+                """The run's step on `centre`, put on `machine`: a station finds a run by the machine it is on."""
+                put = run.operations.get(work_centre=centre)
+                put.machine = machine
+                put.save()
+                return put
+
+            def issue_from(run, when, lots):
+                """Everything the run needs; of an item in `lots`, from those batches in turn."""
+                document = Issue.objects.create(work_order=run, issue_date=when, warehouse=plant)
+                n = 0
+                for component in run.components.all():
+                    left = component.quantity_required
+                    for lot, has in lots.get(component.item_id, [(None, left)]):
+                        take = min(left, has)
+                        if take > 0:
+                            n += 1
+                            IssueLine.objects.create(issue=document, item=component.item, quantity=take,
+                                                     uom=component.uom, line_number=n, lot=lot)
+                            left -= take
+                    if left > 0:
+                        raise CommandError(f"{run} needs {left} more {component.item} than its batches hold.")
+                document.post()
+
+            weave = start_run(fabric_50, f50.bom, "600", looms, day(-2), 20)
+            on_its_machine(weave, looms, loom)
+            tape_lot = Lot.objects.get(item=tape_1000, code="TP-1000-01")
+            issue_from(weave, day(-2), {tape_1000.pk: [(tape_lot, tape_lot.on_hand_at(plant))]})
+            rolls = []
+            for hour, gross, metres, typed in ((7, "90.00", "1000", False), (8, "89.10", "995", False),
+                                               (10, "91.30", "1010", False), (11, "88.40", "1060", False),
+                                               (13, "90.50", "1005", True)):
+                rolls.append(record_roll(loom_exit, lakshmi, loom, D(gross), core, D(metres), at=stamp(yesterday, hour),
+                                         **({"source": "manual", "supervisor": suresh, "reason": "calibration"}
+                                            if typed else {})))
+            gsm = f50.inspection_plan
+            for roll, readings in ((rolls[0], ("87.2", "88.1", "87.6")), (rolls[1], ("86.9", "87.8", "88.3"))):
+                inspection = M("quality.Inspection").objects.create(lot=roll.lot, plan=gsm, inspected_on=yesterday)
+                for line in gsm.lines.order_by("line_number"):
+                    for number, value in enumerate(readings[:line.sample_size], start=1):
+                        M("quality.Reading").objects.create(inspection=inspection, plan_line=line, value=D(value),
+                                                            sample_reference=f"S{number}")
+                inspection.post(by=meena.user)
+
+            sacks = start_run(atta, atta_spec.bom, "2000", conv, yesterday, 8)
+            on_its_machine(sacks, conv, stitcher)
+            issue_from(sacks, yesterday, {fabric_50.pk: [(roll.lot, roll.net_weight_kg) for roll in rolls[:2]]})
+            report_step(sacks.operations.get(work_centre=press), D("1050"), on_date=yesterday, machine=printer,
+                        memo="Counted off the press")
+            weight = atta_spec.inspection_plan.lines.get(characteristic__code="BAGWT")
+            target = (weight.lower_limit + weight.upper_limit) / 2
+            sample = [str((target + D(off)).quantize(D("0.1")))
+                      for off in ("0.4", "-0.3", "0.6", "-0.2", "0.1", "-0.5", "0.3", "0", "-0.1", "0.2")]
+            bundles = [record_bags(tables, ganesh, stitcher, 500, sample, at=stamp(yesterday, hour)).inspection.lot
+                       for hour in (10, 13)]
+            book_scrap(tables, ganesh, stitcher, "STITCH", "18", at=stamp(yesterday, 11))
+            book_scrap(tables, ganesh, stitcher, "EDGE", "12", at=stamp(yesterday, 12))
+            pack(plant, ganesh, [(lot, 500) for lot in bundles], on_date=yesterday,
+                 gross_kg=(target + D("1.20")).quantize(D("0.01")))
+
+            def book(run, centre, machine, crew, when, hour, minutes, made):
+                """Hours on a step: a little over what its work centre's rate says the quantity takes."""
+                operation = run.operations.get(work_centre=centre)
+                booking = Booking.objects.create(work_order=run, operation=operation, booking_date=when,
+                                                 started_at=stamp(when, hour), machine=machine, minutes=D(minutes),
+                                                 quantity_completed=D(made))
+                booking.operators.set(crew)
+                booking.post()
+
+            book(spec_run, ext, machines["EXT-1"], [mahesh], day(-3), 6, "300", "1940")
+            book(weave, looms, loom, [lakshmi], yesterday, 6, "86", sum((roll.net_weight_kg for roll in rolls), D("0")))
+            book(sacks, press, printer, [mahesh], yesterday, 6, "13", "1050")
+            book(sacks, conv, stitcher, [ganesh], yesterday, 6, "14", "1000")
 
         with step("Stoppages"):
             for code, when, reason, minutes, shift, note in (
@@ -1356,3 +1458,23 @@ class Command(BaseCommand):
             M("hr.LeaveRequest").objects.create(employee=ravi, policy=sick, leave_type="sick", start_date=day(-9),
                                                 end_date=day(-8), reason="Fever")
 
+
+        with step("Attendance: the floor's last week"):
+            # O605: the register the floor keeps, the crew on the day shift. Present every working day and once late,
+            # so no day of it is unpaid: the runs already posted or calculated read the same with it as without.
+            lock_rows(*M("hr.Employee").objects.order_by("pk"), refresh=False)
+            from apps.hr.attendance import leave_on
+
+            Day = M("hr.AttendanceDay")
+            for back in range(7, 0, -1):
+                on_date = day(-back)
+                if on_date.weekday() == 6:
+                    continue
+                for employee in (suresh, mahesh, lakshmi, ganesh):
+                    if leave_on(employee, on_date) is not None:
+                        continue
+                    late = employee == ganesh and back == 3
+                    Day.objects.create(employee=employee, on=on_date, status="present", shift="A",
+                                       time_in=datetime.time(6, 25) if late else datetime.time(5, 52),
+                                       time_out=datetime.time(14, 6),
+                                       note="Bus late from Chakan phata" if late else "")

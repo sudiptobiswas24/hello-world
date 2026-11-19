@@ -273,19 +273,7 @@ class WhatTheDemoShowsTests(TestCase):
                          Decimal("15.00"))
 
 
-class TheStatutoryOutputsComeOutTests(TestCase):
-    """
-    O537: every statutory output comes out of the demo as loaded, by its API route, for the person whose work it
-    is. Until g37 six of them could not: no UAN or date of birth for the ECR; no e-invoicing date, company address,
-    state or country for an e-invoice or e-way bill; no section, rate or payable account for TDS; no challan for
-    ITC-04 and no statement for the 2B match. Each figure is worked in /home/user/work/calc_g37_demo/o537.py
-    (and o532.py for the ECR), from the story's own quantities and prices.
-    """
-
-    @classmethod
-    def setUpTestData(cls):
-        load(password="Trial-2026", stdout=StringIO(), stderr=StringIO())
-
+class SignsInAsTheDemo:
     def as_(self, username):
         """The demo person, signed in by the demo password, with the second factor their role is asked for."""
         from django.contrib.auth import get_user_model
@@ -297,6 +285,20 @@ class TheStatutoryOutputsComeOutTests(TestCase):
         self.assertTrue(client.login(username=username, password="Trial-2026"), username)
         for_tests(client, get_user_model().objects.get(username=username))
         return client
+
+
+class TheStatutoryOutputsComeOutTests(SignsInAsTheDemo, TestCase):
+    """
+    O537: every statutory output comes out of the demo as loaded, by its API route, for the person whose work it
+    is. Until g37 six of them could not: no UAN or date of birth for the ECR; no e-invoicing date, company address,
+    state or country for an e-invoice or e-way bill; no section, rate or payable account for TDS; no challan for
+    ITC-04 and no statement for the 2B match. Each figure is worked in /home/user/work/calc_g37_demo/o537.py
+    (and o532.py for the ECR), from the story's own quantities and prices.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        load(password="Trial-2026", stdout=StringIO(), stderr=StringIO())
 
     def invoice_of(self, customer, taxable):
         from apps.sales.models import Invoice
@@ -409,3 +411,78 @@ class TheStatutoryOutputsComeOutTests(TestCase):
                          [Decimal("65000"), Decimal("198500"), Decimal("312500"), Decimal("1680000")])
         self.assertEqual((found["totals"]["filed"], found["totals"]["matched"], found["totals"]["waiting"]),
                          ("342000.00", "342000.00", "406080.00"))
+
+
+class TheFloorScreensShowTheDemoTests(SignsInAsTheDemo, TestCase):
+    """
+    O605: the floor's screens had nothing on the demo, so a person trying them saw them do nothing. The demo now
+    weaves F-50 on LOOM-05 and weighs five rolls at the loom exit yesterday, one typed while the scale was being
+    calibrated; cuts two of them into atta sacks, the press counting 1,050 and the stitching tables two bundles of
+    500 and 30 spoiled; bales the bundles; books the crews' hours; and keeps the floor's attendance for the week.
+    Each screen is read by its route as the person who reads it. Figures worked in
+    /home/user/work/calc_g53/o605.py.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        load(password="Trial-2026", stdout=StringIO(), stderr=StringIO())
+
+    def window(self):
+        from django.utils import timezone
+
+        today = timezone.localdate()
+        return f"?start={today - datetime.timedelta(days=7)}&end={today}"
+
+    def read(self, username, path):
+        answer = self.as_(username).get(path)
+        self.assertEqual(answer.status_code, 200, (path, answer.content[:300]))
+        return json.loads(answer.content)
+
+    def test_the_morning_report_has_yesterdays_five_rolls_and_the_typed_one(self):
+        report = self.read("suresh", "/api/manufacturing/station-reports/LOOM-EXIT/")
+        self.assertEqual((report["rolls"], report["by_shift"], report["from_scale"], report["manual"]),
+                         (5, {"A": 5}, 4, 1))
+        self.assertEqual(report["looms"], [{"loom": "LOOM-05", "rolls": 5, "from_weight": "4997.72",
+                                            "declared": "5070.00", "variance_percent": "1.45",
+                                            "tolerance_percent": "2.00", "over": False}])
+        self.assertEqual([(row["reason"], row["net_kg"]) for row in report["overrides"]],
+                         [("Scale under calibration", "88.100")])
+        rolls = self.read("suresh", "/api/manufacturing/fabric-rolls/")
+        self.assertEqual(sorted((row["length_m"], row["net_weight_kg"], row["within_tolerance"]) for row in rolls),
+                         [("1000.00", "87.600", True), ("1005.00", "88.100", True), ("1010.00", "88.900", True),
+                          ("1060.00", "86.000", False), ("995.00", "86.700", True)])
+        # F-50 has a code and no name: the Fabric column reads the code rather than nothing.
+        self.assertEqual({row["specification_name"] for row in rolls}, {"F-50"})
+
+    def test_the_sacks_were_counted_at_each_step_scrapped_by_reason_and_baled(self):
+        steps = self.read("suresh", "/api/manufacturing/operation-reports/")
+        self.assertEqual([(row["step"].split(" · ")[1], row["quantity_good"]) for row in steps],
+                         [("10 Print", "1050.0000")])
+        scrap = self.read("suresh", "/api/manufacturing/run-flow/scrap/" + self.window())
+        self.assertEqual([(row["item"], row["operation"], row["reason"], row["quantity"]) for row in scrap],
+                         [("SACK-ATTA25", "Cut and stitch", "EDGE", "12"),
+                          ("SACK-ATTA25", "Cut and stitch", "STITCH", "18")])
+        bales = self.read("suresh", "/api/manufacturing/bales/")
+        self.assertEqual([(bale["item"], bale["status"], bale["bags"], [line["bags"] for line in bale["lines"]])
+                          for bale in bales], [("SACK-ATTA25", "sealed", "1000", ["500", "500"])])
+
+    def test_the_crews_hours_read_as_time_booked_and_operator_yield(self):
+        self.assertEqual(len(self.read("suresh", "/api/manufacturing/time-bookings/")), 4)
+        rows = self.read("suresh", "/api/manufacturing/operator-yield/" + self.window())
+        self.assertEqual(sorted((row["operator"], row["work_centre"], row["minutes"], row["ideal_minutes"],
+                                 row["performance"]) for row in rows),
+                         [("302", "EXT", "300.00", "258.67", "0.8622"), ("302", "PRINT", "13.00", "10.50", "0.8077"),
+                          ("303", "LOOM", "86.00", "72.88", "0.8475"), ("304", "CONV", "14.00", "12.00", "0.8571")])
+
+    def test_the_floor_kept_its_attendance_for_the_week(self):
+        from django.utils import timezone
+
+        today = timezone.localdate()
+        worked = [today - datetime.timedelta(days=back) for back in range(7, 0, -1)
+                  if (today - datetime.timedelta(days=back)).weekday() != 6]
+        rows = self.read("kiran", "/api/hr/attendance/?page_size=100")
+        self.assertEqual(sorted({(row["employee_number"], row["on"]) for row in rows}),
+                         sorted((number, str(on)) for on in worked for number in ("301", "302", "303", "304")))
+        self.assertEqual({row["status"] for row in rows}, {"present"})
+        self.assertEqual([(row["employee_number"], row["late_minutes"]) for row in rows if row["late_minutes"]],
+                         [("304", 25)] if today - datetime.timedelta(days=3) in worked else [])
