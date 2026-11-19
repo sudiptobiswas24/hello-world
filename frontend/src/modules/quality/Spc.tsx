@@ -37,7 +37,8 @@ export default function Spc() {
         { key: "signals", label: "Signals", render: (row) => (row.signals ?? []).join("; ") },
       ]}
       waiting="Choose an item and a characteristic."
-      empty="Nothing was inspected in these days."
+      // No "nothing inspected" sentence (O604): an answer always has its points. A window with no standing
+      // inspection, or too few to set limits from, is refused by the server in words that say which.
     />
   );
 }

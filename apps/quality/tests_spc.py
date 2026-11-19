@@ -190,9 +190,11 @@ class ChartApiTests(ChartTestCase):
         self.assertEqual((body["centre"], body["sigma"], body["points"][0]["ucl"],
                           body["capability"]["cpk"]), ("87.4700", "0.3190", "88.0225", "4.5408"))
         self.assertEqual(body["points"][0]["inspected_on"], "2026-03-01")
-        self.assertEqual(client.get("/api/quality/spc/", {
-            "item": self.fabric.pk, "characteristic": "GSM", "end": "2026-02-01"}).status_code,
-            400)
+        # A window with nothing inspected is refused saying so: the screen shows these words, having no sentence of
+        # its own for an empty answer, which never comes (O604).
+        nothing = client.get("/api/quality/spc/", {"item": self.fabric.pk, "characteristic": "GSM", "end": "2026-02-01"})
+        self.assertEqual(nothing.status_code, 400)
+        self.assertIn("No standing inspection of", nothing.content.decode())
 
     def test_an_item_that_is_not_an_id_is_not_found_not_a_fault(self):
         """O609: Django's get_object_or_404 raised ValueError on "abc", "1.5" or a blank picker, a 500."""
