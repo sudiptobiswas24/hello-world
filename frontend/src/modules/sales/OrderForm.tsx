@@ -32,6 +32,8 @@ export interface Order {
   subtotal: string;
   tax_total: string;
   total: string;
+  /** The currency its amounts are in when it is not the base; null for the base (O611). */
+  foreign_currency?: string | null;
   delivery_status: string;
   invoice_status: string;
   [key: string]: unknown;
@@ -204,7 +206,7 @@ export default function OrderForm() {
                 { label: "Invoiced", render: (line) => quantity(line.quantity_invoiced as string) },
               ] : []}
             />
-            <Totals rows={[["Untaxed", order.subtotal], ["Tax", order.tax_total], ["Total", order.total, true]]} />
+            <Totals rows={[["Untaxed", order.subtotal], ["Tax", order.tax_total], ["Total", order.total, true]]} currency={order.foreign_currency} />
           </>
         )}
         {isNew && (

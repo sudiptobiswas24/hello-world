@@ -153,8 +153,12 @@ export function cell<T>(column: Column<T>, row: T): ReactNode {
   if (column.render) return column.render(row);
   const value = (row as Record<string, unknown>)[column.key];
   switch (column.kind) {
-    case "money":
-      return money(value as string);
+    case "money": {
+      // A document in a currency that is not the base names it (O611): a USD invoice's total among rupee ones
+      // read as rupees. Only the trading documents send `foreign_currency`, and their amounts are all in it.
+      const foreign = (row as Record<string, unknown>).foreign_currency;
+      return foreign ? `${money(value as string)} ${String(foreign)}` : money(value as string);
+    }
     case "quantity":
       return quantity(value as string);
     case "date":

@@ -37,6 +37,8 @@ export interface Invoice {
   subtotal: string;
   tax_total: string;
   total: string;
+  /** The currency its amounts are in when it is not the base; null for the base (O611). */
+  foreign_currency?: string | null;
   amount_paid: string;
   amount_credited: string;
   amount_due: string;
@@ -229,7 +231,7 @@ export default function InvoiceForm() {
                 ["Credited", invoice.amount_credited] as [string, string],
                 ["Due now", invoice.amount_due, true] as [string, string, boolean],
               ] : []),
-            ]} />
+            ]} currency={invoice.foreign_currency} />
           </>
         )}
         {isNew && (

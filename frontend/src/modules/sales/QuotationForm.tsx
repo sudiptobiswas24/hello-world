@@ -27,6 +27,8 @@ interface Quotation {
   subtotal: string;
   tax_total: string;
   total: string;
+  /** The currency its amounts are in when it is not the base; null for the base (O611). */
+  foreign_currency?: string | null;
   [key: string]: unknown;
 }
 
@@ -126,7 +128,7 @@ export default function QuotationForm() {
           <>
             <Lines lines={quote.lines} endpoint="/api/sales/quotation-lines/" parent="quotation" parentId={quote.id} withUom charges
               editable={quote.status === "draft" && can("sales.change_quotation")} />
-            <Totals rows={[["Untaxed", quote.subtotal], ["Tax", quote.tax_total], ["Total", quote.total, true]]} />
+            <Totals rows={[["Untaxed", quote.subtotal], ["Tax", quote.tax_total], ["Total", quote.total, true]]} currency={quote.foreign_currency} />
           </>
         )}
         {isNew && <p className="muted">Create the quotation, then add its lines.</p>}

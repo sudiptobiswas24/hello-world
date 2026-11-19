@@ -55,6 +55,7 @@ class ChargedTaxesInTheBrowserTests(BrowserMixin, EInvoiceTestCase, StaticLiveSe
     """
     O610: a line shows the taxes it is charged. An export under the LUT keeps the item's CGST9 and SGST9 as chosen
     and is charged IGST0: posted, the line said CGST9, SGST9 beside a tax of 0.00, and its print said IGST0.
+    O611: its totals name the currency they are in when it is not the rupee.
     """
 
     def export(self, post):
@@ -71,6 +72,19 @@ class ChargedTaxesInTheBrowserTests(BrowserMixin, EInvoiceTestCase, StaticLiveSe
         line = page.get_by_role("row", name=re.compile("Woven sack"))
         expect(line).to_contain_text("IGST0")
         expect(line).not_to_contain_text("CGST9")
+        # O611: its totals are in dollars and say so; read as rupees they were wrong by the exchange rate.
+        expect(page.locator("dl.totals")).to_contain_text("1,370.00 USD")
+        # And among the rupee invoices on the list.
+        page.goto(f"{self.live_server_url}/app/sales/invoices")
+        expect(page.get_by_role("row", name=re.compile(invoice.number))).to_contain_text("1,370.00 USD")
+        self.assertEqual(self.problems, [])
+
+    def test_a_rupee_invoice_names_no_currency_beside_its_totals(self):
+        invoice = EInvoiceTestCase.invoice(self, self.mh, [(self.sack, "100", "10", "0", self.pair)])
+        page = self.sign_in(self.login_for("AR Manager"), f"/app/sales/invoices/{invoice.pk}")
+        totals = page.locator("dl.totals")
+        expect(totals).to_contain_text("1,180.00")
+        expect(totals).not_to_contain_text("INR")
         self.assertEqual(self.problems, [])
 
     def test_a_draft_export_says_what_its_choice_is_charged(self):

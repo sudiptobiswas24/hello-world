@@ -37,7 +37,7 @@ export function Consignments({ invoice }: { invoice: number }) {
     <section className="related-list" aria-label="Trucks">
       <h2>Trucks it went on</h2>
       <table className="data" aria-label="Trucks it went on">
-        <thead><tr><th>Delivery</th><th>Shipped</th><th>Vehicle</th><th>LR</th><th>Moves on</th><th className="num">Value</th><th>E-way bill</th></tr></thead>
+        <thead><tr><th>Delivery</th><th>Shipped</th><th>Vehicle</th><th>LR</th><th>Moves on</th><th className="num">Value (INR)</th><th>E-way bill</th></tr></thead>
         <tbody>
           {found.data.map((row) => (
             <tr key={row.delivery}>

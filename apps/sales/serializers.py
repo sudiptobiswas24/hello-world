@@ -4,7 +4,7 @@ from rest_framework import serializers
 
 from apps.core.api import ModelSerializer
 
-from apps.accounting.serializers import MoneyLineSerializerMixin, TakesItsLinesMixin
+from apps.accounting.serializers import MoneyLineSerializerMixin, NamesItsCurrencyMixin, TakesItsLinesMixin
 
 from .models import (
     SuppliedItem,
@@ -57,7 +57,7 @@ class SalesOrderLineSerializer(MoneyLineSerializerMixin, ModelSerializer):
         ]
 
 
-class SalesOrderSerializer(TakesItsLinesMixin, ExtensibleSerializerMixin, ModelSerializer):
+class SalesOrderSerializer(NamesItsCurrencyMixin, TakesItsLinesMixin, ExtensibleSerializerMixin, ModelSerializer):
     line_serializer = SalesOrderLineSerializer
     line_parent = "order"
     lines = SalesOrderLineSerializer(many=True, read_only=True)
@@ -126,7 +126,7 @@ class InvoiceLineSerializer(MoneyLineSerializerMixin, ModelSerializer):
         extra_kwargs = {"revenue_account": {"required": False}}
 
 
-class InvoiceSerializer(TakesItsLinesMixin, ExtensibleSerializerMixin, ModelSerializer):
+class InvoiceSerializer(NamesItsCurrencyMixin, TakesItsLinesMixin, ExtensibleSerializerMixin, ModelSerializer):
     line_serializer = InvoiceLineSerializer
     line_parent = "invoice"
     lines = InvoiceLineSerializer(many=True, read_only=True)
@@ -309,7 +309,7 @@ class QuotationLineSerializer(MoneyLineSerializerMixin, ModelSerializer):
         ]
 
 
-class QuotationSerializer(ModelSerializer):
+class QuotationSerializer(NamesItsCurrencyMixin, ModelSerializer):
     lines = QuotationLineSerializer(many=True, read_only=True)
     customer_name = serializers.CharField(source="customer.name", read_only=True)
     subtotal = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)

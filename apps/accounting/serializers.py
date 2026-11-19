@@ -253,6 +253,30 @@ class MoneyLineSerializerMixin(serializers.Serializer):
         return super().create(validated_data)
 
 
+class NamesItsCurrencyMixin(serializers.Serializer):
+    """
+    A trading document says what currency its amounts are in when it is not the base (O611): a USD invoice read
+    "Total 1,140.00" on its screen, which a person reads as rupees. Read back only. The codes are read once a
+    response, not once a row, so a list of documents costs what it did.
+    """
+
+    foreign_currency = serializers.SerializerMethodField(
+        help_text="The code of the currency the document's amounts are in when it is not the base currency; "
+                  "empty for a document in the base currency.")
+
+    def get_field_names(self, declared_fields, info):
+        names = list(super().get_field_names(declared_fields, info))
+        return names if "foreign_currency" in names else [*names, "foreign_currency"]
+
+    def get_foreign_currency(self, document):
+        from apps.core.models import Currency
+
+        codes = getattr(self.root, "_foreign_codes", None)
+        if codes is None:
+            codes = self.root._foreign_codes = dict(Currency.objects.filter(is_base=False).values_list("pk", "code"))
+        return codes.get(document.currency_id)
+
+
 class TakesItsLinesMixin(serializers.Serializer):
     """
     A trading document made with its lines in one request (O401). The header and every line are written inside
