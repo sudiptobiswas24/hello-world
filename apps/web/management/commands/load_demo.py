@@ -1608,6 +1608,33 @@ class Command(BaseCommand):
             Visit.objects.create(vehicle_number="MH14 GH 2210", driver_name="Rajesh Iyer", purpose="visitor",
                                  carried="Sales call from Kaveri Feeds")
 
+        with step("People: an advance against salary, and the contract labour register"):
+            # O613: advances and the contract labour register answered nothing on the demo. Ganesh is given 12,000
+            # against his salary, paid from the bank and recovered at 3,000 a month from this month's run; the
+            # runs already posted or calculated end before it and read the same. The loading and packing gang
+            # comes from a licensed contractor, and two of its workers are on the register.
+            lock_rows(*M("hr.Employee").objects.order_by("pk"), refresh=False)
+            staff_advances = acc("1290", "Advances to staff", "asset")
+            recovery = M("hr.PayComponent").objects.create(code="ADV", name="Salary advance recovery", kind="deduction",
+                                                           liability_account=staff_advances, sequence=90)
+            given = M("accounting.Payment").objects.create(
+                party=ganesh.party, direction="disbursement", amount=D("12000"), payment_date=day(-6), currency=inr,
+                bank_account=bank, counterpart_account=staff_advances, reference="Advance against salary")
+            given.post()
+            M("hr.SalaryAdvance").objects.create(
+                employee=ganesh, payment=given, component=recovery, amount=D("12000"), instalment=D("3000"),
+                recover_from=TODAY.replace(day=calendar.monthrange(TODAY.year, TODAY.month)[1]),
+                note="Sister's wedding")
+            gang = party("V-SHRM", "Shramik Manpower Services", "vendor", "Pune", "411018", None, net30,
+                         ("Dattatray", "Kamble", "Proprietor"), "office@shramik.example", state=STATES["27"])
+            contractor = M("hr.LabourContractor").objects.create(
+                party=gang, licence_number="CLRA/PUN/2026/1183", licence_valid_to=day(400),
+                work_nature="Loading, unloading and bale packing", max_workers=20)
+            for name, gender, designation, wage, joined in (("Santosh Jadhav", "male", "Loader", "690", day(-80)),
+                                                           ("Rekha Gaikwad", "female", "Bale packer", "690", day(-45))):
+                M("hr.ContractWorker").objects.create(contractor=contractor, name=name, gender=gender,
+                                                      designation=designation, daily_wage=D(wage), joined_on=joined)
+
         with step("Planning: a year of shipments, a forecast, a build ahead, and the morning's plan"):
             # O613: planning had nothing on the demo. The old system's cement-sack shipments for the year before
             # cutover, a forecast for next month from them, the fertiliser sacks built ahead of the kharif season,

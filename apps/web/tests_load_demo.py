@@ -418,7 +418,8 @@ class TheFloorScreensShowTheDemoTests(SignsInAsTheDemo, TestCase):
     O605: the floor's screens had nothing on the demo, so a person trying them saw them do nothing. The demo now
     weaves F-50 on LOOM-05 and weighs five rolls at the loom exit yesterday, one typed while the scale was being
     calibrated; cuts two of them into atta sacks, the press counting 1,050 and the stitching tables two bundles of
-    500 and 30 spoiled; bales the bundles; books the crews' hours; and keeps the floor's attendance for the week.
+    500 and 30 spoiled; bales the bundles; books the crews' hours; keeps the floor's attendance for the week; gives
+    one of the crew an advance against salary; and keeps the contract labour register.
     Each screen is read by its route as the person who reads it. Figures worked in
     /home/user/work/calc_g53/o605.py.
     """
@@ -473,6 +474,21 @@ class TheFloorScreensShowTheDemoTests(SignsInAsTheDemo, TestCase):
                                  row["performance"]) for row in rows),
                          [("302", "EXT", "300.00", "258.67", "0.8622"), ("302", "PRINT", "13.00", "10.50", "0.8077"),
                           ("303", "LOOM", "86.00", "72.88", "0.8475"), ("304", "CONV", "14.00", "12.00", "0.8571")])
+
+    def test_an_advance_waits_for_this_months_run_and_the_contract_gang_is_on_its_register(self):
+        from django.utils import timezone
+
+        today = timezone.localdate()
+        (advance,) = self.read("kiran", "/api/hr/salary-advances/")
+        # 12,000 given, 3,000 a month from the run for the month it was given in, nothing recovered yet.
+        self.assertEqual([advance[key] for key in ("amount", "instalment", "recovered", "balance", "recover_from")],
+                         ["12000.00", "3000.00", "0.00", "12000.00",
+                          str(today.replace(day=calendar.monthrange(today.year, today.month)[1]))])
+        (contractor,) = self.read("kiran", "/api/hr/labour-contractors/")
+        self.assertEqual((contractor["party_name"], contractor["max_workers"]), ("Shramik Manpower Services", 20))
+        self.assertEqual(sorted((worker["name"], worker["designation"]) for worker in
+                                self.read("kiran", "/api/hr/contract-workers/")),
+                         [("Rekha Gaikwad", "Bale packer"), ("Santosh Jadhav", "Loader")])
 
     def test_the_floor_kept_its_attendance_for_the_week(self):
         from django.utils import timezone
