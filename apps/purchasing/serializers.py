@@ -4,7 +4,7 @@ from rest_framework import serializers
 
 from apps.core.api import ModelSerializer
 
-from apps.accounting.serializers import MoneyLineSerializerMixin, TakesItsLinesMixin
+from apps.accounting.serializers import MoneyLineSerializerMixin, NamesItsCurrencyMixin, TakesItsLinesMixin
 from apps.inventory.tracking import Lot
 
 from .models import (
@@ -55,7 +55,7 @@ class PurchaseOrderLineSerializer(MoneyLineSerializerMixin, ModelSerializer):
         return obj.quantity_billed()
 
 
-class PurchaseOrderSerializer(TakesItsLinesMixin, ExtensibleSerializerMixin, ModelSerializer):
+class PurchaseOrderSerializer(NamesItsCurrencyMixin, TakesItsLinesMixin, ExtensibleSerializerMixin, ModelSerializer):
     line_serializer = PurchaseOrderLineSerializer
     line_parent = "order"
     lines = PurchaseOrderLineSerializer(many=True, read_only=True)
@@ -127,7 +127,7 @@ class BillListSerializer(serializers.ListSerializer):
         return super().to_representation(bills)
 
 
-class BillSerializer(TakesItsLinesMixin, ExtensibleSerializerMixin, ModelSerializer):
+class BillSerializer(NamesItsCurrencyMixin, TakesItsLinesMixin, ExtensibleSerializerMixin, ModelSerializer):
     line_serializer = BillLineSerializer
     line_parent = "bill"
     lines = BillLineSerializer(many=True, read_only=True)

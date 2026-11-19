@@ -46,13 +46,17 @@ export function Sheet({ children }: { children: ReactNode }) {
   return <div className="sheet">{children}</div>;
 }
 
-export function Totals({ rows }: { rows: [string, string | null | undefined, boolean?][] }) {
+/**
+ * A document's totals. `currency` is the code its amounts are in when that is not the base (the API's
+ * `foreign_currency`, O611): a USD invoice's "Total 1,140.00" with nothing beside it reads as rupees.
+ */
+export function Totals({ rows, currency }: { rows: [string, string | null | undefined, boolean?][]; currency?: string | null }) {
   return (
     <dl className="totals">
       {rows.map(([label, value, strong]) => (
         <div key={label} className={strong ? "strong" : undefined}>
           <dt>{label}</dt>
-          <dd>{money(value)}</dd>
+          <dd>{money(value)}{currency ? ` ${currency}` : ""}</dd>
         </div>
       ))}
     </dl>

@@ -69,6 +69,8 @@ interface Bill {
   tcs_section: string;
   tcs_account: number | null;
   total: string;
+  /** The currency its amounts are in when it is not the base; null for the base (O611). */
+  foreign_currency?: string | null;
   amount_paid: string;
   amount_debited: string;
   amount_due: string;
@@ -248,7 +250,7 @@ export default function BillForm() {
                 ["Debited", bill.amount_debited] as [string, string],
                 ["Due now", bill.amount_due, true] as [string, string, boolean],
               ] : []),
-            ]} />
+            ]} currency={bill.foreign_currency} />
           </>
         )}
         {isNew && (
