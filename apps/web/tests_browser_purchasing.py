@@ -327,6 +327,32 @@ class PurchasingInTheBrowserTests(BrowserTestCase):
         self.assertEqual([line.warehouse for line in receipt.lines.all()], [self.warehouse])
         self.assertEqual(self.problems, [])
 
+    def test_the_gate_receives_into_the_receiving_warehouse_not_the_first_listed(self):
+        """
+        Receive by scan sent the first warehouse in its list, by code, for a line naming none (O608's mirror): a
+        quarantine bay coded before the main store took every receipt scanned at the gate, its goods then held
+        from use. It takes the warehouse a line naming none is planned in: the one marked to receive by default,
+        else the only one receiving to stock. The quarantine bay is still offered: a receipt may belong there.
+        """
+        from apps.inventory.models import Warehouse
+
+        bay = Warehouse.objects.create(code="AAA-Q", name="Awaiting tests", is_quarantine=True)
+        order = PurchaseOrder.objects.create(vendor=self.vendor, order_date=datetime.date(2026, 1, 1))
+        PurchaseOrderLine.objects.create(order=order, item=self.item, uom=self.uom, quantity=Decimal("10"),
+                                         unit_price=Decimal("5"))
+        order.confirm()
+        gate = self.sign_in(self.person("Warehouse Staff"), "/app/purchasing/receive-by-scan")
+        arrives = gate.get_by_label("Arrives at")
+        expect(arrives.locator("option")).to_have_text([bay.name, self.warehouse.name])
+        expect(arrives).to_have_value(str(self.warehouse.pk))
+        box = gate.get_by_label("Purchase order")
+        box.fill(order.number)
+        box.press("Enter")
+        gate.wait_for_url(re.compile(r"/purchasing/goods-in/\d+$"))
+        receipt = GoodsReceipt.objects.get(purchase_order=order)
+        self.assertEqual([line.warehouse for line in receipt.lines.all()], [self.warehouse])
+        self.assertEqual(self.problems, [])
+
     def test_a_vendor_made_in_one_form_and_blocked_by_accounts_not_the_buyer(self):
         """
         The buyer adds a vendor with the bank they are paid into and what we

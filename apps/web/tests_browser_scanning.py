@@ -128,6 +128,45 @@ class ScanningInTheBrowserTests(BrowserMixin, stores.ScanTestCase, StaticLiveSer
         expect(page.get_by_text("Nothing scanned yet.")).to_be_visible()
         self.assertFalse(receipt.lines.exists())
 
+    def test_receive_on_the_scan_screen_asks_where_only_for_a_line_naming_none(self):
+        """
+        O608: Receive on a confirmed purchase order was sent naming no warehouse, so an order whose line names none
+        was refused, "Say which warehouse ...", on a screen with nowhere to say it. It asks now, and only then: an
+        order whose lines name their own warehouse drafts at once. North and South both take goods, so neither is
+        assumed.
+        """
+        from apps.core.models import Party, PartyRole, PartyRoleAssignment
+        from apps.purchasing.models import GoodsReceipt, PurchaseOrder, PurchaseOrderLine
+
+        vendor = Party.objects.create(code="V-2", name="Tapes Ltd", default_currency=self.usd)
+        PartyRoleAssignment.objects.create(party=vendor, role=PartyRole.VENDOR)
+
+        def confirmed(warehouse):
+            order = PurchaseOrder.objects.create(vendor=vendor, order_date=DAY)
+            PurchaseOrderLine.objects.create(order=order, item=self.plain, uom=self.each, quantity=Decimal("40"),
+                                             unit_price=Decimal("5"), warehouse=warehouse)
+            order.confirm()
+            return order
+
+        def arrived(order):
+            return [line.warehouse for line in GoodsReceipt.objects.get(purchase_order=order).lines.all()]
+
+        nowhere, to_north = confirmed(None), confirmed(self.north)
+        page = self.on_the_phone("Warehouse Staff", "/stores/scan")
+        found = page.get_by_role("list", name="What it is")
+        scan(page, "Code", nowhere.number)
+        found.get_by_role("button", name="Receive").click()
+        found.get_by_label("Arrives at").select_option(label="S · South")
+        found.get_by_role("button", name="Draft receipt").click()
+        page.wait_for_url(re.compile(r"/stores/scan-receive/\d+$"))
+        self.assertEqual(arrived(nowhere), [self.south])
+
+        page.goto(f"{self.live_server_url}/app/stores/scan")
+        scan(page, "Code", to_north.number)
+        found.get_by_role("button", name="Receive").click()
+        page.wait_for_url(re.compile(r"/stores/scan-receive/\d+$"))
+        self.assertEqual(arrived(to_north), [self.north])
+
     def test_the_store_moves_stock_bin_to_bin(self):
         transfer = StockTransfer.objects.create(transfer_date=DAY, from_warehouse=self.north,
                                                 to_warehouse=self.south)

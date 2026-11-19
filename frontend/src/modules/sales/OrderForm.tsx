@@ -9,8 +9,7 @@ import { Field, today } from "../../forms/fields";
 import { Lines, NewLines, lineBody, type NewLine, type TradeLine } from "../../forms/Lines";
 import { PartyPicker } from "../../forms/PartyPicker";
 import { useDraft } from "../../forms/useDraft";
-import { WarehouseChoice } from "../../forms/WarehouseChoice";
-import { aboveZero } from "../../lib/decimal";
+import { owesWithoutAWarehouse, WarehouseChoice } from "../../forms/WarehouseChoice";
 import { date, money, quantity } from "../../lib/format";
 import { ErrorPanel } from "../../shell/ErrorPanel";
 import { useRefs } from "../../views/RecordScreen";
@@ -127,7 +126,7 @@ export default function OrderForm() {
         )}
         {order?.status === "confirmed" && order.delivery_status !== "full" && can("sales.add_delivery") && (
           <WarehouseChoice label="Ship" prompt="Ship from" confirm="Draft delivery" pending={act.pending}
-            needsOne={order.lines.some((line) => !line.charge && aboveZero(line.quantity_open as string) && !line.warehouse)}
+            needsOne={owesWithoutAWarehouse(order.lines)}
             go={(warehouse) => void run("ship", "Delivery drafted", (d) => navigate(`/sales/deliveries/${(d as { id: number }).id}`),
               warehouse ? { warehouse } : {})} />
         )}
