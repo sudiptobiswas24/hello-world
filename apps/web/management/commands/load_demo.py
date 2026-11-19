@@ -1546,6 +1546,22 @@ class Command(BaseCommand):
             M("purchasing.ReorderRule").objects.create(item=uv, warehouse=plant, minimum=D("150"), target=D("400"),
                                                        multiple_of=D("25"), vendor=western)
 
+        with step("Job work in: a customer's own granule received for its bags, and what was not used sent back"):
+            # O613: material a customer sends to be worked on answered nothing on the demo. Konkan Agro sends two
+            # tonnes of its own granule for its rice bags, into a bay held for it at no value; 150 kg it did not
+            # need goes back on a return that names the receipt, as its own ITC-04 must match.
+            held = Warehouse.objects.create(code="KONK", name="Konkan Agro's material", held_for=konkan)
+            Receipt, Return = M("manufacturing.CustomerMaterialReceipt"), M("manufacturing.CustomerMaterialReturn")
+            theirs = Receipt.objects.create(customer=konkan, warehouse=held, received_on=day(-9),
+                                            their_challan="KAF/JW/0417", their_challan_date=day(-10))
+            granule_in = M("manufacturing.CustomerMaterialReceiptLine").objects.create(
+                receipt=theirs, item=virgin, quantity=D("2000"), declared_value=D("216000"))
+            theirs.post()
+            back = Return.objects.create(customer=konkan, warehouse=held, returned_on=day(-2))
+            M("manufacturing.CustomerMaterialReturnLine").objects.create(material_return=back, item=virgin,
+                                                                        quantity=D("150"), receipt_line=granule_in)
+            back.post()
+
         with step("Stores: a count, a write-off, a move to the godown, and the gate"):
             # O613: the stores' own documents had nothing on the demo. The spares cupboard is counted two bearings
             # short; a hundred and fifty rice sacks spoilt by a roof leak are written off; ten thousand cement
