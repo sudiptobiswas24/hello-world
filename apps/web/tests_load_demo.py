@@ -486,3 +486,64 @@ class TheFloorScreensShowTheDemoTests(SignsInAsTheDemo, TestCase):
         self.assertEqual({row["status"] for row in rows}, {"present"})
         self.assertEqual([(row["employee_number"], row["late_minutes"]) for row in rows if row["late_minutes"]],
                          [("304", 25)] if today - datetime.timedelta(days=3) in worked else [])
+
+
+class TheStoresAndPlanningShowTheDemoTests(SignsInAsTheDemo, TestCase):
+    """
+    O613 (stores and planning): the stores' documents, the gate and planning answered nothing on the demo. The demo
+    now counts the spares cupboard two bearings short, writes off 150 rice sacks spoilt by a leak, moves 10,000
+    cement sacks to the godown's first bay, weighs a lorry of granule in and out, sends a laptop out on a returnable
+    pass with a visitor still on site, and plans the plant once from a year of shipments, a forecast and a build
+    ahead. Each is read by its route as the person whose screen it is.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        load(password="Trial-2026", stdout=StringIO(), stderr=StringIO())
+
+    def read(self, username, path):
+        answer = self.as_(username).get(path)
+        self.assertEqual(answer.status_code, 200, (path, answer.content[:300]))
+        return json.loads(answer.content)
+
+    def test_the_store_counted_wrote_off_and_moved(self):
+        (count,) = self.read("sunita", "/api/inventory/stock-counts/")
+        self.assertEqual((count["posted"], count["reason_name"], [(line["item_label"].split(" ")[0], line["variance"])
+                                                                   for line in count["lines"]]),
+                         (True, "Short on count", [("SP-6205", "-2.0000")]))
+        spoilt = [row for row in self.read("sunita", "/api/inventory/stock-adjustments/")
+                  if row["reason_name"] == "Damaged or spoilt"]
+        self.assertEqual([(row["posted"], [(line["item_label"].split(" ")[0], line["quantity"]) for line in row["lines"]])
+                          for row in spoilt], [(True, [("SACK-RICE25", "-150.0000")])])
+        (move,) = self.read("sunita", "/api/inventory/stock-transfers/")
+        self.assertEqual((move["status"], move["to_name"], [(line["item_label"].split(" ")[0], line["quantity"])
+                                                            for line in move["lines"]]),
+                         ("received", "Finished goods godown", [("SACK-CEM50", "10000.0000")]))
+
+    def test_the_gate_weighed_a_lorry_passed_a_laptop_out_and_has_a_visitor_in(self):
+        visits = self.read("raju", "/api/inventory/gate-visits/")
+        self.assertEqual(sorted((visit["purpose"], visit["status"]) for visit in visits),
+                         [("gate_pass", "out"), ("inward_order", "out"), ("visitor", "in")])
+        (weighing,) = self.read("sunita", "/api/inventory/weighings/")
+        self.assertEqual((weighing["gross_kg"], weighing["tare_kg"], weighing["net_kg"], weighing["state"]),
+                         ("27460.000", "9380.000", "18080.000", "weighed"))
+        (laptop,) = self.read("sunita", "/api/inventory/gate-passes/")
+        self.assertEqual((laptop["kind"], laptop["status"], laptop["approved_by_name"],
+                          [line["outstanding"] for line in laptop["lines"]]),
+                         ("returnable", "out", "sunita", ["1.0000"]))
+
+    def test_the_plan_ran_on_a_years_shipments_a_forecast_and_a_build_ahead(self):
+        self.assertEqual(len(self.read("suresh", "/api/planning/shipment-history/")), 12)
+        (forecast,) = self.read("suresh", "/api/planning/forecasts/")
+        self.assertEqual((forecast["item_label"].split(" ")[0], forecast["quantity"]), ("SACK-CEM50", "200000.0000"))
+        (ahead,) = self.read("suresh", "/api/planning/master-schedule/")
+        self.assertEqual((ahead["item_label"].split(" ")[0], ahead["quantity"]), ("SACK-FERT50", "30000.0000"))
+        (run,) = self.read("suresh", "/api/planning/runs/")
+        self.assertTrue(run["is_complete"])
+        orders = self.read("suresh", "/api/planning/planned-orders/")
+        # The cement sacks the open sales orders want, made: the plan answers from the orders the demo holds.
+        self.assertIn(("SACK-CEM50", "make", "sales"),
+                      {(order["item_sku"], order["kind"], demand["source"]) for order in orders
+                       for demand in order["demands"]})
+        self.assertTrue(self.read("suresh", "/api/planning/actions/"))
+        self.assertEqual(len(self.read("suresh", "/api/planning/settings/")), 1)
