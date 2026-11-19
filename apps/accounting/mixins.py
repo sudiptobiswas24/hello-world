@@ -632,6 +632,14 @@ class TaxedLineMixin(models.Model):
         _, lines, _ = compute_taxes(taxes, self.net_amount(), self.quantity)
         return lines
 
+    def charged_tax_codes(self):
+        """
+        The codes of the taxes this line is charged: after its party's position, or as it was posted (O610). What
+        `taxes` holds is what was chosen, the item's own: an export under LUT keeps CGST9 and SGST9 there and is
+        charged IGST0, and the screen showed the first beside a tax of nothing while the print showed the second.
+        """
+        return [tax.code for tax, _ in self.tax_amounts()]
+
     def tax_total(self):
         return sum((amount for _, amount in self.tax_amounts()), Decimal("0"))
 

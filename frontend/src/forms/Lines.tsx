@@ -18,7 +18,10 @@ export interface TradeLine {
   quantity: string;
   unit_price: string | null;
   discount_percent: string;
+  /** What was chosen on the line: the item's own taxes unless changed. */
   taxes: number[];
+  /** The codes of what it is charged, after the party's position or as posted (O610): an export's IGST0. */
+  charged_taxes?: string[];
   net_amount: string;
   total: string;
   charge?: number | null;
@@ -94,6 +97,11 @@ export function Lines({ lines, endpoint, parent, parentId, editable, extra = [],
   const offered = (taxes.data ?? []).filter((tax) => tax.is_active && (tax.scope === "both" || tax.scope === side));
   // While the taxes load a line says so, not a row id (#1, #2) nobody can read (O394).
   const taxCode = (id: number) => (taxes.data ? taxes.data.find((tax) => tax.id === id)?.code ?? `#${id}` : "…");
+  // A line shows what it is charged, which its party's position can make other than what was chosen: an export
+  // under LUT keeps the item's CGST9 and SGST9 and is charged IGST0 (O610). A line read without the field: the chosen.
+  const charged = (line: TradeLine) => line.charged_taxes ?? line.taxes.map(taxCode);
+  const chargedOtherwise = (line: TradeLine) => line.charged_taxes !== undefined && taxes.data !== undefined
+    && [...line.charged_taxes].sort().join() !== line.taxes.map(taxCode).sort().join();
 
   const patch = (line: TradeLine, change: Partial<TradeLine>) => {
     const changed = Object.entries(change).some(([key, value]) => JSON.stringify(line[key]) !== JSON.stringify(value));
@@ -143,9 +151,12 @@ export function Lines({ lines, endpoint, parent, parentId, editable, extra = [],
               </td>
               <td>
                 {editable ? (
-                  <TaxPicker chosen={line.taxes} offered={taxes.data ? offered : undefined} label="Taxes"
-                    onChange={(next) => patch(line, { taxes: next })} />
-                ) : line.taxes.length ? line.taxes.map(taxCode).join(", ") : <span className="tax-chosen none">No tax</span>}
+                  <>
+                    <TaxPicker chosen={line.taxes} offered={taxes.data ? offered : undefined} label="Taxes"
+                      onChange={(next) => patch(line, { taxes: next })} />
+                    {chargedOtherwise(line) && <div className="muted">Charged {charged(line).join(", ") || "no tax"}</div>}
+                  </>
+                ) : charged(line).length ? charged(line).join(", ") : <span className="tax-chosen none">No tax</span>}
               </td>
               {extra.map((column) => <td key={column.label} className="k-quantity">{column.render(line)}</td>)}
               {centres && (
