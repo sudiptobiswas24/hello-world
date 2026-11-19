@@ -1459,6 +1459,77 @@ class Command(BaseCommand):
                                                 end_date=day(-8), reason="Fever")
 
 
+        with step("Stores: a count, a write-off, a move to the godown, and the gate"):
+            # O613: the stores' own documents had nothing on the demo. The spares cupboard is counted two bearings
+            # short; a hundred and fifty rice sacks spoilt by a roof leak are written off; ten thousand cement
+            # sacks go to the godown's first bay for the week's lorries.
+            Reason = M("inventory.AdjustmentReason")
+            lock_positions([(bearing, plant), (rice, plant), (cement, plant), (cement, godown)])
+            count = M("inventory.StockCount").objects.create(count_date=TODAY, warehouse=plant,
+                                                             reason=Reason.objects.get(code="SHORT"))
+            count.add(bearing, bearing.on_hand_at(plant) - 2)
+            count.post()
+            spoilt = M("inventory.StockAdjustment").objects.create(adjustment_date=day(-1), warehouse=plant,
+                                                                   reason=Reason.objects.get(code="DAMAGE"))
+            M("inventory.StockAdjustmentLine").objects.create(adjustment=spoilt, item=rice, uom=rice.uom,
+                                                              quantity=D("-150"))
+            spoilt.post()
+            move = M("inventory.StockTransfer").objects.create(transfer_date=day(-1), from_warehouse=plant,
+                                                               to_warehouse=godown, reference="For the week's lorries")
+            M("inventory.StockTransferLine").objects.create(transfer=move, item=cement, uom=cement.uom,
+                                                            quantity=D("10000"), to_bin=bins["A-01"])
+            move.post(occurred_at=stamp(day(-1), 11))
+
+            # The gate, on the gate's own clock: a lorry of granule weighed in full and out empty, a laptop out for
+            # repair on a returnable pass the stores keeper approved, and a visitor still on site.
+            Visit, Pass = M("inventory.GateVisit"), M("inventory.GatePass")
+            open_order = M("purchasing.PurchaseOrder").objects.filter(status="confirmed").order_by("-pk").first()
+            lorry = Visit.objects.create(vehicle_number="MH12 QT 4471", driver_name="Baban Kale",
+                                         driver_mobile="98220 11457", transporter_name="Shree Ganesh Roadlines",
+                                         purpose="inward_order", reference=open_order.number if open_order else "",
+                                         carried="PP granule, bagged")
+            weighing = lorry.start_weighing(scale_code="WB-1")
+            for side, kg in (("gross", "27460.000"), ("tare", "9380.000")):
+                weighing.record(side, "typed", kg, reason="calibration", by=sunita.user)
+            lorry.check_out()
+            tempo = Visit.objects.create(vehicle_number="MH14 KD 0932", driver_name="Sanjay Wagh",
+                                         purpose="gate_pass", carried="One laptop")
+            repair = Pass.objects.create(kind="returnable", party_name="Chakan Computer Care",
+                                         purpose="Screen replaced under warranty", expected_return_date=day(7),
+                                         visit=tempo)
+            M("inventory.GatePassLine").objects.create(
+                gate_pass=repair, quantity=D("1"),
+                asset=M("assets.FixedAsset").objects.get(name="Laptops for the office, four"))
+            repair.approve(by=sunita.user)
+            tempo.check_out()
+            Visit.objects.create(vehicle_number="MH14 GH 2210", driver_name="Rajesh Iyer", purpose="visitor",
+                                 carried="Sales call from Kaveri Feeds")
+
+        with step("Planning: a year of shipments, a forecast, a build ahead, and the morning's plan"):
+            # O613: planning had nothing on the demo. The old system's cement-sack shipments for the year before
+            # cutover, a forecast for next month from them, the fertiliser sacks built ahead of the kharif season,
+            # and one run of the planner over the plant as the morning would run it.
+            from apps.planning.mrp import plan
+
+            settings = M("planning.PlanningSettings").get()
+            first_of_month = TODAY.replace(day=1)
+            for back in range(12, 0, -1):  # the year before cutover: the system counts its own months after
+                months = opened.year * 12 + opened.month - 1 - back
+                month = datetime.date(months // 12, months % 12 + 1, 1)
+                M("planning.ShipmentHistory").objects.create(
+                    item=cement, warehouse=plant, month=month,
+                    quantity=D(180000 + 15000 * ((back * 7) % 5)), note="From the old system")
+            following_month = (first_of_month + datetime.timedelta(days=32)).replace(day=1)
+            M("planning.Forecast").objects.create(
+                item=cement, warehouse=plant, starts_on=following_month,
+                ends_on=(following_month + datetime.timedelta(days=32)).replace(day=1) - datetime.timedelta(days=1),
+                quantity=D("200000"), notes="Dealers' orders as last year")
+            monday = TODAY + datetime.timedelta(days=7 - TODAY.weekday() + 7)
+            M("planning.MasterScheduleEntry").objects.create(
+                item=fert, warehouse=plant, week_of=monday, quantity=D("30000"),
+                reason="Built ahead of the kharif season")
+            plan(plant, planned_on=TODAY, settings=settings)
+
         with step("Attendance: the floor's last week"):
             # O605: the register the floor keeps, the crew on the day shift. Present every working day and once late,
             # so no day of it is unpaid: the runs already posted or calculated read the same with it as without.
