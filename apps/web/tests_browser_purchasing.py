@@ -302,6 +302,31 @@ class PurchasingInTheBrowserTests(BrowserTestCase):
         self.assertEqual((receipt.posted, receipt.lines.count()), (False, 1))
         self.assertEqual(self.problems, [])
 
+    def test_a_scan_before_the_warehouses_have_come_waits_for_them(self):
+        """
+        A hand scanner types the moment the screen opens. The receipt goes to the warehouse "Arrives at" shows,
+        and until the list has come it shows none: the scan was sent naming none, refused for an order line
+        that names none either, and no receipt opened. A gate lane under load met it (g51, PostgreSQL). Here
+        the list is held until the order has been looked up, the worst case.
+        """
+        order = PurchaseOrder.objects.create(vendor=self.vendor, order_date=datetime.date(2026, 1, 1))
+        PurchaseOrderLine.objects.create(order=order, item=self.item, uom=self.uom, quantity=Decimal("10"),
+                                         unit_price=Decimal("5"))
+        order.confirm()
+        held = []
+        self.page.route(re.compile(r"/api/inventory/warehouses/"), lambda route: held.append(route))
+        gate = self.sign_in(self.person("Warehouse Staff"), "/app/purchasing/receive-by-scan")
+        box = gate.get_by_label("Purchase order")
+        with gate.expect_response(re.compile(r"/api/purchasing/purchase-orders/\?")):
+            box.fill(order.number)
+            box.press("Enter")
+        self.assertEqual(len(held), 1)
+        held[0].continue_()
+        gate.wait_for_url(re.compile(r"/purchasing/goods-in/\d+$"))
+        receipt = GoodsReceipt.objects.get(purchase_order=order)
+        self.assertEqual([line.warehouse for line in receipt.lines.all()], [self.warehouse])
+        self.assertEqual(self.problems, [])
+
     def test_a_vendor_made_in_one_form_and_blocked_by_accounts_not_the_buyer(self):
         """
         The buyer adds a vendor with the bank they are paid into and what we

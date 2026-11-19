@@ -19,7 +19,8 @@ export default function ReceiveByScan() {
   const act = useAct<{ id: number }>();
   const [problem, setProblem] = useState<string | null>(null);
   const { can } = useAccess();
-  const warehouses = useReference<Warehouse>("/api/inventory/warehouses/", undefined, can("inventory.view_warehouse"));
+  const seesWarehouses = can("inventory.view_warehouse");
+  const warehouses = useReference<Warehouse>("/api/inventory/warehouses/", undefined, seesWarehouses);
   const [warehouse, setWarehouse] = useState("");
   const arrivesAt = warehouse || String(warehouses.data?.[0]?.id ?? "");
   const scanned = async (code: string) => {
@@ -35,8 +36,14 @@ export default function ReceiveByScan() {
         setProblem(`${order.number} is ${order.status}; only a confirmed order is received.`);
         return;
       }
+      // The receipt goes where "Arrives at" says, and until the list has come it says nowhere. A hand scanner
+      // types the moment the screen opens: wait for the list (the request already asked), or the scan is
+      // sent naming no warehouse and refused for a line that names none either.
+      const shown = warehouses.data
+        ?? (seesWarehouses ? (await warehouses.refetch({ cancelRefetch: false })).data : undefined);
+      const where = warehouse || String(shown?.[0]?.id ?? "");
       const outcome = await act.run("POST", `/api/purchasing/purchase-orders/${order.id}/receive/`,
-        arrivesAt ? { warehouse: arrivesAt } : {}, { done: `Receipt drafted for ${order.number}` });
+        where ? { warehouse: where } : {}, { done: `Receipt drafted for ${order.number}` });
       if (outcome.ok) navigate(`/purchasing/goods-in/${outcome.data.id}`);
     } catch (error) {
       setProblem(error instanceof ApiError ? error.messages.join(" ") : `${code} could not be looked up.`);
