@@ -323,7 +323,8 @@ class WhatWasIssuedIsWhatReprints(IssuedThenMoved):
         made, voucher = self.issued()
         old = self.settings.gstin
         letterhead = {"name": "Deccan Polysacks", "legal_name": "Deccan Polysacks Private Limited",
-                      "address": ["Plot 14, MIDC", "Aurangabad"], "tax_id": old, "contacts": ["0240 248 1100"]}
+                      "address": ["Plot 14, MIDC", "Aurangabad"], "tax_id": old, "tax_label": "GSTIN",
+                      "contacts": ["0240 248 1100"]}
         for document in (made, voucher):
             document.refresh_from_db()
             self.assertEqual((document.recipient_gstin, document.letterhead), (old, letterhead))
