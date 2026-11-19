@@ -493,8 +493,9 @@ class TheStoresAndPlanningShowTheDemoTests(SignsInAsTheDemo, TestCase):
     O613 (stores and planning): the stores' documents, the gate and planning answered nothing on the demo. The demo
     now counts the spares cupboard two bearings short, writes off 150 rice sacks spoilt by a leak, moves 10,000
     cement sacks to the godown's first bay, weighs a lorry of granule in and out, sends a laptop out on a returnable
-    pass with a visitor still on site, and plans the plant once from a year of shipments, a forecast and a build
-    ahead. Each is read by its route as the person whose screen it is.
+    pass with a visitor still on site, takes in two tonnes of Konkan Agro's own granule and sends 150 kg of it back,
+    and plans the plant once from a year of shipments, a forecast and a build ahead. Each is read by its route as
+    the person whose screen it is.
     """
 
     @classmethod
@@ -519,6 +520,20 @@ class TheStoresAndPlanningShowTheDemoTests(SignsInAsTheDemo, TestCase):
         self.assertEqual((move["status"], move["to_name"], [(line["item_label"].split(" ")[0], line["quantity"])
                                                             for line in move["lines"]]),
                          ("received", "Finished goods godown", [("SACK-CEM50", "10000.0000")]))
+
+    def test_a_customers_own_granule_came_in_at_no_value_and_what_was_not_used_went_back(self):
+        from apps.inventory.models import Item, Warehouse
+
+        (theirs,) = self.read("sunita", "/api/manufacturing/customer-material-receipts/")
+        self.assertEqual((theirs["customer_name"], theirs["their_challan"], theirs["posted"],
+                          [(line["item_label"].split(" ")[0], line["quantity"]) for line in theirs["lines"]]),
+                         ("Konkan Agro Foods", "KAF/JW/0417", True, [("PP-RAFFIA", "2000.0000")]))
+        (back,) = self.read("sunita", "/api/manufacturing/customer-material-returns/")
+        self.assertEqual((back["posted"], [(line["receipt_line"], line["quantity"]) for line in back["lines"]]),
+                         (True, [(theirs["lines"][0]["id"], "150.0000")]))
+        # 2,000 in, 150 back: 1,850 of Konkan's on the premises, in the bay held for it and on no books.
+        self.assertEqual(Item.objects.get(sku="PP-RAFFIA").on_hand_at(Warehouse.objects.get(code="KONK")),
+                         Decimal("1850"))
 
     def test_the_gate_weighed_a_lorry_passed_a_laptop_out_and_has_a_visitor_in(self):
         visits = self.read("raju", "/api/inventory/gate-visits/")
