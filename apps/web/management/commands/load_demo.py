@@ -1459,6 +1459,49 @@ class Command(BaseCommand):
                                                 end_date=day(-8), reason="Fever")
 
 
+        with step("Sales: the dealers' price list, reminders for what is overdue, a monthly charge"):
+            # O613: prices, dunning and recurring invoices answered nothing on the demo. The dealers' list is kept
+            # beside the agreed prices and given to nobody yet, so no order's price changes under it; the reminders
+            # run once as the office would run them for post, so nothing is emailed; the monthly charge for keeping
+            # Sahyadri's printing cylinders starts next month and has issued nothing.
+            from apps.sales.models import run_dunning
+
+            dealers = M("sales.PriceList").objects.create(code="DEALER-26", name="Dealers, 2026-27", currency=inr,
+                                                          valid_from=on(2026, 4, 1))
+            for it, quantity, price in ((cement, "1", "7.95"), (cement, "50000", "7.80"), (fert, "1", "11.40"),
+                                        (rice, "1", "9.10")):
+                M("sales.PriceListItem").objects.create(price_list=dealers, item=it, min_quantity=D(quantity),
+                                                        unit_price=D(price))
+            for name, days in (("A week late", 7), ("A month late", 30), ("Two months late", 60)):
+                M("sales.DunningLevel").objects.create(name=name, days_overdue=days)
+            # One transaction for the section, where the office's run releases each invoice as it goes: the
+            # invoices it may hold, held first in key order (apps.core.lock_order).
+            lock_rows(*M("sales.Invoice").objects.filter(posted=True).order_by("pk"), refresh=False)
+            run_dunning(as_of=TODAY, send=False)
+            cylinders = M("sales.RecurringInvoice").objects.create(
+                code="RI-CYL", customer=sahyadri, receivable_account=ar, currency=inr, payment_terms=net30,
+                interval="month", interval_count=1, start_date=(TODAY.replace(day=1) + datetime.timedelta(days=32)).replace(day=1),
+                auto_post=False)
+            line = M("sales.RecurringInvoiceLine").objects.create(
+                schedule=cylinders, description="Keeping your printing cylinders, a month", quantity=D("1"),
+                unit_price=D("2500"), revenue_account=sales_sacks)
+            line.taxes.set(gst18)
+
+        with step("Purchasing: a year's granule on a blanket agreement, a reorder rule"):
+            # O613: blanket agreements and reorder rules answered nothing on the demo. The year's raffia granule is
+            # committed to one supplier at a fixed price and the first lorry called off, as a draft for the buyer to
+            # send; the UV masterbatch is kept between 150 and 400 kg.
+            agreement = M("purchasing.BlanketOrder").objects.create(
+                vendor=granule, reference="Annual rate contract 2026-27", start_date=day(-10), end_date=day(355),
+                currency=inr)
+            raffia = M("purchasing.BlanketOrderLine").objects.create(
+                blanket=agreement, item=virgin, uom=virgin.uom, quantity=D("120000"), unit_price=D("109"))
+            raffia.taxes.set(gst18)
+            agreement.confirm()
+            agreement.release({raffia: D("18000")}, order_date=TODAY)
+            M("purchasing.ReorderRule").objects.create(item=uv, warehouse=plant, minimum=D("150"), target=D("400"),
+                                                       multiple_of=D("25"), vendor=western)
+
         with step("Stores: a count, a write-off, a move to the godown, and the gate"):
             # O613: the stores' own documents had nothing on the demo. The spares cupboard is counted two bearings
             # short; a hundred and fifty rice sacks spoilt by a roof leak are written off; ten thousand cement

@@ -547,3 +547,63 @@ class TheStoresAndPlanningShowTheDemoTests(SignsInAsTheDemo, TestCase):
                        for demand in order["demands"]})
         self.assertTrue(self.read("suresh", "/api/planning/actions/"))
         self.assertEqual(len(self.read("suresh", "/api/planning/settings/")), 1)
+
+
+class TheTradingListsShowTheDemoTests(SignsInAsTheDemo, TestCase):
+    """
+    O613 (prices, dunning, recurring invoices, blanket agreements, reorder rules): each answered nothing on the demo.
+    The dealers' price list is kept and given to nobody, so no order's price moves under it; the reminders run once
+    for post, so nothing is emailed; the monthly charge for Sahyadri's printing cylinders starts next month. The
+    year's raffia granule is on a blanket agreement with the first 18,000 kg called off as a draft, and the UV
+    masterbatch has a reorder rule. Read by the AR Manager and the buyer.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        load(password="Trial-2026", stdout=StringIO(), stderr=StringIO())
+
+    def read(self, path, username="rohit"):
+        answer = self.as_(username).get(path)
+        self.assertEqual(answer.status_code, 200, (path, answer.content[:300]))
+        return json.loads(answer.content)
+
+    def test_the_dealers_list_is_kept_and_is_nobodys_default(self):
+        (dealers,) = self.read("/api/sales/price-lists/")
+        self.assertEqual((dealers["code"], dealers["is_default"]), ("DEALER-26", False))
+        self.assertEqual(sorted((entry["item_label"].split(" ")[0], entry["min_quantity"], entry["unit_price"])
+                                for entry in dealers["entries"]),
+                         [("SACK-CEM50", "1.0000", "7.95"), ("SACK-CEM50", "50000.0000", "7.80"),
+                          ("SACK-FERT50", "1.0000", "11.40"), ("SACK-RICE25", "1.0000", "9.10")])
+
+    def test_what_is_overdue_has_its_reminder_recorded_for_post_not_emailed(self):
+        self.assertEqual([level["days_overdue"] for level in self.read("/api/sales/dunning-levels/")], [7, 30, 60])
+        notices = self.read("/api/sales/dunning-notices/")
+        self.assertTrue(notices)
+        for notice in notices:
+            self.assertEqual((notice["sent_to"], notice["sent_at"]), ("", None), notice)
+            self.assertGreaterEqual(notice["days_overdue"], 7, notice)
+            self.assertGreater(Decimal(notice["amount_due"]), 0, notice)
+
+    def test_the_monthly_charge_waits_for_next_month(self):
+        from django.utils import timezone
+
+        today = timezone.localdate()
+        (cylinders,) = self.read("/api/sales/recurring-invoices/")
+        self.assertEqual((cylinders["code"], cylinders["next_run_date"], cylinders["auto_post"]),
+                         ("RI-CYL", str((today.replace(day=1) + datetime.timedelta(days=32)).replace(day=1)), False))
+        self.assertEqual([(line["total"], line["charged_taxes"]) for line in cylinders["lines"]],
+                         [("2950.00", ["CGST9", "SGST9"])])
+
+    def test_the_years_granule_is_on_a_blanket_agreement_and_its_first_lorry_called_off(self):
+        (agreement,) = self.read("/api/purchasing/blanket-orders/", "ravi")
+        self.assertEqual((agreement["vendor_name"], agreement["status"]), ("Granule House Polymers", "confirmed"))
+        # 120,000 kg at 109: 13,080,000; from Gujarat, so integrated tax at 18%.
+        self.assertEqual([(line["quantity"], line["quantity_released"], line["quantity_remaining"], line["net_amount"],
+                           line["charged_taxes"]) for line in agreement["lines"]],
+                         [("120000.0000", "18000.0000", "102000.0000", "13080000.00", ["IGST18"])])
+        called = self.read("/api/purchasing/purchase-orders/?status=draft", "ravi")
+        self.assertEqual([(order["vendor_name"], [line["quantity"] for line in order["lines"]]) for order in called],
+                         [("Granule House Polymers", ["18000.0000"])])
+        (rule,) = self.read("/api/purchasing/reorder-rules/", "ravi")
+        self.assertEqual((rule["item_label"].split(" ")[0], rule["minimum"], rule["target"], rule["vendor_name"]),
+                         ("UV-MB", "150.0000", "400.0000", "Western Masterbatch Pvt Ltd"))
