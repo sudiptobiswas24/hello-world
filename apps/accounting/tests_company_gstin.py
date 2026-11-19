@@ -6,7 +6,7 @@ with no tax ID typed on the company, issued purchase orders and challans with no
 
 from django.test import TestCase
 
-from apps.core.documents import issuer, letterhead, printed_footer
+from apps.core.documents import issuer, letterhead, printed_footer, printed_letterhead
 from apps.core.models import Company
 
 from .gst import GstSettings
@@ -39,6 +39,11 @@ class EveryDocumentPrintsTheRegistrationsGstinTests(TestCase):
         Company.objects.filter(pk=self.company.pk).update(tax_id="DE123456789")
         self.company.refresh_from_db()
         self.assertEqual(issuer(self.company)["tax_id"], "DE123456789")
+        # O606: printed as what it is, not as a GSTIN; a letterhead kept before the label was, reprints as it did.
+        self.assertIn("Tax ID DE123456789", str(letterhead(self.company)))
+        self.assertNotIn("GSTIN", str(letterhead(self.company)))
+        kept_before = {key: value for key, value in issuer(self.company).items() if key != "tax_label"}
+        self.assertIn("GSTIN DE123456789", str(printed_letterhead(kept_before)))
 
     def test_an_inactive_registration_is_not_printed(self):
         registration = self.register()

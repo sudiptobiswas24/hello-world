@@ -349,13 +349,21 @@ def register_company_gstin(ask):
         _REGISTERED_GSTIN.append(ask)
 
 
-def registered_gstin(company):
-    """The GST registration's GSTIN where there is one; else the company's own tax ID, for a plant not registered."""
+def registered_tax_number(company):
+    """
+    (number, label): the GST registration's GSTIN, labelled "GSTIN", where there is one; else the company's own tax
+    number, labelled "Tax ID", for a plant not registered (O606: it printed as a GSTIN on every letterhead).
+    """
     for ask in _REGISTERED_GSTIN:
         gstin = ask(company)
         if gstin:
-            return gstin
-    return company.tax_id or ""
+            return gstin, "GSTIN"
+    return company.tax_id or "", "Tax ID"
+
+
+def registered_gstin(company):
+    """The GST registration's GSTIN where there is one; else the company's own tax ID, for a plant not registered."""
+    return registered_tax_number(company)[0]
 
 
 def issuer(company):
@@ -367,10 +375,15 @@ def issuer(company):
     Its GSTIN is the GST registration's, the one the tax invoice, the returns and the e-invoice name (O603): read
     from the company's own tax ID, every other document printed none where only the registration had it (the
     demo plant's purchase orders and challans), and a different one where the two disagreed.
+
+    What the number is goes with it (O606): a plant not registered keeps its own tax number as a "Tax ID", printed
+    as one rather than as a GSTIN. A letterhead kept before that has no label, and every number it kept was printed
+    as a GSTIN, so it reprints as one.
     """
+    number, label = registered_tax_number(company)
     return {"name": company.name, "legal_name": company.legal_name or "",
             "address": company.address.formatted().splitlines() if company.address_id else [],
-            "tax_id": registered_gstin(company), "contacts": contacts(company)}
+            "tax_id": number, "tax_label": label, "contacts": contacts(company)}
 
 
 def contacts(company):
@@ -382,7 +395,7 @@ def printed_letterhead(kept):
     """A letterhead from issuer()'s values, kept or as they stand."""
     parts = [bold(kept.get("name", "")), *kept.get("address", [])]
     if kept.get("tax_id"):
-        parts.append(f"GSTIN {kept['tax_id']}")
+        parts.append(f"{kept.get('tax_label', 'GSTIN')} {kept['tax_id']}")
     return lines(parts)
 
 
