@@ -555,7 +555,8 @@ class TheTradingListsShowTheDemoTests(SignsInAsTheDemo, TestCase):
     The dealers' price list is kept and given to nobody, so no order's price moves under it; the reminders run once
     for post, so nothing is emailed; the monthly charge for Sahyadri's printing cylinders starts next month. The
     year's raffia granule is on a blanket agreement with the first 18,000 kg called off as a draft, and the UV
-    masterbatch has a reorder rule. Read by the AR Manager and the buyer.
+    masterbatch has a reorder rule. The latest invoice in rupees has its e-invoice and e-way bill built, waiting for
+    the portals. Read by the AR Manager, the buyer and the accountant.
     """
 
     @classmethod
@@ -607,3 +608,16 @@ class TheTradingListsShowTheDemoTests(SignsInAsTheDemo, TestCase):
         (rule,) = self.read("/api/purchasing/reorder-rules/", "ravi")
         self.assertEqual((rule["item_label"].split(" ")[0], rule["minimum"], rule["target"], rule["vendor_name"]),
                          ("UV-MB", "150.0000", "400.0000", "Western Masterbatch Pvt Ltd"))
+
+    def test_the_latest_invoice_has_its_e_invoice_and_e_way_bill_built_and_waiting_for_the_portals(self):
+        from apps.sales.models import Invoice
+
+        latest = Invoice.objects.filter(posted=True, credits__isnull=True, currency__is_base=True).order_by(
+            "-invoice_date", "-pk").first()
+        (built,) = self.read("/api/gst/e-invoices/", "anita")
+        # Built and kept, with no IRN: registering it is the portal's answer, and nothing it could not be refused.
+        self.assertEqual((built["invoice_number"], built["irn"], built["warnings"]), (latest.number, "", []))
+        self.assertEqual(Decimal(str(built["payload"]["ValDtls"]["TotInvVal"])), latest.total())
+        (bill,) = self.read("/api/gst/eway-bills/", "anita")
+        self.assertEqual((bill["document_number"], bill["number"], bill["required"], bill["vehicle_number"]),
+                         (latest.number, "", True, "MH12RT5508"))
