@@ -12,7 +12,8 @@ from decimal import Decimal
 
 from django.contrib.auth.decorators import login_required, permission_required
 from django.http import Http404
-from django.shortcuts import get_object_or_404, render
+from django.shortcuts import render
+from rest_framework.generics import get_object_or_404
 from django.utils import timezone
 from django.views.decorators.csrf import ensure_csrf_cookie
 

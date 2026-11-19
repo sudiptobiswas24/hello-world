@@ -13,7 +13,7 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from django.http import HttpResponse
 from django.db import transaction
 from django.db.models import Q
-from django.shortcuts import get_object_or_404
+from rest_framework.generics import get_object_or_404
 from django.utils import timezone
 from django.utils.html import escape
 from rest_framework import viewsets

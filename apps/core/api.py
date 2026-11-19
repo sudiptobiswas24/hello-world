@@ -169,7 +169,7 @@ def record_or_404(model, value, field, optional=False):
     ValueError on "MAIN" or an account code, which was a 500. `optional`:
     None for a field left blank.
     """
-    from django.shortcuts import get_object_or_404
+    from rest_framework.generics import get_object_or_404
 
     if optional and value in (None, ""):
         return None

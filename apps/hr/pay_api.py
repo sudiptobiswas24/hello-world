@@ -12,7 +12,7 @@ my-payslips/            the signed-in employee's own posted payslips, and {id}/p
 """
 
 from django.http import HttpResponse
-from django.shortcuts import get_object_or_404
+from rest_framework.generics import get_object_or_404
 from rest_framework import serializers, viewsets
 
 from apps.core.api import ModelSerializer, takes_only

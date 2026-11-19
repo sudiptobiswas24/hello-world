@@ -10,7 +10,7 @@ corrective-actions/overdue/ lists those late on open complaints.
 """
 
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.shortcuts import get_object_or_404
+from rest_framework.generics import get_object_or_404
 from django.utils.dateparse import parse_date
 from rest_framework import serializers, viewsets
 
