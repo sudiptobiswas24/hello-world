@@ -1487,6 +1487,18 @@ class Command(BaseCommand):
                 unit_price=D("2500"), revenue_account=sales_sacks)
             line.taxes.set(gst18)
 
+        with step("GST documents: the latest invoice's e-invoice and e-way bill, waiting for the portals"):
+            # O613: e-invoices and e-way bills answered nothing on the demo. The latest invoice in rupees, inside
+            # the thirty days a large company has to register it, has both built and kept for the accountant to
+            # upload: the portals' answers (the IRN, the e-way bill's number) are theirs to give, so nothing is
+            # recorded as registered.
+            from apps.gst import einvoice, ewaybill
+
+            latest = M("sales.Invoice").objects.filter(posted=True, credits__isnull=True,
+                                                       currency=inr).order_by("-invoice_date", "-pk").first()
+            einvoice.prepare(latest)
+            ewaybill.prepare(latest, mode=ewaybill.TransportMode.ROAD, distance_km=480, vehicle_number="MH12 RT 5508")
+
         with step("Purchasing: a year's granule on a blanket agreement, a reorder rule"):
             # O613: blanket agreements and reorder rules answered nothing on the demo. The year's raffia granule is
             # committed to one supplier at a fixed price and the first lorry called off, as a draft for the buyer to
