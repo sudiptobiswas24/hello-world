@@ -713,7 +713,15 @@ class FabricRollSerializer(ModelSerializer):
 
     lot_code = serializers.CharField(source="lot.code", read_only=True)
     machine_code = serializers.CharField(source="machine.code", read_only=True, default="")
-    specification_name = serializers.CharField(source="specification.name", read_only=True, default="")
+    specification_name = serializers.SerializerMethodField(
+        help_text="The fabric specification it was woven to, by its name, else its code (a name is optional); "
+                  "empty for a roll with none.")
+
+    def get_specification_name(self, obj):
+        # The Rolls screen's Fabric column read the name alone, and every roll of a specification given only a code
+        # (the demo's F-50) showed no fabric at all (O605).
+        spec = obj.specification
+        return (spec.name or spec.code) if spec is not None else ""
 
     def get_implied_gsm(self, obj):
         return str(obj.implied_gsm())
