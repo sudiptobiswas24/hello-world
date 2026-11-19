@@ -1,0 +1,1 @@
+import{H as e}from"./client-DQbRb5n_.js";import{t}from"./Aging-xHUvbrab.js";var n=e();function r(){return(0,n.jsx)(t,{title:`Payables by age`,endpoint:`/api/purchasing/purchasing-reports/aging/`,documents:`bills`,document:`Bill`,party:`vendor`,href:e=>`/purchasing/bills/${e}`})}export{r as default};

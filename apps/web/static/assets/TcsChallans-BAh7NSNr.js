@@ -1,0 +1,1 @@
+import{H as e}from"./client-DQbRb5n_.js";import{n as t,r as n}from"./Challans-B68Zessq.js";var r=e();function i(){return(0,r.jsx)(t,{kind:n})}export{i as default};

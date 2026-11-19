@@ -1,0 +1,1 @@
+import{H as e}from"./client-DQbRb5n_.js";import{t}from"./PaymentList-Jf5j7PMf.js";var n=e();function r(){return(0,n.jsx)(t,{direction:`receipt`,title:`Money received`,base:`/sales/receipts`,noun:[`receipt`,`receipts`],party:`customer`})}export{r as default};

@@ -1,0 +1,1 @@
+var e={endpoint:`/api/hr/departments/`,permission:`hr.view_department`,label:e=>String(e.name||e.code)},t={endpoint:`/api/hr/job-openings/`,permission:`hr.view_jobopening`,label:e=>String(e.title)},n=[[`walk_in`,`Walk-in`],[`referral`,`Referral`],[`agency`,`Agency`],[`portal`,`Job portal`],[`other`,`Other`]];export{t as n,n as r,e as t};

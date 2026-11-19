@@ -1,0 +1,1 @@
+var e=e=>[e.label,e.line1,e.city,e.state,e.postal_code].filter(Boolean).map(String).join(`, `),t={endpoint:`/api/core/addresses/`,permission:`core.view_address`,query:{is_active:`true`},label:e},n=`For an export of goods: the port, ICD or CFS in India they leave the plant for`;export{n,e as r,t};

@@ -1,0 +1,1 @@
+function e(e){return e.is_active===!1?{label:`Deactivated`,tone:`draft`,why:`Switched off: the login no longer signs in`}:typeof e.ended==`string`&&e.ended?{label:`Ended`,tone:`void`,why:e.ended}:{label:`Active`,tone:`open`,why:``}}export{e as t};

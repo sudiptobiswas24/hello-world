@@ -1,0 +1,1 @@
+import{H as e}from"./client-DQbRb5n_.js";import{t}from"./PartyList-hCz3QP-d.js";var n=e();function r(){return(0,n.jsx)(t,{role:`customer`,title:`Customers`,base:`/sales/customers`})}export{r as default};

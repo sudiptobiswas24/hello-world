@@ -1,0 +1,6 @@
+import{H as e}from"./client-DQbRb5n_.js";import{r as t}from"./RecordScreen-DWgXoYiU.js";var n=e();function r(){return(0,n.jsx)(t,{endpoint:`/api/sales/dunning-levels/`,back:`/sales/reminder-levels`,backLabel:`Reminder levels`,newTitle:`New reminder level`,heading:e=>String(e.name??``),state:e=>e.is_active===!1?{label:`Inactive`,tone:`draft`}:null,permissions:{add:`sales.add_dunninglevel`,change:`sales.change_dunninglevel`,delete:`sales.delete_dunninglevel`},fields:[{key:`name`,label:`Name`},{key:`days_overdue`,label:`Days overdue`,kind:`integer`,hint:`Send once the invoice is at least this many days past due`},{key:`subject`,label:`Subject`,initial:`Reminder: invoice {number} is overdue`,hint:`Supports {number}, {customer}, {days}, {amount}`},{key:`body`,label:`Body`,kind:`textarea`,initial:`Dear {customer},
+
+Invoice {number} for {amount} was due on {due_date} and is now {days} days overdue.
+
+Please arrange payment.
+`,hint:`Supports {number}, {customer}, {days}, {amount}, {due_date}`},{key:`is_active`,label:`Active`,kind:`bool`,initial:!0}]})}export{r as default};

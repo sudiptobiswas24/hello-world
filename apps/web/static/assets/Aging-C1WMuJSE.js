@@ -1,0 +1,1 @@
+import{H as e}from"./client-DQbRb5n_.js";import{t}from"./Aging-xHUvbrab.js";var n=e();function r(){return(0,n.jsx)(t,{title:`Receivables by age`,endpoint:`/api/sales/invoices/aging/`,documents:`invoices`,document:`Invoice`,party:`customer`,href:e=>`/sales/invoices/${e}`})}export{r as default};

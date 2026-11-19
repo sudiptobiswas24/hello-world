@@ -1,0 +1,1 @@
+var e=[[`torn`,`Torn or damaged bags`],[`short_weight`,`Short weight or count`],[`rate`,`Rate disputed`],[`quality`,`Quality below specification`],[`other`,`Other`]];export{e as t};
