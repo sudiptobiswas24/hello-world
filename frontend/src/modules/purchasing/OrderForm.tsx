@@ -11,8 +11,7 @@ import { Lines, NewLines, lineBody, type NewLine, type TradeLine } from "../../f
 import { PartyPicker } from "../../forms/PartyPicker";
 import { RelatedList } from "../../forms/Related";
 import { useDraft } from "../../forms/useDraft";
-import { WarehouseChoice } from "../../forms/WarehouseChoice";
-import { aboveZero } from "../../lib/decimal";
+import { owesWithoutAWarehouse, WarehouseChoice } from "../../forms/WarehouseChoice";
 import { date, money, quantity } from "../../lib/format";
 import { ErrorPanel } from "../../shell/ErrorPanel";
 import { useRefs } from "../../views/RecordScreen";
@@ -118,7 +117,7 @@ export default function OrderForm() {
         )}
         {order?.status === "confirmed" && order.receipt_status !== "full" && can("purchasing.add_goodsreceipt") && (
           <WarehouseChoice label="Receive" prompt="Arrives at" confirm="Draft receipt" pending={act.pending}
-            needsOne={order.lines.some((line) => !line.charge && aboveZero(line.quantity_open) && !line.warehouse)}
+            needsOne={owesWithoutAWarehouse(order.lines)}
             go={(warehouse) => void run("receive", "Receipt drafted", (r) => navigate(`/purchasing/goods-in/${(r as { id: number }).id}`),
               warehouse ? { warehouse } : {})} />
         )}

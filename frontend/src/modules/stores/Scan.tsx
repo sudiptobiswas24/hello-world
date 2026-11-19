@@ -4,6 +4,7 @@ import { Link, useNavigate } from "react-router";
 import { ApiError, get } from "../../api/client";
 import { useAct, useGet, useReference } from "../../api/hooks";
 import { useAccess } from "../../auth/me";
+import { owesWithoutAWarehouse, WarehouseChoice } from "../../forms/WarehouseChoice";
 import { ScanBox } from "../../views/ScanBox";
 
 /**
@@ -24,18 +25,30 @@ const SCREEN: Record<string, string> = {
 };
 const VERB: Record<string, string> = { receive: "Receive", pick: "Pick", issue: "Issue", transfer: "Transfer", count: "Count" };
 
-function Offer({ row, start }: { row: Match; start: (row: Match) => void }) {
+interface Owed { charge?: number | null; quantity_open?: string | null; warehouse?: number | null }
+
+function Offer({ row, receive }: { row: Match; receive: Receive }) {
   return (
     <li>
       <span>{row.label}</span>{row.state ? <span className="muted"> ({row.state})</span> : null}{" "}
       {row.actions.map((action) => {
         const screen = SCREEN[`${row.kind}:${action}`];
-        return screen
-          ? <Link key={action} className="btn" to={`/stores/${screen}/${row.id}`}>{VERB[action] ?? action}</Link>
-          : <button key={action} type="button" className="btn" onClick={() => start(row)}>{VERB[action] ?? action}</button>;
+        if (screen) return <Link key={action} className="btn" to={`/stores/${screen}/${row.id}`}>{VERB[action] ?? action}</Link>;
+        // A confirmed purchase order: asks where it arrives only when a line still owed names nowhere (O608).
+        if (row.kind === "purchase_order" && action === "receive") {
+          return <WarehouseChoice key={action} label="Receive" prompt="Arrives at" confirm="Draft receipt"
+            pending={receive.pending} needsOne={() => receive.owes(row)} go={(warehouse) => void receive.draft(row, warehouse)} />;
+        }
+        return null;
       })}
     </li>
   );
+}
+
+interface Receive {
+  pending: boolean;
+  owes: (row: Match) => Promise<boolean | null>;
+  draft: (row: Match, warehouse: number | null) => Promise<void>;
 }
 
 export default function Scan() {
@@ -60,11 +73,26 @@ export default function Scan() {
       setProblem(error instanceof ApiError ? error.messages.join(" ") : `${code} could not be looked up.`);
     }
   };
-  // A confirmed purchase order: a draft receipt of what is still to come, then its scan screen.
-  const start = async (row: Match) => {
-    if (row.kind !== "purchase_order") return;
-    const outcome = await act.run("POST", `/api/purchasing/purchase-orders/${row.id}/receive/`, {}, { done: `Receipt drafted for ${row.code}` });
-    if (outcome.ok) navigate(`/stores/scan-receive/${outcome.data.id}`);
+  // A confirmed purchase order: a draft receipt of what is still to come, then its scan screen. Where it arrives
+  // is asked only when a line still owed names no warehouse, read from the order when Receive is pressed: the
+  // offers are up to 25 orders, and reading each on sight would cost a request apiece.
+  const receive: Receive = {
+    pending: act.pending,
+    owes: async (row) => {
+      setProblem(null);
+      try {
+        const order = await get<{ lines: Owed[] }>(`/api/purchasing/purchase-orders/${row.id}/`);
+        return owesWithoutAWarehouse(order.lines);
+      } catch (error) {
+        setProblem(error instanceof ApiError ? error.messages.join(" ") : `${row.code} could not be read.`);
+        return null;
+      }
+    },
+    draft: async (row, warehouse) => {
+      const outcome = await act.run("POST", `/api/purchasing/purchase-orders/${row.id}/receive/`,
+        warehouse ? { warehouse } : {}, { done: `Receipt drafted for ${row.code}` });
+      if (outcome.ok) navigate(`/stores/scan-receive/${outcome.data.id}`);
+    },
   };
 
   return (
@@ -75,7 +103,7 @@ export default function Scan() {
         {problem && <p className="form-error" role="alert">{problem}</p>}
         {found && (
           <ul className="scan-lines" aria-label="What it is">
-            {found.map((row) => <Offer key={`${row.kind}-${row.id}`} row={row} start={(each) => void start(each)} />)}
+            {found.map((row) => <Offer key={`${row.kind}-${row.id}`} row={row} receive={receive} />)}
           </ul>
         )}
       </section>
@@ -94,7 +122,7 @@ export default function Scan() {
         <h2>Open to scan into</h2>
         {drafts.data && drafts.data.length === 0 && <p className="muted">Nothing open that you may scan into.</p>}
         <ul className="scan-lines">
-          {(drafts.data ?? []).map((row) => <Offer key={`${row.kind}-${row.id}`} row={row} start={(each) => void start(each)} />)}
+          {(drafts.data ?? []).map((row) => <Offer key={`${row.kind}-${row.id}`} row={row} receive={receive} />)}
         </ul>
       </section>
     </article>
