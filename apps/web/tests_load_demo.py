@@ -557,7 +557,8 @@ class TheTradingListsShowTheDemoTests(SignsInAsTheDemo, TestCase):
     year's raffia granule is on a blanket agreement with the first 18,000 kg called off as a draft, and the UV
     masterbatch has a reorder rule. The latest invoice in rupees has its e-invoice and e-way bill built, waiting for
     the portals. An atta sack is costed for a quote from the month's rates, and next year's standards are drafted.
-    Read by the AR Manager, the buyer and the accountant.
+    The imported container's bill of entry is entered as a draft for the accountant to post. Read by the AR Manager,
+    the buyer and the accountant.
     """
 
     @classmethod
@@ -636,3 +637,11 @@ class TheTradingListsShowTheDemoTests(SignsInAsTheDemo, TestCase):
         self.assertEqual((version["is_published"], version["effective_from"][5:]), (False, "04-01"))
         self.assertGreater(version["items"], 0)
         self.assertEqual(len(self.read("/api/manufacturing/standard-costs/", "anita")), version["items"])
+
+    def test_the_imported_containers_bill_of_entry_is_entered_for_the_accountant_to_post(self):
+        (entry,) = self.read("/api/purchasing/bills-of-entry/", "anita")
+        # USD 50,000 FOB, 1,150 freight and 52 insurance at 84.10: 4,306,088.20. Duty to the rupee, line by line
+        # (calc_g53/o613_boe.py): BCD 322,956, social welfare surcharge 32,296, IGST 839,041.
+        self.assertEqual([entry[key] for key in ("status", "fob_total", "assessable_total", "bcd_total", "sws_total",
+                                                 "duty_total", "igst_total", "duty_bill")],
+                         ["draft", "50000.00", "4306088.20", "322956.00", "32296.00", "355252.00", "839041.00", None])

@@ -735,6 +735,15 @@ class Command(BaseCommand):
             landed.post()
             import_bill = imported.create_bill(ap, bill_date=day(-12), reference="GPF/26/0912")
             import_bill.post()
+            # O613: entered from the BE customs gave, against the receipt and bill it clears, and left for the
+            # accountant to check against the paper and post: posting raises the duty bill to the customs house.
+            Account = M("accounting.Account")
+            entry = M("purchasing.BillOfEntry").objects.create(
+                be_number="4418210", be_date=day(-13), port_code="INCCU1", currency=usd, customs_rate=D("84.1000"),
+                freight=D("1150.00"), insurance=D("52.00"), customs_party=M("core.Party").objects.get(code="V-CUSTOMS"),
+                payable_account=Account.objects.get(code="2460"), duty_account=Account.objects.get(code="5160"),
+                igst_account=igst_in)
+            entry.clear_receipt(landed, import_bill)
 
         with step("The container paid by telegraphic transfer"):
             # Its own section, as the office pays in its own request: posted in the transaction that received the
