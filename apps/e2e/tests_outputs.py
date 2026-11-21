@@ -93,10 +93,9 @@ class WhatThePlantPrintsAndFiles(TestCase):
         self.assertEqual(Employee.objects.exclude(pin_digest=None).count(), 4)
 
     def test_the_posted_run_writes_a_salary_file_paying_everyone(self):
-        from apps.hr.bank_file import SalaryTransferFile
-
         run = PayRun.objects.filter(status="posted").order_by("pk").first()
-        made = SalaryTransferFile.prepare(run)
+        (made,) = run.bank_files.all()  # written and paid by the demo since g54
+        self.assertIsNotNone(made.payment)
         slips = [slip for slip in run.payslips.all() if slip.net() > 0]
         self.assertEqual(made.rows.count(), len(slips))
         self.assertEqual(len(made.text.splitlines()), len(slips) + 2)  # a heading and a total
