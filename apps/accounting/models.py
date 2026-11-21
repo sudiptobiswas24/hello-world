@@ -1708,15 +1708,19 @@ class BankStatement(AuditModel):
             raise ValidationError("This statement is closed. Reopen it to make changes.")
         self._check_span()
         stored = BankStatement.objects.filter(pk=self.pk).values_list("bank_account_id", "start_date").first()
+        moved = stored != (self.bank_account_id, to_date(self.start_date))
+        if moved:
+            # Held as Account._check_cut_off holds it (O615), and before refuse_as_money_account shares it below:
+            # shared first and held after is an upgrade, which two saves at once deadlock on (PostgreSQL, g55).
+            list(row_lock_query(Account, self.bank_account_id))
         if stored is None or stored[0] != self.bank_account_id:
             from .money import refuse_as_money_account
 
             # A bank's statement is of an account money moves through.
             refuse_as_money_account(self.bank_account)
-        if stored != (self.bank_account_id, to_date(self.start_date)):
-            # Held as Account._check_cut_off holds it, then asked (O615): reconciled from a day, the account's
-            # statements start on or after it, and what moved before it cleared by then.
-            list(row_lock_query(Account, self.bank_account_id))
+        if moved:
+            # Reconciled from a day, the account's statements start on or after it, and what moved before it
+            # cleared by then.
             cut_off = reconciled_from(self.bank_account_id)
             if cut_off is not None and to_date(self.start_date) < cut_off:
                 raise ValidationError({"start_date": [
