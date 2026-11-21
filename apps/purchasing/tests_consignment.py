@@ -143,6 +143,56 @@ class ShippingConsignmentTests(ConsignmentTestCase):
             delivery.post()
 
 
+class WhatComesOnConsignmentIsBilledOnceTests(ConsignmentTestCase):
+    """
+    O612: another vendor's goods received into this vendor's consignment store went in at no value as this vendor's,
+    and their order then billed 400 that was never accrued. And the consignment vendor's own delivery could be billed
+    on its order, for goods the company did not own, then billed again when drawn.
+    """
+
+    def test_another_vendors_goods_are_refused_from_a_consignment_store(self):
+        other = Party.objects.create(code="V-OTHER", name="Other Supplies", default_currency=self.usd)
+        PartyRoleAssignment.objects.create(party=other, role=PartyRole.VENDOR)
+        order = PurchaseOrder.objects.create(vendor=other, order_date=datetime.date(2026, 1, 1))
+        line = PurchaseOrderLine.objects.create(order=order, item=self.item, uom=self.uom,
+                                                quantity=Decimal("100"), unit_price=Decimal("4"))
+        order.confirm()
+        receipt = GoodsReceipt.objects.create(purchase_order=order, receipt_date=datetime.date(2026, 1, 5))
+        GoodsReceiptLine.objects.create(receipt=receipt, order_line=line, warehouse=self.store,
+                                        quantity_received=Decimal("100"))
+        with self.assertRaisesMessage(ValidationError, "'s stock on consignment. What "):
+            receipt.post()
+        self.assertEqual(self.item.on_hand_at(self.store), Decimal("0"))
+
+    def test_the_consignment_delivery_is_not_billed_on_its_order(self):
+        order, _receipt = self.deliver("100")
+        with self.assertRaisesMessage(ValidationError, "is on consignment"):
+            order.create_bill(self.payable, bill_date=datetime.date(2026, 1, 10))
+        line = order.lines.get()
+        self.assertEqual((line.quantity_on_consignment(), line.bill_limit(), line.ordered_limit()),
+                         (Decimal("100"), Decimal("0"), Decimal("100")))
+
+    def test_a_bill_typed_against_it_is_refused_naming_the_consignment(self):
+        from .models import Bill, BillLine
+
+        order, _receipt = self.deliver("100")
+        bill = Bill.objects.create(vendor=self.vendor, bill_date=datetime.date(2026, 1, 10),
+                                   payable_account=self.payable, purchase_order=order)
+        with self.assertRaisesMessage(ValidationError, "the 100 that came on consignment"):
+            BillLine.objects.create(bill=bill, order_line=order.lines.get(), item=self.item, quantity=Decimal("30"),
+                                    unit_price=Decimal("4"))
+            bill.post()
+
+    def test_drawing_still_bills_once(self):
+        order, _receipt = self.deliver("100")
+        _drawn, bill = draw_consignment(self.item, self.store, self.warehouse, Decimal("30"), self.payable,
+                                        on_date=datetime.date(2026, 2, 1))
+        self.assertEqual(bill.total(), Decimal("120"))
+        self.assertEqual(self.balance(self.payable), Decimal("-120"))
+        with self.assertRaisesMessage(ValidationError, "is on consignment"):
+            order.create_bill(self.payable, bill_date=datetime.date(2026, 2, 2))
+
+
 class DrawTests(ConsignmentTestCase):
     def test_drawing_takes_ownership_and_raises_the_bill(self):
         """Both facts land together, or the stock appears without a

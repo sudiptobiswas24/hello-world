@@ -117,6 +117,7 @@ export default function OrderForm() {
         )}
         {order?.status === "confirmed" && order.receipt_status !== "full" && can("purchasing.add_goodsreceipt") && (
           <WarehouseChoice label="Receive" prompt="Arrives at" confirm="Draft receipt" pending={act.pending}
+            receivingFrom={order.vendor}
             needsOne={owesWithoutAWarehouse(order.lines)}
             go={(warehouse) => void run("receive", "Receipt drafted", (r) => navigate(`/purchasing/goods-in/${(r as { id: number }).id}`),
               warehouse ? { warehouse } : {})} />

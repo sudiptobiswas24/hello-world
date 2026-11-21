@@ -36,7 +36,7 @@ function Offer({ row, receive }: { row: Match; receive: Receive }) {
         if (screen) return <Link key={action} className="btn" to={`/stores/${screen}/${row.id}`}>{VERB[action] ?? action}</Link>;
         // A confirmed purchase order: asks where it arrives only when a line still owed names nowhere (O608).
         if (row.kind === "purchase_order" && action === "receive") {
-          return <WarehouseChoice key={action} label="Receive" prompt="Arrives at" confirm="Draft receipt"
+          return <WarehouseChoice key={action} label="Receive" prompt="Arrives at" confirm="Draft receipt" receivingFrom={null}
             pending={receive.pending} needsOne={() => receive.owes(row)} go={(warehouse) => void receive.draft(row, warehouse)} />;
         }
         return null;

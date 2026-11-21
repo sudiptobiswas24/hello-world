@@ -16,9 +16,20 @@ interface Warehouse {
   receives_by_default?: boolean;
 }
 
-/** A warehouse goods may be received into or shipped from: not quarantine, transit or someone else's stock. */
+/** A warehouse goods may be shipped from, or a receipt defaults to: not quarantine, transit or someone else's stock. */
 export function usableWarehouse(w: Record<string, unknown>): boolean {
   return w.is_active !== false && !w.is_quarantine && !w.is_transit && w.consignment_vendor == null && w.held_for == null;
+}
+
+/**
+ * A warehouse a receipt may be put into (O612): quarantine too, where goods wait for quality (a subcontract made from
+ * held batches must land there), and the vendor's own consignment store when the vendor is known. Never a
+ * customer's material or another vendor's consignment store, which posting refuses; nor transit, where a transfer
+ * rests on its way and a purchase has no business.
+ */
+export function receivableWarehouse(w: Record<string, unknown>, vendor?: number | null): boolean {
+  if (w.is_active === false || w.is_transit || w.held_for != null) return false;
+  return w.consignment_vendor == null || (vendor != null && w.consignment_vendor === vendor);
 }
 
 /**
@@ -44,14 +55,18 @@ export function owesWithoutAWarehouse(lines: { charge?: number | null; quantity_
 /**
  * Ship or Receive, asking where only when it has to: a line that names
  * its warehouse moves there, and where only one warehouse can take it,
- * that one is meant. Quarantine, transit, consignment and a customer's
- * own material are never a delivery's or a receipt's to choose; the
- * server refuses them at posting, so they are not offered.
+ * that one is meant. A delivery ships from the company's own stock, so
+ * quarantine, transit, consignment and a customer's material are not
+ * offered. A receipt is offered what it may be put into
+ * (receivableWarehouse): quarantine and its vendor's consignment store
+ * too (O612). The one meant without asking is always the company's own.
  */
-export function WarehouseChoice({ label, prompt, confirm, needsOne, pending, go }: {
+export function WarehouseChoice({ label, prompt, confirm, needsOne, pending, go, receivingFrom }: {
   label: string; // "Ship"
   prompt: string; // "Ship from"
   confirm: string; // "Draft delivery"
+  /** Set for a receipt: the vendor, or null where it is not known, whose consignment store is then not offered. */
+  receivingFrom?: number | null;
   /**
    * Some line still owed names no warehouse of its own. A screen that has not read the order's lines (the Scan
    * screen's offers) passes a function asking when pressed; null from it means stop, the screen has said why.
@@ -64,8 +79,11 @@ export function WarehouseChoice({ label, prompt, confirm, needsOne, pending, go 
   const [asking, setAsking] = useState(false);
   const [checking, setChecking] = useState(false);
   const [chosen, setChosen] = useState<number | null>(null);
-  const usable = (warehouses.data ?? []).filter((w) =>
-    w.is_active && !w.is_quarantine && !w.is_transit && w.consignment_vendor === null && w.held_for === null);
+  const rows = (warehouses.data ?? []) as unknown as Record<string, unknown>[];
+  // Gone to without asking: only the company's own stock. Offered when asking: what a receipt may take, for one.
+  const usable = rows.filter(usableWarehouse) as unknown as Warehouse[];
+  const offered = (receivingFrom === undefined ? usable
+    : rows.filter((w) => receivableWarehouse(w, receivingFrom))) as unknown as Warehouse[];
 
   const start = async () => {
     let needed: boolean | null = needsOne === true;
@@ -93,7 +111,7 @@ export function WarehouseChoice({ label, prompt, confirm, needsOne, pending, go 
         <span>{prompt}</span>
         <select autoFocus value={chosen ?? ""} onChange={(e) => setChosen(Number(e.target.value) || null)}>
           <option value="">Choose a warehouse…</option>
-          {usable.map((w) => <option key={w.id} value={w.id}>{w.code} · {w.name}</option>)}
+          {offered.map((w) => <option key={w.id} value={w.id}>{w.code} · {w.name}</option>)}
         </select>
       </label>
       <ActionButton primary pending={pending} disabled={chosen === null} onClick={() => go(chosen)}>{confirm}</ActionButton>
