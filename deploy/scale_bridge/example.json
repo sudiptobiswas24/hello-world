@@ -1,0 +1,10 @@
+{
+  "server": "https://erp.plant.local",
+  "scale": "SC-1",
+  "api_key_file": "/etc/scale-bridge/SC-1.key",
+  "port": "/dev/ttyUSB0",
+  "baud": 9600,
+  "pattern": "status_gross",
+  "repeat": 3,
+  "retry_seconds": 5
+}

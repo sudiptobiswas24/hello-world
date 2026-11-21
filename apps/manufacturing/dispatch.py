@@ -1,0 +1,404 @@
+"""
+The detailed schedule: which machine runs what, from when to when.
+
+Planning answers "can this run be done by the day it is wanted" in
+whole days per bank. The floor asks a different question at six in the
+morning: what goes on loom 14 next, and when does it come off. This
+answers that, and it is the first place in the system a run's
+operations get a time of day.
+
+**Forward, finite, in order of when runs are due.** Every released
+run's remaining operations are placed one at a time, the run due
+soonest first. An operation waits for the step before it on the same
+run to finish; then it goes on whichever machine in its bank would
+finish it earliest, counting the changeover from what that machine
+last ran or was last given. An outside step takes its vendor's lead
+days and no machine of ours.
+
+**What has started stays where it started.** An operation with time
+booked against it keeps its machine and is given only its remaining
+minutes; moving a half-woven roll to another loom is not a scheduling
+decision anybody makes. One already given a machine — by a committed
+schedule or by hand — keeps that too: the dispatcher decided, and a
+rebuild does not quietly overrule them.
+
+**A machine's day** starts when the plant's first shift starts and runs
+for the machine's hours, on the days its calendar works. A 24-hour loom
+therefore runs continuously; an eight-hour stitching line runs from the
+morning shift's start for eight hours. At a crewed bank a machine runs
+only on the shifts whose crew runs it that day, by manning.crewed_on,
+the rule capacity's cap counts with (O526, O527).
+
+**Proposed until committed.** `build()` returns a schedule and changes
+nothing; `commit()` writes each operation's machine and planned times,
+which is the dispatcher's decision, taken on purpose, not a side effect
+of somebody looking at the board.
+"""
+
+import datetime
+from collections import defaultdict
+from decimal import Decimal
+
+from django.db import transaction
+from django.utils import timezone
+
+ZERO = Decimal("0")
+MINUTE = datetime.timedelta(minutes=1)
+FAR = datetime.date(9999, 12, 31)
+LOOKAHEAD_DAYS = 3 * 366
+# How long a crewed machine may go with nobody on it before the board stops
+# looking for a shift that runs it: a month, not the three years a
+# machine's own calendar is searched over, since every day searched asks
+# who is on leave.
+CREW_LOOKAHEAD_DAYS = 31
+
+
+class NotCrewed(Exception):
+    """Nobody is crewed to run this machine within CREW_LOOKAHEAD_DAYS."""
+
+
+def _day_start():
+    from .shifts import Shift
+
+    first = Shift.objects.filter(is_active=True).order_by("starts_at").first()
+    return first.starts_at if first else datetime.time(0, 0)
+
+
+class Clock:
+    """A machine's working time: which minutes it runs on."""
+
+    def __init__(self, calendar, hours, day_start, crew=None):
+        self.calendar = calendar
+        self.minutes = int(Decimal(hours) * 60)
+        self.day_start = day_start
+        # day -> the (start, end) of each shift whose crew runs this
+        # machine that day, or None where the bank is not crewed.
+        self.crew = crew
+
+    def _spans(self, day):
+        start, end = self._window(day)
+        if self.crew is None:
+            return [(start, end)]
+        return [(max(start, a), min(end, b)) for a, b in self.crew(day)
+                if min(end, b) > max(start, a)]
+
+    def _window(self, day):
+        start = datetime.datetime.combine(day, self.day_start)
+        return start, start + datetime.timedelta(minutes=self.minutes)
+
+    def windows(self, moment):
+        """Working windows from the one `moment` falls in, onwards."""
+        day = moment.date() - datetime.timedelta(days=1)
+        idle = 0
+        for _ in range(LOOKAHEAD_DAYS):
+            found = False
+            if self.minutes and self.calendar.is_working(day):
+                for start, end in self._spans(day):
+                    if end > moment:
+                        found = True
+                        yield max(start, moment), end
+            idle = 0 if found else idle + 1
+            if self.crew is not None and idle > CREW_LOOKAHEAD_DAYS:
+                raise NotCrewed
+            day += datetime.timedelta(days=1)
+        raise ValueError("No working time within three years.")
+
+    def advance(self, moment, minutes):
+        """The moment `minutes` of working time after `moment`, and when that work began."""
+        remaining = Decimal(minutes)
+        began = None
+        for start, end in self.windows(moment):
+            if began is None:
+                began = start
+            if remaining <= 0:
+                return began, start
+            span = Decimal((end - start) / MINUTE)
+            if remaining <= span:
+                return began, start + datetime.timedelta(minutes=float(remaining))
+            remaining -= span
+        raise ValueError("unreachable")
+
+
+class Resource:
+    """One machine, or a bank with none listed standing in for one."""
+
+    def __init__(self, centre, machine, day_start, start_at, crew=None):
+        from .changeover import on_the_machine
+
+        self.centre, self.machine = centre, machine
+        owner = machine or centre
+        hours = machine.hours_per_day() if machine else centre.available_hours_per_day
+        self.clock = Clock(owner.calendar(), hours, day_start, crew)
+        self.free_at = start_at
+        self.last_item = on_the_machine(centre, machine)
+
+    @property
+    def code(self):
+        return self.machine.code if self.machine else self.centre.code
+
+
+def _remaining(operation, started_quantity, machine=None):
+    """
+    Minutes an inside operation still needs on `machine`, and whether it has begun.
+
+    On the machine's own speed where it states one (O481): the operation was timed at its
+    bank's, and a loom at three quarters of the bank's rate takes a third as long again.
+    """
+    booked = operation.minutes_booked()
+    if operation.quantity_completed() >= started_quantity:
+        return ZERO, True
+    return max(operation.minutes_on(machine) - booked, ZERO), booked > 0
+
+
+def _speed_refused(machine, operation):
+    """Why `machine` cannot be timed on `operation`, or None where it can."""
+    from django.core.exceptions import ValidationError
+
+    if machine is None:
+        return None
+    try:
+        operation.minutes_on(machine)
+    except ValidationError as error:
+        return " ".join(error.messages).rstrip(".")
+    return None
+
+
+class CrewBook:
+    """
+    The shifts each machine is crewed on, day by day, from crewed_on: the
+    rule capacity's cap (manned_minutes) takes, so the board runs a
+    machine on exactly the shifts the plan counts it for (O526, O527).
+    Asked once per bank, shift and day.
+    """
+
+    def __init__(self):
+        from .shifts import Shift
+
+        self.shifts = list(Shift.objects.filter(is_active=True).order_by("starts_at"))
+        self.seen = {}
+
+    def for_resource(self, centre, machine, machines):
+        """day -> crewed shift spans for one machine, or None where the bank is not crewed."""
+        if centre.operators_per_machine is None:
+            return None
+        pk = machine.pk if machine else None
+        return lambda day: [span for run, span in self._crewed(centre, day, machines)
+                            if pk in run]
+
+    def _crewed(self, centre, day, machines):
+        from .manning import crewed_on
+
+        key = (centre.pk, day)
+        if key not in self.seen:
+            rows = []
+            for shift in self.shifts:
+                start = datetime.datetime.combine(day, shift.starts_at)
+                end = start + datetime.timedelta(minutes=int(shift.hours * 60))
+                run = {m.pk if m else None for m in crewed_on(centre, shift, day, machines)}
+                rows.append((run, (start, end)))
+            self.seen[key] = rows
+        return self.seen[key]
+
+
+def build(start_at=None):
+    """
+    The schedule, as rows of {operation, machine, start, finish,
+    changeover, late}, and nothing written anywhere.
+    """
+    from .changeover import changeover
+    from .machines import requirements
+    from .tooling import tooling_ready
+    from .orders import WorkOrder, WorkOrderStatus
+
+    start_at = timezone.localtime(start_at or timezone.now()).replace(tzinfo=None, second=0,
+                                                                      microsecond=0)
+    day_start = _day_start()
+    resources = {}
+
+
+    crew = CrewBook()
+
+    def pool(centre):
+        if centre.pk not in resources:
+            machines = centre.machine_list()
+            resources[centre.pk] = [
+                Resource(centre, machine, day_start, start_at,
+                         crew.for_resource(centre, machine, machines))
+                for machine in machines
+            ] or ([] if centre.runs_on_machines()
+                  else [Resource(centre, None, day_start, start_at,
+                                 crew.for_resource(centre, None, machines))])
+        return resources[centre.pk]
+
+    orders = sorted(
+        WorkOrder.objects.filter(status=WorkOrderStatus.RELEASED)
+        .select_related("item").prefetch_related("operations__work_centre",
+                                                 "operations__machine"),
+        key=lambda order: (order.scheduled_end or FAR, order.scheduled_start or FAR, order.pk),
+    )
+    rows = []
+
+    def held(operation, order, reason):
+        rows.append({"operation": operation, "order": order, "machine": operation.machine,
+                     "resource": None, "start": None, "finish": None, "changeover": ZERO,
+                     "outside": operation.is_outside, "held": reason})
+
+    for order in orders:
+        ready = start_at
+        waiting_on = None
+        needs = requirements(order.bom)
+        if order.scheduled_start:
+            ready = max(ready, datetime.datetime.combine(order.scheduled_start, day_start))
+        started = order.started_quantity()
+        begun = any(_remaining(operation, started)[1] for operation in order.operations.all()
+                    if not operation.is_outside)
+        if not begun:
+            # A printed sack not yet begun waits for its cylinders.
+            tools, why = tooling_ready(order.bom, start_at.date())
+            if tools is None:
+                for operation in order.operations.order_by("sequence"):
+                    held(operation, order, f"{why}; it cannot be printed.")
+                continue
+            if tools > start_at.date():
+                ready = max(ready, datetime.datetime.combine(tools, day_start))
+        for operation in order.operations.order_by("sequence"):
+            if waiting_on is not None:
+                # A step after a held one cannot be timed; it is listed as
+                # waiting rather than dropped from the board.
+                held(operation, order, f"Waits for step {waiting_on}, which is held.")
+                continue
+            if operation.is_outside:
+                if operation.quantity_back() >= started:
+                    continue
+                finish = ready + datetime.timedelta(days=int(operation.outside_lead_days))
+                rows.append({"operation": operation, "order": order, "machine": None,
+                             "start": ready, "finish": finish, "changeover": ZERO,
+                             "outside": True})
+                ready = finish
+                continue
+            minutes, begun = _remaining(operation, started)
+            if minutes <= 0 and begun:
+                continue
+            candidates = pool(operation.work_centre)
+            if not candidates:
+                held(operation, order,
+                     f"Every machine at {operation.work_centre.code} is out of service.")
+                waiting_on = operation.sequence
+                continue
+            refused = {resource.code: (resource.machine.refuses(needs)
+                                       or _speed_refused(resource.machine, operation))
+                       for resource in candidates if resource.machine is not None}
+            reasons = [why for why in refused.values() if why]
+            able = [resource for resource in candidates if not refused.get(resource.code)]
+            if not able:
+                held(operation, order, f"No machine at {operation.work_centre.code} can take "
+                                       f"it: {'; '.join(reasons)}.")
+                waiting_on = operation.sequence
+                continue
+            candidates = able
+            moved_from = None
+            if operation.machine_id:
+                # Started there, or put there by the dispatcher: it stays.
+                pinned = [r for r in candidates if r.machine and
+                          r.machine.pk == operation.machine_id]
+                if not pinned and begun:
+                    # Half a roll is on a loom now out of use. Moving it is
+                    # not a scheduling decision, so it is held and said.
+                    held(operation, order, f"Started on {operation.machine.code}, which is "
+                                           "out of use; it is not moved to another machine.")
+                    waiting_on = operation.sequence
+                    continue
+                if not pinned:
+                    moved_from = operation.machine.code
+                candidates = pinned or candidates
+            best = None
+            for resource in candidates:
+                minutes, _ = _remaining(operation, started, resource.machine)
+                change, purge = (ZERO, ZERO) if begun else changeover(
+                    operation.work_centre, resource.last_item, order.item,
+                    operation.setup_minutes,
+                )
+                work = minutes if begun else minutes - operation.setup_minutes + change
+                earliest = max(resource.free_at, ready)
+                try:
+                    began, finish = resource.clock.advance(earliest, max(work, ZERO))
+                except NotCrewed:
+                    continue
+                key = (finish, resource.code)
+                if best is None or key < best[0]:
+                    best = (key, resource, began, finish, change, purge)
+            if best is None:
+                held(operation, order, f"Nobody is crewed to run {operation.work_centre.code}.")
+                waiting_on = operation.sequence
+                continue
+            _, resource, began, finish, change, purge = best
+            resource.free_at = finish
+            resource.last_item = order.item
+            rows.append({"operation": operation, "order": order, "machine": resource.machine,
+                         "resource": resource.code, "start": began, "finish": finish,
+                         "changeover": change, "purge_kg": purge, "outside": False,
+                         "moved_from": moved_from})
+            ready = finish
+    for row in rows:
+        row.setdefault("held", None)
+        row.setdefault("purge_kg", ZERO)
+        row.setdefault("moved_from", None)
+        if row["held"]:
+            row["late"] = None
+            continue
+        due = row["order"].scheduled_end
+        row["late"] = due is not None and row["finish"].date() > due
+        row["start"] = timezone.make_aware(row["start"])
+        row["finish"] = timezone.make_aware(row["finish"])
+    return rows
+
+
+@transaction.atomic
+def commit(rows):
+    """
+    Write the schedule onto the operations: the dispatcher's decision.
+
+    Every run, then every operation, held first in key order (lock_rows), then written in the order
+    dispatched: each operation's save holds its run (O254), and taken as the schedule ran, two runs and
+    their operations were taken in no fixed order (O226).
+    """
+    from django.db import transaction
+
+    from apps.core.models import lock_rows
+
+    written = 0
+    writing = [row["operation"] for row in rows if not row["held"]]
+    with transaction.atomic():
+        if writing:
+            lock_rows(*{operation.work_order_id: operation.work_order for operation in writing}.values())
+            lock_rows(*writing)
+        for row in rows:
+            written += _commit_row(row)
+    return written
+
+
+def _commit_row(row):
+    """One row of the schedule onto its operation: 1 written, 0 for a row held off the board."""
+    if row["held"]:
+        return 0
+    operation = row["operation"]
+    operation.planned_start = row["start"]
+    operation.planned_finish = row["finish"]
+    fields = ["planned_start", "planned_finish", "updated_at"]
+    if row["machine"] is not None and operation.machine_id != row["machine"].pk:
+        operation.machine = row["machine"]
+        fields.append("machine")
+    operation.save(update_fields=fields)
+    return 1
+
+
+def dispatch_list(rows):
+    """The schedule by machine, each machine's work in the order it runs."""
+    board = defaultdict(list)
+    for row in rows:
+        if row["held"]:
+            board["held"].append(row)
+            continue
+        board["outside" if row["outside"] else row["resource"]].append(row)
+    return {code: items if code == "held" else sorted(items, key=lambda row: row["start"])
+            for code, items in board.items()}

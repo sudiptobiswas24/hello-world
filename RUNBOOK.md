@@ -1,0 +1,580 @@
+# Running the ERP at the plant
+
+For whoever installs and looks after the server. It assumes someone who
+can use a Linux command line, not a Django developer.
+
+## What runs
+
+One server, four containers, started together by `docker compose`:
+
+| container | what it is | keeps its data in |
+|---|---|---|
+| `db` | PostgreSQL 16 | the `pgdata` volume |
+| `web` | the application (gunicorn, 3 workers) | nothing; it is rebuilt from the code |
+| `proxy` | Caddy: HTTPS, and the only thing listening on ports 80/443 | the `caddy_data` volume (certificates) |
+| `backup` | a nightly `pg_dump` and an archive of the attachments | `./backups` next to this file |
+
+The business state is in two places: the database, and the files
+attached to records (a PO copy, an LR scan), which live in the `media`
+volume. A complete backup is both, and the nightly one takes both.
+
+## The server
+
+- Linux (Ubuntu 24.04 LTS is what this was written against), 4 cores,
+  8 GB memory (16 GB for the pilot, docs/PILOT.md), SSD. A plant of this size fits comfortably.
+- Docker Engine with the compose plugin: <https://docs.docker.com/engine/install/ubuntu/>.
+- A fixed address on the plant network, so the tablets on the floor can
+  find it.
+- A UPS. PostgreSQL survives a power cut; a disk that dies mid-write
+  sometimes does not.
+
+### The UPS shuts the server down before its battery does
+
+A UPS with a USB lead to the server, read by NUT. Without the lead the
+UPS only delays the power cut: when its battery runs flat the server
+still loses power mid-write. These steps shut the server down cleanly
+after five minutes on battery, whatever the battery has left.
+
+```sh
+sudo apt install nut
+sudo nut-scanner -U        # the UPS should be listed; if not, check the USB lead
+```
+
+Then, replacing `<choose one>` with any password (it stays on this
+machine):
+
+| file | lines |
+|---|---|
+| `/etc/nut/nut.conf` | `MODE=standalone` |
+| `/etc/nut/ups.conf` | `[plant]`, then `driver = usbhid-ups` and `port = auto` |
+| `/etc/nut/upsd.users` | `[upsmon]`, then `password = <choose one>` and `upsmon primary` |
+| `/etc/nut/upsmon.conf` | `MONITOR plant@localhost 1 upsmon <choose one> primary`, `SHUTDOWNCMD "/sbin/shutdown -h +0"`, `NOTIFYCMD /usr/sbin/upssched`, `NOTIFYFLAG ONBATT SYSLOG+EXEC`, `NOTIFYFLAG ONLINE SYSLOG+EXEC` |
+| `/etc/nut/upssched.conf` | `CMDSCRIPT /etc/nut/upssched-cmd`, `PIPEFN /run/nut/upssched.pipe`, `LOCKFN /run/nut/upssched.lock`, `AT ONBATT * START-TIMER onbatt 300`, `AT ONLINE * CANCEL-TIMER onbatt` |
+| `/etc/nut/upssched-cmd` | `#!/bin/sh`, then `[ "$1" = onbatt ] && /usr/sbin/upsmon -c fsd`; make it executable (`sudo chmod +x`) |
+
+```sh
+sudo systemctl restart nut-server nut-monitor
+upsc plant@localhost battery.charge    # a number: NUT reads the UPS
+```
+
+In the server's firmware (BIOS) set "restore on AC power loss" to
+"power on", so it starts by itself when the mains returns; the
+containers start with it (`restart: unless-stopped`).
+
+**Prove it once, before the pilot**, with nobody using it: pull the
+UPS's mains plug. The server should shut down after five minutes. Plug
+it back in; when the server is up, `docker compose ps` should show
+`web` healthy within a few minutes. A UPS that has never been tried
+this way is a hope, as an unrestored backup is. These steps were
+written against NUT 2.8 on Ubuntu 24.04 and have not been tried on the
+plant's own UPS: some cheap units need `driver = blazer_usb` or
+`nutdrv_qx` instead, which `nut-scanner` names.
+
+## Trying it on a laptop first
+
+To see it working before a server is bought: install Docker Desktop
+(Windows or Mac) or Docker Engine (Linux), then
+
+```sh
+git clone https://github.com/sudiptobiswas24/hello-world.git erp
+cd erp
+cp .env.example .env
+```
+
+and set these lines in `.env`; leave the rest as they are:
+
+| setting | on a laptop |
+|---|---|
+| `POSTGRES_PASSWORD`, `POSTGRES_APP_PASSWORD`, `DJANGO_SECRET_KEY` | 64 hex characters each, all three different: `openssl rand -hex 32`, or `python -c "import secrets; print(secrets.token_hex(32))"` |
+| `ERP_FIELD_KEYS` | `openssl rand -base64 32 \| tr '+/' '-_'` (keep the `=` it ends with) |
+| `ERP_SITE` | `http://localhost` |
+| `ERP_TLS` | empty |
+| `DJANGO_ALLOWED_HOSTS` | `localhost` |
+| `DJANGO_CSRF_TRUSTED_ORIGINS` | `http://localhost` |
+| `DJANGO_HTTPS` | `false`. Nothing leaves the laptop, so plain HTTP is safe here, and only here. |
+
+Then start it and load the demo plant:
+
+```sh
+docker compose up -d --build
+docker compose logs -f web    # wait for "Listening at: http://0.0.0.0:8000", then Ctrl-C
+docker compose run --rm web python manage.py load_demo
+```
+
+Open <http://localhost>. `load_demo` makes Deccan Polysacks, a woven-sack
+plant with three months of sales, purchases, production, quality,
+maintenance, payroll and the CRM, and prints a login for each role, all
+with one password; `--password` sets it, or one is made up and printed.
+It refuses a database that already holds records, so it never reaches
+real books. `docker compose down -v` stops everything and deletes the
+database with it, to start again from nothing.
+
+## First installation
+
+```sh
+sudo mkdir -p /srv && cd /srv   # the cron lines below expect /srv/erp
+git clone https://github.com/sudiptobiswas24/hello-world.git erp
+cd erp
+cp .env.example .env
+openssl rand -hex 32     # run three times: POSTGRES_PASSWORD, POSTGRES_APP_PASSWORD, DJANGO_SECRET_KEY
+openssl rand -base64 32 | tr '+/' '-_'    # once, for ERP_FIELD_KEYS
+nano .env                # fill in every line; see below
+docker compose up -d --build
+docker compose logs -f web   # wait for "Listening at: http://0.0.0.0:8000"
+```
+
+Compose refuses to start while any of those four is empty, and names it.
+
+The first start builds the database from nothing and takes five to ten
+minutes (ten on a 4-core test machine, 6 November 2026). Later starts take seconds; after a restore, about twenty.
+Until `web` is listening the browser shows **502 Bad Gateway**: that is
+Caddy saying the application is not up yet, not a fault. Wait.
+
+The build fetches the base images from Docker Hub, which limits how
+often an address may fetch without signing in. If it answers `429 Too
+Many Requests`, run `docker login` with a free Docker Hub account and
+build again.
+
+Then make the first user, who can make all the others:
+
+```sh
+docker compose run --rm web python manage.py createsuperuser
+```
+
+Then the plant's books, stores and statutory figures, each seeded for the
+accountant to review and none of them overwriting what is there:
+
+```sh
+docker compose run --rm web python manage.py setup_indian_books --gstin <the plant's GSTIN>
+docker compose run --rm web python manage.py setup_stores
+docker compose run --rm web python manage.py setup_payroll
+docker compose run --rm web python manage.py setup_statutory
+```
+
+- `setup_indian_books` makes the company ready to post: rupees as its base
+  currency, its year from April (only while nothing is posted), the chart of
+  accounts, the GST taxes and positions, and every default account the
+  application books to. `--gstin` is the plant's own registration; without
+  it, enter it later under Settings > Plant's GST registration. Not under
+  "GST registrations": those are the parties'.
+- `setup_stores` adds the stock adjustment reasons.
+- `setup_payroll` adds the payroll accounts (2410 PF, 2420 ESI, 2430 PT and
+  2440 LWF payable, 6000 Wages, 6100 Employer contributions) and the
+  standard pay components: Basic, DA and HRA; PF and ESI, the employee's and
+  the employer's shares; professional tax; the welfare fund, both shares.
+  Each statutory one is marked with its levy. An account or component
+  already there is kept as it is, and so is a levy a component is already
+  marked as. Run it before `setup_statutory`.
+- `setup_statutory` loads the TDS, TCS, PF, ESI, bonus, overtime and minimum
+  wage figures, unconfirmed: nothing posts at one until the Controller
+  confirms it. Professional tax and the welfare fund load into the pay
+  components marked as those levies, which `setup_payroll` made.
+
+Take the first backup now: until one exists, `docker compose ps` shows
+`web` as unhealthy and `/healthz/` says "no backup found".
+
+```sh
+docker compose run --rm backup now
+```
+
+Sign in as the first user: the sign-in asks for a code from an
+authenticator app, and the password again to confirm it, and shows ten
+recovery codes once. Then, in the
+application: name the company (Settings > Company), make the warehouses
+(Stores > Configuration > Warehouses), confirm the statutory figures and the
+customs valuation defaults, and review what was seeded (Settings > Seeded
+defaults).
+
+### Before people use it
+
+Bring the old system's records in (docs/IMPORT.md: put the files in
+`imports/`), then ask whether it is ready:
+
+```sh
+docker compose run --rm web python manage.py import_csv parties /app/imports/parties.csv
+docker compose run --rm web python manage.py go_live_check
+```
+
+`go_live_check` lists what is missing: accounts not set, roles not made,
+logins with no role or no employee, a ledger that does not balance,
+stock that does not agree with it. It fails while anything would break
+the first day. Run it again on the morning of go-live. docs/PILOT.md is
+the fortnight before that.
+
+### What goes in `.env`
+
+| setting | what to put |
+|---|---|
+| `POSTGRES_PASSWORD` | output of `openssl rand -hex 32`. Hex only: it goes inside a URL. The database owner's: migrations, backup and restore. |
+| `POSTGRES_APP_PASSWORD` | another `openssl rand -hex 32`, different from the one above. The application's own login, which owns no table, so the audit trail cannot be switched off from it. |
+| `DJANGO_SECRET_KEY` | another `openssl rand -hex 32`. Signs every login. The server refuses to start without one. |
+| `ERP_FIELD_KEYS` | `openssl rand -base64 32 \| tr '+/' '-_'` (or `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`). Seals every login's second factor in the database, so a copy of the database holds none of them. The server refuses to start without one. It is not in any backup: keep a copy off the machine, apart from the backups (see "Backups"). |
+| `ERP_SITE` | what people type in the browser: `erp.deccanpolysacks.in`, or `erp.plant.local`, or `192.168.1.10`. |
+| `ERP_TLS` | empty for a public domain name; `tls internal` for a name or address on the plant network. |
+| `DJANGO_ALLOWED_HOSTS` | the same name(s) as `ERP_SITE`, comma-separated. Anything else is refused. |
+| `DJANGO_CSRF_TRUSTED_ORIGINS` | the same, with `https://` in front. Without it, every form submission is refused. |
+| `DJANGO_TIME_ZONE` | `Asia/Kolkata`. Shifts start at 08:00 plant time; get this wrong and every shift is read 5½ hours off. |
+| `DJANGO_HTTPS` | `true`. See "Plain HTTP" below before changing it. |
+| `DJANGO_TRUSTED_PROXIES` | set to `1` by docker-compose.yml for the Caddy in front. Only change it if another proxy is added in front of Caddy (then `2`): the sign-in lock reads each caller's address through them. |
+| `BACKUP_AT`, `BACKUP_KEEP_DAYS` | when the nightly backup runs (plant time) and how many days of them to keep. |
+| `DJANGO_ADMINS` | who is mailed when a request fails on the server (needs `EMAIL_HOST`). See "When something goes wrong". |
+
+### HTTPS on the plant network
+
+Passwords and the operators' PINs cross the network, so it runs over
+HTTPS even inside the plant.
+
+- **A public domain name** pointed at the server, with ports 80 and 443
+  reachable from the internet: leave `ERP_TLS` empty and Caddy gets and
+  renews a real certificate by itself.
+- **A name or address only on the plant network**: set
+  `ERP_TLS=tls internal`. Caddy makes its own certificate authority.
+  Each PC and tablet must trust it once, or the browser will warn on every
+  visit:
+
+  ```sh
+  docker compose cp proxy:/data/caddy/pki/authorities/local/root.crt ./plant-root.crt
+  ```
+
+  Install `plant-root.crt` as a trusted root certificate on each device
+  (Windows: double-click, "Install certificate", "Local machine",
+  "Trusted Root Certification Authorities". Android: Settings, Security,
+  "Install a certificate", "CA certificate").
+
+### Plain HTTP
+
+`DJANGO_HTTPS=false` makes the application work without HTTPS. Use it
+only if installing the certificate on every device is truly not
+possible, and know what it means: anyone on the plant network can read
+every password and PIN as it is typed. It is never the default.
+
+## Users and what they may do
+
+On every start the `web` container refreshes the role groups defined
+in `apps/core/management/commands/setup_roles.py`. Give each person a login
+in the admin (`/admin/`, "Users") and put them in the groups that match
+their job. The roles keep apart the people who prepare a document and
+the people who post it; that separation is the point, so resist giving
+everyone everything.
+
+| role | for | cannot |
+|---|---|---|
+| Production Supervisor | work orders, issues, production, downtime, crews, maintenance jobs | change specifications, bills, routings or costing; see pay or the ledger |
+| Station | the shared login on a station tablet | anything but the station |
+| Production Planner | forecasts, MRP, planned orders, releasing work orders, changeover rules | record production; see pay or the ledger |
+| Quality Inspector | inspections, readings, calibrations, coating checks, test certificates, incoming inspection | set the plans and limits the readings are judged against |
+| Quality Manager | all of quality, complaints and corrective actions, third-party releases | |
+| GST Officer | GSTR-1, GSTR-3B, ITC-04, e-invoice and e-way bill payloads | book or change an invoice or a bill |
+| Bookkeeper, Controller | the ledger; the Controller posts and closes | |
+| Sales Rep, AR Manager | orders and invoices; the AR Manager posts and collects | |
+| Purchasing Clerk, AP Manager | orders and bills; the AP Manager approves, posts and pays | |
+| Warehouse Staff | receipts and deliveries, naming each new batch as it comes in | |
+| HR Admin | employees and leave | |
+| Payroll Officer | pay components (PF, ESI, PT rules), what each person is paid, working out each month's payroll | post it to the ledger or pay it: the Controller does both, and pays PF, ESI and tax over |
+| Employee Self Service | leave requests and purchase requisitions | read anyone's pay, or the ledger. They do see everyone's leave requests: limiting a person to their own is not built yet |
+
+A login alone reads nothing: every screen needs the role that shows it.
+
+Floor operators do not need logins of their own. A station tablet is
+logged in once with a user in the Station role, and each operator then
+identifies themselves at the station screen (`/station/<station code>/`)
+with their employee PIN.
+
+### Two-factor sign-in, and a lost phone
+
+Logins that pay money, change where it goes, see pay or keep logins
+(setup_roles `SECOND_FACTOR`: the Controller, AR and AP Managers,
+Bookkeeper, Purchasing Clerk, Payroll Officer, HR Admin, and every
+superuser) sign in with the password and then a code from an
+authenticator app. Any other login may choose it from the user menu.
+
+- First sign-in: the login sets up its phone, typing its password again,
+  and is shown ten recovery codes once. Whoever holds the password first
+  sets the phone up, so hand a new login's first password to its person
+  only, who must change it at that first sign-in.
+- A lost phone: on the Logins screen, Reset second factor, by whoever may
+  set that login's password (a superuser for the Controller). Every
+  session the login has ends, and it sets up a new phone at its next
+  sign-in.
+- The only administrator lost the phone and the recovery codes: on the
+  server, `docker compose exec web python manage.py reset_second_factor
+  <login>`. It is recorded in the login's history.
+- Five wrong codes lock the code step for 15 minutes, and each lock after
+  another, with no right code in between, lasts twice as long (a day at
+  most).
+
+API keys are what the scale bridge and other programs sign in with (see
+deploy/scale_bridge/RUNBOOK.md). Run `python manage.py prune_api_key_uses`
+from the nightly job: it keeps 18 months of what each key did.
+
+## Email
+
+Invoices, quotations, customer statements, payment reminders, delivery
+challans, purchase orders and job-work challans go by email, and each
+record's page lists what went out and to whom. Until a mail server is named, sending is refused with a message
+saying so, and nothing is recorded as sent. To turn it on, add to
+`.env` and run `docker compose up -d`:
+
+```
+EMAIL_HOST=smtp.gmail.com        # or the company's mail provider
+EMAIL_PORT=587
+EMAIL_HOST_USER=accounts@deccanpolysacks.in
+EMAIL_HOST_PASSWORD=<an app password, not the mailbox password>
+DEFAULT_FROM_EMAIL=accounts@deccanpolysacks.in
+```
+
+## Morning checks
+
+Nothing in the application runs by itself. Each login's home page shows
+what fell due for them (maintenance and calibration due, licences to
+renew, bills past their MSME days, attendance unmarked, deliveries not
+signed for, freight unbilled, invoices and bills past due, drafts nobody
+posted, stock under its reorder level, meters unread, complaint actions
+overdue). To have the same mailed each morning, give the server one cron
+line, at six:
+
+```
+0 6 * * * cd /srv/erp && docker compose run --rm web python manage.py morning_checks
+```
+
+One mail a person with something waiting and an address; nobody else
+hears. Without a mail server (above) the command prints the lines
+instead, and says so. `--dry-run` prints without sending.
+
+What recurs is taken the same way. Recurring invoices and recurring
+journal entries (rent accrued, insurance amortised) are issued by a
+second cron line, a few minutes before the checks so the morning mail
+counts what is left:
+
+```
+50 5 * * * cd /srv/erp && docker compose run --rm web python manage.py generate_recurring
+```
+
+It prints what it issued and names any schedule it could not run (lines
+that do not balance, a date in a closed month) rather than forcing it.
+Until it runs, each login's inbox counts what is due.
+
+The same inbox also counts what was left incomplete and would otherwise
+carry forward unseen: customers with no GST standing or GSTIN, items
+with no HSN, PF or ESI members with no number, money received or paid a
+week ago and applied to nothing, bank lines a week old nobody explained,
+last month's depreciation or wages not posted, invoices the e-invoice
+portal has not registered. Each is a link to exactly those records.
+
+## When something goes wrong
+
+**Every failure has a reference.** When a request fails on the server,
+the person sees "Something went wrong on the server … quote its
+reference, E-7K3QM". The Controller and the HR Admin find that
+reference under Settings → Problems people hit, with who hit it, where,
+and the traceback; once it is dealt with they say what was done, and it
+leaves the open list. With `DJANGO_ADMINS` set in `.env`, the same
+traceback is mailed as it happens.
+
+**The books are checked against themselves every day.** Settings →
+Health (the Controller) runs the checks that must always hold: the
+trial balance balances; every posted entry balances; each receivable and
+payable control account holds exactly what its open invoices and bills
+say; the stock's value is the inventory accounts' balance; no shelf is
+below nothing; nothing was posted into a closed month after it closed;
+invoice numbers run without a gap. One that does not hold shows on the
+Controller's home page and in the morning mail as "Books that do not
+agree with themselves" until it is found. The same screen shows the
+server: the database, whether the schema is current, the disk, and how
+old the newest backup is (`BACKUP_DIR`, set by docker-compose.yml).
+
+The same checks from the command line, for a cron line somebody is
+paged on; it exits 1 when anything is wrong:
+
+```
+30 6 * * * cd /srv/erp && docker compose run --rm web python manage.py check_health
+```
+
+`docker compose ps` shows `web` as healthy or unhealthy by the same
+test: `/healthz/` answers 200 when the database answers, the schema is
+current, the disk has room and there is a backup from the last day, and
+503 naming what does not, in words that give nothing away (it needs no
+sign-in). Point whatever monitoring the plant has at it.
+
+## Backups
+
+Every night at `BACKUP_AT` the `backup` container writes one backup as
+two files with the same stamp, and deletes those older than
+`BACKUP_KEEP_DAYS`:
+
+| file | what is in it |
+|---|---|
+| `backups/erp_YYYY-MM-DD_HHMM.dump` | the whole database (PostgreSQL custom format) |
+| `backups/erp_YYYY-MM-DD_HHMM.media.tar.gz` | every attached file, from the `media` volume |
+| `backups/erp_YYYY-MM-DD_HHMM.media.sha256` | each attached file's sha256, as it was backed up |
+
+Neither is a backup without the other: the database says a file is
+attached, and only the archive holds it. Copy them together.
+
+**The backups do not hold `ERP_FIELD_KEYS`, on purpose.** The database
+keeps each login's second factor sealed with it, so a stolen backup
+signs nobody in. A restore needs that key as well: restored without it
+(or with a different one), every enrolled login is told its second
+factor can no longer be read, and whoever keeps logins resets each one
+so that it sets up its phone again. Keep a copy of `.env`, or at least
+that line, off the machine and apart from the backups.
+
+To change the key: put the new one first in `ERP_FIELD_KEYS`, the old
+one after it, comma-separated; restart; run
+`docker compose exec web python manage.py rotate_field_keys`; then drop
+the old key and restart again. A login the command names could not be
+opened with any key: reset its second factor. The log
+line for each backup names both files and how many attachments it holds.
+Check that it is working:
+
+```sh
+ls -lh backups/
+docker compose logs backup | tail
+```
+
+For a backup right now (before an update, before an import):
+
+```sh
+docker compose run --rm backup now
+```
+
+**These backups sit on the same disk as the database.** They protect
+against a bad import or a mistaken deletion. They do not protect against
+the disk failing, fire or theft. Copy `backups/` off the machine every
+day: to another computer, a NAS, or cloud storage with `rclone`. Which one
+is the plant's choice. Having none is the one choice that is wrong.
+
+### The copy off the premises, with rclone
+
+The backups hold the whole books and every employee's pay and bank
+details, so the copy leaving the plant is encrypted before it leaves.
+`rclone` does both: a remote for the storage (Google Drive, Backblaze B2,
+an S3 bucket) and a `crypt` remote over it.
+
+```sh
+sudo apt install rclone
+sudo rclone config        # n: new remote "offsite" for the storage, as its prompts ask
+sudo rclone config        # n: new remote "erpvault", type crypt, remote offsite:erp-backups,
+                          #    and let it generate both passwords
+```
+
+**The crypt passwords are the only way to read the copy.** Keep them
+where `ERP_FIELD_KEYS` is kept: off the machine and apart from the
+backups. Without them the off-site copy is noise.
+
+Then one cron line for root (`sudo crontab -e`), after the nightly
+backup has finished (`BACKUP_AT` is 02:00 by default):
+
+```
+30 3 * * * rclone copy /srv/erp/backups erpvault: --max-age 48h --log-file /var/log/erp-offsite.log
+```
+
+`copy`, not `sync`: a backup deleted here, by accident or by
+`BACKUP_KEEP_DAYS`, stays there. Set how long the storage keeps files
+in the storage's own settings (a lifecycle rule), or prune by hand.
+
+Once a week, look that last night's arrived:
+
+```sh
+sudo rclone lsl erpvault: --max-age 2d
+```
+
+It lists the last two days' `.dump`, `.media.tar.gz` and `.media.sha256`.
+Nothing listed means nothing left the plant: read
+`/var/log/erp-offsite.log`. Once a quarter, fetch one back
+(`rclone copy erpvault:<stamp>.dump /tmp/check/`) and prove it as below.
+
+### Restoring
+
+Restoring replaces the database and the attachments with the backup,
+and everything entered or attached since then is lost. Name the `.dump`;
+the archive with the same stamp beside it is restored with it.
+
+```sh
+docker compose stop web
+docker compose run --rm backup restore /backups/erp_2026-10-03_0200.dump
+docker compose start web
+```
+
+It asks for `yes` before it touches anything, and refuses a file that is
+not a readable backup or an archive that is not readable. A dump with no
+archive beside it (one taken before attachments were backed up) is
+refused too, since the attachments would be left as they are now rather
+than as they were; `RESTORE_WITHOUT_MEDIA=yes` restores the database
+alone when that is what is meant.
+
+### Proving a backup restores
+
+A backup that has never been restored is a hope, not a backup. Once a
+month, restore the latest into a scratch database and look at it:
+
+```sh
+docker compose exec db createdb -U erp erp_check
+docker compose exec -T db pg_restore -U erp -d erp_check --no-owner < backups/<newest file>.dump
+docker compose exec db psql -U erp -d erp_check -c "select count(*) from accounting_journalentry"
+docker compose exec db psql -U erp -d erp_check -c "select count(*) from core_attachment"
+docker compose exec db dropdb -U erp erp_check
+tar -tzf backups/<newest file>.media.tar.gz | grep -vc '/$'
+```
+
+The restore checks every attachment it unpacks against the `.sha256`
+manifest before it touches the database or the files, and refuses an
+archive that does not match. To check one file by hand against what was
+backed up:
+
+```sh
+tar -xzOf backups/<stamp>.media.tar.gz ./<path> | sha256sum
+grep ' ./<path>$' backups/<stamp>.media.sha256
+```
+
+The two counts should agree in kind: as many files in the archive as the
+attachments the database lists (more, if old files were replaced). An
+archive with none while records say "attached" is a backup that lost
+them. `apps/core/tests_backup.py` takes a backup, deletes an attachment
+and restores it, on PostgreSQL, with these same scripts.
+
+## Updating to a new version
+
+```sh
+docker compose run --rm backup now
+git pull
+docker compose up -d --build
+docker compose logs -f web
+```
+
+Database changes apply by themselves when `web` starts. If anything
+looks wrong afterwards, restore the backup you just took, check out the
+previous version (`git checkout <previous tag>`), and rebuild.
+
+## Day to day
+
+| to | run |
+|---|---|
+| see whether everything is up | `docker compose ps` |
+| read the application's log | `docker compose logs --tail 200 web` |
+| restart the application | `docker compose restart web` |
+| run a command (MRP, an import) | `docker compose run --rm web python manage.py <command>` |
+| check the books agree and the server is well | `docker compose run --rm web python manage.py check_health` |
+| open a database prompt | `docker compose exec db psql -U erp` |
+
+## What it does not do
+
+- It sends no email until a mail server is set up (see "Email").
+- It files nothing with the GST portal. GSTR-1, GSTR-3B and ITC-04 are
+  prepared for review and filing by whoever files today. E-invoice and
+  e-way bill payloads are produced for upload; the system does not
+  connect to the IRP or the e-way bill portal.
+- It takes advances (down payments from customers, prepayments to
+  vendors) without GST. That is right for goods. An advance for a
+  service, such as job work, owes GST when it is received; until that
+  is built, raise the tax on a separate invoice.
+
+## Security notes
+
+`python manage.py check --deploy` reports two warnings, both left on
+purpose:
+
+- `SECURE_HSTS_INCLUDE_SUBDOMAINS` is off. Turning it on would force
+  HTTPS on every other site under the company's domain, which may not
+  all have it.
+- `SECURE_HSTS_PRELOAD` is off. Preloading is very hard to undo.
