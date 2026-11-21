@@ -6,7 +6,7 @@ import { aboveZero } from "../lib/decimal";
 import { money, quantity } from "../lib/format";
 import { CommitDecimal, DecimalInput } from "./fields";
 import { RecordPicker } from "./RecordPicker";
-import { defaultReceiving, usableWarehouse } from "./WarehouseChoice";
+import { defaultReceiving, receivableWarehouse } from "./WarehouseChoice";
 import { useAccess } from "../auth/me";
 
 export interface TradeLine {
@@ -264,7 +264,8 @@ export function AddLine({ side, receiving, withUom, charges, pending, onAdd }: {
   const asCharge = mayCharge && kind === "charge";
   const places = useReference<Place>("/api/inventory/warehouses/", undefined,
     Boolean(receiving && can("inventory.view_warehouse")));
-  const usable = (places.data ?? []).filter(usableWarehouse);
+  // A line is received where it names (O612): quarantine too; its default stays the company's own stock.
+  const usable = (places.data ?? []).filter((w) => receivableWarehouse(w));
   const [place, setPlace] = useState<number | null>(null);
   useEffect(() => {
     if (place === null && places.data) setPlace(defaultReceiving(places.data));

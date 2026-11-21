@@ -353,6 +353,31 @@ class PurchasingInTheBrowserTests(BrowserTestCase):
         self.assertEqual([line.warehouse for line in receipt.lines.all()], [self.warehouse])
         self.assertEqual(self.problems, [])
 
+    def test_receive_on_the_order_offers_quarantine_where_a_receipt_may_go(self):
+        """
+        O612: the order page's Receive offered only the company's own stock, its docstring saying the server refuses
+        quarantine. Posting takes it, and goods made from batches quality holds must land there. With two stores and
+        a quarantine bay, a line naming none asks, and the bay is among what it offers.
+        """
+        from apps.inventory.models import Warehouse
+
+        bay = Warehouse.objects.create(code="Q", name="Awaiting tests", is_quarantine=True)
+        Warehouse.objects.create(code="WH2", name="Second store")
+        order = PurchaseOrder.objects.create(vendor=self.vendor, order_date=datetime.date(2026, 1, 1))
+        PurchaseOrderLine.objects.create(order=order, item=self.item, uom=self.uom, quantity=Decimal("10"),
+                                         unit_price=Decimal("5"))
+        order.confirm()
+        store = self.sign_in(self.person("Warehouse Staff"), f"/app/purchasing/orders/{order.pk}")
+        store.get_by_role("button", name="Receive", exact=True).click()
+        chooser = store.get_by_label("Arrives at")
+        expect(chooser.locator("option", has_text="Q · Awaiting tests")).to_have_count(1)
+        chooser.select_option(label="Q · Awaiting tests")
+        store.get_by_role("button", name="Draft receipt").click()
+        store.wait_for_url(re.compile(r"/purchasing/goods-in/\d+$"))
+        receipt = GoodsReceipt.objects.get(purchase_order=order)
+        self.assertEqual([line.warehouse for line in receipt.lines.all()], [bay])
+        self.assertEqual(self.problems, [])
+
     def test_a_vendor_made_in_one_form_and_blocked_by_accounts_not_the_buyer(self):
         """
         The buyer adds a vendor with the bank they are paid into and what we

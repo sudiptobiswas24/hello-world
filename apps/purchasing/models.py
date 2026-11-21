@@ -2352,6 +2352,11 @@ class PurchaseOrder(Extensible, TaxesTakenUnder, TaxedDocumentMixin, ChangesWith
                     "Nothing has been received that isn't already billed. This order is "
                     "billed on receipt, so book the goods in first."
                 )
+            consigned = [line for line in self.lines.all() if line.quantity_on_consignment() > 0]
+            if consigned:
+                raise ValidationError(
+                    f"What came on this order is on consignment ({', '.join(line.label() for line in consigned)}): "
+                    "the vendor's until it is drawn, and billed as it is drawn, not here (O612).")
             raise ValidationError("This order is already fully billed.")
 
         bill = Bill.objects.create(
@@ -2529,7 +2534,7 @@ class PurchaseOrder(Extensible, TaxesTakenUnder, TaxedDocumentMixin, ChangesWith
 
     def worth_at_most(self):
         """What this order can still come to: a line closed short counts at what came."""
-        return self.worth_within(lambda line: line.bill_limit())
+        return self.worth_within(lambda line: line.ordered_limit())
 
     def total_words(self, worth):
         """The order total a refusal states: what the order can still come to, and why if less."""
@@ -3296,13 +3301,21 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
         ).aggregate(total=models.Sum("quantity"))["total"] or Decimal("0")
         return billed - debited
 
-    def bill_limit(self):
+    def ordered_limit(self):
         """
-        The most this line may bill: what came, once closed short, and otherwise what was
-        ordered. Sales' invoice_limit(); closing short promised it and nothing held to it, so
-        a line billed as ordered went on billing goods that would never come.
+        What this line comes to: what came, once closed short, and otherwise what was ordered.
+        Sales' invoice_limit(); closing short promised it and nothing held to it, so a line billed
+        as ordered went on billing goods that would never come.
         """
         return self.quantity_received() if self.is_closed_short() else self.quantity
+
+    def bill_limit(self):
+        """
+        The most this line may bill: ordered_limit() less what came in on consignment, which is the vendor's
+        until drawn, and drawing raises its own order and bill (draw_consignment). Billed here as well, the same
+        goods were billed twice, the first time while the company did not own them (O612).
+        """
+        return self.ordered_limit() - self.quantity_on_consignment()
 
     def quantity_unbilled(self):
         return self.bill_limit() - self.quantity_billed()
@@ -3357,7 +3370,22 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
         # that will never come would strand the freight on the order.
         if self.order.bill_policy != BillPolicy.RECEIVED or self.is_charge():
             return unbilled
-        return min(unbilled, self.quantity_received() - self.quantity_billed())
+        # What came in on consignment is not the company's to be billed for here (bill_limit).
+        return min(unbilled, self.quantity_received() - self.quantity_on_consignment() - self.quantity_billed())
+
+    def quantity_on_consignment(self):
+        """Net quantity received into a consignment store, its vendor's until drawn: receipts less returns."""
+        if prefetched(self, "receipt_lines"):
+            # A list reads it for every line from what with_line_figures() fetched once.
+            return sum((row.quantity_received if row.receipt.reverses_id is None else -row.quantity_received
+                        for row in self.receipt_lines.all()
+                        if row.receipt.posted and row.warehouse.consignment_vendor_id), Decimal("0"))
+        rows = self.receipt_lines.filter(receipt__posted=True, warehouse__consignment_vendor__isnull=False)
+        received = rows.filter(receipt__reverses__isnull=True).aggregate(
+            total=models.Sum("quantity_received"))["total"] or Decimal("0")
+        returned = rows.filter(receipt__reverses__isnull=False).aggregate(
+            total=models.Sum("quantity_received"))["total"] or Decimal("0")
+        return received - returned
 
     def is_fully_billed(self):
         return self.quantity_billed() >= self.bill_limit()
@@ -4984,6 +5012,8 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxesTakenUnder, TaxedDocumentMix
             limit = order_line.bill_limit()
             if already + going[order_line.pk] > limit:
                 what = "received quantity of a line closed short" if order_line.is_closed_short() else "ordered quantity"
+                if order_line.quantity_on_consignment():
+                    what += f" less the {plain(order_line.quantity_on_consignment())} that came on consignment"
                 raise ValidationError(
                     f"Billing {plain(going[order_line.pk])} of {order_line.item} would exceed the {what} "
                     f"({plain(limit)}; {plain(already)} already billed)."
@@ -6496,7 +6526,8 @@ def with_line_figures(lines):
     from django.db.models import Prefetch
 
     return lines.prefetch_related(
-        Prefetch("receipt_lines", queryset=GoodsReceiptLine.objects.select_related("receipt")),
+        # The warehouse too: what came on consignment is read from it (quantity_on_consignment, O612).
+        Prefetch("receipt_lines", queryset=GoodsReceiptLine.objects.select_related("receipt", "warehouse")),
         Prefetch("bill_lines", queryset=BillLine.objects.select_related("bill")),
     )
 
@@ -7456,6 +7487,15 @@ class GoodsReceipt(AuditModel):
                 raise ValidationError(
                     f"{line.warehouse} holds {line.warehouse.held_for}'s material. What "
                     "the company buys goes into its own stock."
+                )
+            # A consignment store holds its own vendor's goods: another vendor's arriving there went in at no value
+            # as the store's vendor's, and the order then billed what was never accrued (O612). Asked of a return
+            # too, as the same loop serves both.
+            if line.warehouse.consignment_vendor_id and \
+                    line.warehouse.consignment_vendor_id != self.purchase_order.vendor_id:
+                raise ValidationError(
+                    f"{line.warehouse} holds {line.warehouse.consignment_vendor}'s stock on consignment. What "
+                    f"{self.purchase_order.vendor} sends goes into the company's own stock."
                 )
             if is_return:
                 # Only what is still on the shelf can go back, as a delivery
