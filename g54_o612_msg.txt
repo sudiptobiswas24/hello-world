@@ -1,0 +1,53 @@
+O612: a consignment store takes only its own vendor's goods, is billed once, and a receipt is offered quarantine
+
+O612 was registered as a screen saying the server refuses quarantine,
+transit and consignment for a receipt while posting refuses only a
+customer's material. Probing what posting does take found two defects
+behind it, both in the books.
+
+- Another vendor's goods could be received into a vendor's
+  consignment store. They went in at no value, as that store's
+  vendor's stock, and their order then billed 400 that was never
+  accrued. Posting now refuses it, in the loop that serves receipts
+  and returns alike, beside the customer's-material check.
+- The consignment vendor's own delivery could be billed on its order,
+  for goods the company did not own, and then billed again when drawn
+  (draw_consignment raises its own order and bill). bill_limit() now
+  leaves out what came on consignment (quantity_on_consignment).
+  ordered_limit() keeps the old meaning for what an order is worth,
+  which approvals quote. create_bill says the goods are on consignment
+  rather than "already fully billed", and a typed bill is refused
+  naming the quantity.
+
+The screens, as registered:
+- receivableWarehouse() is one rule for what a receipt may be put
+  into: quarantine (goods made from batches quality holds must land
+  there), and the order's own vendor's consignment store. Never
+  transit, a customer's material or another vendor's store.
+- The order page's Receive offers it; the Scan screen's offers it
+  without consignment, the vendor being unknown there; the line adder
+  offers it too.
+- What Receive goes to without asking stays the company's own stock.
+- WarehouseChoice's docstring now says what the server refuses.
+
+Tests:
+- WhatComesOnConsignmentIsBilledOnceTests: four tests, all failing on
+  the old code. A refused receipt, an order that bills nothing, a typed
+  bill refused naming the consignment, and a draw that still bills
+  once.
+- WarehouseChoice.test.ts covers the rule case by case.
+- A browser test: Receive on the order page offers the quarantine bay,
+  and the receipt lands in it. It fails on the old screens: no such
+  option.
+- The first version asked a query a row for what came on
+  consignment, and test_the_lists_do_not_ask_once_per_row caught it on
+  the purchase order list. The list's prefetch now brings each receipt
+  line with its warehouse, and quantity_on_consignment reads that.
+- The purchasing, accounting and inventory suites pass (2644), as do
+  the purchasing, scanning and sales browser modules (37) and vitest
+  (91). audit_invariants: no findings; makemigrations --check: none.
+
+Gate: {GATE}
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01XQiMmxK5wWbnQzkh2yM2yK

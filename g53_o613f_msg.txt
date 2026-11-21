@@ -1,0 +1,26 @@
+The demo takes in a customer's own granule and sends back what it did not use
+
+Part of O613: material a customer sends to be worked on answered
+nothing on the demo, in receipts, returns and their lines.
+
+Konkan Agro sends two tonnes of its own granule for its rice bags
+(their challan KAF/JW/0417). It goes into a bay held for Konkan, at no
+value and on no books. 150 kg it did not need goes back on a return
+that names the receipt line, as its own ITC-04 must match. 1,850 kg is
+left on the premises.
+
+The new warehouse is held for the customer (held_for). Planning,
+default receiving and every receiving list already leave such a
+warehouse out, and the ten modules that load the demo pass with it.
+
+Tests:
+- TheStoresAndPlanningShowTheDemoTests reads both documents as the
+  stores keeper, and the bay's 1,850 kg.
+- tests_load_demo passes (35), as do the ten other modules that load
+  the demo (122).
+- audit_invariants is clean. The sweep went from 77 empty lists to 73.
+
+Gate: {GATE}
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01XQiMmxK5wWbnQzkh2yM2yK

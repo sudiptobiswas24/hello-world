@@ -1,0 +1,38 @@
+O608: the Scan screen asks where an order arrives when a line names none
+
+Receive on a confirmed purchase order on the Scan screen was sent naming
+no warehouse. An order whose line names none was refused ("Say which
+warehouse ... arrives at") on a screen with nowhere to say it.
+
+- The offer is now the order page's own WarehouseChoice. It reads the
+  order when pressed, not on sight, because the screen offers up to 25
+  orders. It asks only when a line still owed names no warehouse, and
+  goes straight on when one warehouse can take the goods.
+- "Owes without a warehouse" is one function (owesWithoutAWarehouse)
+  shared by the sales and purchasing order forms and the Scan screen,
+  instead of the same expression copied twice.
+- The mirror, Receive by scan, sent the first warehouse in its list by
+  code for a line naming none. A quarantine bay coded before the main
+  store took every receipt scanned at the gate. It now defaults as a
+  line naming none is planned (defaultReceiving): the warehouse marked
+  to receive by default, else the only one receiving to stock, else
+  "Choose a warehouse...". Every warehouse stays on offer: a receipt
+  may belong in quarantine.
+
+Seen while doing this: WarehouseChoice's docstring says the server
+refuses quarantine, transit and consignment warehouses at posting, but
+GoodsReceipt.post refuses only one holding a customer's material. That
+is registered as O612, not changed here.
+
+Tests: both new browser tests fail on the old screens and pass on the
+new ones.
+- The Scan screen: Locator.select_option timed out, with no "Arrives
+  at" to choose.
+- The gate: it defaulted to the quarantine bay.
+The sales, purchasing and scanning browser modules pass (37 tests), as
+do tsc, vitest (87), names and screenkeys.
+
+Gate: {GATE}
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01XQiMmxK5wWbnQzkh2yM2yK

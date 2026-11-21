@@ -1,0 +1,35 @@
+O611: a document in another currency names it beside its amounts
+
+INV-2026-00016 on the demo plant is in USD and its screen read "Total
+1,140.00" and "Due now 1,140.00", which a person reads as rupees. The
+invoice list put the same figure in the column beside rupee invoices,
+and the "Trucks it went on" panel showed the delivery's value,
+95,896.80, which is in rupees (1,140 x 84.12), also with no label. No
+quotation, order, invoice, purchase order or bill screen named the
+currency anywhere.
+
+The five trading documents' serializers now read back
+foreign_currency: the code of the currency the document is in when it
+is not the base, and empty when it is. NamesItsCurrencyMixin in
+accounting holds it once for sales and purchasing. The codes are read
+once per response, not once per row, so a list costs what it did.
+Totals shows the code beside each amount, and the list's money cell
+does the same for any row that sends it. The trucks panel's column
+reads "Value (INR)": an e-way bill's value is in rupees whatever the
+invoice is in.
+
+Tests, worked by hand:
+- 1,000 sacks at 1.37 USD under the LUT give a total of 1,370.00 and
+  read "USD".
+- 100 at 10 inside Maharashtra give 1,180.00 and read nothing.
+- Reading three documents' codes takes one query.
+- Every serializer on the mixin lists the field: the five, no more.
+- In the browser, as the AR Manager, the export's totals and its row on
+  the invoice list read "1,370.00 USD", and a rupee invoice's totals
+  name no currency.
+- The list cell's unit test covers both cases.
+
+Gate: {GATE}
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01XQiMmxK5wWbnQzkh2yM2yK

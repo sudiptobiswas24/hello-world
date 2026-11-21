@@ -1,0 +1,56 @@
+The demo's bank statements, payroll payments, tools and floor masters show their work
+
+The demo answered 70 of 266 lists with nothing after g53. It answers
+55 now. The row stays open, narrowed: seven lists a person would open
+are still empty, and the rest are named in it as empty by nature.
+
+What the loader adds:
+- HDFC's statement for each month from going live, August to October.
+  The first opens at the balance the plant went live with. Each
+  carries every entry the month moved through the account, and is
+  matched by auto_match as the office would match it. October also
+  has the bank's 590 of charges, which the books do not have yet: its
+  reconciliation differs from the books by exactly that, with nothing
+  unpresented.
+- The posted run's salary file, written and paid from HDFC, and the
+  month's provident fund paid to the EPFO and remitted. PF and PF-ER
+  both owe into 2410, so there is one challan for the account. Posting
+  a payment holds its period, and marking the file paid then holds
+  the slips, which rank before it; so these are three steps, as they
+  are three requests in the office.
+- The press's setup families and changeovers; critical positions with
+  their spares on LOOM-03, LOOM-05 and EXT-1; the day shift's crew;
+  the power tariff; a lane from the plant to the godown; two party
+  tags; two suppliers' bank details.
+- A print design for the atta sack. Its two cylinders and a cutting
+  die are named on the sack run, and the loom's reed on the weave, so
+  each booking wears them (ProductionEntry._wear_tools). The tape run
+  has its line settings recorded.
+- The loader's journal() returns its entry, so the bank's first
+  statement opens at the go-live balance rather than listing it.
+
+Two defects the statements showed, registered rather than fixed here
+(both wait on one design answer):
+- O614: a journal typed through the bank (the rent, the power bill, a
+  bank charge entered by hand) can never explain a statement line, so
+  no month with one can close. All three demo statements stay open
+  for that reason.
+- O615: a first statement has no cut-off. Every earlier payment lists
+  as unpresented for good: October alone read -1,716,200 apart.
+
+Tests:
+- TheBooksAndTheFloorsMastersShowTheDemoTests: four tests, read as the
+  accountant, the payroll officer, the production supervisor,
+  maintenance and the purchasing clerk.
+- tests_outputs wrote a salary file for the posted run. The demo now
+  writes and pays that file, so prepare() refuses another, rightly.
+  The test reads the demo's file instead and keeps its three checks:
+  a row a paid slip, a heading and a total, the slips' net pay.
+- The nine modules that load the demo ran 124 tests: one error, the
+  one above. After the change, tests_outputs passes (9).
+- audit_invariants: no findings; makemigrations --check: none.
+
+Gate: {GATE}
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01XQiMmxK5wWbnQzkh2yM2yK

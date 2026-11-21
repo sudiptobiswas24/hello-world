@@ -1,0 +1,32 @@
+The demo's imported container has its bill of entry, entered for the accountant to post
+
+Part of O613: bills of entry answered nothing on the demo, though it
+imports a container of polymer through customs. The loader's own
+comment said the bill of entry was "the accountant's to enter from the
+BE customs gave", and nobody had.
+
+It is now entered (BillOfEntry.clear_receipt) against the receipt and
+bill it clears:
+- BE 4418210 at Kolkata port, USD at the customs rate of 84.10;
+- freight 1,150 and insurance 52, given as actual figures, since the
+  demo keeps no customs valuation default.
+
+It is left a draft for the accountant to check against the paper and
+post. Posting raises the duty bill to the customs house, which the 2B
+match and the payables would then read.
+
+Figures (calc_g53/o613_boe.py): assessable value 4,306,088.20; duty to
+the rupee, line by line: BCD 322,956, social welfare surcharge 32,296,
+IGST 839,041.
+
+Tests:
+- TheTradingListsShowTheDemoTests reads the bill of entry as the
+  accountant.
+- tests_load_demo passes (34). TheStatutoryOutputsComeOutTests, with
+  its 2B match, passes alongside.
+- The sweep went from 79 empty lists to 77.
+
+Gate: {GATE}
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01XQiMmxK5wWbnQzkh2yM2yK

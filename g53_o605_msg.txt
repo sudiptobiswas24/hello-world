@@ -1,0 +1,50 @@
+O605: the demo plant's floor screens show its work
+
+Eight floor screens showed nothing on the demo: Time booked, Bales,
+Fabric rolls, Operator yield, Scrap by reason, the station morning
+report, Step counts and Attendance. A person trying the plant's floor
+on the demo could not see any of them work. The demo's own loom-exit
+station could not weigh a roll either: the only run on the looms was of
+a fabric with no specification.
+
+The demo now does the floor's work through the floor's own functions:
+record_roll, record_bags, book_scrap, pack, scrap.report and
+TimeBooking.post.
+
+- The 50 cm fabric (F-50) is woven on LOOM-05 from the inspected tape
+  lot. Five rolls are weighed at the loom exit yesterday: one typed
+  while the scale was being calibrated (approved by the supervisor), one
+  declaring 1,060 m against 982.86 m from its weight.
+- Two rolls are measured for GSM and cut into atta sacks on STITCH-1.
+  The press counts 1,050 printed. The stitching tables count two bundles
+  of 500, weighed against the bag specification, and book 18 spoiled
+  for stitching and 12 for edge trim. The two bundles are pressed into
+  one bale.
+- The crews book their hours on four steps (performance 81-86%).
+- The floor's four people are present for the last week, once late.
+  No day is unpaid, so the posted and calculated pay runs read the same.
+- FAB-50-87 and SACK-ATTA25 are kept by batch from the start, as a roll
+  and a bundle each are one.
+
+Seen on the screenshots and fixed here: the Rolls screen's Fabric
+column read the specification's name, which is optional. Every roll of
+F-50, which has a code and no name, showed no fabric. It now reads the
+name, else the code.
+
+Tests:
+- TheFloorScreensShowTheDemoTests reads each screen's route as the
+  person who reads it (Suresh, Kiran). Its figures are worked in
+  calc_g53/o605.py: 4,997.72 m from weight against 5,070 declared,
+  1.45%, within 2.00. All four tests fail on the old loader.
+- WhatTheRollsScreenCallsItsFabricTests covers the name, the code and a
+  roll of no specification.
+- tests_load_demo passes (24 tests, also under Asia/Kolkata), as do the
+  ten other modules that load the demo (122 tests).
+- audit_invariants is clean and makemigrations --check finds no
+  changes. The eight screens were driven in the browser on the demo,
+  with no console errors and no 4xx responses.
+
+Gate: {GATE}
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01XQiMmxK5wWbnQzkh2yM2yK

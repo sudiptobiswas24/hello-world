@@ -1,0 +1,39 @@
+The demo's rate sheet, a quote's cost sheet and next year's standards show their work
+
+Part of O613: material and stage rates, quote policies, cost sheets,
+cost versions and standard costs answered nothing on the demo. The
+sales office could not show a sack being costed.
+
+- The rate sheet, from 30 days back:
+  - the polymers, thread and ink, at this month's market;
+  - four stages a kilogramme and packing a sack;
+  - 8% overhead and a 12% margin.
+  The filler's rate is 104, near its last receipt from the Gulf at
+  105.15. The opening stock's 38 would have shown the sheet a third of
+  the last price paid.
+- A cost sheet (quoting.cost) for 100,000 atta sacks from B-ATTA25's
+  walked recipe:
+  - material 8.560159 and conversion 2.798376, less 0.258835 of
+    regrind back;
+  - 8% overhead, 11.987676;
+  - quoted at 13.43 a sack.
+- Next financial year's standard costs, rolled up (CostVersion.roll_up)
+  for the price committee and not published: publishing revalues the
+  shelf. It is dated the next 1 April from today. The story's on() never
+  goes past today, and dated the draft today.
+
+Tests:
+- TheTradingListsShowTheDemoTests reads the sheet as the AR Manager,
+  figure by figure, and the version and its standard costs as the
+  accountant. The Production Supervisor may read none of these; who may
+  is the role map's.
+- tests_load_demo passes (33, also under Asia/Kolkata), as do the ten
+  other modules that load the demo (122).
+- audit_invariants is clean and makemigrations --check finds no
+  changes. The sweep of every list route on the demo went from 85
+  empty to 79.
+
+Gate: {GATE}
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01XQiMmxK5wWbnQzkh2yM2yK

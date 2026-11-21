@@ -1,0 +1,39 @@
+The demo's prices, reminders, recurring charge and buying controls show their work
+
+Part of O613: price lists, dunning, recurring invoices, blanket
+agreements and reorder rules answered nothing on the demo. Each is now
+made through its own path, chosen so that nothing another test does on
+the demo changes under it.
+
+- Price list: the dealers' list for 2026-27, with a break at 50,000
+  cement sacks. It is kept and given to nobody: a default list would
+  reprice every order line typed after it.
+- Dunning: three levels at 7, 30 and 60 days, and one run_dunning for
+  post (send=False), so nothing is emailed. Each notice records what is
+  late, as the run does. The loader holds the posted invoices in key
+  order first. The office's run releases each invoice as it goes, but
+  the loader's single transaction would hold them in date order, which
+  the lock-order sentinel refuses.
+- Recurring invoice: a monthly charge of 2,500 plus CGST and SGST
+  (2,950) for keeping Sahyadri's printing cylinders, starting next
+  month. It has issued nothing.
+- Blanket agreement: the year's 120,000 kg of raffia granule with
+  Granule House at 109, integrated tax as the supply is from Gujarat.
+  Its first 18,000 kg are called off as a draft order for the buyer.
+- Reorder rule: UV masterbatch kept between 150 and 400 kg, in 25s,
+  from Western Masterbatch.
+
+Purchasing's budgets and approval policies stay out. Either would hold
+or refuse orders that other tests create on the demo; they want a
+story that does not. The O613 row says so and stays open.
+
+Tests:
+- TheTradingListsShowTheDemoTests reads each list as the AR Manager or
+  the buyer.
+- tests_load_demo passes (31).
+- The sweep of every list route on the demo went from 96 empty to 87.
+
+Gate: {GATE}
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01XQiMmxK5wWbnQzkh2yM2yK

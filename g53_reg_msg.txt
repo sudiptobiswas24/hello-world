@@ -1,0 +1,16 @@
+Register the lists the demo leaves empty
+
+A sweep of every list route on the demo, read as the administrator,
+found 114 of 266 answering nothing. The sweep ran with O605 in place,
+so the floor's lists are no longer among them.
+
+Some of the empty ones are expected and harmless: keys, errors,
+integrations and the like. The rest are modules a person trying the
+demo sees do nothing. The register row groups them, the pilot's own
+first: stores, planning, prices, purchasing controls, GST documents
+and job work. The probe and its output are in calc_g53.
+
+Gate: documentation only (docs/). No application code or test changed.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01XQiMmxK5wWbnQzkh2yM2yK

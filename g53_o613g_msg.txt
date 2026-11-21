@@ -1,0 +1,31 @@
+The demo gives an advance against salary and keeps the contract labour register
+
+Part of O613: salary advances, labour contractors and contract workers
+answered nothing on the demo.
+
+- Ganesh is given 12,000 against his salary, by a posted payment from
+  the bank against a new "Advances to staff" receivable (1290). It is
+  recovered at 3,000 a month by a new deduction, ADV, from the run
+  whose period ends this month's end. The runs already posted or
+  calculated end before it and read the same: WhatTheDemoShowsTests'
+  PF, PT and gratuity figures pass alongside. ADV is given to nobody's
+  salary, so no run computes it but through an advance.
+- The loading and bale-packing gang comes from Shramik Manpower
+  Services, licensed for 20. Two of its workers are on the register at
+  690 a day.
+
+The register follows the Contract Labour Act. Which registers the
+Occupational Safety, Health and Working Conditions Code asks for is
+O224's, the adviser's to confirm.
+
+Tests:
+- TheFloorScreensShowTheDemoTests reads the advance and the register as
+  HR (Kiran).
+- tests_load_demo passes (36), as do the ten other modules that load
+  the demo (122). audit_invariants is clean. The sweep went from 73
+  empty lists to 70.
+
+Gate: {GATE}
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01XQiMmxK5wWbnQzkh2yM2yK

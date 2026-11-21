@@ -1,0 +1,31 @@
+O606: a plant's own tax number prints as a Tax ID, not as a GSTIN
+
+A plant with no GST registration printed its company's other tax number
+labelled "GSTIN" on every letterhead. printed_letterhead() labelled
+whatever issuer() kept, and since O603 issuer() keeps the registration's
+GSTIN where there is one, else the company's own tax ID. The settings
+screen already calls that field "Other tax number".
+
+- registered_tax_number() answers the number and what it is: "GSTIN"
+  from the registration, "Tax ID" from the company.
+- issuer() keeps the label beside the number (tax_label), so a reprint
+  prints what was issued.
+- A letterhead kept before this has no label. Every number it kept was
+  printed as a GSTIN, so it reprints as one, as it was printed.
+- registered_gstin() keeps its answer for the invoice foot that calls
+  it.
+
+Tests:
+- tests_company_gstin: a plant with no registration prints "Tax ID
+  DE123456789" and no "GSTIN", and the same values kept without a label
+  print "GSTIN DE123456789".
+- tests_rcm_cash: a newly issued self-invoice's kept letterhead now
+  carries tax_label "GSTIN". The migration-built letterhead in
+  KeptAsIssuedMigrationTests keeps none, as before.
+- apps.gst passes (428 tests), as do the eight other modules that read
+  letterheads or GSTIN lines (71).
+
+Gate: {GATE}
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01XQiMmxK5wWbnQzkh2yM2yK

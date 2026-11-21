@@ -1,0 +1,23 @@
+O604: the control chart keeps no sentence for an answer that never comes
+
+For an empty answer, the control chart's screen said "Nothing was
+inspected in these days." It never showed. spc.chart refuses a window
+with no standing inspection, and one with fewer than two subgroups to
+set limits from, so an answer always has its points. The screen showed
+the refusal instead: "Refused" over the server's reason, which says
+which of the two it is.
+
+Of the register's two choices, the refusal stays: it is deliberate,
+held by tests_spc, and its words are the better sentence. The screen
+drops its dead one.
+
+The API test held only the 400. It now also holds the words the screen
+shows: "No standing inspection of ...".
+
+Tests: tests_spc passes (17), as do tsc, vitest (87), screenkeys and
+the build.
+
+Gate: {GATE}
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01XQiMmxK5wWbnQzkh2yM2yK

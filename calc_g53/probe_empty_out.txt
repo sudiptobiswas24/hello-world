@@ -1,0 +1,141 @@
+Found 1 test(s).
+Creating test database for alias 'default'...
+System check identified no issues (0 silenced).
+
+FULL 152 EMPTY 114 FAILED 16
+EMPTY /api/accounting/bank-rates/
+EMPTY /api/accounting/bank-statement-lines/
+EMPTY /api/accounting/bank-statements/
+EMPTY /api/accounting/gst-returns-filed/
+EMPTY /api/accounting/restatements/
+EMPTY /api/accounting/tax-groups/
+EMPTY /api/accounting/tcs-declarations/
+EMPTY /api/assets/tax-block-openings/
+EMPTY /api/assets/tax-block-rates/
+EMPTY /api/assets/tax-blocks/
+EMPTY /api/assets/tax-years/
+EMPTY /api/core/api-keys/
+EMPTY /api/core/bank-accounts/
+EMPTY /api/core/custom-fields/
+EMPTY /api/core/errors/
+EMPTY /api/core/integrations/
+EMPTY /api/core/licences/
+EMPTY /api/core/party-tags/
+EMPTY /api/core/role-proposals/
+EMPTY /api/core/saved-filters/
+EMPTY /api/gst/cash-payments/
+EMPTY /api/gst/e-invoices/
+EMPTY /api/gst/eway-bills/
+EMPTY /api/gst/payment-vouchers/
+EMPTY /api/gst/self-invoices/
+EMPTY /api/hr/bonus-declarations/
+EMPTY /api/hr/contract-workers/
+EMPTY /api/hr/gratuity-payouts/
+EMPTY /api/hr/labour-contractors/
+EMPTY /api/hr/my-payslips/
+EMPTY /api/hr/salary-advances/
+EMPTY /api/hr/salary-files/
+EMPTY /api/hr/shortfall-settlements/
+EMPTY /api/hr/statutory-remittances/
+EMPTY /api/hr/timesheet-entries/
+EMPTY /api/hr/timesheets/
+EMPTY /api/inventory/gate-pass-lines/
+EMPTY /api/inventory/gate-passes/
+EMPTY /api/inventory/gate-visits/
+EMPTY /api/inventory/item-attribute-values/
+EMPTY /api/inventory/item-attributes/
+EMPTY /api/inventory/item-templates/
+EMPTY /api/inventory/item-units/
+EMPTY /api/inventory/stock-adjustment-lines/
+EMPTY /api/inventory/stock-adjustments/
+EMPTY /api/inventory/stock-count-lines/
+EMPTY /api/inventory/stock-counts/
+EMPTY /api/inventory/stock-transfer-lines/
+EMPTY /api/inventory/stock-transfers/
+EMPTY /api/inventory/weighings/
+EMPTY /api/manufacturing/bom-substitutes/
+EMPTY /api/manufacturing/changeover-rules/
+EMPTY /api/manufacturing/cost-sheets/
+EMPTY /api/manufacturing/cost-versions/
+EMPTY /api/manufacturing/crew-assignments/
+EMPTY /api/manufacturing/customer-material-receipt-lines/
+EMPTY /api/manufacturing/customer-material-receipts/
+EMPTY /api/manufacturing/customer-material-return-lines/
+EMPTY /api/manufacturing/customer-material-returns/
+EMPTY /api/manufacturing/energy-tariffs/
+EMPTY /api/manufacturing/job-work-losses/
+EMPTY /api/manufacturing/liner-specifications/
+EMPTY /api/manufacturing/machine-positions/
+EMPTY /api/manufacturing/material-rates/
+EMPTY /api/manufacturing/packing-lines/
+EMPTY /api/manufacturing/print-designs/
+EMPTY /api/manufacturing/production-byproducts/
+EMPTY /api/manufacturing/quote-policies/
+EMPTY /api/manufacturing/rebatches/
+EMPTY /api/manufacturing/setup-families/
+EMPTY /api/manufacturing/stage-rates/
+EMPTY /api/manufacturing/standard-costs/
+EMPTY /api/manufacturing/tape-run-settings/
+EMPTY /api/manufacturing/test-certificates/
+EMPTY /api/manufacturing/tool-usage/
+EMPTY /api/manufacturing/tools/
+EMPTY /api/planning/actions/
+EMPTY /api/planning/forecasts/
+EMPTY /api/planning/master-schedule/
+EMPTY /api/planning/planned-demands/
+EMPTY /api/planning/planned-orders/
+EMPTY /api/planning/runs/
+EMPTY /api/planning/settings/
+EMPTY /api/planning/shipment-history/
+EMPTY /api/planning/transfer-routes/
+EMPTY /api/purchasing/approval-policies/
+EMPTY /api/purchasing/approval-tiers/
+EMPTY /api/purchasing/bill-of-entry-lines/
+EMPTY /api/purchasing/bills-of-entry/
+EMPTY /api/purchasing/blanket-order-lines/
+EMPTY /api/purchasing/blanket-orders/
+EMPTY /api/purchasing/budgets/
+EMPTY /api/purchasing/customs-valuation-defaults/
+EMPTY /api/purchasing/rate-difference-lines/
+EMPTY /api/purchasing/rate-differences/
+EMPTY /api/purchasing/reorder-rules/
+EMPTY /api/purchasing/vendor-profiles/
+EMPTY /api/purchasing/weight-claims/
+EMPTY /api/sales/call-offs/
+EMPTY /api/sales/customer-tds/
+EMPTY /api/sales/dunning-levels/
+EMPTY /api/sales/dunning-notices/
+EMPTY /api/sales/invoice-write-offs/
+EMPTY /api/sales/price-clauses/
+EMPTY /api/sales/price-list-items/
+EMPTY /api/sales/price-lists/
+EMPTY /api/sales/price-variation-bills/
+EMPTY /api/sales/recurring-invoice-lines/
+EMPTY /api/sales/recurring-invoices/
+EMPTY /api/sales/supplied-items/
+EMPTY /api/sales/tcs-challans/
+EMPTY /api/sales/tcs-collections/
+EMPTY /api/sales/third-party-releases/
+EMPTY /api/web/search/
+FAILED ('/api/core/attachments/', 400, b'{"model":["Name the record\'s kind as app.model."]}')
+FAILED ('/api/core/notes/', 400, b'{"model":["Name the record\'s kind as app.model."]}')
+FAILED ('/api/core/follow-ups/', 400, b'{"model":["Name the record\'s kind as app.model."]}')
+FAILED ('/api/inventory/scan/', 400, b'["code is required."]')
+FAILED ('/api/sales/customers/', 405, b'{"detail":"Method \\"GET\\" not allowed."}')
+FAILED ('/api/purchasing/vendors/', 405, b'{"detail":"Method \\"GET\\" not allowed."}')
+FAILED ('/api/hr/gratuity/', 400, b'{"components":["Give the day and the wage components gratuity is on, as codes: BASIC,DA."]}')
+FAILED ('/api/hr/bonus-statement/', 400, b'{"year":["Say the accounting year by the year it starts in: 2025 for 1 April 2025 to 31 March 2026."]}')
+FAILED ('/api/hr/statutory-registers/', 400, b'{"kind":["pt or lwf."]}')
+FAILED ('/api/manufacturing/order-profitability/', 400, b'["Name the sales order: ?order=<id>."]')
+FAILED ('/api/manufacturing/operator-yield/', 400, b'["start and end are required, as YYYY-MM-DD."]')
+FAILED ('/api/manufacturing/scale-readings/', 403, b'{"detail":"Scale readings are posted by the scale\'s bridge with its own key, not by a login that weighs at a station. A weight typed by hand needs a supervisor\'')
+FAILED ('/api/quality/spc/', 404, b'{"detail":"No Item matches the given query."}')
+FAILED ('/api/quality/sampling/', 400, b'["lot_size is a whole number of units."]')
+FAILED ('/api/planning/promise/', 400, b'["Name an item and a warehouse."]')
+FAILED ('/api/web/summary/', 400, b'{"endpoint":["Name the list as its API path."]}')
+.
+----------------------------------------------------------------------
+Ran 1 test in 28.302s
+
+OK
+Destroying test database for alias 'default'...

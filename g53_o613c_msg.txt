@@ -1,0 +1,32 @@
+The demo's latest invoice has its e-invoice and e-way bill waiting for the portals
+
+Part of O613: e-invoices and e-way bills answered nothing on the demo.
+The latest invoice in rupees now has both built and kept, through
+einvoice.prepare and ewaybill.prepare, for the accountant to upload.
+The portals' answers (the IRN, the bill's number) are theirs to give,
+so nothing is recorded as registered.
+
+The latest is taken, not a named customer's. The first try, Narmada's
+last invoice, was 39 days old, and its e-invoice warned that a company
+with 10 crore of turnover cannot register it. The demo should not open
+on a warning it made itself.
+
+The tests' own invoices (Kaveri 627,600, Gulf 17,100, Sahyadri
+1,617,000) are left alone: TheStatutoryOutputsComeOutTests builds their
+e-invoices and e-way bills by the API, and passes alongside.
+
+The reverse-charge documents (self-invoices, payment vouchers) stay
+empty: the demo buys nothing under reverse charge. The O613 row says
+so.
+
+Tests:
+- TheTradingListsShowTheDemoTests reads both as the accountant: no IRN,
+  no warnings, the total the invoice's, the bill required and
+  unnumbered.
+- tests_load_demo passes (32).
+- The sweep of every list route on the demo went from 87 empty to 85.
+
+Gate: {GATE}
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01XQiMmxK5wWbnQzkh2yM2yK

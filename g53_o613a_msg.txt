@@ -1,0 +1,44 @@
+The demo's stores, gate and planning show their work
+
+Part of O613: on the demo, the stores' documents, the gate register
+and every planning list answered nothing. A person trying them saw
+the modules do nothing. Each is now made through its own path.
+
+- Stores (StockCount.add and post, StockAdjustment.post,
+  StockTransfer.post): the spares cupboard is counted two bearings
+  short; 150 rice sacks spoilt by a roof leak are written off; 10,000
+  cement sacks move to the godown's bay A-01.
+- The gate (GateVisit, Weighing.record, GatePass.approve, check_out):
+  a lorry of granule is weighed in at 27,460 kg and out at 9,380 kg,
+  both typed under calibration by the stores keeper. A laptop goes out
+  for repair on a returnable pass she approved. A visitor is still on
+  site.
+- Planning:
+  - twelve months of cement-sack shipments from before cutover (the
+    system counts its own months after it, and refuses history for
+    them);
+  - a forecast for next month;
+  - fertiliser sacks built ahead of the kharif season on the master
+    schedule;
+  - the settings;
+  - one run of the planner over the plant (mrp.plan). Its planned
+    orders and actions are the plan's real answer to the demo's
+    orders, including cancelling what nothing in the horizon wants.
+
+The O613 row stays open for the rest of its list: prices, dunning,
+recurring invoices, purchasing's controls, GST documents, job work,
+costing.
+
+Tests:
+- TheStoresAndPlanningShowTheDemoTests reads each list as the person
+  whose screen it is (Sunita, Raju, Suresh). It fails on the loader
+  before this commit.
+- tests_load_demo passes (27, also under Asia/Kolkata), as do the ten
+  other modules that load the demo (122).
+- audit_invariants is clean. The sweep of every list route on the demo
+  went from 114 empty to 96.
+
+Gate: {GATE}
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01XQiMmxK5wWbnQzkh2yM2yK
