@@ -1782,6 +1782,43 @@ class Command(BaseCommand):
         with step("Payroll paid: the salary file marked paid by its payment"):
             transfers.mark_paid(salaries_paid)
 
+        with step("A tape batch split for two looms, the laminator's trim, a shipment's test certificate"):
+            # O613: rebatches, job-work losses and test certificates answered nothing on the demo. Part of the
+            # second tape batch is split into two for the night shift's looms (the same tape at the same cost, its
+            # inspection carried); the laminator states the edge trim it kept from the fabric on its challan; and
+            # the latest shipment is certified with what was measured on it.
+            from apps.manufacturing.certificates import issue
+            from apps.manufacturing.rebatch import rebatch
+
+            Lot = M("inventory.Lot")
+            second = Lot.objects.get(item=tape_1000, code="TP-1000-02")
+            halves = [Lot.objects.create(item=tape_1000, code=code) for code in ("TP-1000-02A", "TP-1000-02B")]
+            rebatch(tape_1000, plant, [(second, D("400"))], [(halves[0], D("200")), (halves[1], D("200"))],
+                    "Split for the two looms on the night shift", on_date=day(-1))
+            M("manufacturing.JobWorkLoss").objects.create(
+                line=M("manufacturing.JobWorkLine").objects.get(challan__job_worker=laminator), loss_date=day(-1),
+                quantity=D("9.5"),
+                note="Edge trim kept by the laminator, as its delivery note states")
+            shipped = (M("sales.Delivery").objects.filter(posted=True, is_drop_ship=False)
+                       .order_by("-delivery_date", "-pk"))
+            latest = next((delivery for delivery in shipped if not delivery.is_return()), None)
+            if latest is None:
+                raise CommandError("No shipment to certify.")
+            issue(latest, on_date=latest.delivery_date, by=meena.user)
+
+        with step("Call-offs: a customer's schedule against an order not yet shipped"):
+            # O613: call-offs answered nothing. Its own step: a call-off holds its order line, which the lock order
+            # takes before the period the batches above were posted into. Half in a week, half in three.
+            waiting = (M("sales.SalesOrderLine").objects.filter(order__status="confirmed", item__isnull=False,
+                                                                 delivery_lines__isnull=True)
+                       .order_by("-order__order_date", "pk").first())
+            if waiting is None:
+                raise CommandError("No confirmed order line is waiting to ship; nothing to call off.")
+            half = (waiting.quantity / 2).quantize(D("1"))
+            for weeks, quantity, number in ((1, half, "CO-1"), (3, waiting.quantity - half, "CO-2")):
+                M("sales.CallOff").objects.create(line=waiting, due_on=TODAY + datetime.timedelta(weeks=weeks),
+                                                  quantity=quantity, reference=f"{waiting.order.customer.code}/{number}")
+
         with step("The bank's statements from its cut-off to last month, matched to the books"):
             # O613: bank statements answered nothing on the demo. HDFC is reconciled from the first of the month after
             # going live (O615): what it moved before then cleared, but for a cheque from the old books the bank paid

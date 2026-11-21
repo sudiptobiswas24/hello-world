@@ -725,6 +725,19 @@ class TheBooksAndTheFloorsMastersShowTheDemoTests(SignsInAsTheDemo, TestCase):
         report = self.read(f"/api/accounting/bank-statements/{last['id']}/reconciliation/", "anita")
         self.assertEqual((report["unpresented"], report["difference"], report["reconciled"]), ([], "590.00", False))
 
+    def test_a_split_batch_the_laminators_trim_and_a_shipments_certificate(self):
+        # O613: rebatches, job-work losses and test certificates answered nothing. Read by the supervisor who
+        # splits batches and sends certificates, and by the stores manager who keeps what is out at job work.
+        (split,) = self.read("/api/manufacturing/rebatches/", "suresh")
+        self.assertEqual((split["reason"], split["posted"]), ("Split for the two looms on the night shift", True))
+        (trim,) = self.read("/api/manufacturing/job-work-losses/", "sunita")
+        self.assertEqual((trim["quantity"], trim["voided_at"]), ("9.5000", None))
+        (certificate,) = self.read("/api/manufacturing/test-certificates/", "suresh")
+        self.assertTrue(certificate["number"] and certificate["content"], certificate)
+        calls = self.read("/api/sales/call-offs/", "rohit")
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(len({row["line"] for row in calls}), 1)
+
     def test_the_posted_run_is_paid_by_its_salary_file_and_its_provident_fund_paid_over(self):
         from apps.hr.payroll import PayRun, _deducted, remitted
 
