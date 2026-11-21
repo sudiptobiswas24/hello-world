@@ -17,6 +17,10 @@ const under = (kind: unknown): FieldDef["pick"] => ({
 const MONEY = "What payments, claims and challans are paid from or into; nothing else is offered for that. "
   + "An asset, or a liability for a card or an overdraft. It cannot change once anything is posted to the account.";
 
+const RECONCILED = "For a bank: the day its statements are reconciled from. What it moved before then is taken as "
+  + "cleared, but for what is listed as outstanding at the cut-off; nothing new is dated before it. Empty reconciles "
+  + "from the first entry.";
+
 /**
  * One account of the chart: made from the chart, and changed from its
  * ledger, which stays its page. What the books cannot take (a parent of
@@ -47,6 +51,7 @@ export default function AccountForm() {
         { key: "currency", label: "Currency", kind: "ref", ref: CURRENCY },
         { key: "is_active", label: "In use", kind: "bool", initial: true },
         { key: "holds_money", label: "Bank, cash or card", kind: "bool", hint: MONEY },
+        { key: "reconciled_from", label: "Reconciled from", kind: "date", hint: RECONCILED },
       ]}
     />
   );

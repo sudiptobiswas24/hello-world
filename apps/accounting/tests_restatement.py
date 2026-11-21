@@ -311,6 +311,8 @@ def settling_models():
 # What books against a document or a payment and needs not ask, and why.
 NEED_NOT_ASK = {
     "accounting.bankstatementline": "matches a statement line to a payment already posted; nothing open changes",
+    # g55 (O615): what a bank had not shown by the day its statements are reconciled from.
+    "accounting.bankcutoffitem": "lists a payment already posted as outstanding at a bank's cut-off; it posts no entry and nothing open changes",
     "hr.statutoryremittance": "payroll's remittance, in the base currency; its payment asks at Payment.post",
     "hr.salaryadvance": "payroll, in the base currency; its payment asks at Payment.post",
     "hr.shortfallsettlement": "payroll, in the base currency; its payment asks at Payment.post",

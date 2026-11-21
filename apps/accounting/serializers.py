@@ -29,7 +29,7 @@ class AccountSerializer(ModelSerializer):
     class Meta:
         model = Account
         fields = ["id", "code", "name", "account_type", "parent", "parent_code", "parent_name", "currency",
-                  "is_active", "holds_money"]
+                  "is_active", "holds_money", "reconciled_from"]
 
 
 class CostCentreSerializer(ModelSerializer):

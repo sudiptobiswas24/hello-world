@@ -1782,36 +1782,70 @@ class Command(BaseCommand):
         with step("Payroll paid: the salary file marked paid by its payment"):
             transfers.mark_paid(salaries_paid)
 
-        with step("The bank's statements from going live to last month, matched to the books"):
-            # O613: bank statements answered nothing on the demo. HDFC's statement for each month from going live:
-            # the first opens at the balance the plant went live with, and each carries every entry the month moved
-            # through the account. Last month's also has the bank's charges the books do not have yet, left for the
-            # accountant to book. Matched as the office matches them. Every month stays open: the power bill, the
-            # rent and the bank's own charges were journals typed through the bank, which a statement line cannot
-            # yet be explained by (O614).
+        with step("The bank's statements from its cut-off to last month, matched to the books"):
+            # O613: bank statements answered nothing on the demo. HDFC is reconciled from the first of the month after
+            # going live (O615): what it moved before then cleared, but for a cheque from the old books the bank paid
+            # in September, listed as outstanding at the cut-off. Each month's statement carries every entry the month
+            # moved through the account; last month's also the bank's charges, not booked yet, left for the
+            # accountant. Matched as the office matches them: the obvious first, then each line to what it is. The
+            # journals typed through the bank (the power bill, the rent) are matched like the rest (O614), so
+            # September closes; October waits on its charges.
+            from django.db.models import Q
+
             from apps.accounting.models import moved_through
 
-            month_start, last_start = go_live.date.replace(day=1), s.month_span(2026, 10, -1)[0]
-            balance = moved_through(go_live, bank)
-            matched = []
+            Payment, Line = M("accounting.Payment"), M("accounting.BankStatementLine")
+            cut_off = (go_live.date.replace(day=1) + datetime.timedelta(days=32)).replace(day=1)
+            bank.reconciled_from = cut_off
+            bank.save()
+            old_cheque = M("accounting.BankCutOffItem").objects.create(
+                bank_account=bank, date=cut_off - datetime.timedelta(days=40), reference="000431",
+                description=f"Cheque to {granule.name}, from the old books", amount=D("-25000.00"))
+            last_start = s.month_span(2026, 10, -1)[0]
+            month_start = cut_off
+            # What the bank held at the cut-off: the books then, and the cheque it had not paid yet.
+            balance = sum((moved_through(entry, bank) for entry in M("accounting.JournalEntry").objects.filter(
+                posted=True, lines__account=bank, date__lt=cut_off).distinct()), D("0")) - old_cheque.amount
+            statements = []
             while month_start <= last_start:
                 month_end = month_start.replace(day=calendar.monthrange(month_start.year, month_start.month)[1])
                 through = M("accounting.JournalEntry").objects.filter(
-                    posted=True, lines__account=bank, date__range=(month_start, month_end)).exclude(
-                    pk=go_live.pk).distinct().order_by("date", "pk")
-                statement_rows = [(entry.date, (entry.reference or entry.memo)[:255], moved_through(entry, bank))
+                    posted=True, lines__account=bank, date__range=(month_start, month_end)).distinct().order_by("date", "pk")
+                statement_rows = [(entry.date, (entry.reference or entry.memo)[:255], moved_through(entry, bank), entry)
                                   for entry in through]
                 statement_rows = [row for row in statement_rows if row[2]]
+                if month_start == cut_off:
+                    statement_rows.insert(0, (month_start + datetime.timedelta(days=3), "Chq 000431 paid", old_cheque.amount,
+                                              old_cheque))
                 if month_start == last_start:
-                    statement_rows.append((month_end, "Charges incl GST: NEFT, statement", D("-590.00")))
+                    statement_rows.append((month_end, "Charges incl GST: NEFT, statement", D("-590.00"), None))
                 closing = balance + sum((row[2] for row in statement_rows), D("0"))
                 statement = M("accounting.BankStatement").objects.create(
                     bank_account=bank, reference=f"HDFC {month_start:%b %Y}", start_date=month_start,
                     end_date=month_end, opening_balance=balance, closing_balance=closing)
-                for when, words, amount in statement_rows:
-                    M("accounting.BankStatementLine").objects.create(statement=statement, date=when,
-                                                                     description=words, amount=amount)
-                matched += statement.auto_match()
+                made = [(Line.objects.create(statement=statement, date=when, description=words, amount=amount), source)
+                        for when, words, amount, source in statement_rows]
+                statement.auto_match()
+
+                def returned_first(row):
+                    # A payment's void before the payment: the bank's return is matched before what it returned.
+                    source = row[1]
+                    entry = source if isinstance(source, M("accounting.JournalEntry")) else None
+                    return not (entry is not None and Payment.objects.filter(voided_entry=entry).exists())
+
+                for line, source in sorted(made, key=returned_first):
+                    line.refresh_from_db()
+                    if line.is_resolved() or source is None:
+                        continue
+                    if source == old_cheque:
+                        line.match_cut_off_item(old_cheque)
+                        continue
+                    payment = Payment.objects.filter(Q(journal_entry=source) | Q(voided_entry=source)).first()
+                    line.match(payment) if payment is not None else line.match_entry(source)
+                statements.append(statement)
                 balance, month_start = closing, month_end + datetime.timedelta(days=1)
-            if not matched:
-                raise CommandError("Nothing on HDFC's statements matched the books.")
+            if len(statements) < 2:
+                raise CommandError(f"HDFC has {len(statements)} statement(s) from {cut_off}; the demo wants a closed one "
+                                   "and an open one.")
+            for statement in statements[:-1]:
+                statement.close()

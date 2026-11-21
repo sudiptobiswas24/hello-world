@@ -19,7 +19,7 @@ from apps.core.api import flag, record_or_404
 from apps.core.audit import AuditableViewSetMixin
 from apps.core.models import Party
 
-from .models import Account, BankStatement, BankStatementLine, JournalEntry, Payment, round_money
+from .models import Account, BankCutOffItem, BankStatement, BankStatementLine, JournalEntry, Payment, round_money
 from .bank_import import import_lines
 
 
@@ -43,15 +43,36 @@ class BankStatementSerializer(ModelSerializer):
 class BankStatementLineSerializer(ModelSerializer):
     payment_number = serializers.CharField(source="payment.number", read_only=True, default=None)
     returned_payment_number = serializers.CharField(source="returned_payment.number", read_only=True, default=None)
+    cut_off_item_name = serializers.CharField(source="cut_off_item.__str__", read_only=True, default=None)
     resolved = serializers.BooleanField(source="is_resolved", read_only=True)
 
     class Meta:
         model = BankStatementLine
         fields = ["id", "statement", "date", "description", "reference", "amount", "payment",
                   "payment_number", "returned_payment", "returned_payment_number", "journal_entry",
-                  "booked_entry", "resolved"]
+                  "booked_entry", "cut_off_item", "cut_off_item_name", "resolved"]
         # Set by matching and posting, which check what they set.
-        read_only_fields = ["payment", "returned_payment", "journal_entry", "booked_entry"]
+        read_only_fields = ["payment", "returned_payment", "journal_entry", "booked_entry", "cut_off_item"]
+
+
+class BankCutOffItemSerializer(ModelSerializer):
+    bank_account_name = serializers.CharField(source="bank_account.name", read_only=True)
+    payment_number = serializers.CharField(source="payment.number", read_only=True, default=None)
+    shown_on = serializers.SerializerMethodField()
+
+    class Meta:
+        model = BankCutOffItem
+        fields = ["id", "bank_account", "bank_account_name", "payment", "payment_number", "entry", "date",
+                  "reference", "description", "amount", "cancelled_by", "shown_on"]
+        # Set by cancel(), which checks the entry it names.
+        read_only_fields = ["cancelled_by"]
+
+    def get_shown_on(self, item):
+        """The statement whose line shows a plain item, or nothing yet."""
+        try:
+            return str(item.line.statement)
+        except BankStatementLine.DoesNotExist:
+            return None
 
 
 def _payment_row(payment):
@@ -63,6 +84,12 @@ def _return_row(payment):
     """A voided payment's reversal the bank has not shown yet (O230): the payment's row, the other way."""
     return {**_payment_row(payment), "number": f"Return of {payment.number}", "returned": True,
             "date": payment.voided_entry.date, "amount": -payment.signed_base_amount()}
+
+
+def _item_row(item):
+    """A cheque from before the books, outstanding at the account's cut-off (O615), as a payment's row reads."""
+    return {"cut_off_item": item.pk, "number": f"Outstanding at the cut-off: {item.reference or item.pk}",
+            "party_name": item.description, "date": item.date, "amount": item.amount}
 
 
 def _entry_row(entry, amount):
@@ -118,7 +145,8 @@ class BankStatementViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
             + [_return_row(payment) for payment in report["unreturned"]]
             + [{**_payment_row(payment), "number": f"Returned by the bank, not yet voided: {payment.number}"}
                for payment in report["returned_unvoided"]]
-            + [_entry_row(entry, amount) for entry, amount in report["unpresented_entries"]],
+            + [_entry_row(entry, amount) for entry, amount in report["unpresented_entries"]]
+            + [_item_row(item) for item in report["outstanding_at_cut_off"]],
             "unpresented_total": round_money(report["unpresented_total"]),
             "unresolved_lines": len(report["unresolved_lines"]),
             "statement_difference": round_money(report["statement_difference"]),
@@ -153,12 +181,18 @@ class BankStatementViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def match(self, request, pk=None):
         """
-        Say a line ({"line"}) is a payment ({"payment"}), or money a document
-        booked through the bank ({"entry"}: a TDS challan, an expense claim paid out).
+        Say a line ({"line"}) is a payment ({"payment"}), money booked through
+        the bank ({"entry"}: a TDS challan, an expense claim paid out, a journal
+        keyed by hand), or a cheque outstanding at the account's cut-off
+        ({"cut_off_item"}).
         """
-        takes_only(request.data, "entry", "line", "payment")
+        takes_only(request.data, "cut_off_item", "entry", "line", "payment")
         statement = self.get_object()
         line = self._line(statement, request)
+        if request.data.get("cut_off_item") not in (None, ""):
+            item = record_or_404(BankCutOffItem, request.data.get("cut_off_item"), "cut_off_item")
+            _refused(lambda: line.match_cut_off_item(item))
+            return Response(self.get_serializer(statement).data)
         if request.data.get("entry") not in (None, ""):
             entry = record_or_404(JournalEntry, request.data.get("entry"), "entry")
             _refused(lambda: line.match_entry(entry))
@@ -193,10 +227,10 @@ class BankStatementViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 
 class BankStatementLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
-    queryset = BankStatementLine.objects.select_related("statement", "payment", "returned_payment")
+    queryset = BankStatementLine.objects.select_related("statement", "payment", "returned_payment", "cut_off_item")
     serializer_class = BankStatementLineSerializer
     filter_fields = ["statement", "payment__isnull", "journal_entry__isnull", "returned_payment__isnull",
-                     "booked_entry__isnull"]
+                     "booked_entry__isnull", "cut_off_item__isnull"]
     search_fields = ["description", "reference"]
     # Matched and posted through the statement, which asks which line;
     # undone here, where the line is all there is to say.
@@ -221,3 +255,38 @@ class BankStatementLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         line = self.get_object()
         _refused(lambda: line.reverse_posting(on_date=request.data.get("date") or None))
         return self._answer(line)
+
+
+class BankCutOffItemViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    """
+    What was outstanding at a bank account's cut-off (O615), listed once when
+    the account's reconciliation starts, then matched as the statements show
+    it, or cancelled by the entry that put its money back.
+    """
+
+    queryset = BankCutOffItem.objects.select_related("bank_account", "payment", "line__statement")
+    serializer_class = BankCutOffItemSerializer
+    filter_fields = ["bank_account", "payment__isnull", "entry__isnull", "cancelled_by__isnull", "line__isnull"]
+    search_fields = ["reference", "description", "bank_account__name"]
+    date_field = "date"
+    action_permission_map = {
+        "cancel": "accounting.change_bankcutoffitem",
+        "uncancel": "accounting.change_bankcutoffitem",
+    }
+
+    @action(detail=True, methods=["post"])
+    def cancel(self, request, pk=None):
+        """Taken back by the entry ({"entry"}) that put its money back: a cheque from before the books, cancelled."""
+        takes_only(request.data, "entry")
+        item = self.get_object()
+        entry = record_or_404(JournalEntry, request.data.get("entry"), "entry")
+        _refused(lambda: item.cancel(entry))
+        item.refresh_from_db()
+        return Response(self.get_serializer(item).data)
+
+    @action(detail=True, methods=["post"])
+    def uncancel(self, request, pk=None):
+        item = self.get_object()
+        _refused(item.uncancel)
+        item.refresh_from_db()
+        return Response(self.get_serializer(item).data)

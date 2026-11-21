@@ -70,6 +70,8 @@ ROLES = {
         # the books is a Controller decision.
         *crud("accounting", "bankstatement", actions=("add", "change", "view")),
         *crud("accounting", "bankstatementline", actions=("add", "change", "view")),
+        # What was outstanding at a bank's cut-off, listed as the statements are keyed in (O615).
+        *crud("accounting", "bankcutoffitem", actions=("add", "change", "view")),
         # deliberately NOT accounting.close_bankstatement: whoever keys the
         # statement in should not also be the one who signs it off.
         # Matching a line is naming the payment it is.
@@ -207,6 +209,7 @@ ROLES = {
         "assets.dispose_fixedasset",
         *crud("accounting", "bankstatement"),
         *crud("accounting", "bankstatementline"),
+        *crud("accounting", "bankcutoffitem"),
         "accounting.close_bankstatement",
         # Giving up on a receivable is an expense decision, so it sits with
         # the Controller and not with the people who booked or chased the

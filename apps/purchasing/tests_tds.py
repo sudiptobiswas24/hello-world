@@ -627,9 +627,13 @@ class ChallanOnTheStatementTests(TdsTestCase):
         paid = Payment.objects.create(party=self.vendor, direction="disbursement", payment_date=datetime.date(2026, 7, 7),
                                       amount=Decimal("700"), bank_account=self.bank, counterpart_account=self.payable)
         paid.post()
-        for entry, said in ((by_hand, "is not money a document moved"), (paid.journal_entry, "match a payment")):
-            with self.subTest(entry=entry), self.assertRaisesMessage(ValidationError, said):
-                self.line.match_entry(entry)
+        with self.assertRaisesMessage(ValidationError, "match a payment"):
+            self.line.match_entry(paid.journal_entry)
+        # Refused until O614, this test with it: the bank shows a transfer keyed by hand as it shows the challan,
+        # and matched to nothing a month with one could never close.
+        self.line.match_entry(by_hand)
+        self.assertEqual(self.line.booked_entry_id, by_hand.pk)
+        self.line.unmatch()
         self.line.amount = Decimal("-701")
         self.line.save()
         with self.assertRaisesMessage(ValidationError, "moved -700.00"):

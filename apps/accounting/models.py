@@ -16,6 +16,7 @@ from apps.core.models import (
     AuditModel,
     answer_to_its_document,
     documents_it_answers_to,
+    lock_rows,
     row_lock_query,
     Country,
     Currency,
@@ -62,6 +63,10 @@ class Account(AuditModel):
         default=False,
         help_text="A bank, cash box, card or overdraft: what payments, claims and challans are paid "
                   "from or into. Nothing else is offered as one.")
+    reconciled_from = models.DateField(
+        null=True, blank=True,
+        help_text="For a bank: the day its statements are reconciled from. What it moved before then is taken "
+                  "as cleared by then, but for what is listed as outstanding at it; nothing new is dated before it.")
 
     class Meta:
         ordering = ["code"]
@@ -102,7 +107,51 @@ class Account(AuditModel):
         self._check_tree()
         self._check_money()
         self._check_currency()
+        self._check_cut_off()
         super().save(*args, **kwargs)
+
+    def _check_cut_off(self):
+        """
+        The day a bank's statements are reconciled from (O615). Every statement of the account reads it, a
+        closed one too, so it moves only while none is closed; never past the start of a statement the account
+        already has, nor to or before the day of an item listed as outstanding at it; and it is not cleared
+        while one is listed. Only money is reconciled with a bank's statements.
+        """
+        day = to_date(self.reconciled_from) if self.reconciled_from else None
+        self.reconciled_from = day
+        if day is not None and not self.holds_money:
+            raise ValidationError({"reconciled_from": [
+                "Only a bank, cash or card account is reconciled with statements; mark it as one first."]})
+        if self.pk is None:
+            return
+        before = Account.objects.filter(pk=self.pk).values_list("reconciled_from", flat=True).first()
+        if day == before:
+            return
+        # The account held, then its statements, against close() (which holds its statement as it reads the
+        # cut-off) and a statement saved meanwhile (which holds the account as it asks).
+        list(row_lock_query(Account, self.pk))
+        statements = list(BankStatement.objects.filter(bank_account_id=self.pk))
+        lock_rows(*statements)
+        closed = min((statement for statement in statements if statement.closed), default=None,
+                     key=lambda statement: statement.end_date)
+        if closed is not None:
+            raise ValidationError({"reconciled_from": [
+                f"{closed} is closed, reconciled from {before or 'the first entry'}; reopen it to move the day."]})
+        if day is None:
+            if self.cut_off_items.exists():
+                raise ValidationError({"reconciled_from": [
+                    f"Items are listed as outstanding at {before}; remove them before clearing the day."]})
+            return
+        early = min((statement for statement in statements if statement.start_date < day), default=None,
+                    key=lambda statement: statement.start_date)
+        if early is not None:
+            raise ValidationError({"reconciled_from": [
+                f"{early} starts on {early.start_date}, before {day}: statements are reconciled from the day on."]})
+        late = self.cut_off_items.filter(date__gte=day).order_by("date", "pk").first()
+        if late is not None:
+            raise ValidationError({"reconciled_from": [
+                f"{late} is listed as outstanding at the cut-off and was written on {late.date}; the day comes "
+                "after what was outstanding at it."]})
 
     def _check_money(self):
         """
@@ -444,12 +493,8 @@ class JournalEntry(AuditModel):
         Asked of every model that points at an entry, so a document added
         later is covered the day it keeps its entry.
         """
-        for relation in self._meta.get_fields(include_hidden=True):
-            if not relation.auto_created or relation.concrete or relation.related_model in (JournalEntry, JournalLine):
-                continue
-            if relation.related_model._meta.auto_created:
-                continue  # a many-to-many's own table: the document is asked through the relation itself
-            found = relation.related_model._base_manager.filter(**{relation.field.name: self}).first()
+        for model, field in entry_keepers():
+            found = model._base_manager.filter(**{field: self}).first()
             if found is not None:
                 return found
         return None
@@ -472,6 +517,16 @@ class JournalEntry(AuditModel):
                 f"JE-{self.pk} reverses JE-{self.reverses_id}. To stand again, JE-{self.reverses_id} is "
                 "posted again as an entry of its own, not by reversing its reversal."
             )
+        # A bank's statement line says it showed this entry (O614): reversed, the line would say the bank moved
+        # money the books no longer hold, and the reversal would wait for a statement that never shows it.
+        shown = BankStatementLine.objects.filter(booked_entry=self).select_related("statement").first()
+        if shown is not None:
+            raise ValidationError(
+                f"JE-{self.pk} is matched to a line of {shown.statement}; unmatch it there before reversing it.")
+        cancels = BankCutOffItem.objects.filter(cancelled_by=self).first()
+        if cancels is not None:
+            raise ValidationError(f"JE-{self.pk} cancels {cancels}, outstanding at the cut-off; take the "
+                                  "cancellation back there before reversing it.")
         return self.create_reversal(memo=memo)
 
     def total_debit(self):
@@ -512,6 +567,16 @@ class JournalEntry(AuditModel):
             raise ValidationError(
                 f"The books opened on {books.opened_on}; an entry is not posted on {to_date(self.date)}, before "
                 "them. Only an open invoice or bill brought in from the old system keeps an earlier date.")
+        # A bank reconciled from a day took what it moved before then as cleared by then (O615): an entry dated
+        # before it would read as cleared though no statement showed it. Asked here, every path is asked: a
+        # payment, its void, a challan, a reversal, a journal keyed by hand.
+        reconciled = (Account.objects.filter(lines__entry=self, reconciled_from__gt=to_date(self.date))
+                      .order_by("code").first())
+        if reconciled is not None:
+            raise ValidationError(
+                f"{reconciled} is reconciled with its statements from {reconciled.reconciled_from}: what it moved "
+                f"before then is taken as cleared, so nothing new is dated before it. Date this on or after "
+                f"{reconciled.reconciled_from}.")
         if not correcting and self.reverses_id is None:
             refuse_switched_off(self.lines.select_related("account", "cost_centre"))
         if not in_its_currency and self.reverses_id is None:
@@ -1268,14 +1333,76 @@ def register_bank_movements(entries):
         BANK_MOVEMENTS.append(entries)
 
 
+# Fields that name an entry without having posted it (O614): a statement line matched to it, an item listed as
+# outstanding at a bank's cut-off, the entry that cancelled one. The entry stays its own document's, or nobody's.
+ENTRY_REFERENCES = {
+    ("accounting.bankstatementline", "booked_entry"),
+    ("accounting.bankcutoffitem", "entry"),
+    ("accounting.bankcutoffitem", "cancelled_by"),
+}
+
+
+def entry_keepers():
+    """
+    (model, field) for every document that posted an entry and keeps it, read from the models: a document
+    added later is covered the day it keeps its entry. JournalEntry.recorded_by() asks them one by one.
+    """
+    keepers = []
+    for relation in JournalEntry._meta.get_fields(include_hidden=True):
+        if not relation.auto_created or relation.concrete or relation.related_model in (JournalEntry, JournalLine):
+            continue
+        if relation.related_model._meta.auto_created:
+            continue  # a many-to-many's own table: the document is asked through the relation itself
+        if (relation.related_model._meta.label_lower, relation.field.name) in ENTRY_REFERENCES:
+            continue
+        keepers.append((relation.related_model, relation.field.name))
+    return keepers
+
+
+def hand_movements(bank_account):
+    """
+    Posted entries through `bank_account` that no document keeps (O614): a journal keyed by hand or taken from
+    a recurring schedule (the rent, the power bill, a transfer between two banks), and a statement line's
+    posting once reversed. The bank shows them as it shows a payment; matched to nothing, a month with one
+    could never close.
+    """
+    kept = Q()
+    for model, field in entry_keepers():
+        kept |= Q(pk__in=model._base_manager.filter(**{f"{field}__isnull": False}).values(field))
+    return JournalEntry.objects.filter(posted=True, lines__account=bank_account).exclude(kept).distinct()
+
+
 def bank_movements(bank_account):
-    """The posted entries a document moved through `bank_account`, by what each module registered."""
-    if not BANK_MOVEMENTS:
-        return JournalEntry.objects.none()
-    registered = Q(pk__in=BANK_MOVEMENTS[0]().values("pk"))
-    for entries in BANK_MOVEMENTS[1:]:
-        registered |= Q(pk__in=entries().values("pk"))
-    return JournalEntry.objects.filter(registered, posted=True, lines__account=bank_account).distinct()
+    """
+    The posted entries through `bank_account` a statement line is matched to rather than posted again: what
+    each module registered its documents moved (a TDS challan, a claim paid out), and every entry no document
+    keeps (hand_movements). A payment is matched as a payment; anything else a document keeps, a
+    restatement's valuation or a statement line's own posting, moved no money a bank shows.
+    """
+    moved = Q(pk__in=hand_movements(bank_account).values("pk"))
+    for entries in BANK_MOVEMENTS:
+        moved |= Q(pk__in=entries().values("pk"))
+    return JournalEntry.objects.filter(moved, posted=True, lines__account=bank_account).distinct()
+
+
+def netted_by_hand(entries, hand, seen):
+    """
+    The pks among `entries` of an entry keyed by hand and the reversal that took it back, neither shown by the
+    bank (`seen`): the two net to nothing and never reached it, as a voided payment the bank showed neither
+    way did not (BankStatement._unseen). A document's void stays listed its own way (O164).
+    """
+    by_pk = {entry.pk: entry for entry in entries}
+    netted = set()
+    for entry in entries:
+        original = by_pk.get(entry.reverses_id)
+        if original is not None and {original.pk, entry.pk} <= hand and not seen(original) and not seen(entry):
+            netted |= {original.pk, entry.pk}
+    return netted
+
+
+def reconciled_from(bank_account_id):
+    """The day the account's statements are reconciled from (O615), as stored: None reconciles from the first entry."""
+    return Account.objects.filter(pk=bank_account_id).values_list("reconciled_from", flat=True).first()
 
 
 def moved_through(entry, bank_account):
@@ -1575,16 +1702,26 @@ class BankStatement(AuditModel):
         if self.start_date and self.end_date and self.end_date < self.start_date:
             raise ValidationError("A statement cannot end before it starts.")
 
+    @transaction.atomic
     def save(self, *args, **kwargs):
         if self.pk and BankStatement.objects.filter(pk=self.pk, closed=True).exists():
             raise ValidationError("This statement is closed. Reopen it to make changes.")
         self._check_span()
-        stored = BankStatement.objects.filter(pk=self.pk).values_list("bank_account_id", flat=True).first()
-        if stored != self.bank_account_id:
+        stored = BankStatement.objects.filter(pk=self.pk).values_list("bank_account_id", "start_date").first()
+        if stored is None or stored[0] != self.bank_account_id:
             from .money import refuse_as_money_account
 
             # A bank's statement is of an account money moves through.
             refuse_as_money_account(self.bank_account)
+        if stored != (self.bank_account_id, to_date(self.start_date)):
+            # Held as Account._check_cut_off holds it, then asked (O615): reconciled from a day, the account's
+            # statements start on or after it, and what moved before it cleared by then.
+            list(row_lock_query(Account, self.bank_account_id))
+            cut_off = reconciled_from(self.bank_account_id)
+            if cut_off is not None and to_date(self.start_date) < cut_off:
+                raise ValidationError({"start_date": [
+                    f"{self.bank_account} is reconciled from {cut_off}: a statement of it starts on or after "
+                    "that day. What moved before it cleared by then, or is listed as outstanding at it."]})
         super().save(*args, **kwargs)
 
     @serialised("closed")
@@ -1667,10 +1804,17 @@ class BankStatement(AuditModel):
         payments = Payment.objects.filter(
             bank_account=self.bank_account, posted=True, payment_date__lte=self.end_date,
         ).select_related("voided_entry").order_by("payment_date", "pk")
+        # From the account's cut-off (O615): a payment, and a void, dated before it cleared by then, but for a
+        # payment listed as outstanding at it, which is read as itself.
+        cut_off = reconciled_from(self.bank_account_id)
+        listed = set(BankCutOffItem.objects.filter(bank_account_id=self.bank_account_id, payment__isnull=False)
+                     .values_list("payment_id", flat=True))
         unpresented, unreturned, unvoided = [], [], []
         for payment in payments:
             voided = payment.voided_entry_id is not None and payment.voided_entry.date <= self.end_date
-            seen, seen_back = payment.pk in presented, payment.pk in returned
+            cleared = cut_off is not None and payment.pk not in listed
+            seen = payment.pk in presented or (cleared and payment.payment_date < cut_off)
+            seen_back = payment.pk in returned or (cleared and voided and payment.voided_entry.date < cut_off)
             if voided and not seen and not seen_back:
                 continue
             if not seen:
@@ -1691,16 +1835,46 @@ class BankStatement(AuditModel):
 
     def unpresented_entries(self):
         """
-        [(entry, amount)]: money a document moved through this account by the
-        statement's end (bank_movements) that no statement line is matched to.
-        A payment that was taken back is two such entries, and they net to
-        nothing until the bank shows either.
+        [(entry, amount)]: money moved through this account by the statement's
+        end (bank_movements: a document's, or keyed by hand) that no statement
+        line is matched to. A document's payment that was taken back is two
+        such entries, and they net to nothing until the bank shows either; an
+        entry keyed by hand and reversed, neither shown, is listed as neither.
+
+        From the account's cut-off (O615), what moved before it cleared by
+        then, but for an entry listed as outstanding at it; an entry that
+        cancelled a listed item goes with the item.
         """
+        bank = self.bank_account
+        cut_off = reconciled_from(bank.pk)
         # Presented by the statement's end: a line of a later statement leaves it unpresented at this one's.
-        matched = BankStatementLine.objects.filter(booked_entry__isnull=False, date__lte=self.end_date).values(
-            "booked_entry")
-        entries = bank_movements(self.bank_account).filter(date__lte=self.end_date).exclude(pk__in=matched)
-        return [(entry, moved_through(entry, self.bank_account)) for entry in entries.order_by("date", "pk")]
+        matched = set(BankStatementLine.objects.filter(booked_entry__isnull=False, date__lte=self.end_date)
+                      .values_list("booked_entry", flat=True))
+        items = BankCutOffItem.objects.filter(bank_account=bank)
+        listed = set(items.filter(entry__isnull=False).values_list("entry_id", flat=True))
+        cancelling = items.filter(cancelled_by__isnull=False).values("cancelled_by")
+        entries = list(bank_movements(bank).filter(date__lte=self.end_date).exclude(pk__in=cancelling)
+                       .order_by("date", "pk"))
+
+        def seen(entry):
+            return entry.pk in matched or (cut_off is not None and entry.date < cut_off and entry.pk not in listed)
+
+        hand = set(hand_movements(bank).filter(pk__in=[entry.pk for entry in entries]).values_list("pk", flat=True))
+        netted = netted_by_hand(entries, hand, seen)
+        return [(entry, moved_through(entry, bank)) for entry in entries
+                if not seen(entry) and entry.pk not in netted]
+
+    def outstanding_at_cut_off(self):
+        """
+        The plain items listed as outstanding at the account's cut-off (O615),
+        cheques from before the books opened, that the bank had still not
+        shown by the statement's end: matched by a line dated by then, or
+        cancelled by an entry dated by then, an item is not. A payment or an
+        entry listed is read as itself, with the payments and the entries.
+        """
+        return list(BankCutOffItem.objects.filter(
+            bank_account_id=self.bank_account_id, payment__isnull=True, entry__isnull=True,
+        ).exclude(line__date__lte=self.end_date).exclude(cancelled_by__date__lte=self.end_date).order_by("date", "pk"))
 
     def reconciliation(self):
         """
@@ -1712,10 +1886,12 @@ class BankStatement(AuditModel):
         unpresented, unreturned = self._unseen()
         unvoided = self._unvoided
         unpresented_entries = self.unpresented_entries()
+        outstanding = self.outstanding_at_cut_off()
         adjustment = (sum((payment.signed_base_amount() for payment in unpresented), Decimal("0"))
                       - sum((payment.signed_base_amount() for payment in unreturned), Decimal("0"))
                       + sum((payment.signed_base_amount() for payment in unvoided), Decimal("0"))
-                      + sum((amount for _, amount in unpresented_entries), Decimal("0")))
+                      + sum((amount for _, amount in unpresented_entries), Decimal("0"))
+                      + sum((item.amount for item in outstanding), Decimal("0")))
         ledger = self.ledger_balance()
         return {
             "statement": self,
@@ -1725,6 +1901,7 @@ class BankStatement(AuditModel):
             "unreturned": unreturned,
             "returned_unvoided": unvoided,
             "unpresented_entries": unpresented_entries,
+            "outstanding_at_cut_off": outstanding,
             "unpresented_total": adjustment,
             "unresolved_lines": self.unresolved_lines(),
             "statement_difference": self.statement_difference(),
@@ -1805,6 +1982,9 @@ class BankStatement(AuditModel):
             ] + [
                 (line.match_entry, entry) for entry, amount in self.unpresented_entries()
                 if amount == line.amount and abs((to_date(entry.date) - to_date(line.date)).days) <= tolerance_days
+            ] + [
+                # A cheque from before the books is presented whenever its payee banks it: no date to be near.
+                (line.match_cut_off_item, item) for item in self.outstanding_at_cut_off() if item.amount == line.amount
             ]
             if len(candidates) == 1:
                 match, what = candidates[0]
@@ -1817,6 +1997,205 @@ class BankStatement(AuditModel):
                     continue
                 matched.append(line)
         return matched
+
+
+class BankCutOffItem(AuditModel):
+    """
+    What was outstanding at a bank account's cut-off (O615): money the books
+    had moved through it that the bank had not shown by the day the account
+    is reconciled from. Everything else dated before that day cleared by
+    then; these are reconciling items until a statement line shows them.
+
+    A payment or an entry from before the cut-off is read as itself from
+    then on: matched as a payment or an entry, cancelled by its own void or
+    reversal. A plain amount is a cheque from before the books opened, inside
+    their opening balance: matched to its line here, or cancelled by the
+    entry that put its money back.
+    """
+
+    bank_account = models.ForeignKey(Account, on_delete=models.PROTECT, related_name="cut_off_items")
+    payment = models.ForeignKey(
+        Payment, null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="A payment from before the cut-off the bank had not shown by then.")
+    entry = models.ForeignKey(
+        JournalEntry, null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="An entry through the bank from before the cut-off it had not shown by then: a journal keyed "
+                  "by hand, a challan paid over.")
+    date = models.DateField(blank=True, help_text="The day it was written: a payment's or an entry's own.")
+    reference = models.CharField(max_length=64, blank=True, help_text="The cheque's number")
+    description = models.CharField(max_length=255, blank=True)
+    amount = models.DecimalField(
+        max_digits=18, decimal_places=2, blank=True,
+        help_text="As the bank will show it: money in positive, a cheque issued negative. A payment's or an "
+                  "entry's own.")
+    cancelled_by = models.ForeignKey(
+        JournalEntry, null=True, blank=True, on_delete=models.PROTECT, related_name="+", editable=False,
+        help_text="The entry that put a plain item's money back: a cheque from before the books, cancelled.")
+
+    class Meta:
+        ordering = ["bank_account", "date", "id"]
+        verbose_name = "item outstanding at a bank's cut-off"
+        constraints = [
+            models.CheckConstraint(check=~Q(amount=0), name="cut_off_item_amount_not_zero"),
+            models.CheckConstraint(check=Q(payment__isnull=True) | Q(entry__isnull=True),
+                                   name="cut_off_item_a_payment_or_an_entry"),
+            models.UniqueConstraint(fields=["payment"], condition=Q(payment__isnull=False),
+                                    name="one_cut_off_item_per_payment"),
+            models.UniqueConstraint(fields=["entry"], condition=Q(entry__isnull=False),
+                                    name="one_cut_off_item_per_entry"),
+            models.UniqueConstraint(fields=["cancelled_by"], condition=Q(cancelled_by__isnull=False),
+                                    name="one_cut_off_item_per_cancelling_entry"),
+        ]
+
+    def __str__(self):
+        what = self.reference or self.description or (f"JE-{self.entry_id}" if self.entry_id else "an item")
+        return f"{what} of {self.amount} on {self.date}"
+
+    def _hold_the_bank(self, since=None):
+        """
+        The account (and the one it named before), held with every statement of it, and refused if one of
+        those statements is closed (ending on or after `since`, when given): each reads what was outstanding
+        at the cut-off. Held against close(), which holds its statement as it reads them.
+        """
+        ids = {self.bank_account_id}
+        if self.pk is not None:
+            ids |= set(BankCutOffItem.objects.filter(pk=self.pk).values_list("bank_account_id", flat=True))
+        banks = list(Account.objects.filter(pk__in=ids))
+        statements = list(BankStatement.objects.filter(bank_account_id__in=ids))
+        lock_rows(*banks, *statements)
+        closed = min((statement for statement in statements if statement.closed
+                      and (since is None or statement.end_date >= to_date(since))),
+                     default=None, key=lambda statement: statement.end_date)
+        if closed is not None:
+            raise ValidationError(
+                f"{closed} is closed and reads what was outstanding at its account's cut-off; reopen it first.")
+        return next(bank for bank in banks if bank.pk == self.bank_account_id)
+
+    def _refuse_if_settled(self):
+        shown = BankStatementLine.objects.filter(cut_off_item_id=self.pk).select_related("statement").first()
+        if shown is not None:
+            raise ValidationError(f"{self} is matched to a line of {shown.statement}; unmatch it first.")
+        if BankCutOffItem.objects.filter(pk=self.pk, cancelled_by__isnull=False).exists():
+            raise ValidationError(f"{self} is cancelled; take the cancellation back first.")
+
+    @transaction.atomic
+    def save(self, *args, **kwargs):
+        bank = self._hold_the_bank()
+        cut_off = bank.reconciled_from
+        if not bank.holds_money or cut_off is None:
+            raise ValidationError({"bank_account": [
+                f"{bank} has no day its statements are reconciled from; set it on the account first: what is "
+                "listed here was outstanding at that day."]})
+        if self.pk is not None:
+            self._refuse_if_settled()
+        if self.payment_id and self.entry_id:
+            raise ValidationError({"entry": ["An item is a payment or an entry, not both."]})
+        if self.payment_id:
+            self._read_payment(bank, cut_off)
+        elif self.entry_id:
+            self._read_entry(bank, cut_off)
+        else:
+            if not self.date:
+                raise ValidationError({"date": ["The day the cheque was written."]})
+            if not self.amount:
+                raise ValidationError({"amount": [
+                    "What the bank will show: money in positive, a cheque issued negative."]})
+        self.date = to_date(self.date)
+        if self.date >= cut_off:
+            raise ValidationError({"date": [
+                f"{bank} is reconciled from {cut_off}: what was outstanding then was written before it."]})
+        super().save(*args, **kwargs)
+
+    def _read_payment(self, bank, cut_off):
+        payment = Payment.objects.select_related("party", "voided_entry").get(pk=self.payment_id)
+        if not payment.posted:
+            raise ValidationError({"payment": ["Only a posted payment moved money."]})
+        if payment.bank_account_id != bank.pk:
+            raise ValidationError({"payment": [f"{payment.number} went through another account."]})
+        listed = BankCutOffItem.objects.filter(payment=payment).exclude(pk=self.pk).first()
+        if listed is not None:
+            raise ValidationError({"payment": [f"{payment.number} is listed already, as {listed}."]})
+        if payment.voided_entry_id and payment.voided_entry.date < cut_off:
+            raise ValidationError({"payment": [
+                f"{payment.number} was voided on {payment.voided_entry.date}, before the cut-off: it was not "
+                "outstanding at it."]})
+        self.date, self.amount = payment.payment_date, payment.signed_base_amount()
+        self.reference = self.reference or payment.number
+        self.description = self.description or payment.party.name[:255]
+
+    def _read_entry(self, bank, cut_off):
+        entry = JournalEntry.objects.get(pk=self.entry_id)
+        if not bank_movements(bank).filter(pk=entry.pk).exists():
+            raise ValidationError({"entry": [
+                f"JE-{entry.pk} is not money moved through {bank} by hand or by a challan or a claim: a payment is "
+                "listed as a payment, and a valuation moved nothing the bank shows."]})
+        listed = BankCutOffItem.objects.filter(entry=entry).exclude(pk=self.pk).first()
+        if listed is not None:
+            raise ValidationError({"entry": [f"JE-{entry.pk} is listed already, as {listed}."]})
+        reversal = JournalEntry.objects.filter(reverses=entry, posted=True, date__lt=cut_off).first()
+        if reversal is not None:
+            raise ValidationError({"entry": [
+                f"JE-{entry.pk} was reversed by JE-{reversal.pk} on {reversal.date}, before the cut-off: it was "
+                "not outstanding at it."]})
+        moved = moved_through(entry, bank)
+        if not moved:
+            raise ValidationError({"entry": [f"JE-{entry.pk} moved nothing through {bank}."]})
+        self.date, self.amount = entry.date, moved
+        self.reference = self.reference or entry.reference
+        self.description = self.description or entry.memo[:255]
+
+    @transaction.atomic
+    def delete(self, *args, **kwargs):
+        self._hold_the_bank()
+        self._refuse_if_settled()
+        super().delete(*args, **kwargs)
+
+    @transaction.atomic
+    def cancel(self, entry):
+        """
+        A plain item taken back by the entry that put its money back: a cheque from before the books, never
+        presented, and the journal that returned it to the books. From the entry's day the two net to nothing
+        and neither is listed. A payment or entry listed is cancelled by its own void or reversal.
+        """
+        bank = self._hold_the_bank(since=entry.date)
+        lock_rows(self)
+        if self.payment_id or self.entry_id:
+            raise ValidationError(f"{self} is a payment or an entry: void or reverse it instead, and it goes.")
+        self._refuse_if_settled()
+        if not hand_movements(bank).filter(pk=entry.pk).exists():
+            raise ValidationError(
+                f"JE-{entry.pk} is not an entry keyed by hand through {bank}: an item is cancelled by the journal "
+                "that put its money back.")
+        if moved_through(entry, bank) != -self.amount:
+            raise ValidationError(
+                f"JE-{entry.pk} moved {moved_through(entry, bank)} through {bank}; taking back {self} moves "
+                f"{-self.amount}.")
+        if entry.date < bank.reconciled_from:
+            raise ValidationError(f"JE-{entry.pk} is dated before the cut-off, where {self} was outstanding.")
+        shown = BankStatementLine.objects.filter(booked_entry=entry).select_related("statement").first()
+        if shown is not None:
+            raise ValidationError(f"JE-{entry.pk} is matched to a line of {shown.statement}: the bank showed it.")
+        other = BankCutOffItem.objects.filter(Q(cancelled_by=entry) | Q(entry=entry)).first()
+        if other is not None:
+            raise ValidationError(f"JE-{entry.pk} is {other} already.")
+        self.cancelled_by = entry
+        super().save(update_fields=["cancelled_by", "updated_at"])
+
+    @transaction.atomic
+    def uncancel(self):
+        """The cancellation taken back: outstanding again from the cancelling entry's day."""
+        # The bank and its statements first, then the item, as cancel() takes them: the other way round, the two
+        # at once could each hold what the other waits for.
+        since = BankCutOffItem.objects.filter(pk=self.pk).values_list("cancelled_by__date", flat=True).first()
+        if since is None:
+            raise ValidationError(f"{self} is not cancelled.")
+        self._hold_the_bank(since=since)
+        lock_rows(self)
+        if self.cancelled_by_id is None:
+            raise ValidationError(f"{self} is not cancelled.")
+        self._hold_the_bank(since=self.cancelled_by.date)  # asked again of what the lock read; held already
+        self.cancelled_by = None
+        super().save(update_fields=["cancelled_by", "updated_at"])
 
 
 class BankStatementLine(AuditModel):
@@ -1849,8 +2228,12 @@ class BankStatementLine(AuditModel):
     )
     booked_entry = models.ForeignKey(
         JournalEntry, null=True, blank=True, on_delete=models.PROTECT, related_name="+", editable=False,
-        help_text="Money a document already booked through the bank, not as a payment: a TDS challan, an "
-                  "expense claim paid out. Matched to it, not posted again.",
+        help_text="Money already booked through the bank, not as a payment: a TDS challan, an expense claim "
+                  "paid out, a journal keyed by hand. Matched to it, not posted again.",
+    )
+    cut_off_item = models.OneToOneField(
+        BankCutOffItem, null=True, blank=True, on_delete=models.PROTECT, related_name="line", editable=False,
+        help_text="A cheque from before the books, outstanding at the account's cut-off, that this line shows.",
     )
 
     class Meta:
@@ -1865,7 +2248,17 @@ class BankStatementLine(AuditModel):
         return f"{self.date:%d %b %Y} {self.description} {self.amount}"
 
     def is_resolved(self):
-        return bool(self.payment_id or self.journal_entry_id or self.returned_payment_id or self.booked_entry_id)
+        return bool(self.payment_id or self.journal_entry_id or self.returned_payment_id or self.booked_entry_id
+                    or self.cut_off_item_id)
+
+    def _refuse_cleared(self, day, listed, what):
+        """Dated before the account's cut-off and not listed as outstanding at it, it cleared by then (O615)."""
+        cut_off = reconciled_from(self.statement.bank_account_id)
+        if cut_off is not None and to_date(day) < cut_off and not listed:
+            raise ValidationError(
+                f"{what} is dated {to_date(day)}, before {self.statement.bank_account} is reconciled from "
+                f"({cut_off}): it cleared by then. If the bank had not shown it by then, list it as outstanding "
+                "at the cut-off first.")
 
     def locked_before_it(self):
         """The statements it leaves and joins, as save() holds them (apps.core.models.answer_to_its_document)."""
@@ -1899,7 +2292,7 @@ class BankStatementLine(AuditModel):
             raise ValidationError("This line was posted to the ledger; reverse it first.")
         super().delete(*args, **kwargs)
 
-    @serialised("payment", "journal_entry", "returned_payment", "booked_entry", held_first=True)
+    @serialised("payment", "journal_entry", "returned_payment", "booked_entry", "cut_off_item", held_first=True)
     def match(self, payment):
         """Say this line is that payment."""
         if self.is_resolved():
@@ -1914,6 +2307,9 @@ class BankStatementLine(AuditModel):
             # way. Matched nowhere, a bounce reported after its cheque's statement closed could
             # never be explained: posted instead, it took the money off the books a second time.
             if self.amount == -payment.signed_base_amount():
+                voided_on = payment.voided_entry.date if payment.voided_entry_id else payment.payment_date
+                self._refuse_cleared(voided_on, BankCutOffItem.objects.filter(payment=payment).exists(),
+                                     f"The void of {payment.number}")
                 if returned is not None:
                     raise ValidationError(f"The bank's return of that payment is already matched, on {returned.statement}.")
                 if to_date(self.date) < to_date(payment.payment_date):
@@ -1925,6 +2321,8 @@ class BankStatementLine(AuditModel):
             if returned is None:
                 raise ValidationError("A voided payment never reached the bank, unless the bank returned it: "
                                       "match the line that returned it first.")
+        self._refuse_cleared(payment.payment_date, BankCutOffItem.objects.filter(payment=payment).exists(),
+                             payment.number)
         elsewhere = BankStatementLine.objects.filter(payment=payment).select_related("statement").first()
         if elsewhere is not None:
             raise ValidationError(f"That payment is already matched, on the statement {elsewhere.statement}.")
@@ -1937,19 +2335,32 @@ class BankStatementLine(AuditModel):
         self.save(update_fields=["payment", "updated_at"])
         return self
 
-    @serialised("payment", "journal_entry", "returned_payment", "booked_entry", held_first=True)
+    @serialised("payment", "journal_entry", "returned_payment", "booked_entry", "cut_off_item", held_first=True)
     def match_entry(self, entry):
         """
-        Say this line is money a document already booked through the bank (a
-        TDS challan, an expense claim paid out), as match() says it of a
-        payment. Explained by posting instead, the books took it twice.
+        Say this line is money already booked through the bank (a TDS challan,
+        an expense claim paid out, a journal keyed by hand), as match() says it
+        of a payment. Explained by posting instead, the books took it twice.
         """
         if self.is_resolved():
             raise ValidationError("This line is already explained.")
         bank = self.statement.bank_account
         if not bank_movements(bank).filter(pk=entry.pk).exists():
-            raise ValidationError(f"JE-{entry.pk} is not money a document moved through {bank}: match a "
-                                  "payment as a payment, and post what nothing booked.")
+            raise ValidationError(f"JE-{entry.pk} is not money moved through {bank} by hand or by a challan or a "
+                                  "claim: match a payment as a payment, and post what nothing booked.")
+        cancels = BankCutOffItem.objects.filter(cancelled_by=entry).first()
+        if cancels is not None:
+            raise ValidationError(f"JE-{entry.pk} cancels {cancels}, outstanding at the cut-off: the bank never "
+                                  "shows it.")
+        self._refuse_cleared(entry.date, BankCutOffItem.objects.filter(entry=entry).exists(), f"JE-{entry.pk}")
+        # Keyed by hand and taken back, it never reached the bank, unless the bank took it back too: as a voided
+        # payment is matched only after its return (O614). A document's void is corrected through the document.
+        reversal = JournalEntry.objects.filter(reverses=entry, posted=True).first()
+        if (reversal is not None and hand_movements(bank).filter(pk=entry.pk).exists()
+                and not BankStatementLine.objects.filter(booked_entry=reversal).exists()):
+            raise ValidationError(
+                f"JE-{entry.pk} was reversed by JE-{reversal.pk}: keyed by hand and taken back, it never reached the "
+                f"bank, unless the bank took it back too. Match the line that took it back to JE-{reversal.pk} first.")
         elsewhere = BankStatementLine.objects.filter(booked_entry=entry).select_related("statement").first()
         if elsewhere is not None:
             raise ValidationError(f"JE-{entry.pk} is already matched, on the statement {elsewhere.statement}.")
@@ -1961,10 +2372,40 @@ class BankStatementLine(AuditModel):
         self.save(update_fields=["booked_entry", "updated_at"])
         return self
 
-    @serialised("payment", "journal_entry", "returned_payment", "booked_entry", held_first=True)
+    @serialised("payment", "journal_entry", "returned_payment", "booked_entry", "cut_off_item", held_first=True)
+    def match_cut_off_item(self, item):
+        """
+        Say this line is a plain item outstanding at the account's cut-off (O615): a cheque from before the
+        books, presented now. A payment or an entry listed is matched as itself.
+        """
+        if self.is_resolved():
+            raise ValidationError("This line is already explained.")
+        # Read after the line's statement is held, which cancel() holds too: the item in hand may be stale.
+        item = BankCutOffItem.objects.get(pk=item.pk)
+        if item.bank_account_id != self.statement.bank_account_id:
+            raise ValidationError(f"{item} was outstanding on another account.")
+        if item.payment_id or item.entry_id:
+            raise ValidationError(f"{item} is a payment or an entry: match the line to it as one.")
+        if item.cancelled_by_id:
+            raise ValidationError(f"{item} was cancelled by JE-{item.cancelled_by_id}; the bank does not show it.")
+        elsewhere = BankStatementLine.objects.filter(cut_off_item=item).select_related("statement").first()
+        if elsewhere is not None:
+            raise ValidationError(f"{item} is already matched, on the statement {elsewhere.statement}.")
+        if item.amount != self.amount:
+            raise ValidationError(f"The bank shows {self.amount} and {item} is {item.amount}. Matching them would "
+                                  "hide the difference.")
+        self.cut_off_item = item
+        self.save(update_fields=["cut_off_item", "updated_at"])
+        return self
+
+    @serialised("payment", "journal_entry", "returned_payment", "booked_entry", "cut_off_item", held_first=True)
     def unmatch(self):
         if self.journal_entry_id:
             raise ValidationError("This line was posted, not matched. Reverse it instead.")
+        if self.cut_off_item_id:
+            self.cut_off_item = None
+            self.save(update_fields=["cut_off_item", "updated_at"])
+            return
         if self.booked_entry_id:
             self.booked_entry = None
             self.save(update_fields=["booked_entry", "updated_at"])
@@ -1978,7 +2419,7 @@ class BankStatementLine(AuditModel):
         self.payment = self.returned_payment = None
         self.save(update_fields=["payment", "returned_payment", "updated_at"])
 
-    @serialised("payment", "journal_entry", "returned_payment", "booked_entry", held_first=True)
+    @serialised("payment", "journal_entry", "returned_payment", "booked_entry", "cut_off_item", held_first=True)
     def post_to(self, account, party=None, memo=""):
         """
         Explain a line that is not a payment at all — a bank charge,
@@ -1995,7 +2436,12 @@ class BankStatementLine(AuditModel):
         # A line a document already booked (a challan, a claim) is matched to it, not
         # posted a second time: the bank and the account it went to would carry it twice (O164).
         matched = BankStatementLine.objects.filter(booked_entry__isnull=False).values("booked_entry")
-        for entry in bank_movements(bank).filter(date=to_date(self.date)).exclude(pk__in=matched):
+        # Nor what the bank never shows (O614): an entry keyed by hand and reversed, or its reversal (a line's own
+        # posting, reversed, is posted again), and the entry that cancelled an item outstanding at the cut-off.
+        taken_back = hand_movements(bank).filter(Q(reversed_by__isnull=False) | Q(reverses__isnull=False))
+        cancelling = BankCutOffItem.objects.filter(cancelled_by__isnull=False).values("cancelled_by")
+        for entry in (bank_movements(bank).filter(date=to_date(self.date)).exclude(pk__in=matched)
+                      .exclude(pk__in=taken_back.values("pk")).exclude(pk__in=cancelling)):
             if moved_through(entry, bank) == self.amount:
                 raise ValidationError(
                     f"JE-{entry.pk} ({entry.reference or entry.memo}) already moved {self.amount} through {bank} on "
@@ -2029,7 +2475,7 @@ class BankStatementLine(AuditModel):
         self.save(update_fields=["journal_entry", "updated_at"])
         return entry
 
-    @serialised("payment", "journal_entry", "returned_payment", "booked_entry", held_first=True)
+    @serialised("payment", "journal_entry", "returned_payment", "booked_entry", "cut_off_item", held_first=True)
     @takes_back
     def reverse_posting(self, on_date=None):
         """

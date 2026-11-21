@@ -3,7 +3,7 @@ from rest_framework.routers import DefaultRouter
 from .lut_api import BooksOpeningViewSet, GstReturnFiledViewSet, GstSettingsViewSet, LetterOfUndertakingViewSet, SeededDefaultViewSet
 from .tds_api import BankRateViewSet, TcsDeclarationViewSet, TcsRateViewSet, TcsSectionViewSet, TdsRateViewSet, TdsSectionViewSet
 
-from .banking_api import BankStatementLineViewSet, BankStatementViewSet
+from .banking_api import BankCutOffItemViewSet, BankStatementLineViewSet, BankStatementViewSet
 from .charges_api import ChargeTypeViewSet
 from .restatement_api import RestatementViewSet
 
@@ -61,5 +61,6 @@ router.register("tcs-declarations", TcsDeclarationViewSet)
 router.register("bank-rates", BankRateViewSet)
 router.register("bank-statements", BankStatementViewSet)
 router.register("bank-statement-lines", BankStatementLineViewSet)
+router.register("bank-cut-off-items", BankCutOffItemViewSet)
 
 urlpatterns = router.urls

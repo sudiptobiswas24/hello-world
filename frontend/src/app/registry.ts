@@ -938,6 +938,15 @@ export const MODULES: Module[] = [
         detail: () => import("../modules/accounts/BankStatementForm"),
       },
       {
+        // What was outstanding at a bank's cut-off, the day its reconciliation starts (O615): listed once, then
+        // matched as the statements show it, or cancelled by the entry that put its money back.
+        path: "bank-cut-off", label: "Outstanding at a bank's cut-off", permission: "accounting.view_bankcutoffitem",
+        create: "accounting.add_bankcutoffitem",
+        keywords: "reconciliation brs cut-off reconciled from outstanding cheque opening unpresented go-live",
+        load: () => import("../modules/accounts/BankCutOffItems"),
+        detail: () => import("../modules/accounts/BankCutOffItemForm"),
+      },
+      {
         path: "tds-deducted", label: "TDS deducted", permission: "purchasing.view_tdsdeduction",
         keywords: "tds 194q 194c 194j deducted vendor withholding", load: () => import("../modules/accounts/TdsDeductions"),
         detail: () => import("../modules/accounts/TdsDeductionForm"),

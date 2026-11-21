@@ -681,8 +681,8 @@ class TheTradingListsShowTheDemoTests(SignsInAsTheDemo, TestCase):
 class TheBooksAndTheFloorsMastersShowTheDemoTests(SignsInAsTheDemo, TestCase):
     """
     O613 (the last of it): bank statements, salary files, remittances and the floor's masters answered nothing on the
-    demo. HDFC's statement for last month carries what the month moved through the account and the bank's charges,
-    matched as the office matches it and left open; the posted run's salary file is paid and its provident fund paid
+    demo. HDFC is reconciled from the month after going live, a cheque from the old books outstanding at that cut-off;
+    September's statement is matched and closed, October's carries the bank's charges and is left open; the posted run's salary file is paid and its provident fund paid
     over to the EPFO; the press has its setup families and changeovers, the looms and the extruder their critical
     positions, the day shift its crew, the plant its power tariff and its lane to the godown; the runs on the floor
     name the tools they wear. Read by the accountant, the payroll officer, the production supervisor and maintenance.
@@ -697,22 +697,31 @@ class TheBooksAndTheFloorsMastersShowTheDemoTests(SignsInAsTheDemo, TestCase):
         self.assertEqual(answer.status_code, 200, (path, answer.content[:300]))
         return json.loads(answer.content)
 
-    def test_each_months_statement_follows_the_last_and_differs_from_the_books_by_the_charges_alone(self):
+    def test_reconciled_from_its_cut_off_september_closes_and_october_differs_by_the_charges_alone(self):
         statements = sorted(self.read("/api/accounting/bank-statements/", "anita"), key=lambda row: row["start_date"])
-        self.assertEqual(len(statements), 3)
-        for before, after in zip(statements, statements[1:]):
-            self.assertEqual(after["opening_balance"], before["closing_balance"])
-        self.assertEqual({row["closed"] for row in statements}, {False})
-        last = statements[-1]
+        self.assertEqual(len(statements), 2)
+        first, last = statements
+        self.assertEqual(last["opening_balance"], first["closing_balance"])
+        self.assertEqual((first["closed"], last["closed"]), (True, False))
+        (hdfc,) = [row for row in self.read("/api/accounting/accounts/?holds_money=true", "anita")
+                   if row["id"] == first["bank_account"]]
+        self.assertEqual(hdfc["reconciled_from"], first["start_date"])
+        # The cheque from the old books, outstanding at the cut-off, paid on September's statement (O615).
+        (cheque,) = self.read("/api/accounting/bank-cut-off-items/", "anita")
+        self.assertEqual((cheque["reference"], cheque["amount"], cheque["shown_on"]),
+                         ("000431", "-25000.00", f"{hdfc['code']} to {datetime.date.fromisoformat(first['end_date']):%d %b %Y}"))
+        september = self.read(f"/api/accounting/bank-statement-lines/?statement={first['id']}", "anita")
+        self.assertEqual([line["description"] for line in september if not line["resolved"]], [])
+        # The journals typed through the bank are matched too (O614): the power bill among them.
+        self.assertTrue(any(line["booked_entry"] and "power" in line["description"].lower() for line in september),
+                        september)
         lines = self.read(f"/api/accounting/bank-statement-lines/?statement={last['id']}", "anita")
         self.assertEqual(Decimal(last["closing_balance"]) - Decimal(last["opening_balance"]),
                          sum(Decimal(line["amount"]) for line in lines))
-        charges = [line for line in lines if line["description"].startswith("Charges")]
-        self.assertEqual([(line["amount"], line["payment"], line["booked_entry"]) for line in charges],
-                         [("-590.00", None, None)])
+        self.assertEqual([(line["description"], line["amount"]) for line in lines if not line["resolved"]],
+                         [("Charges incl GST: NEFT, statement", "-590.00")])
         self.assertTrue(any(line["payment"] for line in lines), lines)
-        # What the bank took that the books have not booked is the whole difference: every payment of the months
-        # the statements cover was presented on one of them.
+        # What the bank took that the books have not booked is the whole difference.
         report = self.read(f"/api/accounting/bank-statements/{last['id']}/reconciliation/", "anita")
         self.assertEqual((report["unpresented"], report["difference"], report["reconciled"]), ([], "590.00", False))
 
