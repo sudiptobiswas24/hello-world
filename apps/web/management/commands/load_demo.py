@@ -1237,7 +1237,9 @@ class Command(BaseCommand):
         with step("Polymer that comes with the supplier's certificate"):
             # L28: a copolymer bought by the lot, each lot with Granule House's certificate of analysis, read against
             # the plan in force the day it came in. PP-2610-A's is within and it may go; PP-2610-B's melt flow is
-            # 4.1 against 2.8 to 3.6, and it is held until the Quality Manager takes it by concession.
+            # 4.1 against 2.8 to 3.6, and it is held until the Quality Manager takes it by concession. The lorry was
+            # weighed in full and out empty (O613, the gate's own clock): 10,070 kg net against the challan's 10,140,
+            # 70 kg short beyond the half per cent allowed, claimed in the next step.
             g10 = UOM.objects.create(code="g10min", name="Grammes per 10 minutes", category="other")
             pct = UOM.objects.create(code="pct", name="Per cent", category="other")
             copo = item("PP-COPO", "PP copolymer granule, for coating", kg, "124", hsn="39023000")
@@ -1258,7 +1260,17 @@ class Command(BaseCommand):
                 POLine.objects.create(order=copo_order, item=copo, uom=kg, quantity=D("5000"), unit_price=D("124"),
                                       warehouse=plant, expected_date=day(-6)).taxes.set(gst18)
             copo_order.confirm()
+            lorry = M("inventory.GateVisit").objects.create(
+                vehicle_number="MH12 QT 4471", driver_name="Baban Kale", driver_mobile="98220 11457",
+                transporter_name="Shree Ganesh Roadlines", purpose="inward_order", reference=copo_order.number,
+                carried="PP copolymer granule, bagged")
+            weighing = lorry.start_weighing(scale_code="WB-1")
+            for side, weight in (("gross", "19450.000"), ("tare", "9380.000")):  # not `kg`: the unit is named so
+                weighing.record(side, "typed", weight, reason="calibration", by=sunita.user)
+            lorry.check_out()
             copo_receipt = copo_order.create_receipt(receipt_date=day(-6), warehouse=plant)
+            copo_receipt.weighing, copo_receipt.documented_weight_kg = weighing, D("10140.000")
+            copo_receipt.save()
             copo_lots = []
             for row, code in zip(copo_receipt.lines.order_by("pk"), ("PP-2610-A", "PP-2610-B")):
                 row.lot = M("inventory.Lot").objects.create(item=copo, code=code, supplier_reference=f"GH/{code[-6:]}")
@@ -1273,6 +1285,13 @@ class Command(BaseCommand):
                     M("quality.SupplierCertificateLine").objects.create(certificate=coa, characteristic=characteristic,
                                                                         value=D(value))
                 coa.post(by=meena.user)
+
+        with step("Copolymer short on the weighbridge, claimed from Granule House"):
+            # O613: weight claims answered nothing. Its own step: a claim holds the order before its receipt. 70 kg at
+            # the receipt's own cost of 124: 8,680.00, open until Granule House bills the lot and the debit note meets it.
+            M("purchasing.WeightClaim").objects.create(
+                receipt=copo_receipt, against="supplier", raised_on=day(-5),
+                note="Challan 10,140 kg, weighbridge 10,070 kg net")
 
         with step("Maintenance: schedules, planned jobs and breakdowns"):
             for code, name, minutes, every in (("EXT-1", "Screen changer and die cleaning", 120, 30),
@@ -1639,18 +1658,9 @@ class Command(BaseCommand):
                                                             quantity=D("10000"), to_bin=bins["A-01"])
             move.post(occurred_at=stamp(day(-1), 11))
 
-            # The gate, on the gate's own clock: a lorry of granule weighed in full and out empty, a laptop out for
-            # repair on a returnable pass the stores keeper approved, and a visitor still on site.
+            # The gate, on the gate's own clock: a laptop out for repair on a returnable pass the stores keeper
+            # approved, and a visitor still on site. The lorry that brought the copolymer is in the register as well.
             Visit, Pass = M("inventory.GateVisit"), M("inventory.GatePass")
-            open_order = M("purchasing.PurchaseOrder").objects.filter(status="confirmed").order_by("-pk").first()
-            lorry = Visit.objects.create(vehicle_number="MH12 QT 4471", driver_name="Baban Kale",
-                                         driver_mobile="98220 11457", transporter_name="Shree Ganesh Roadlines",
-                                         purpose="inward_order", reference=open_order.number if open_order else "",
-                                         carried="PP granule, bagged")
-            weighing = lorry.start_weighing(scale_code="WB-1")
-            for side, kg in (("gross", "27460.000"), ("tare", "9380.000")):
-                weighing.record(side, "typed", kg, reason="calibration", by=sunita.user)
-            lorry.check_out()
             tempo = Visit.objects.create(vehicle_number="MH14 KD 0932", driver_name="Sanjay Wagh",
                                          purpose="gate_pass", carried="One laptop")
             repair = Pass.objects.create(kind="returnable", party_name="Chakan Computer Care",
@@ -1818,6 +1828,38 @@ class Command(BaseCommand):
             for weeks, quantity, number in ((1, half, "CO-1"), (3, waiting.quantity - half, "CO-2")):
                 M("sales.CallOff").objects.create(line=waiting, due_on=TODAY + datetime.timedelta(weeks=weeks),
                                                   quantity=quantity, reference=f"{waiting.order.customer.code}/{number}")
+
+        with step("The raffia circular revised back-dated: Granule House's rate difference, a cement order's clause"):
+            # O613: price shipped_since and rate-difference notes answered nothing on the demo. A cement order's price stood
+            # on the raffia circular at 100, with a clause passing a move of more than 2% on at 74 g of polymer a sack.
+            # Reliance then revised the circular to 104 from two days before the order on it. Granule House's note for
+            # what came on that order is drafted as a supplementary bill: 4.00 a kg on 18,000 kg, 72,000.00.
+            revised_from = on_circular.order_date - datetime.timedelta(days=2)
+            shipped_since = (M("sales.DeliveryLine").objects.filter(
+                delivery__posted=True, delivery__is_drop_ship=False, delivery__delivery_date__gte=revised_from,
+                delivery__sales_order__currency=inr, reverses_line__isnull=True, order_line__item=cement)
+                .select_related("order_line__order").order_by("delivery__delivery_date", "pk").first())
+            if shipped_since is None:
+                raise CommandError(f"No cement sacks shipped on or after {revised_from} to vary.")
+            M("sales.PriceVariationClause").objects.create(
+                order_line=shipped_since.order_line, index=circular, base_value=D("100.0000"), polymer_kg_per_unit=D("0.074"),
+                threshold_percent=D("2"))
+            Value.objects.create(index=circular, valid_from=revised_from, value=D("104.0000"), published_on=day(-12))
+            came = M("purchasing.GoodsReceipt").objects.filter(purchase_order=on_circular, posted=True).order_by(
+                "-receipt_date").first()
+            M("purchasing.RateDifferenceNote").objects.create(
+                contract=M("purchasing.PurchaseRateContract").objects.get(index=circular), start=revised_from,
+                end=came.receipt_date, note_date=came.receipt_date + datetime.timedelta(days=8),
+                supplier_reference="GRAN/RD/26/0412", supplier_note_date=came.receipt_date + datetime.timedelta(days=7),
+                created_by=admin, updated_by=admin)
+
+        with step("The cement order's dispatch since the revision, billed under its clause"):
+            # Its own step: a variation bill holds its order, which the lock order takes before the vendor and the bill
+            # above. 0.296 a sack (4 on the circular, at 74 g) on the sacks shipped since: drafted as a supplementary
+            # invoice for review.
+            from apps.sales.price_variation import bill_variation
+
+            bill_variation(shipped_since.order_line.order, revised_from, day(-1), ar, invoice_date=day(-1), by=admin)
 
         with step("The bank's statements from its cut-off to last month, matched to the books"):
             # O613: bank statements answered nothing on the demo. HDFC is reconciled from the first of the month after

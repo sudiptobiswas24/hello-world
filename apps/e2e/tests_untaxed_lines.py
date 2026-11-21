@@ -108,8 +108,11 @@ class ALineWithNoTaxIsRefused(UntaxedLinesTestCase):
         self.assertEqual(confirmed.status_code, 200, confirmed.content)
 
     def test_an_invoice_whose_line_names_no_tax_is_not_posted(self):
-        invoice = Invoice.objects.filter(posted=False, is_down_payment=False).exclude(lines=None).first()
-        if invoice is None:  # every demo invoice is posted: draft one from a posted one's customer
+        # A draft with a line of an item that bears tax: the guard's question (refuse_untaxed_lines). The demo's price
+        # variation draft has a line of no item, which the guard leaves alone (registered with O613's close).
+        invoice = Invoice.objects.filter(posted=False, is_down_payment=False,
+                                         lines__item__sales_taxes__isnull=False).distinct().first()
+        if invoice is None:  # every such demo invoice is posted: draft one from a posted one's customer
             posted = Invoice.objects.filter(posted=True, is_down_payment=False).first()
             invoice = Invoice.objects.create(customer=posted.customer, receivable_account=posted.receivable_account,
                                              invoice_date=posted.invoice_date)

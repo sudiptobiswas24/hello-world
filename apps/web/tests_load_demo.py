@@ -508,8 +508,8 @@ class TheStoresAndPlanningShowTheDemoTests(SignsInAsTheDemo, TestCase):
     """
     O613 (stores and planning): the stores' documents, the gate and planning answered nothing on the demo. The demo
     now counts the spares cupboard two bearings short, writes off 150 rice sacks spoilt by a leak, moves 10,000
-    cement sacks to the godown's first bay, weighs a lorry of granule in and out, sends a laptop out on a returnable
-    pass with a visitor still on site, takes in two tonnes of Konkan Agro's own granule and sends 150 kg of it back,
+    cement sacks to the godown's first bay, has the lorry that brought the copolymer weighed in and out, sends a
+    laptop out on a returnable pass with a visitor still on site, takes in two tonnes of Konkan Agro's own granule and sends 150 kg of it back,
     and plans the plant once from a year of shipments, a forecast and a build ahead. Each is read by its route as
     the person whose screen it is.
     """
@@ -556,8 +556,9 @@ class TheStoresAndPlanningShowTheDemoTests(SignsInAsTheDemo, TestCase):
         self.assertEqual(sorted((visit["purpose"], visit["status"]) for visit in visits),
                          [("gate_pass", "out"), ("inward_order", "out"), ("visitor", "in")])
         (weighing,) = self.read("sunita", "/api/inventory/weighings/")
+        # The copolymer's lorry: 19,450 in, 9,380 out, 10,070 kg net (the claim on it is read with the trading lists).
         self.assertEqual((weighing["gross_kg"], weighing["tare_kg"], weighing["net_kg"], weighing["state"]),
-                         ("27460.000", "9380.000", "18080.000", "weighed"))
+                         ("19450.000", "9380.000", "10070.000", "weighed"))
         (laptop,) = self.read("sunita", "/api/inventory/gate-passes/")
         self.assertEqual((laptop["kind"], laptop["status"], laptop["approved_by_name"],
                           [line["outstanding"] for line in laptop["lines"]]),
@@ -781,3 +782,36 @@ class TheBooksAndTheFloorsMastersShowTheDemoTests(SignsInAsTheDemo, TestCase):
         self.assertEqual(sorted((row["bank_name"].split(",")[0], row["ifsc"], row["is_primary"])
                                 for row in self.read("/api/core/bank-accounts/", "ravi")),
                          [("ICICI Bank", "ICIC0000004", True), ("State Bank of India", "SBIN0000575", True)])
+
+    def test_a_short_weight_claimed_and_a_circular_revised_back_dated_drafts_both_differences(self):
+        """
+        O613 (weight claims, rate differences, price clauses): worked in calc_g57/cases.py. The copolymer's challan
+        said 10,140 kg and the weighbridge 10,070 net: 70 kg short, beyond the 50.70 allowed, claimed at the receipt's
+        124 a kg, 8,680.00, open until the bill comes. The raffia circular revised from 100 to 104: 4.00 a kg on the
+        6,000, 7,000 and 5,000 kg on the circular, 72,000.00, drafted as a bill with IGST 12,960.00; and 0.296 a sack
+        on the 135,000 cement sacks shipped since, under a clause at 74 g, 39,960.00, drafted as an invoice with CGST
+        and SGST of 3,596.40 each. Nothing posted: read by the buyer and the AR Manager.
+        """
+        (claim,) = self.read("/api/purchasing/weight-claims/", "ravi")
+        self.assertEqual((claim["vendor_name"], claim["against"], claim["quantity"], claim["value"], claim["status"]),
+                         ("Granule House Polymers", "supplier", "70.0000", "8680.00", "open"))
+        (note,) = self.read("/api/purchasing/rate-differences/", "ravi")
+        self.assertEqual((note["vendor_name"], note["status"], note["total"], note["supplier_reference"]),
+                         ("Granule House Polymers", "draft", "72000.00", "GRAN/RD/26/0412"))
+        rows = self.read(f"/api/purchasing/rate-difference-lines/?note={note['id']}", "ravi")
+        self.assertEqual(sorted((row["quantity_kg"], row["index_was"], row["index_now"], row["amount"]) for row in rows),
+                         [("5000.000", "100.0000", "104.0000", "20000.00"), ("6000.000", "100.0000", "104.0000", "24000.00"),
+                          ("7000.000", "100.0000", "104.0000", "28000.00")])
+        bill = self.read(f"/api/purchasing/bills/{note['bill']}/", "ravi")
+        self.assertEqual((bill["posted"], bill["subtotal"], bill["tax_total"], bill["total"]),
+                         (False, "72000.00", "12960.00", "84960.00"))
+        (clause,) = self.read("/api/sales/price-clauses/", "rohit")
+        self.assertEqual((clause["base_value"], clause["polymer_kg_per_unit"], clause["threshold_percent"]),
+                         ("100.0000", "0.074000", "2.00"))
+        (varied,) = self.read("/api/sales/price-variation-bills/", "rohit")
+        self.assertEqual((varied["total"], varied["credit_note"], varied["cancelled"]), ("39960.00", None, False))
+        self.assertEqual([(row["quantity"], row["index_value"], row["variation_per_unit"], row["amount"])
+                          for row in varied["lines"]], [("135000.0000", "104.0000", "0.296000", "39960.00")])
+        invoice = self.read(f"/api/sales/invoices/{varied['invoice']}/", "rohit")
+        self.assertEqual((invoice["customer_name"], invoice["posted"], invoice["subtotal"], invoice["tax_total"],
+                          invoice["total"]), ("Sahyadri Cement Works", False, "39960.00", "7192.80", "47152.80"))
