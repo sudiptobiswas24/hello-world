@@ -256,8 +256,11 @@ def tax_invoice(invoice, copy="original"):
         "tcs": [{"section": row.law_section(), "rate": row.rate_percent, "base": row.base, "amount": row.amount,
                  "declaration": (f"Form {row.declaration.form} {row.declaration.reference}".strip()
                                  + f" received {row.declaration.received_on:%d %b %Y}") if row.declaration_id else None,
-                 "gives_back": row.gives_back.invoice.number if row.gives_back_id else None}
-                for row in invoice.tcs_collected.select_related("section", "declaration", "gives_back__invoice")],
+                 "gives_back": row.gives_back.invoice.number if row.gives_back_id else None,
+                 # The buyer's lower-collection certificate the part was collected at (O619).
+                 "certificate": row.certificate.reference if row.certificate_id else None}
+                for row in invoice.tcs_collected.select_related("section", "declaration", "certificate",
+                                                                "gives_back__invoice")],
         "signatory": supplier["name"],
     }
 
@@ -370,6 +373,9 @@ def render_invoice_pdf(invoice, copy="original"):
         if row["declaration"]:
             blocks.append(("", f"TCS u/s {row['section']} not collected: the buyer's declaration, "
                                f"{row['declaration']}."))
+        if row["certificate"]:
+            blocks.append(("", f"TCS u/s {row['section']} at {_rate(row['rate'])} on {money(row['base'], currency)}: "
+                               f"the buyer's certificate for a lower rate, {row['certificate']}."))
 
     return render_document(
         heading=printed["heading"], subheading=printed["copy"],

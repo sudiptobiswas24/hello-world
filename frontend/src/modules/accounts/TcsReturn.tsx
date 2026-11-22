@@ -26,6 +26,7 @@ export default function TcsReturn() {
         { key: "base", label: "Collected on", kind: "money", width: "10rem" },
         { key: "amount", label: "Collected", kind: "money", width: "9rem" },
         { key: "not_collected", label: "Not collected", width: "7rem" },
+        { key: "certificate", label: "Lower rate under", width: "10rem" },
         { key: "challan", label: "Challan", width: "10rem", render: (row) => String(row.challan || "Not paid over") },
       ]}
       empty="Nothing was collected in these dates."

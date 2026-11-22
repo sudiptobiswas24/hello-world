@@ -20,6 +20,8 @@ the rate and declaration stood. The challan that pays it over is the TDS
 challan's mechanism (challans.pay_over), shared so the two cannot drift.
 """
 
+from decimal import Decimal
+
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
@@ -169,6 +171,85 @@ class TcsDeclaration(AuditModel):
         # One recorded without a PAN (before the PAN was asked) is not honoured: it exempts nothing.
         return cls.objects.filter(party=party, section=section, valid_from__lte=day, valid_to__gte=day,
                                   received_on__lte=day).exclude(pan="").order_by("-valid_from", "-pk").first()
+
+
+class TcsCertificate(AuditModel):
+    """
+    A buyer's certificate for collection at a lower rate (section 206C(9); its section of the 2025 Act from April
+    2026), issued for a financial year, up to an amount (O619). Between its days its rate applies to the value it
+    states; past that the section's rate does, and an invoice crossing it is collected on in two rows, as TDS's
+    certificate splits a bill (O598). Credited back, the part past the amount is given back first, so what stands is
+    what the net sale would have collected (decided by the owner, 22 November 2026). Kept as invoices used it.
+    """
+
+    party = models.ForeignKey("core.Party", on_delete=models.PROTECT, related_name="tcs_certificates")
+    section = models.ForeignKey(TcsSection, on_delete=models.PROTECT, related_name="certificates")
+    reference = models.CharField(max_length=64, help_text="The certificate's number, as the officer issued it.")
+    rate_percent = models.DecimalField(max_digits=7, decimal_places=4,
+                                       help_text="The rate it allows, nil included.")
+    valid_from = models.DateField(help_text="Its first day.")
+    valid_to = models.DateField(help_text="Its last day, in the financial year it was issued for.")
+    amount = models.DecimalField(max_digits=18, decimal_places=2,
+                                 help_text="The value its rate applies to; past it the section's rate does.")
+
+    class Meta:
+        ordering = ["-valid_from", "-id"]
+        verbose_name = "TCS certificate"
+        constraints = [
+            models.CheckConstraint(check=Q(valid_to__gte=models.F("valid_from")),
+                                   name="tcs_certificate_ends_after_it_starts"),
+            models.CheckConstraint(check=Q(amount__gt=0), name="tcs_certificate_amount_positive"),
+            models.CheckConstraint(check=Q(rate_percent__gte=0), name="tcs_certificate_rate_not_negative"),
+        ]
+
+    def __str__(self):
+        return f"{self.reference} for {self.party} under {self.section.code}"
+
+    def save(self, *args, **kwargs):
+        from .tds import financial_year
+
+        if self.amount is not None and self.amount <= 0:
+            raise ValidationError({"amount": "A certificate's amount is more than nothing: the value its rate "
+                                             "applies to, as the officer stated it."})
+        if self.rate_percent is not None and self.rate_percent < 0:
+            raise ValidationError({"rate_percent": "A rate is nothing or more."})
+        if self.valid_from and self.valid_to and self.valid_to < self.valid_from:
+            raise ValidationError({"valid_to": f"The certificate cannot end on {self.valid_to:%d %b %Y}, before it "
+                                               f"starts on {self.valid_from:%d %b %Y}."})
+        if self.valid_from and self.valid_to and financial_year(self.valid_from) != financial_year(self.valid_to):
+            start, end = financial_year(self.valid_from)
+            raise ValidationError({"valid_to": f"A certificate is issued for one financial year: this one starts in "
+                                               f"{start.year}-{end:%y}, so it ends by {end:%d %b %Y}."})
+        if not self._state.adding and self.collections.exists():
+            before = TcsCertificate.objects.get(pk=self.pk)
+            if any(getattr(before, name) != getattr(self, name)
+                   for name in ("party_id", "section_id", "reference", "rate_percent", "valid_from", "valid_to",
+                                "amount")):
+                raise ValidationError("Invoices were collected on under this certificate as it stood; record the "
+                                      "officer's new one instead.")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        if self.collections.exists():
+            raise ValidationError("Invoices were collected on under this certificate; it stays.")
+        return super().delete(*args, **kwargs)
+
+    @classmethod
+    def covering(cls, party, section, day):
+        return cls.objects.filter(party=party, section=section, valid_from__lte=day,
+                                  valid_to__gte=day).order_by("-valid_from", "-pk").first()
+
+    def left(self):
+        """
+        Its amount less the value collected on under it and not given back: each invoice's part at its rate, less
+        what credit notes gave back of those parts (O619). Never less than nothing.
+        """
+        from django.db.models import Sum
+
+        collected = self.collections.filter(gives_back__isnull=True).aggregate(total=Sum("base"))["total"]
+        given = self.collections.model.objects.filter(gives_back__certificate=self).aggregate(
+            total=Sum("base"))["total"]
+        return max(Decimal("0"), self.amount - (collected or Decimal("0")) + (given or Decimal("0")))
 
 
 class SeededDefault(AuditModel):

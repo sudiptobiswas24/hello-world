@@ -163,6 +163,8 @@ ROLES = {
         *crud("accounting", "tcsrate"),
         "accounting.confirm_tcsrate",
         *crud("accounting", "tcsdeclaration", actions=("add", "change", "view")),
+        # A buyer's lower-collection certificate, kept as its declarations are (O619).
+        *crud("accounting", "tcscertificate", actions=("add", "change", "view")),
         *view("sales", "tcscollection"),
         *crud("sales", "tcschallan", actions=("add", "view")),
         # TDS: what customers deducted, confirmed against Form 26AS; what
@@ -268,6 +270,8 @@ ROLES = {
         *view("accounting", "tdssection", "tdsrate"),
         *view("accounting", "tcssection", "tcsrate"),
         *crud("accounting", "tcsdeclaration", actions=("add", "change", "view")),
+        # A buyer's lower-collection certificate, kept as its declarations are (O619).
+        *crud("accounting", "tcscertificate", actions=("add", "change", "view")),
         *view("sales", "tcscollection"),
         *crud("sales", "tcschallan", actions=("add", "view")),
         # Complaints are settled in money here, so read.
