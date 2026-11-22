@@ -30,6 +30,7 @@ export default function GstRegistrationForm() {
         { key: "tds_rate_basis", label: "Its own rate is", kind: "choice", choices: [["deductee", "The deductee's own class"], ["certificate", "A lower-deduction certificate (section 197)"]], hint: "A certificate's rate stands only between its dates" },
         { key: "tds_rate_from", label: "Certificate from", kind: "date", hint: "Its first day, as the certificate says" },
         { key: "tds_rate_until", label: "Certificate until", kind: "date", hint: "Its last day; outside these the section's rate applies" },
+        { key: "tds_rate_limit", label: "Certificate amount", kind: "decimal", places: 2, hint: "The amount its rate applies up to, as the certificate states; past it the section's rate applies" },
         { key: "msme_category", label: "MSME", kind: "choice", choices: [["micro", "Micro"], ["small", "Small"], ["medium", "Medium"]], hint: "As its Udyam registration says; micro and small are paid within 45 days" },
         { key: "udyam_number", label: "Udyam number", hint: "UDYAM-XX-00-0000000" },
       ]}

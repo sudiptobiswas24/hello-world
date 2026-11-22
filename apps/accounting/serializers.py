@@ -184,7 +184,7 @@ class PartyTaxProfileSerializer(ModelSerializer):
         fields = ["id", "party", "fiscal_position", "tax_exempt", "exemption_reference",
             "gstin", "gst_state", "gst_registration",
             "pan", "tds_section", "tds_rate_percent", "tds_rate_reference", "tds_rate_basis",
-            "tds_rate_from", "tds_rate_until", "msme_category", "udyam_number",
+            "tds_rate_from", "tds_rate_until", "tds_rate_limit", "msme_category", "udyam_number",
         ]
 
 

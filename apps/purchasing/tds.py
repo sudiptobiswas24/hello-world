@@ -10,6 +10,12 @@ over to the government: Dr TDS payable / Cr Bank.
 
 Both have their reverse here: a deduction is reversed until a challan pays
 it, and a challan is voided, which frees what it paid.
+
+A lower-deduction certificate's rate applies up to the amount it states
+(O598). A bill that crosses what is left on it is deducted in two rows,
+as the return lists them: the part up to the amount at the certificate's
+rate, the rest at the section's. The two are one deduction: reversed
+together, paid over together.
 """
 
 import datetime
@@ -17,12 +23,12 @@ from decimal import Decimal
 
 from django.core.exceptions import ValidationError
 from django.db import models, transaction
-from django.db.models import Q
+from django.db.models import Q, Sum
 
 from apps.accounting.models import Account, JournalEntry, JournalLine, TdsSection
 from apps.accounting.restatement import AsksTheRestatement
 from apps.accounting.statutory_names import period_names
-from apps.accounting.tds import deduction_terms, financial_year
+from apps.accounting.tds import deduction_terms, financial_year, rupees
 from apps.core.models import AuditModel, Company, correction_date, lock_rows, serialised, to_date
 
 
@@ -81,8 +87,11 @@ class TdsDeduction(AsksTheRestatement, AuditModel):
         constraints = [
             models.CheckConstraint(check=Q(amount__gt=0), name="tds_deduction_positive"),
             models.CheckConstraint(check=Q(posted_account__isnull=False), name="tds_deduction_keeps_its_account"),
-            models.UniqueConstraint(fields=["bill", "section"], condition=Q(reversed_entry__isnull=True),
-                                    name="one_standing_tds_per_bill_and_section"),
+            # One standing deduction per bill and section, which a certificate's amount splits in two at most
+            # (O598): the part at the certificate, and the part past it at the section's rate (no certificate).
+            models.UniqueConstraint(fields=["bill", "section", "certificate"],
+                                    condition=Q(reversed_entry__isnull=True),
+                                    name="one_standing_tds_per_bill_section_and_certificate"),
         ]
 
     def __str__(self):
@@ -103,23 +112,49 @@ class TdsDeduction(AsksTheRestatement, AuditModel):
                                       "reverse the deduction instead.")
         super().save(*args, **kwargs)
 
-    @serialised("reversed_entry", "challan")
+    def parts(self):
+        """
+        The rows of the one deduction this row is part of (O598): itself, and the other part where a certificate's
+        amount split the bill's base in two, in key order. A bill holds one standing deduction per section, so
+        its standing rows under the section are the parts.
+        """
+        if self.reversed_entry_id:
+            return [self]
+        return list(_live(TdsDeduction.objects.filter(bill_id=self.bill_id, section_id=self.section_id))
+                    .order_by("pk"))
+
+    def parts_before_it(self):
+        """The part of its deduction made before it, held before it (rows of a model are locked in key order)."""
+        return [part for part in self.parts() if part.pk < self.pk]
+
+    @serialised("reversed_entry", "challan", held_first="parts_before_it")
     @takes_back
     def reverse(self, on_date=None):
         """
         Take a deduction back: made under the wrong section, or the bill
         corrected. On its own date by default, so the month it was owed in
-        nets to what is still owed.
+        nets to what is still owed. A deduction split at a certificate's
+        amount is taken back whole, both rows (O598): one part alone would
+        leave the bill deducted on part of its base, and the certificate's
+        amount counting the wrong part as used.
         """
         if self.reversed_entry_id:
             raise ValidationError("This deduction has already been reversed.")
-        if self.is_paid_over():
-            raise ValidationError(f"Challan {self.challan} has paid this over; void the challan first.")
-        self.reversed_entry = self.journal_entry.create_reversal(
-            entry_date=correction_date(to_date(on_date) or self.date, self.journal_entry.date,
-                                       f"{self} is not reversed on", "it was deducted"),
-            memo=f"Reversed: {self.journal_entry.memo}")
-        self.save(update_fields=["reversed_entry", "updated_at"])
+        later = [part for part in self.parts() if part.pk > self.pk]
+        if later:
+            lock_rows(*later)
+        parts = [part for part in self.parts() if part.pk < self.pk] + [self] + later
+        for part in parts:
+            if part.reversed_entry_id:
+                raise ValidationError("This deduction has already been reversed.")
+            if part.is_paid_over():
+                raise ValidationError(f"Challan {part.challan} has paid this over; void the challan first.")
+        day = correction_date(to_date(on_date) or self.date, self.journal_entry.date, f"{self} is not reversed on",
+                              "it was deducted")
+        for part in parts:
+            part.reversed_entry = part.journal_entry.create_reversal(
+                entry_date=day, memo=f"Reversed: {part.journal_entry.memo}")
+            part.save(update_fields=["reversed_entry", "updated_at"])
         return self.reversed_entry
 
 
@@ -155,14 +190,42 @@ def _owed(bill, section, rate):
     return base, amount, caught_up, untaxed
 
 
+def certificate_left(party, section, day):
+    """
+    What is left on `party`'s lower-deduction certificate under `section` on `day` (O598): the amount it states,
+    less the base deducted at it between its days and still standing. None where no amount is followed: no
+    certificate standing that day, a nil-rate one (O618), or one entered before its amount was asked (Health).
+    """
+    profile = getattr(party, "tax_profile", None)
+    if (profile is None or profile.tds_rate_basis != "certificate" or profile.tds_rate_limit is None
+            or profile.own_tds_rate_on(section, day) is None):
+        return None
+    used = _live(TdsDeduction.objects.filter(
+        bill__vendor=party, section=section, certificate=profile.tds_rate_reference,
+        date__gte=profile.tds_rate_from, date__lte=profile.tds_rate_until)).aggregate(total=Sum("base"))["total"]
+    return max(Decimal("0"), profile.tds_rate_limit - (used or Decimal("0")))
+
+
+def at_the_certificate(base, rate, left):
+    """
+    How much of `base` is deducted at a certificate's `rate` with `left` on its amount (O598); the rest goes at the
+    section's. A part that comes to nothing at the certificate goes at the section's with the rest: recorded at
+    nothing it could not be (an amount is more than nothing), so its use would never be counted.
+    """
+    if left is None:
+        return base
+    part = min(base, left)
+    return part if rupees(part * Decimal(rate) / 100) > 0 else Decimal("0")
+
+
 def refuse_posting_without_a_rate(bill):
     """
     A bill its vendor's section taxes, posted with no confirmed rate standing
     on its day, is refused in words: deducted at nothing, the plant loses the
     expense under section 40(a)(ia) (integrator's decision, g22). Asked of
     the vendor's own section; a rate of its own standing on the bill's day needs
-    no row (a certificate's only between its dates, O247); a bill under the
-    section's thresholds needs none either.
+    no row (a certificate's only between its dates, O247, and only up to its
+    amount, O598); a bill under the section's thresholds needs none either.
     """
     profile = getattr(bill.vendor, "tax_profile", None)
     section = profile.tds_section if profile else None
@@ -171,10 +234,11 @@ def refuse_posting_without_a_rate(bill):
     if bill.currency_id not in (None, Company.get().base_currency_id):
         return
     day = to_date(bill.bill_date)
-    if profile.own_tds_rate_on(section, day) is not None:
-        return
+    own = profile.own_tds_rate_on(section, day)
     base, _, _, _ = _owed(bill, section, Decimal("0"))
     if base <= 0:
+        return
+    if own is not None and at_the_certificate(base, own, certificate_left(bill.vendor, section, day)) == base:
         return
     try:
         section.rate_on(day)
@@ -213,13 +277,7 @@ def deduct(bill, section=None, on_date=None):
         certificate = (profile.tds_rate_reference
                        if rate_row is None and profile is not None and profile.tds_rate_basis == "certificate" else "")
         if rate_row is not None:
-            # Read again under its lock, which an edit of the row takes too (review F4): changed as this
-            # deducted, the row waits for the accountant again and nothing is taken at it.
-            lock_rows(rate_row)
-            if rate_row.confirmed_on is None:
-                raise ValidationError(f"The {section.code} rate from {rate_row.applies_from:%d %b %Y} was changed "
-                                      "as this deducted; it waits for the accountant's confirmation again.")
-            rate = rate_row.percent_for(pan)
+            rate = _still_confirmed(section, rate_row).percent_for(pan)
         if section.payable_account_id is None:
             raise ValidationError(f"{section} has no payable account to owe the tax into.")
         if _live(bill.tds_deductions.filter(section=section)).exists() or _live(
@@ -227,6 +285,22 @@ def deduct(bill, section=None, on_date=None):
             raise ValidationError(f"Tax under {section.code} has already been deducted on {bill}.")
 
         base, amount, caught_up, untaxed = _owed(bill, section, rate)
+        # (base, rate, rate row, certificate) of each row. Past what is left on a certificate's amount, the rest of
+        # the base goes at the section's confirmed rate (O598); read under the vendor's lock, so two bills
+        # deducted at once cannot both take what is left.
+        parts = [(base, rate, rate_row, certificate)]
+        if certificate:
+            at_certificate = at_the_certificate(base, rate, certificate_left(bill.vendor, section, day))
+            if at_certificate < base:
+                section_row = _still_confirmed(section, section.rate_on(day))
+                # A part whose tax rounds to nothing is no row: a deduction is more than nothing. The part at the
+                # certificate never does (at_the_certificate); the rest can, past a certificate a few rupees short
+                # of the base (10 at 2%), and goes untaxed as the rounding leaves it.
+                parts = [part for part in [(at_certificate, rate, None, certificate),
+                                           (base - at_certificate, section_row.percent_for(pan), section_row, "")]
+                         if rupees(part[0] * part[1] / 100) > 0]
+                amount = sum((rupees(part_base * part_rate / 100) for part_base, part_rate, _, _ in parts),
+                             Decimal("0"))
         if amount <= 0:
             raise ValidationError(
                 f"Nothing to deduct under {section.code}: {bill.vendor}'s bills this year have not "
@@ -238,22 +312,44 @@ def deduct(bill, section=None, on_date=None):
 
         # Deducted when the bill is booked, which is when the law says it is
         # owed (on credit or payment, whichever is first): the challan for
-        # the bill's month is the one that pays it.
-        memo = f"TDS {section.code} on {bill.number}"
-        entry = JournalEntry.objects.create(date=day, reference=bill.number, memo=memo)
-        JournalLine.objects.create(entry=entry, account=bill.payable_account, party=bill.vendor,
-                                   debit=amount, description=memo)
+        # the bill's month is the one that pays it. An entry for each row, as
+        # each is a row of its own in the bill's history and the return.
         account = section.payable_account  # read once at the event, kept with the deduction
-        JournalLine.objects.create(entry=entry, account=account, party=bill.vendor,
-                                   credit=amount, description=memo)
-        entry.post()
-        deduction = TdsDeduction.objects.create(
-            bill=bill, section=section, base=base, rate_percent=rate, rate=rate_row, pan=pan,
-            certificate=certificate, amount=amount, date=day, journal_entry=entry, posted_account=account)
-        # The earlier bills only when this deduction took them in: taxed alone
-        # past the single limit, they stay untaxed for the year's limit to catch.
-        deduction.covered_bills.set([bill, *untaxed] if caught_up else [bill])
-        return deduction
+        made = []
+        for part_base, part_rate, part_row, part_certificate in parts:
+            part_amount = amount if len(parts) == 1 else rupees(part_base * part_rate / 100)
+            memo = f"TDS {section.code} on {bill.number}"
+            if len(parts) > 1:
+                memo += (f", at certificate {part_certificate}" if part_certificate
+                         else ", past the certificate's amount")
+            entry = JournalEntry.objects.create(date=day, reference=bill.number, memo=memo)
+            JournalLine.objects.create(entry=entry, account=bill.payable_account, party=bill.vendor,
+                                       debit=part_amount, description=memo)
+            JournalLine.objects.create(entry=entry, account=account, party=bill.vendor,
+                                       credit=part_amount, description=memo)
+            entry.post()
+            deduction = TdsDeduction.objects.create(
+                bill=bill, section=section, base=part_base, rate_percent=part_rate, rate=part_row, pan=pan,
+                certificate=part_certificate, amount=part_amount, date=day, journal_entry=entry,
+                posted_account=account)
+            # The earlier bills only when this deduction took them in: taxed alone
+            # past the single limit, they stay untaxed for the year's limit to catch.
+            deduction.covered_bills.set([bill, *untaxed] if caught_up else [bill])
+            made.append(deduction)
+        # Split at a certificate's amount, the part at the certificate; the other is beside it (parts()).
+        return made[0]
+
+
+def _still_confirmed(section, rate_row):
+    """
+    `rate_row` read again under its lock, which an edit of the row takes too (review F4): changed as this
+    deducted, the row waits for the accountant again and nothing is taken at it.
+    """
+    lock_rows(rate_row)
+    if rate_row.confirmed_on is None:
+        raise ValidationError(f"The {section.code} rate from {rate_row.applies_from:%d %b %Y} was changed "
+                              "as this deducted; it waits for the accountant's confirmation again.")
+    return rate_row
 
 
 class TdsChallan(AuditModel):
