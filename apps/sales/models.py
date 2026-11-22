@@ -22,6 +22,7 @@ from apps.accounting.restatement import AsksTheRestatement
 from apps.accounting.trade_terms import FreightTerms, Incoterm
 from apps.core.approvals import (
     CostWords,
+    holds_any,
     PolicyRefusal,
     joined,
     told,
@@ -595,8 +596,10 @@ class PlacedWhereTheGoodsGo:
             raise ValidationError(problem)
 
 
-# Who is told an order's margin: cost, so the approver's, not the rep's (O299).
-COST_SEEN_WITH = "sales.approve_order"
+# Who is told an order's margin: cost, so the approver's, not the rep's (O299); and whoever reads the books, where
+# the cost of what was sold is already theirs to read: the Controller sees the margin and approves nothing (O352,
+# decided by the owner on 22 November 2026).
+COST_SEEN_WITH = ("sales.approve_order", "accounting.view_journalentry")
 
 
 class SalesOrder(PlacedWhereTheGoodsGo, Extensible, TaxesTakenUnder, TaxedDocumentMixin, ChangesWithinItsApproval,
@@ -882,8 +885,8 @@ class SalesOrder(PlacedWhereTheGoodsGo, Extensible, TaxesTakenUnder, TaxedDocume
 
     @staticmethod
     def sees_its_cost(user):
-        """Whether `user` is told an order's margin: cost, so the approver's, not the rep's (O299)."""
-        return user.has_perm(COST_SEEN_WITH)
+        """Whether `user` is told an order's margin: cost, so the approver's and the books' readers', not the rep's."""
+        return holds_any(user, COST_SEEN_WITH)
 
     def reasons_told_to(self, user):
         """

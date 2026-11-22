@@ -623,13 +623,13 @@ class ARepIsNotToldTheMarginTests(RolesTestCase, ApprovalTestCase):
         # 10 at 1 against a cost of 4 a unit: (10 - 40) / 10 = -300.00%.
         self.order = self.draft(quantity="10", price="1")
 
-    def client_as(self, role):
+    def client_as(self, role, username=None):
         from django.contrib.auth.models import Group
         from rest_framework.test import APIClient
 
         from .tests_base import carries_every_customer
 
-        user = get_user_model().objects.create_user(role.replace(" ", "_").lower())
+        user = get_user_model().objects.create_user(username or role.replace(" ", "_").lower())
         user.groups.add(Group.objects.get(name=role))
         carries_every_customer(user)
         client = APIClient()
@@ -646,6 +646,28 @@ class ARepIsNotToldTheMarginTests(RolesTestCase, ApprovalTestCase):
         self.assertEqual(refused.status_code, 400)
         self.assertNotIn("-300", refused.content.decode())
         self.assertIn("below the 20.00% floor", refused.content.decode())
+
+    def test_the_controller_reads_the_margin_and_approves_nothing(self):
+        # O352, decided by the owner on 22 November 2026: whoever reads the books, where the cost is theirs to read,
+        # is told the margin; approving stays the approver's.
+        controller = self.client_as("Controller", "books")
+        reply = controller.get(f"/api/sales/sales-orders/{self.order.pk}/approval/")
+        self.assertEqual(reply.status_code, 200, reply.content)
+        self.assertEqual((reply.json()["margin_percent"], reply.json()["reasons"]),
+                         ("-300.00", ["Gross margin is -300.00%, below the 20.00% floor."]))
+        self.assertEqual(controller.post(f"/api/sales/sales-orders/{self.order.pk}/approve/", {},
+                                         format="json").status_code, 403)
+        self.assertEqual(controller.post(f"/api/sales/sales-orders/{self.order.pk}/confirm/", {},
+                                         format="json").status_code, 403)
+        # Approved and confirmed, the order's margin is still told to the books' reader, and to nobody else.
+        self.assertEqual(self.client_as("AR Manager").post(f"/api/sales/sales-orders/{self.order.pk}/approve/", {},
+                                                            format="json").status_code, 200)
+        self.order.refresh_from_db()
+        self.order.confirm()
+        self.assertEqual(controller.get(f"/api/sales/sales-orders/{self.order.pk}/approval/").json()["margin_percent"],
+                         "-300.00")
+        self.assertIsNone(self.client_as("Sales Rep").get(
+            f"/api/sales/sales-orders/{self.order.pk}/approval/").json()["margin_percent"])
 
     def test_a_rep_pricing_a_confirmed_line_is_not_told_the_margin(self):
         # Approved at -300.00% and confirmed; the rep takes the price to 0.5: (5 - 40) / 5 = -700.00%.

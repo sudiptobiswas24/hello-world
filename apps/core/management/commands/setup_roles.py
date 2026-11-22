@@ -82,6 +82,9 @@ ROLES = {
         # deliberately NOT accounting.post_journalentry
     ],
     "Controller": [
+        # Sales orders, read only, and with them each order's margin (O352, decided by the owner on 22 November 2026):
+        # the cost is in the books the Controller reads. Approving, changing and confirming stay with sales.
+        *view("sales", "salesorder", "salesorderline"),
         # The plant's own GST registration, a setting of the books (it had no door but code; seen on a first
         # installation). The GST Officer reads it.
         *crud("accounting", "gstsettings", actions=("add", "change", "view")),
