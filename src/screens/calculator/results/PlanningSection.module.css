@@ -1,0 +1,107 @@
+/* Collapsible planning panel (loom, tape plant, lamination, flexo, BOPP). */
+
+.section {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  margin: 0;
+  padding: 10px 12px;
+  border: 0;
+  background: var(--paper);
+  text-align: left;
+  cursor: pointer;
+}
+.header:hover {
+  background: var(--surface-sunken);
+}
+/* keep the focus ring inside the clipped panel */
+.header:focus-visible {
+  outline-offset: -2px;
+}
+
+.icon {
+  flex: none;
+  color: var(--brand);
+}
+
+.title {
+  flex: 1;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.summary {
+  font-size: var(--text-md);
+  color: var(--subtle);
+}
+
+.chevron {
+  flex: none;
+  color: var(--subtle);
+  transition: transform 120ms;
+}
+.chevronOpen {
+  transform: rotate(180deg);
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+  border-top: 1px solid var(--line);
+}
+
+/* input row */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px;
+}
+
+/* count input with + / − buttons */
+.stepper {
+  display: flex;
+  gap: 6px;
+  align-items: stretch;
+}
+.stepper input {
+  min-width: 0;
+}
+.stepBtn {
+  flex: none;
+  width: 28px;
+  padding: 1px 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--brand);
+  cursor: pointer;
+}
+.stepBtn:hover {
+  background: var(--surface-sunken);
+}
+
+/* panel does not apply to this bag */
+.na {
+  font-size: var(--text-md);
+  color: var(--subtle);
+}
+
+/* the tape-width select sits at body size, unlike other selects */
+select.plainSelect {
+  font-size: var(--text-base);
+  cursor: default;
+}

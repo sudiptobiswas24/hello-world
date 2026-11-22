@@ -3,7 +3,7 @@ import { calc } from './calc';
 import { defaultState, makeSku } from './defaults';
 import { fmt, inr } from './format';
 import { mixAnalysis } from './mix';
-import { mixBlend, mixPct } from './materials';
+import { mixBlend, mixPct, weekStart, weeklySeries } from './materials';
 import { plan, tapePlan } from './plan';
 import { qcModel } from './qc';
 import { migrateState } from './persist';
@@ -172,6 +172,26 @@ describe('rates', () => {
       ],
     });
     expect(mixBlend(state, [{ m: 'pp', wt: 1 }])).toBe(110);
+  });
+});
+
+describe('weekly rate trend', () => {
+  it('buckets by Monday regardless of time zone', () => {
+    expect(weekStart('2026-02-04')).toBe('2026-02-02'); // Wednesday → Monday
+    expect(weekStart('2026-02-02')).toBe('2026-02-02'); // Monday stays
+    expect(weekStart('2026-02-08')).toBe('2026-02-02'); // Sunday → previous Monday
+  });
+  it('keeps the latest-effective rate per week', () => {
+    const rateHistory = [
+      { m: 'pp', d: '2026-02-02', eff: '2026-02-02', r: 100 },
+      { m: 'pp', d: '2026-02-05', eff: '2026-02-05', r: 104 },
+      { m: 'pp', d: '2026-02-10', eff: '2026-02-10', r: 101 },
+      { m: 'cc', d: '2026-02-10', eff: '2026-02-10', r: 30 },
+    ];
+    expect(weeklySeries({ rateHistory }, 'pp')).toEqual([
+      { week: '2026-02-02', rate: 104 },
+      { week: '2026-02-09', rate: 101 },
+    ]);
   });
 });
 

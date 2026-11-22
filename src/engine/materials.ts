@@ -96,11 +96,14 @@ export function mixBlend(st: RateCtx, mix: MixRow[] | undefined): number {
   return tw > 0 ? tc / tw : 0;
 }
 
-/** Monday (local time) of the week containing `ds`, as YYYY-MM-DD. */
+/** Monday of the week containing the date `ds` (YYYY-MM-DD), as YYYY-MM-DD. */
 export function weekStart(ds: string): string {
-  const d = new Date(ds + 'T00:00:00');
-  const off = (d.getDay() + 6) % 7;
-  d.setDate(d.getDate() - off);
+  // Calendar-date arithmetic in UTC, so the result doesn't shift with the
+  // browser's time zone (the design's version labelled weeks with the
+  // previous Sunday east of UTC, e.g. in IST).
+  const d = new Date(ds + 'T00:00:00Z');
+  const off = (d.getUTCDay() + 6) % 7;
+  d.setUTCDate(d.getUTCDate() - off);
   return d.toISOString().slice(0, 10);
 }
 

@@ -1,0 +1,103 @@
+/* Rows of small label-over-value tiles (derived strip, quantities, planning outputs). */
+
+.strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.label,
+.value,
+.note {
+  margin: 0;
+}
+
+.label {
+  font-size: var(--text-xs);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+
+/* ---- derived-strip stat tiles: borderless, 16px values ---- */
+.stat {
+  padding: 8px 12px;
+  background: var(--surface-sunken);
+  border-radius: var(--radius);
+  min-width: 74px;
+}
+.stat .label {
+  color: var(--muted);
+}
+.stat .value {
+  font-size: 16px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.statBrand {
+  background: var(--brand-tint);
+}
+.statBrand .label {
+  color: var(--brand-ink);
+}
+.statBrand .value {
+  color: #171c5c;
+}
+
+/* out-of-range backgrounds override the base colour, text colours stay */
+.statWarn {
+  background: var(--warn-tint);
+}
+.statDanger {
+  background: var(--danger-tint);
+}
+
+/* ---- outlined info tiles (quantities + planning outputs) ---- */
+.info {
+  padding: 8px 12px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.info .label {
+  color: var(--subtle);
+}
+.info .value {
+  font-weight: 600;
+}
+
+/* "Number of days" result */
+.infoAccent {
+  background: var(--brand-tint);
+  border-color: var(--brand-soft);
+}
+.infoAccent .label {
+  color: var(--brand);
+}
+.infoAccent .value {
+  color: var(--brand-ink);
+}
+
+/* e.g. more tapes than winders */
+.infoAlert {
+  background: var(--danger-tint);
+  border-color: #fda29b;
+}
+
+.sub {
+  font-size: var(--text-xs);
+  color: var(--faint);
+  font-weight: 500;
+}
+
+.note {
+  font-size: var(--text-xs);
+  color: var(--subtle);
+  font-weight: 500;
+}
+.noteAlert {
+  color: var(--danger);
+}

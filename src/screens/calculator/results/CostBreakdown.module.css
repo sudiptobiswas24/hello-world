@@ -1,0 +1,59 @@
+/* Totals box under the BOM and conversion tables. */
+
+.totals {
+  padding: 12px 14px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  font-variant-numeric: tabular-nums;
+}
+
+.row {
+  display: flex;
+  justify-content: space-between;
+  padding: 3px 0;
+}
+
+/* closes a group with a rule */
+.ruled {
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--line);
+}
+/* first row after a rule */
+.afterRule {
+  padding: 8px 0 3px;
+}
+
+.label {
+  color: var(--ink-3);
+}
+/* whole row in the secondary text colour */
+.dim {
+  color: var(--ink-3);
+}
+
+.strong {
+  font-weight: 600;
+}
+
+.quote {
+  font-weight: 600;
+  font-size: var(--text-lg);
+}
+.quoteValue {
+  color: var(--brand-ink);
+}
+
+.marginOk {
+  color: var(--ok);
+  font-weight: 500;
+}
+.marginNeg {
+  color: var(--danger);
+  font-weight: 500;
+}
+
+.grand {
+  padding: 6px 0 0;
+  font-weight: 600;
+}

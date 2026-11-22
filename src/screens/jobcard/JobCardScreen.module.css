@@ -1,0 +1,158 @@
+.screen {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* ---- toolbar (hidden in print) ---- */
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.jobSelect {
+  padding: 7px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  font-size: var(--text-base);
+  cursor: pointer;
+  min-width: 260px;
+}
+.spacer {
+  flex: 1;
+}
+.toolbar .printBtn {
+  gap: 8px;
+}
+
+/* ---- printable sheet ---- */
+.sheet {
+  max-width: 860px;
+  padding: 32px 36px;
+}
+
+.sheetHead {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  padding-bottom: 16px;
+  border-bottom: 2px solid var(--ink);
+}
+.logo {
+  height: 24px;
+  display: block;
+  margin-bottom: 6px;
+}
+.sheetTitle {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: inherit;
+  letter-spacing: -0.01em;
+}
+.sheetMeta {
+  text-align: right;
+  font-size: var(--text-md);
+  color: var(--ink-3);
+}
+.mono {
+  font-family: var(--font-mono);
+}
+
+.dl {
+  margin: 0;
+}
+.dl dd {
+  margin: 0;
+}
+
+/* 1. job summary */
+.summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px 24px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: var(--text-md);
+}
+.summary dt {
+  color: var(--subtle);
+}
+.summary dd {
+  font-weight: 600;
+  font-size: var(--text-base);
+}
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* section blocks */
+.block {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line);
+}
+.blockTitle {
+  margin: 0 0 8px;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  line-height: inherit;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* 2. spec summary */
+.spec {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 6px 20px;
+  font-size: var(--text-md);
+  font-variant-numeric: tabular-nums;
+}
+.spec dt,
+.spec dd {
+  display: inline;
+}
+.spec dt {
+  color: var(--subtle);
+}
+.spec dd {
+  font-weight: 500;
+}
+
+/* editable sections */
+.fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 8px 20px;
+}
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: var(--text-sm);
+  color: var(--subtle);
+}
+.fieldInput {
+  border: none;
+  border-bottom: 1px solid var(--line-strong);
+  padding: 3px 0;
+  font-size: var(--text-base);
+  color: var(--ink);
+  background: transparent;
+  border-radius: 0;
+}
+.fieldInput:focus {
+  outline: none;
+  border-bottom-color: var(--brand);
+}
+
+.signatures {
+  display: flex;
+  justify-content: space-between;
+  padding-top: 20px;
+  font-size: var(--text-md);
+  color: var(--ink-3);
+}

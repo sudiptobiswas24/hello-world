@@ -1,0 +1,71 @@
+/* Shared pieces of the cost sheet's lower half: section headings and tables. */
+
+.heading {
+  margin: 0 0 6px;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  line-height: inherit;
+}
+
+.derived {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.chainNote {
+  font-size: var(--text-sm);
+  color: var(--subtle);
+}
+
+/* ---- tables ---- */
+.table {
+  width: 100%;
+}
+
+.th {
+  padding: 6px 8px;
+  font-size: var(--text-sm);
+  color: var(--subtle);
+  font-weight: 500;
+  text-align: left;
+  border-bottom: 1px solid var(--line);
+}
+.thNum {
+  text-align: right;
+}
+
+.td {
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.dim {
+  color: var(--muted);
+}
+.strong {
+  font-weight: 500;
+}
+.costCol {
+  width: 90px;
+}
+
+/* plan strip row highlights */
+.rowBottleneck {
+  background: var(--warn-tint);
+}
+.rowNoCapacity {
+  background: var(--danger-tint);
+}
+
+.planNote {
+  margin-top: 6px;
+  font-size: var(--text-md);
+  color: var(--muted);
+}

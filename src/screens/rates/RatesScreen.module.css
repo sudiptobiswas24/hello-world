@@ -1,0 +1,445 @@
+/*
+ * Rates screen. Pixel values follow the design; widths marked content-box
+ * mirror the design, which has no global border-box rule.
+ */
+.screen {
+  /* secondary text colour, as in the design (#918D7E) */
+  --meta: var(--subtle);
+  display: grid;
+  /* deviation: the design's 340px minimum squeezed material names to ~14px
+     (the fixed columns alone are ~400px); cards are wide enough for a full row */
+  grid-template-columns: repeat(auto-fit, minmax(min(580px, 100%), 1fr));
+  gap: 16px;
+  align-items: start;
+}
+
+.full {
+  grid-column: 1 / -1;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.title {
+  margin: 0;
+  font-size: inherit;
+  line-height: inherit;
+  font-weight: 600;
+}
+
+.table {
+  width: 100%;
+}
+
+/* ---------- due banner ---------- */
+.due {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  background: var(--due-bg);
+  border: 1px solid var(--due-bd);
+  border-radius: var(--radius);
+  color: var(--due-c);
+}
+.dueWarn {
+  --due-bg: var(--warn-tint);
+  --due-bd: var(--warn-line);
+  --due-c: var(--warn);
+}
+.dueOk {
+  --due-bg: var(--ok-tint);
+  --due-bd: #a6f4c5;
+  --due-c: var(--ok);
+}
+.dueText {
+  flex: 1;
+  font-size: var(--text-base);
+  color: var(--due-c);
+  font-weight: 500;
+}
+.dueBtn {
+  padding: 6px 14px;
+  border: 1px solid var(--due-c);
+  border-radius: var(--radius);
+  background: var(--surface);
+  font-size: var(--text-md);
+  font-weight: 600;
+  color: var(--due-c);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+/* ---------- bulk update panel ---------- */
+.bulk {
+  background: var(--surface);
+  border: 1px solid var(--brand);
+  border-radius: var(--radius);
+  box-shadow: 0 2px 8px rgba(61, 78, 217, 0.1);
+  overflow: hidden;
+}
+.bulkHead {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+  flex-wrap: wrap;
+  background: #f7f8fe;
+}
+.bulkSub {
+  font-size: var(--text-md);
+  color: var(--muted);
+}
+.effLabel {
+  font-size: var(--text-md);
+  color: var(--ink-3);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.dateInput {
+  padding: 5px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-md);
+}
+.dateInput:focus {
+  outline: none;
+  border-color: var(--brand);
+}
+.futureNote {
+  padding: 8px 16px;
+  background: var(--warn-tint);
+  border-bottom: 1px solid var(--warn-line);
+  font-size: var(--text-md);
+  color: var(--warn);
+}
+.bulkGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 0 24px;
+  padding: 8px 16px 4px;
+}
+.bulkSec {
+  padding: 6px 0;
+}
+.secLabel {
+  margin: 0;
+  font-size: var(--text-sm);
+  line-height: inherit;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding: 6px 0 4px;
+}
+.bName {
+  padding: 3px 6px 3px 0;
+  border-bottom: 1px solid var(--line-soft);
+  font-size: var(--text-base);
+  font-weight: 400;
+  text-align: left;
+}
+.bCur {
+  padding: 3px 6px;
+  border-bottom: 1px solid var(--line-soft);
+  text-align: right;
+  color: var(--meta);
+  font-size: var(--text-md);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.bInpCell {
+  padding: 3px 4px;
+  border-bottom: 1px solid var(--line-soft);
+  width: 84px;
+  box-sizing: content-box;
+}
+.bInput {
+  width: 78px;
+  box-sizing: border-box;
+  padding: 4px 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.bInput:focus {
+  outline: none;
+  border-color: var(--brand);
+}
+.bDelta {
+  padding: 3px 0 3px 4px;
+  border-bottom: 1px solid var(--line-soft);
+  text-align: right;
+  width: 56px;
+  box-sizing: content-box;
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+}
+.bulkFoot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--line);
+}
+.saveAll {
+  padding: 7px 16px;
+  border: none;
+  border-radius: var(--radius);
+  background: var(--brand);
+  color: #fff;
+  font-size: var(--text-base);
+  font-weight: 600;
+  cursor: pointer;
+}
+.saveAll:hover {
+  background: #3341c4;
+}
+.clearBtn {
+  padding: 7px 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  font-size: var(--text-base);
+  cursor: pointer;
+}
+.clearBtn:hover {
+  background: var(--surface-sunken);
+}
+.flash {
+  font-size: var(--text-md);
+  color: var(--ok);
+  font-weight: 600;
+}
+
+/* ---------- material section cards ---------- */
+.secHead {
+  display: flex;
+  align-items: center;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+}
+.addBtn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  font-size: var(--text-md);
+  cursor: pointer;
+}
+.addBtn:hover {
+  background: var(--surface-sunken);
+}
+.cName {
+  min-width: 140px;
+  padding: 4px 4px 4px 12px;
+  border-bottom: 1px solid var(--line-soft);
+  font-weight: 400;
+  text-align: left;
+}
+.cellInput {
+  box-sizing: border-box;
+  padding: 4px 6px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+}
+.cellInput:hover {
+  border-color: var(--line-strong);
+}
+.cellInput:focus {
+  outline: none;
+  border-color: var(--brand);
+  background: var(--surface);
+}
+.nameInput {
+  width: 100%;
+  font-size: var(--text-base);
+}
+.cCat {
+  padding: 4px 8px 4px 4px;
+  border-bottom: 1px solid var(--line-soft);
+  width: 120px;
+  box-sizing: content-box;
+}
+.catInput {
+  width: 112px;
+  font-size: var(--text-md);
+  color: var(--muted);
+}
+.cUpd {
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--line-soft);
+  text-align: right;
+  color: var(--meta);
+  font-size: var(--text-sm);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.cUnit {
+  padding: 4px;
+  border-bottom: 1px solid var(--line-soft);
+  text-align: right;
+  color: var(--meta);
+  font-size: var(--text-md);
+  white-space: nowrap;
+}
+.cRate {
+  padding: 4px;
+  border-bottom: 1px solid var(--line-soft);
+  text-align: right;
+  width: 88px;
+  box-sizing: content-box;
+}
+.rateInput {
+  width: 76px;
+  box-sizing: content-box;
+  padding: 5px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.rateDirty {
+  border-color: var(--brand);
+}
+.rateMissing {
+  border-color: var(--danger-strong);
+}
+.rateInput:focus {
+  outline: none;
+  border-color: var(--brand);
+}
+.cSave {
+  padding: 4px 2px;
+  border-bottom: 1px solid var(--line-soft);
+  width: 56px;
+  box-sizing: content-box;
+}
+.saveBtn {
+  padding: 5px 10px;
+  border: none;
+  border-radius: 6px;
+  font-size: var(--text-md);
+  font-weight: 600;
+  background: var(--brand);
+  color: #fff;
+  cursor: pointer;
+}
+.saveBtn:disabled {
+  background: var(--line);
+  color: var(--faint);
+  cursor: default;
+  pointer-events: none;
+}
+.cDel {
+  padding: 4px 10px 4px 2px;
+  border-bottom: 1px solid var(--line-soft);
+  width: 28px;
+  box-sizing: content-box;
+}
+
+/* ---------- rate trend ---------- */
+.trendHead {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+  flex-wrap: wrap;
+}
+.histSelect {
+  padding: 6px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  font-size: var(--text-md);
+  cursor: pointer;
+  min-width: 220px;
+}
+.trendNote {
+  font-size: var(--text-md);
+  color: var(--muted);
+}
+.th {
+  padding: 8px;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  border-bottom: 1px solid var(--line);
+  text-align: right;
+}
+.th.first {
+  text-align: left;
+  padding: 8px 8px 8px 16px;
+}
+.th.last {
+  padding: 8px 16px 8px 8px;
+}
+.td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line-soft);
+  font-weight: 400;
+}
+.td.first {
+  padding: 6px 8px 6px 16px;
+  text-align: left;
+}
+.td.last {
+  padding: 6px 16px 6px 8px;
+}
+.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.rateVal {
+  font-weight: 500;
+}
+.metaText {
+  color: var(--meta);
+}
+.weekCell {
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-3);
+}
+.empty {
+  padding: 20px 16px;
+  font-size: var(--text-md);
+  color: var(--meta);
+}
+
+/* week-over-week change: a price rise is bad (red), a fall is good (green) */
+.deltaNeutral {
+  color: var(--meta);
+}
+.deltaUp {
+  color: var(--danger);
+  font-weight: 500;
+}
+.deltaDown {
+  color: var(--ok);
+  font-weight: 500;
+}
+
+/* icon-only buttons (remove material, close panel) */
+.iconBtn {
+  padding: 4px;
+  border: none;
+  background: transparent;
+  color: var(--subtle);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+.iconBtn:hover {
+  color: var(--danger);
+  background: var(--danger-tint);
+}

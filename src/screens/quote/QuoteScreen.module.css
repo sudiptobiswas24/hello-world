@@ -1,0 +1,218 @@
+.screen {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+/* ---- quote details panel (hidden in print) ---- */
+.panel {
+  width: 340px;
+  flex: none;
+}
+.panelHead {
+  margin: 0;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+  font-size: inherit;
+  font-weight: 600;
+  line-height: inherit;
+}
+.panelBody {
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+/* the design's field labels sit on the base 20px line */
+.panelBody label {
+  line-height: inherit;
+}
+
+.groupLabel {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+.line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.line:hover {
+  background: var(--surface-sunken);
+}
+.line input {
+  accent-color: var(--brand);
+}
+.lineName {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.lineRate {
+  font-size: var(--text-md);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.panelBody .printBtn {
+  padding: 7px 14px;
+  gap: 8px;
+}
+
+/* ---- printable quotation sheet ---- */
+.sheet {
+  flex: 1;
+  min-width: 520px;
+  max-width: 820px;
+  padding: 36px 40px;
+}
+.sheetHead {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  padding-bottom: 20px;
+  border-bottom: 2px solid var(--ink);
+}
+.logo {
+  height: 26px;
+  display: block;
+  margin-bottom: 8px;
+}
+.company {
+  font-weight: 600;
+  font-size: var(--text-lg);
+}
+.tagline {
+  font-size: var(--text-md);
+  color: var(--muted);
+}
+.headRight {
+  text-align: right;
+}
+.sheetTitle {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+  line-height: inherit;
+  letter-spacing: -0.01em;
+}
+.qNo {
+  font-family: var(--font-mono);
+  font-size: var(--text-md);
+  color: var(--ink-3);
+  margin-top: 4px;
+}
+.qDate {
+  font-size: var(--text-md);
+  color: var(--muted);
+}
+
+.meta {
+  display: flex;
+  gap: 40px;
+  padding: 16px 0;
+}
+.metaLabel {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--subtle);
+}
+.metaValue {
+  font-weight: 500;
+  margin-top: 2px;
+}
+.metaSub {
+  font-size: var(--text-md);
+  color: var(--muted);
+  font-family: var(--font-mono);
+}
+.hsn {
+  font-family: var(--font-mono);
+  font-size: var(--text-base);
+}
+
+.table {
+  width: 100%;
+}
+.table th {
+  text-align: left;
+  padding: 8px;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  border-bottom: 1px solid var(--line-strong);
+}
+.table td {
+  padding: 8px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.table .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  /* deviation: keep "₹" with its amount and headers on one line (the design let them wrap) */
+  white-space: nowrap;
+}
+.table td.idx {
+  color: var(--subtle);
+  font-variant-numeric: tabular-nums;
+}
+.table td.amt {
+  font-weight: 500;
+}
+.rowName {
+  font-weight: 500;
+}
+.rowDesc {
+  font-size: var(--text-md);
+  color: var(--muted);
+}
+
+.totalsWrap {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 14px;
+}
+.totals {
+  width: 280px;
+  font-variant-numeric: tabular-nums;
+}
+.totalRow {
+  display: flex;
+  justify-content: space-between;
+  padding: 3px 0;
+  color: var(--ink-3);
+}
+.totalRowRule {
+  border-bottom: 1px solid var(--line-strong);
+  padding-bottom: 8px;
+}
+.grandRow {
+  display: flex;
+  justify-content: space-between;
+  padding: 8px 0 0;
+  font-weight: 600;
+  font-size: var(--text-lg);
+}
+
+.terms {
+  margin-top: 28px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+  font-size: var(--text-sm);
+  color: var(--subtle);
+  line-height: 16px;
+}
