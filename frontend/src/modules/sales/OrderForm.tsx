@@ -41,6 +41,8 @@ export interface Order {
 interface Approval {
   status: string;
   reasons: string[];
+  /** The order's gross margin, sent only to whoever is told its cost (null otherwise). */
+  margin_percent: string | null;
 }
 
 const TERM_FIELDS = orderTermFields("sell");
@@ -72,7 +74,11 @@ export default function OrderForm() {
   const order = record.data;
   const draft = useDraft<Order>(isNew ? ({ customer: null, order_date: today(), reference: "" } as unknown as Order) : order);
   const act = useAct<Order>();
-  const approval = useGet<Approval>(`${ENDPOINT}${order?.id}/approval/`, undefined, order?.status === "draft");
+  // An approver, and whoever reads the books, is told the order's cost (O299, O352): asked on any order for them,
+  // on a draft for everyone else, whose answer carries no figure.
+  const seesCost = can("sales.approve_order") || can("accounting.view_journalentry");
+  const approval = useGet<Approval>(`${ENDPOINT}${order?.id}/approval/`, undefined,
+    Boolean(order?.id) && (order?.status === "draft" || seesCost));
   const waiting = approval.data?.status === "pending";
 
   const refs = useRefs(TERM_FIELDS);
@@ -158,6 +164,9 @@ export default function OrderForm() {
       {order && <SmartButtons buttons={orderButtons(order.id)} />}
 
       {order && order.status !== "cancelled" && <Steps steps={["Draft", "Confirmed", "Shipped", "Invoiced"]} at={stage(order)} />}
+      {approval.data?.margin_percent != null && (
+        <p className="muted" role="note">Gross margin {quantity(approval.data.margin_percent, 2)}%</p>
+      )}
       {order?.status === "draft" && waiting && (approval.data?.reasons.length ?? 0) > 0 && (
         <div className="note warn" role="note">
           <strong>Needs approval before it can be confirmed.</strong>

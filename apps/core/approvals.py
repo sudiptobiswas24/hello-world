@@ -281,7 +281,7 @@ class CostWords(str):
     """
     A breach's words that carry cost (a margin's figure), with `withheld`, the
     same breach in words that do not, and `seen_with`, the permission that is
-    told the figure (O299). A str, so it joins and is kept as before; who is
+    told the figure, or several, any of which is (O299, O352). A str, so it joins and is kept as before; who is
     told what is decided on these attributes, never by comparing text.
     """
 
@@ -291,9 +291,15 @@ class CostWords(str):
         return made
 
 
+def holds_any(user, seen_with):
+    """Whether `user` holds `seen_with`: a permission, or several of which any will do (O352)."""
+    names = (seen_with,) if isinstance(seen_with, str) else tuple(seen_with)
+    return user is not None and any(user.has_perm(name) for name in names)
+
+
 def told(words, user):
     """`words` as `user` is told them: a CostWords' figure only to whoever holds its seen_with."""
-    if isinstance(words, CostWords) and not (user is not None and user.has_perm(words.seen_with)):
+    if isinstance(words, CostWords) and not holds_any(user, words.seen_with):
         return words.withheld
     return str(words)
 
