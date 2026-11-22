@@ -492,6 +492,19 @@ class TaxedLineMixin(models.Model):
         """
         return None
 
+    def taxed_as(self):
+        """
+        The item whose taxes this line carries (O617): its own, or for a line that varies an order line's price
+        (a price variation billed or credited, a supplier's rate difference) the item of the line it varies. Such
+        a line names no item of its own, so that nothing counts it as goods; it is consideration for them all the
+        same, taxed as they are, and refuse_untaxed_lines asks it so.
+        """
+        item = getattr(self, "item", None)
+        if item is not None:
+            return item
+        varies = getattr(self, "varies", None)
+        return varies.item if varies is not None else None
+
     def default_taxes(self, under=_NOW):
         """
         `under`: the fiscal position to map through (None: none), when not the party's now (O446).

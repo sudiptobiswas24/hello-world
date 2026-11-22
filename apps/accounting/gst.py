@@ -326,6 +326,10 @@ def refuse_untaxed_lines(lines, party, what, purchase=False):
     a line that names none takes it; one that then names none all the same,
     on an item that says it bears tax, is the defect, and is refused.
 
+    A line that varies an order line's price names no item and is asked of the
+    item it varies (taxed_as, O617): a price variation or a rate difference
+    whose taxes were cleared in the draft posted untaxed.
+
     A line with no tax is lawful elsewhere and is left alone: an item that
     declares none (diesel, a non-GST supply the return puts in table 5); a
     party marked exempt; and on the purchase side, a vendor who is not a
@@ -343,7 +347,7 @@ def refuse_untaxed_lines(lines, party, what, purchase=False):
         return
     bare = []
     for line in lines:
-        item = getattr(line, "item", None)
+        item = line.taxed_as() if hasattr(line, "taxed_as") else getattr(line, "item", None)
         declared = item is not None and (item.purchase_taxes if purchase else item.sales_taxes).exists()
         if declared and not line.taxes.exists():
             bare.append(line.label())

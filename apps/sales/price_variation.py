@@ -341,7 +341,7 @@ def bill_variation(order, start, end, receivable_account, invoice_date=None, by=
         document = draft(credits)
         for line, amount in lines:
             row = InvoiceLine.objects.create(
-                invoice=document, quantity=Decimal("1"), unit_price=abs(amount),
+                invoice=document, varies=line, quantity=Decimal("1"), unit_price=abs(amount),
                 description=(f"Polymer price variation, {line.label()}, "
                              f"{bill.start} to {bill.end} ({bill.number})")[:255],
                 revenue_account=line.revenue_account)

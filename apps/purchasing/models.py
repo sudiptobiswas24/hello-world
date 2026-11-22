@@ -4628,6 +4628,13 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxesTakenUnder, TaxedDocumentMix
             refuse_untaxed_lines(self.lines.all(), self.vendor, f"{self.number or 'This bill'} is not posted",
                                  purchase=True)
             self.refuse_taxes_taken_under_another_position()
+        elif self.is_debit_note():
+            from apps.accounting.gst import refuse_untaxed_lines
+
+            # A fall in the circular met by a debit note takes back the goods' price as the supplier's note says,
+            # taxed as its order line: asked of what it varies (O617).
+            refuse_untaxed_lines(self.lines.filter(varies__isnull=False), self.vendor,
+                                 f"{self.number or 'This debit note'} is not posted", purchase=True)
         if not self.number:
             if self.is_debit_note():
                 self.number = DocumentSequence.next_for(
@@ -5391,6 +5398,9 @@ class BillLine(PostedLineMixin, TaxedLineMixin, AuditModel):
                   "cannot be billed twice for the same goods.",
     )
     item = models.ForeignKey(Item, null=True, blank=True, on_delete=models.PROTECT, related_name="bill_lines")
+    varies = models.ForeignKey(
+        PurchaseOrderLine, null=True, blank=True, on_delete=models.PROTECT, related_name="+", editable=False,
+        help_text="The order line whose price this rate-difference line varies (O617): taxed as it is.")
     charge = models.ForeignKey(
         ChargeType, null=True, blank=True, on_delete=models.PROTECT, related_name="%(class)ss",
         help_text="Set instead of an item when this line is freight, handling or similar.",

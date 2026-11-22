@@ -20,6 +20,8 @@ from decimal import Decimal
 from django.core.exceptions import ValidationError
 from django.utils import timezone
 
+from apps.accounting.models import PartyTaxProfile
+
 from .models import Delivery, DeliveryLine, InvoicePolicy, SalesOrder, SalesOrderLine
 from .price_variation import (
     PriceIndex,
@@ -300,3 +302,67 @@ class SignTests(PriceVariationTestCase):
             with self.assertRaises(IntegrityError), transaction.atomic():
                 PriceVariationLine.objects.filter(pk=row.pk).update(
                     quantity=Decimal(quantity), amount=Decimal(amount))
+
+
+class TaxedAsWhatItVariesTests(PriceVariationTestCase):
+    """
+    O617: under GST, the sack bears CGST and SGST and its order line names them. A variation's line names no item,
+    so that nothing counts it as sacks invoiced, and is taxed as the order line it varies. With its taxes cleared in
+    the draft it is refused as the order's own line would be: the rise's invoice and the fall's credit note alike.
+    A customer marked exempt takes none, as its order did. Before, every one of them posted untaxed.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from apps.accounting.gst import GstSettings
+        from apps.accounting.models import Account, AccountType, FiscalPosition, FiscalPositionTaxMapping, Tax
+
+        def tax(code, rate, account_code):
+            account = Account.objects.create(code=account_code, name=f"Output {code}",
+                                             account_type=AccountType.LIABILITY)
+            return Tax.objects.create(code=code, name=code, rate=Decimal(rate), gst_head=code[:4].lower(),
+                                      collected_account=account, paid_account=account)
+
+        self.cgst, self.sgst = tax("CGST9", "9", "2201"), tax("SGST9", "9", "2202")
+        inter = FiscalPosition.objects.create(code="INTER", name="Inter-state")
+        FiscalPositionTaxMapping.objects.create(fiscal_position=inter, source_tax=self.cgst,
+                                                target_tax=tax("IGST18", "18", "2203"))
+        FiscalPositionTaxMapping.objects.create(fiscal_position=inter, source_tax=self.sgst, target_tax=None)
+        GstSettings.objects.create(gstin="27AABCD1234E1Z8", interstate_position=inter)
+        PartyTaxProfile.objects.create(party=self.customer, gstin="27AABCD1234E2Z7")
+        self.item.sales_taxes.set([self.cgst, self.sgst])
+        self.line.taxes.set([self.cgst, self.sgst])
+
+    def test_the_rises_invoice_with_its_taxes_cleared_is_refused(self):
+        invoice = self.march().invoice
+        drafted = invoice.lines.get()
+        self.assertEqual((drafted.item, drafted.varies, set(drafted.taxes.all())),
+                         (None, self.line, {self.cgst, self.sgst}))
+        drafted.taxes.clear()
+        with self.assertRaisesMessage(ValidationError, "names no tax"):
+            invoice.post()
+        drafted.taxes.set([self.cgst, self.sgst])
+        invoice.post()
+        # 264.00 and CGST, SGST 23.76 each.
+        self.assertEqual((invoice.subtotal(), invoice.total()), (Decimal("264.00"), Decimal("311.52")))
+
+    def test_the_falls_credit_note_with_its_taxes_cleared_is_refused(self):
+        self.dispatch("100", 5)
+        self.order.create_invoice(self.ar, invoice_date=before(4)).post()
+        note = bill_variation(self.order, before(6), before(4), self.ar).credit_note
+        drafted = note.lines.get()
+        self.assertEqual((drafted.item, drafted.varies), (None, self.line))
+        drafted.taxes.clear()
+        with self.assertRaisesMessage(ValidationError, "names no tax"):
+            note.post()
+        drafted.taxes.set([self.cgst, self.sgst])
+        note.post()
+        # 100 sacks at -0.66: 66.00 and CGST, SGST 5.94 each.
+        self.assertEqual(note.total(), Decimal("77.88"))
+
+    def test_an_exempt_customers_variation_takes_none(self):
+        PartyTaxProfile.objects.filter(party=self.customer).update(tax_exempt=True, exemption_reference="EX-1")
+        invoice = self.march().invoice
+        invoice.lines.get().taxes.clear()
+        invoice.post()
+        self.assertEqual(invoice.total(), Decimal("264.00"))

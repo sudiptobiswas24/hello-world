@@ -218,3 +218,43 @@ class ANotesDocumentSaysWhatTheNoteSaysTests(RateContractTestCase):
         note.bill.post()
         with self.assertRaisesMessage(ValidationError, "a fall in the circular is a new rate-difference note"):
             note.bill.create_debit_note(memo="Supplier's error")
+
+
+class TaxedAsWhatItVariesTests(RateContractTestCase):
+    """
+    O617: a note's document names no item, so that nothing counts it as goods, and is taxed as the order line it
+    varies, the grade's CGST and SGST. With those taxes cleared in the draft it is refused, as a bill of the grade
+    would be: the rise's supplementary bill and the fall's debit note alike. Before, both posted untaxed.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.grade_a.purchase_taxes.set([self.cgst, self.sgst])
+
+    def test_the_rises_bill_with_its_taxes_cleared_is_refused(self):
+        line, _, _ = self.three_lots()
+        self.revise("102.5000")
+        bill = self.note().bill
+        drafted = bill.lines.get()
+        self.assertEqual((drafted.item, drafted.varies), (None, line))
+        drafted.taxes.clear()
+        with self.assertRaisesMessage(ValidationError, "names no tax"):
+            bill.post()
+        drafted.taxes.set([self.cgst, self.sgst])
+        bill.post()
+        self.assertEqual((bill.subtotal(), bill.total()), (D("45000.00"), D("53100.00")))
+
+    def test_the_falls_debit_note_with_its_taxes_cleared_is_refused(self):
+        line = self.contract_order(kg="5000")
+        self.lot(line, "5000", 5)
+        line.order.create_bill(self.payable, bill_date=OCT(6), reference="HPT/26-27/0398").post()
+        self.revise("98.8000")
+        debit = self.note(reference="HPT/CN/0007").debit_note
+        drafted = debit.lines.get()
+        self.assertEqual((drafted.item, drafted.varies), (None, line))
+        drafted.taxes.clear()
+        with self.assertRaisesMessage(ValidationError, "names no tax"):
+            debit.post()
+        drafted.taxes.set([self.cgst, self.sgst])
+        debit.post()
+        self.assertEqual(debit.total(), D("7080.00"))

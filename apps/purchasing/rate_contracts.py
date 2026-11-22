@@ -303,7 +303,8 @@ class RateDifferenceNote(AuditModel):
                 currency=lines[0][0].order.currency)
             for order_line, amount in lines:
                 line = BillLine.objects.create(
-                    bill=document, quantity=Decimal("1"), unit_price=abs(amount), expense_account=self.account,
+                    bill=document, varies=order_line, quantity=Decimal("1"), unit_price=abs(amount),
+                    expense_account=self.account,
                     description=(f"Polymer rate difference, {order_line.item}, {self.start:%d.%m.%Y} to "
                                  f"{self.end:%d.%m.%Y} ({self.number}, {self.supplier_reference})")[:255])
                 line.taxes.set(order_line.taxes.all())

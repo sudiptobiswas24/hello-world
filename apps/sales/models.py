@@ -3108,6 +3108,13 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxesTa
 
             refuse_untaxed_lines(self.lines.all(), self.customer, f"{self.number or 'This invoice'} is not posted")
             self.refuse_taxes_taken_under_another_position()
+        elif self.is_credit_note():
+            from apps.accounting.gst import refuse_untaxed_lines
+
+            # A fall in the index credited under a price clause takes back the supply's price as agreed, taxed as
+            # its order line: asked of what it varies (O617). The rest of a note takes back what was posted.
+            refuse_untaxed_lines(self.lines.filter(varies__isnull=False), self.customer,
+                                 f"{self.number or 'This credit note'} is not posted")
         # What the order has already been billed, and taken up front, is
         # read below and decided on; two invoices for one order posting
         # at once must not both see the same room. Every order a line
@@ -3709,6 +3716,9 @@ class InvoiceLine(PostedLineMixin, TaxedLineMixin, AuditModel):
         help_text="On a debit note line, the invoice line it bills more for: its HSN and taxes (O235).",
     )
     item = models.ForeignKey(Item, null=True, blank=True, on_delete=models.PROTECT, related_name="invoice_lines")
+    varies = models.ForeignKey(
+        SalesOrderLine, null=True, blank=True, on_delete=models.PROTECT, related_name="+", editable=False,
+        help_text="The order line whose price this line varies under its clause (O617): taxed as it is.")
     charge = models.ForeignKey(
         ChargeType, null=True, blank=True, on_delete=models.PROTECT, related_name="%(class)ss",
         help_text="Set instead of an item when this line bills freight, handling or similar.",
