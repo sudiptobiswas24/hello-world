@@ -24,7 +24,7 @@ it, removed by its own clerk and the first current again.
 
 import tempfile
 
-from django.contrib.auth.models import Group, Permission, User
+from django.contrib.auth.models import Group, User
 from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import override_settings
@@ -107,11 +107,14 @@ class ProofOfDeliveryTests(SalesTestCase):
 
     # -- refused ----------------------------------------------------------------------------------
 
-    def test_a_rep_reads_no_delivery_and_so_no_proof_of_one(self):
+    def test_a_rep_reads_its_customers_proof_and_keeps_none(self):
+        # Its own customers' deliveries are the rep's to read (O558); recording a receipt, and so its paper, is not.
         self.receive()
         rep = self.as_user(self.rep_a)
-        self.assertEqual(self.proofs(rep).status_code, 403)
-        self.refused(self.keep(rep), 403, "")
+        self.refused(self.keep(rep, "mine.pdf"), 403, "what recording its receipt takes")
+        kept = self.keep(self.as_clerk).json()
+        self.assertEqual([row["name"] for row in self.proofs(rep).json()], ["pod.pdf"])
+        self.assertEqual(rep.get(f"{FILES}{kept['id']}/download/").status_code, 200)
 
     def test_reading_the_delivery_is_not_keeping_its_proof(self):
         self.receive()
@@ -169,15 +172,32 @@ class ProofOfDeliveryTests(SalesTestCase):
         self.assertEqual(sorted(Attachment.objects.values_list("name", "purpose")),
                          [("lr.pdf", ""), ("pod.pdf", PROOF_OF_DELIVERY)])
 
+    def test_a_rep_reads_their_own_customers_deliveries_and_ships_nothing(self):
+        # O558, decided 22 November 2026: the Sales Rep role reads deliveries, its own customers' only.
+        theirs = self.shipped_to(self.beta)
+        rep = self.as_user(User.objects.get(pk=self.rep_a.pk))
+        self.assertEqual([row["id"] for row in rep.get("/api/sales/deliveries/").json()], [self.delivery.pk])
+        self.assertEqual(rep.get(f"/api/sales/deliveries/{theirs.pk}/").status_code, 404)
+        self.assertEqual({row["delivery"] for row in rep.get("/api/sales/delivery-lines/").json()}, {self.delivery.pk})
+        self.assertEqual([row["id"] for row in rep.get("/api/sales/deliveries/unacknowledged/").json()],
+                         [self.delivery.pk])
+        # Reading is not shipping, nor recording what the customer signed.
+        self.assertEqual(rep.patch(f"/api/sales/deliveries/{self.delivery.pk}/", {"reference": "R-1"},
+                                   format="json").status_code, 403)
+        self.assertEqual(rep.post(f"/api/sales/deliveries/{self.delivery.pk}/received/",
+                                  {"received_on": "2026-03-05", "received_by": "R. Sharma"}, format="json").status_code,
+                         403)
+        self.assertEqual(rep.post("/api/sales/deliveries/", {"sales_order": self.delivery.sales_order_id,
+                                                              "delivery_date": "2026-03-04"}, format="json").status_code,
+                         403)
+
     def test_a_login_limited_to_its_own_customers_reads_only_their_proofs(self):
         theirs = self.shipped_to(self.beta)
         self.receive()
         self.receive(theirs)
         mine = self.keep(self.as_clerk).json()
         other = self.keep(self.as_clerk, "beta.pdf", where={"model": "sales.delivery", "id": theirs.pk}).json()
-        # The Sales Rep role reads no delivery; this rep is also given that one right, as a plant might.
-        self.rep_a.user_permissions.add(Permission.objects.get(content_type__app_label="sales",
-                                                               codename="view_delivery"))
+        # The Sales Rep role reads its own customers' deliveries (O558).
         rep = self.as_user(User.objects.get(pk=self.rep_a.pk))
         self.assertEqual([row["name"] for row in self.proofs(rep).json()], ["pod.pdf"])
         self.assertEqual(rep.get(f"{FILES}{mine['id']}/download/").status_code, 200)

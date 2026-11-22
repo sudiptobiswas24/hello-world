@@ -7,10 +7,10 @@ added, a wrong file is refused in words, a phone photograph is added over
 it and the scan stays under it as the earlier copy, and taking the
 photograph off leaves the scan in force again.
 
-A Sales Rep reads no delivery, so their order page asks for none of this.
-A rep a plant has also let read deliveries sees the signed copy of their
-own customer's, opens it, and is offered nothing to add or remove; another
-rep's customer's delivery and its paper are not there for them.
+A Sales Rep reads their own customers' deliveries (O558): their order page
+lists the delivery, and they see its signed copy, open it, and are offered
+nothing to add or remove; another rep's customer's delivery and its paper
+are not there for them.
 """
 
 import re
@@ -21,7 +21,6 @@ try:
 except ImportError:  # pragma: no cover - the base class skips, saying why
     expect = None
 
-from django.contrib.auth.models import Permission
 from django.test import override_settings
 
 from apps.core.attachments import Attachment, attach
@@ -118,13 +117,6 @@ class ProofOfDeliveryInTheBrowserTests(BrowserTestCase):
     def test_a_rep_reads_their_own_customers_signed_copy_and_nobody_elses(self):
         mine = self.received_with_its_paper(self.delivery, "pod.pdf")
         rep = self.person("Sales Rep")  # carries every customer there is now: Acme
-        # The role reads no delivery: the rep's order page asks for no delivery and no paper.
-        page = self.sign_in(rep, f"/app/sales/orders/{self.sale.pk}")
-        expect(page.locator(".doc-head, .doc").first).to_contain_text(self.sale.number)
-        page.wait_for_load_state("networkidle")
-        self.assertEqual(self.problems, [])
-        refused = page.request.get(f"{self.live_server_url}/api/core/attachments/{mine.pk}/download/")
-        self.assertEqual(refused.status, 403)
 
         # A customer of another rep's, made after: this rep does not carry it.
         bolt = Party.objects.create(code="C-2", name="Bolt Traders", default_currency=self.usd)
@@ -139,8 +131,13 @@ class ProofOfDeliveryInTheBrowserTests(BrowserTestCase):
         other.post()
         theirs = self.received_with_its_paper(other, "bolt.pdf")
 
-        # The plant lets this rep read deliveries too.
-        rep.user_permissions.add(Permission.objects.get(content_type__app_label="sales", codename="view_delivery"))
+        # The role reads its customers' deliveries (O558): the order page lists this one, asked of nothing it may
+        # not read, and the delivery shows its signed copy, which the rep may open but not add to or take off.
+        page = self.sign_in(rep, f"/app/sales/orders/{self.sale.pk}")
+        expect(page.locator(".doc-head, .doc").first).to_contain_text(self.sale.number)
+        expect(page.get_by_role("region", name="Deliveries")).to_contain_text(self.delivery.number)
+        page.wait_for_load_state("networkidle")
+        self.assertEqual(self.problems, [])
         page.goto(f"{self.live_server_url}/app/sales/deliveries/{self.delivery.pk}")
         proof = page.get_by_role("region", name="Proof of delivery")
         expect(proof.locator("tbody tr")).to_have_count(1)
@@ -153,8 +150,11 @@ class ProofOfDeliveryInTheBrowserTests(BrowserTestCase):
         page.wait_for_load_state("networkidle")
         self.assertEqual(self.problems, [])
 
+        # Another rep's customer's delivery and its paper are not there for this one.
         for address in (f"/api/core/attachments/{theirs.pk}/download/",
                         f"/api/core/attachments/?model=sales.delivery&id={other.pk}&purpose={PROOF_OF_DELIVERY}",
                         f"/api/sales/deliveries/{other.pk}/"):
             self.assertEqual(page.request.get(f"{self.live_server_url}{address}").status, 404, address)
+        listed = page.request.get(f"{self.live_server_url}/api/sales/deliveries/").json()
+        self.assertEqual([row["number"] for row in listed], [self.delivery.number])
         self.assertEqual(Attachment.objects.count(), 2)

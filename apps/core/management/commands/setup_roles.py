@@ -238,6 +238,9 @@ ROLES = {
         # deliberately NOT sales.approve_order: a rep cannot sign off
         # their own discount.
         *crud("sales", "customerprofile", actions=("view",)),
+        # What went to their customers and who signed for it (O558, decided 22 November 2026): read only, and only
+        # their own customers' (CustomerScopedMixin), as their orders and invoices are. Shipping is the stores'.
+        *view("sales", "delivery", "deliveryline"),
         *crud("sales", "quotation"),
         *crud("sales", "quotationline"),
         *view("sales", "salesteam", "salestarget"),
