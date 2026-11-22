@@ -76,11 +76,24 @@ class Clock:
         self.crew = crew
 
     def _spans(self, day):
+        """
+        Uncrewed, the machine's hours from the day's first shift. Crewed, the shifts its crew runs it on, for no
+        more than its hours a day, the day's first shifts first (O557, decided by the owner on 22 November 2026):
+        capacity counts the crewed shifts up to the machine's hours (min of the two), and the board runs the same
+        minutes. Cut to the day window instead, a 16-hour loom crewed on B and N ran 14:00 to 22:00 and lost the
+        night its capacity counted. Shifts never overlap (Shift.save), so the spans do not either.
+        """
         start, end = self._window(day)
         if self.crew is None:
             return [(start, end)]
-        return [(max(start, a), min(end, b)) for a, b in self.crew(day)
-                if min(end, b) > max(start, a)]
+        spans, left = [], end - start
+        for a, b in sorted(self.crew(day)):
+            if left <= datetime.timedelta(0):
+                break
+            b = min(b, a + left)
+            spans.append((a, b))
+            left -= b - a
+        return spans
 
     def _window(self, day):
         start = datetime.datetime.combine(day, self.day_start)

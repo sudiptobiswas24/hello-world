@@ -796,6 +796,34 @@ class ThreeShiftsRoundTheClockTests(DispatchTestCase):
         self.assertEqual(self.placed(run), {run.number: ("L-1", at(D1, 6), at(D2, 12, 30))})
         self.assertEqual(self.manned(), Decimal("1440"))
 
+    def test_a_sixteen_hour_loom_crewed_on_b_and_n_runs_both(self):
+        """
+        O557, decided 22 November 2026 (calc_g57/o557.py): L-1 is a 16-hour loom, crewed on B and N. Its 960
+        minutes a day are the crew's two shifts, so a run of 630 from 06:00 starts at 14:00 and ends 00:30 on the
+        2nd. Cut to its day window from 06:00 (06:00 to 22:00) the board ran 14:00 to 22:00 alone: 16:30 on the
+        2nd, a day late, while capacity counted both shifts.
+        """
+        Machine.objects.filter(pk=self.l1.pk).update(available_hours_per_day=Decimal("16"))
+        Machine.objects.filter(pk=self.l2.pk).update(is_active=False)
+        self.crew("B", "N")
+        run = self.run_of("600", D3)
+        self.assertEqual(self.placed(run), {run.number: ("L-1", at(D1, 14), at(D2, 0, 30))})
+        self.assertEqual(self.manned(), Decimal("960"))
+        self.assertEqual(WorkCentre.objects.get(pk=self.bank.pk).minutes_on(D1), Decimal("960"))
+
+    def test_crewed_past_its_hours_it_runs_the_first_shifts_of_the_day(self):
+        """
+        The same loom crewed on all three shifts: no more than its 16 hours, the day's first shifts first, D and
+        B, as capacity caps the crew's 1,440 at 960. A run of 1,230 from 06:00: 960 on the 1st, 270 from 06:00 on
+        the 2nd, 10:30; run on every crewed shift it would have finished at 02:30 on the 2nd.
+        """
+        Machine.objects.filter(pk=self.l1.pk).update(available_hours_per_day=Decimal("16"))
+        Machine.objects.filter(pk=self.l2.pk).update(is_active=False)
+        self.crew("D", "B", "N")
+        run = self.run_of("1200", D3)
+        self.assertEqual(self.placed(run), {run.number: ("L-1", at(D1, 6), at(D2, 10, 30))})
+        self.assertEqual(WorkCentre.objects.get(pk=self.bank.pk).minutes_on(D1), Decimal("960"))
+
     def test_a_loom_crewed_by_night_only_runs_the_whole_night(self):
         self.crew("D", "N", "N")
         a, b = self.run_of("1800", D3), self.run_of("600", D4)
