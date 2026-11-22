@@ -50,6 +50,62 @@ pg_isready -q || service postgresql start                              # role er
 
 ## 2. Next steps, in order
 
+**g55 is pushed (bac7b9d, 22 November 2026), all six lanes green on one tip (gated as 84dc776).** Six commits on
+2f237a8. The first is O614 and O615, decided by the owner on 21 November as recommended: journals typed through a bank
+are matched like any movement, and a bank is reconciled from a day, with a list of what was outstanding then. The second
+fills four more of the demo's empty lists. The third fixes a lock order pg-c found in the first. The fourth proves O616
+is not a defect. The fifth fills the demo's last wanted lists and closes O613. The sixth closes O617, which the fifth
+found. All six lanes ran again on the six.
+
+g55:
+- O614: a journal keyed by hand through a bank (the rent, the power bill, a transfer) could never explain a
+  statement line, so no month with one could close. bank_movements() now takes every posted entry through the
+  bank that no document keeps, as well as what modules register. A document's entry is read from the models
+  (entry_keepers(), shared with JournalEntry.recorded_by()). A hand journal reversed, neither shown, nets away. It
+  is matched only after the line that took it back. Matched to a line, it is not reversed by hand.
+- O615: Account.reconciled_from is the day a bank's statements are reconciled from. What the bank moved before
+  then cleared by then, except what is listed as outstanding at it (BankCutOffItem): an earlier payment or entry,
+  or a cheque from before the books as a plain amount. A plain cheque is matched to its line, or cancelled by the
+  journal that put its money back. No statement starts before the day, and nothing new is posted through the bank
+  dated before it (JournalEntry.post asks, so every path is asked). The day and the list are fixed while a
+  statement of the account is closed. Screens: the account takes the day; "Outstanding at a bank's cut-off" lists
+  the items; a statement matches an outstanding cheque.
+- A bank whose opening balance came in as a journal through it now lists that journal as unpresented until its
+  reconciled-from day is set after it. That is the rule as decided, not a defect; say so to whoever opens the
+  books. The demo shows the shape: HDFC is reconciled from the month after going live, with a cheque from the old
+  books of 25,000 outstanding at that day. September is matched and closed; October differs by the bank's 590 of
+  charges alone.
+- The demo, O613 closed: a tape batch split for two looms, the laminator's trim on its challan, the latest
+  shipment's test certificate, a customer's call-offs; then the three lists the row still wanted, each without moving
+  a figure another demo test totals. The copolymer's lorry is weighed for its receipt (10,070 kg net against the
+  challan's 10,140) and the 70 kg short is claimed from Granule House, 8,680.00, open until the bill. The raffia
+  circular is revised from 100 to 104 back-dated: Granule House's rate difference is drafted as a bill (72,000.00)
+  and a cement order's clause as a supplementary invoice (135,000 sacks at 0.296, 39,960.00). The sweep finds 45 of
+  267 lists empty, each one the row named as empty by nature or out of scope.
+- O617, found by the fifth commit and closed by the sixth: a variation or rate-difference document's line names no
+  item, and refuse_untaxed_lines() asked only lines whose item declares taxes, so such a draft with its taxes cleared
+  posted untaxed; the notes skipped the guard altogether. Each such line now records the order line it varies
+  (InvoiceLine.varies, BillLine.varies, sales 0089 and purchasing 0096), TaxedLineMixin.taxed_as() answers the item
+  it is taxed as, and the guard asks that; a credit or debit note asks it of its varying lines. Lines drafted before
+  the migrations name nothing and are asked as before.
+- Found by the gate: a new bank statement shared its account (refuse_as_money_account) and then held it to read the
+  day, an upgrade PostgreSQL's lock sentinel refuses. Ten bank tests failed on pg-c. It holds the account first now.
+  SQLite takes no FOR SHARE, so only the PostgreSQL lanes can see this shape.
+- O616, registered with O615 and closed in the same round: a backdated entry posting as a bank's day is set cannot
+  read the day before the setter commits. Both take the company's numbering row first (post() is @serialised;
+  _check_cut_off() locks through row_lock_query), and post() reads the day after the wait. tests_races_cut_off
+  runs it both ways on PostgreSQL: the day first refuses the entry, the entry first posts and the day takes it as
+  cleared, as the rule decides for anything posted before the day is set.
+
+Counts: Asia/Kolkata 9,052 (254 skipped), PostgreSQL 4,220 + 3,704 + 1,128 = 9,052, migration-tagged 65 of 65
+and the one PostgreSQL-only, vitest 91. The migration lane takes about eight hours, so pg-a and pg-b ran beside it
+and sales's migration tests beside it too. manufacturing's hit the lane's 7,000-second limit with six of seven
+done (exit=124, the extra load beside it, not a test), and passed again beside the lane alone (7 in 2,357 s).
+
+Next: O598 (a certificate's amount; a bill crossing it deducted in two rows) is committed on a working tree as
+ffd2589e and gates as g56 on bac7b9d; it adds accounting 0042 and purchasing 0097, so all 65 migration tests run.
+Still waiting on the owner, each sent with a recommendation: O494, O571, O558, O557.
+
 **g54 is pushed (4874133, 21 November 2026), all six lanes green on one tip (gated as 5418571).** Two commits on 28897ba:
 O612, and the demo's books, payroll payments, tools and floor masters.
 
