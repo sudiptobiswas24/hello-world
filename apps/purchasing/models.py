@@ -21,6 +21,7 @@ from apps.accounting.mixins import (
     TaxedLineMixin,
     TaxesTakenUnder,
     nothing_left_to_give_back,
+    priced_within,
     refuse_correcting_a_note,
     refuse_correcting_another_line,
     refuse_correcting_past_what_it_holds,
@@ -5118,7 +5119,7 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxesTakenUnder, TaxedDocumentMix
     @takes_back
     def create_debit_note(self, memo="", quantities=None, accruals=None, amount=None,
                           supplier_note_number="", supplier_note_date=None, on_date=None, post=True,
-                          by_its_owner=False):
+                          by_its_owner=False, after_goodwill=False):
         """
         Debit this bill. By default the whole thing; pass `quantities` as
         {bill_line: quantity} to give back part of it, which is what a
@@ -5133,6 +5134,10 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxesTakenUnder, TaxedDocumentMix
 
         A prepayment is debited by `amount`: part of what is left of it,
         or by default all.
+
+        `after_goodwill`: a goods return, priced to its share of what is left after a debit typed on no line (a
+        goodwill debit of part, O448, the sales mirror). The accrual it puts back is what the returned receipt lines
+        booked, whatever it is priced at: the difference is the price variance the posting books.
         """
         if not self.posted:
             raise ValidationError("Only a posted bill can be corrected with a debit note.")
@@ -5190,7 +5195,14 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxesTakenUnder, TaxedDocumentMix
             debits=self,
             **supplier_note,
         )
-        for line, quantity in selected:
+        planned = [(line, quantity, line.unit_price, line.discount_percent) for line, quantity in selected]
+        if after_goodwill:
+            planned = priced_within(planned, self, "debits", "bill", BillLine, BillLine.quantity_debited)
+        # A line priced to the paisa as two (priced_within) puts back its accrual in its quantity's share, the last
+        # part taking what is left, so the line's accrual comes back whole.
+        accrued_left = {line: accruals[line] for line, _ in selected if accruals and line in accruals}
+        quantity_left = {line: quantity for line, quantity in selected}
+        for line, quantity, price, discount in planned:
             note_line = BillLine.objects.create(
                 bill=debit_note,
                 order_line=line.order_line,
@@ -5199,15 +5211,21 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxesTakenUnder, TaxedDocumentMix
                 charge=line.charge,
                 description=line.description,
                 quantity=quantity,
-                unit_price=line.unit_price,
-                discount_percent=line.discount_percent,
+                unit_price=price,
+                discount_percent=discount,
                 expense_account=line.expense_account,
                 given_taxes=line.taxes.all(),
             )
-            if accruals and line in accruals:
+            if line in accrued_left:
                 # What the returned receipt lines accrued, net of the
                 # order's discount as they booked it.
-                doc, base = accruals[line]
+                doc, base = accrued_left[line]
+                if quantity < quantity_left[line]:
+                    share = quantity / quantity_left[line]
+                    part = ((doc * share).quantize(Decimal("0.000001")), (base * share).quantize(Decimal("0.000001")))
+                    accrued_left[line] = (doc - part[0], base - part[1])
+                    doc, base = part
+                quantity_left[line] -= quantity
                 note_line.accrued_doc = doc
                 note_line.accrued_base = base
                 super(BillLine, note_line).save(update_fields=[
@@ -8558,8 +8576,10 @@ class GoodsReceipt(AuditModel):
         # Every bill before the first note, in key order (O169, the sales mirror).
         lock_rows(*allocations, refresh=False)
         return [
+            # After a goodwill debit of part, the goods go back and their note debits their share of what is left
+            # (O448, the sales mirror).
             bill.create_debit_note(
-                memo=f"Goods returned on {self.number}", quantities=quantities,
+                memo=f"Goods returned on {self.number}", quantities=quantities, after_goodwill=True,
                 accruals=returned.get(bill, {}),
                 # On the day the goods went back, or the bill's when it is dated after them.
                 on_date=max(to_date(self.receipt_date), to_date(bill.bill_date)), post=post,

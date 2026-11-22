@@ -86,6 +86,7 @@ from apps.accounting.mixins import (
     TaxedLineMixin,
     TaxesTakenUnder,
     nothing_left_to_give_back,
+    priced_within,
     refuse_correcting_a_note,
     refuse_correcting_another_line,
     priced_to_give_back,
@@ -3289,12 +3290,14 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxesTa
 
     @serialised("posted", held_first=True)
     @takes_back
-    def create_credit_note(self, memo="", quantities=None, amount=None, on_date=None, post=True):
+    def create_credit_note(self, memo="", quantities=None, amount=None, on_date=None, post=True, after_goodwill=False):
         """
         Credit this invoice, on `on_date` or today. By default the whole thing; pass
         `quantities` as {invoice_line: quantity} to credit part of it, which
         is what a partial goods return needs. A down payment is credited by
         `amount` instead: part of what is left of it, or by default all.
+        `after_goodwill`: a goods return, priced to its share of what is left after a credit typed on no line
+        (a goodwill credit of part, O448).
         """
         if not self.posted:
             raise ValidationError("Only a posted invoice can be credited.")
@@ -3330,23 +3333,27 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxesTa
         on_date = correction_date(on_date, self.invoice_date, f"{self.number} is not credited on",
                                   "it was invoiced")
         credit_note = self._credit_note(on_date=on_date)
-        for line, wanted in selected:
-            # At what is left of the line's value: after a claim, not its whole price (O185).
-            for quantity, price, discount in priced_to_give_back(
-                    line, wanted, "credits_line", InvoiceLine.quantity_credited, on="invoice"):
-                InvoiceLine.objects.create(
-                    invoice=credit_note,
-                    order_line=line.order_line,
-                    credits_line=line,
-                    item=line.item,
-                    charge=line.charge,
-                    description=line.description,
-                    quantity=quantity,
-                    unit_price=price,
-                    discount_percent=discount,
-                    revenue_account=line.revenue_account,
-                    given_taxes=line.taxes.all(),
-                )
+        # At what is left of the line's value: after a claim, not its whole price (O185); and of the invoice's,
+        # after a goodwill credit of part, when asked (O448).
+        planned = [(line, quantity, price, discount) for line, wanted in selected
+                   for quantity, price, discount in priced_to_give_back(
+                       line, wanted, "credits_line", InvoiceLine.quantity_credited, on="invoice")]
+        if after_goodwill:
+            planned = priced_within(planned, self, "credits", "invoice", InvoiceLine, InvoiceLine.quantity_credited)
+        for line, quantity, price, discount in planned:
+            InvoiceLine.objects.create(
+                invoice=credit_note,
+                order_line=line.order_line,
+                credits_line=line,
+                item=line.item,
+                charge=line.charge,
+                description=line.description,
+                quantity=quantity,
+                unit_price=price,
+                discount_percent=discount,
+                revenue_account=line.revenue_account,
+                given_taxes=line.taxes.all(),
+            )
         # `post=False`: raised by someone who may not post invoices (a goods return), it waits as a
         # draft for the AR side to post (O292, purchasing's debit note since review F8).
         if post:
@@ -5182,8 +5189,10 @@ class Delivery(AuditModel):
         # invoice taken after a note already made would be taken against the key order (O169).
         lock_rows(*allocations, refresh=False)
         return [
+            # After a goodwill credit of part, the goods come back and their note gives back their share of what
+            # is left (O448).
             invoice.create_credit_note(
-                memo=f"Goods returned on {self.number}", quantities=quantities, post=post
+                memo=f"Goods returned on {self.number}", quantities=quantities, post=post, after_goodwill=True,
             )
             for invoice, quantities in sorted(allocations.items(), key=lambda pair: pair[0].pk)
         ]
