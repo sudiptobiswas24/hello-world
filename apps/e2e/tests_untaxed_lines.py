@@ -367,6 +367,50 @@ class AChargeLineTakesItsChargesTaxes(UntaxedLinesTestCase):
         _, bought = self.purchase_charge(self.as_("ravi"), "V-WMB", taxes=[])
         self.assertEqual((bought["taxes"], bought["total"]), ([], "1000.00"))
 
+    def test_a_charge_line_naming_none_is_refused_on_either_side(self):
+        # O494, decided by the owner on 22 November 2026: a charge that bears tax is asked of its line as an item is.
+        imran = self.as_("imran")
+        order, _ = self.sales_charge(imran, "C-KONK", taxes=[])
+        refused = imran.post(f"/api/sales/sales-orders/{order.pk}/confirm/", format="json")
+        self.assertEqual(refused.status_code, 400, refused.content)
+        self.assertIn("names no tax, though its charge bears tax", str(refused.json()))
+        ravi = self.as_("ravi")
+        bought, _ = self.purchase_charge(ravi, "V-WMB", taxes=[])
+        refused = ravi.post(f"/api/purchasing/purchase-orders/{bought.pk}/confirm/", format="json")
+        self.assertEqual(refused.status_code, 400, refused.content)
+        self.assertIn("names no tax, though its charge bears tax", str(refused.json()))
+        order.refresh_from_db()
+        bought.refresh_from_db()
+        self.assertEqual((order.status, bought.status), ("draft", "draft"))
+
+    def test_an_invoice_with_freight_naming_none_is_not_posted(self):
+        posted = Invoice.objects.filter(posted=True, is_down_payment=False, customer__code="C-KONK").first() or \
+            Invoice.objects.filter(posted=True, is_down_payment=False).first()
+        invoice = Invoice.objects.create(customer=posted.customer, receivable_account=posted.receivable_account,
+                                         invoice_date=posted.invoice_date)
+        line = invoice.lines.create(charge=self.freight, quantity=D("1"), unit_price=D("1000.00"),
+                                    revenue_account=self.freight.revenue_account)
+        self.assertTrue(line.taxes.exists())  # it took the charge's, and the draft then cleared them
+        line.taxes.clear()
+        refused = self.as_("rohit").post(f"/api/sales/invoices/{invoice.pk}/post_invoice/", format="json")
+        self.assertEqual(refused.status_code, 400, refused.content)
+        self.assertIn("names no tax, though its charge bears tax", str(refused.json()))
+
+    def test_freight_that_keeps_no_tax_for_the_side_and_an_exempt_customer_go_untaxed(self):
+        # A charge keeping a tax for purchases only bears none on a sale; an exempt customer's freight bears none.
+        sgst = Tax.objects.get(code="SGST9")
+        purchase_only = Tax.objects.create(code="PCESS1", name="Purchase cess", rate=D("1"), scope="purchase",
+                                           paid_account=sgst.paid_account)
+        imran = self.as_("imran")
+        self.freight.taxes.set([purchase_only])
+        order, line = self.sales_charge(imran, "C-KONK")
+        self.assertEqual(line["taxes"], [])
+        self.assertEqual(imran.post(f"/api/sales/sales-orders/{order.pk}/confirm/", format="json").status_code, 200)
+        self.freight.taxes.set(Tax.objects.filter(code__in=["CGST9", "SGST9"]))
+        PartyTaxProfile.objects.filter(party__code="C-KONK").update(tax_exempt=True, exemption_reference="EX-1")
+        order, _ = self.sales_charge(imran, "C-KONK", taxes=[])
+        self.assertEqual(imran.post(f"/api/sales/sales-orders/{order.pk}/confirm/", format="json").status_code, 200)
+
     def test_a_charge_s_tax_for_the_other_side_is_not_taken(self):
         # One charge serves both directions; a tax kept for purchases only is not put on a sale, as an item's is not.
         sgst = Tax.objects.get(code="SGST9")
