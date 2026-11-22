@@ -389,17 +389,59 @@ def refuse_giving_back_past_the_document(document, original, corrects, on):
     _refuse_past_the_document(document, original, mine, lines, corrects, on, waiting=False)
 
 
+def document_left(held, original, on):
+    """What is left to give back of `held`, an invoice or bill, as booked: its lines' net less every posted note's."""
+    whole = sum((row.net_amount() for row in held.lines.all()), Decimal("0"))
+    notes = held.lines.model._base_manager.filter(**{f"{on}__{original}": held, f"{on}__posted": True})
+    return whole - sum((row.net_amount() for row in notes), Decimal("0"))
+
+
 def nothing_left_to_give_back(held, original, on):
     """
     True when posted notes on `held`, an invoice or bill, have given back all its booked net (O366).
     A return of goods after a goodwill credit of the whole was refused outright, its note past the
     ceiling above, so the goods could not come back either. Decided: the goods come back, and the
     return gives back nothing more, sales and purchasing alike. Asked by a return as it chooses
-    which documents its notes give back on.
+    which documents its notes give back on. After a goodwill credit of part, the return gives back
+    what is left (priced_within, O448).
     """
-    whole = sum((row.net_amount() for row in held.lines.all()), Decimal("0"))
-    notes = held.lines.model._base_manager.filter(**{f"{on}__{original}": held, f"{on}__posted": True})
-    return whole - sum((row.net_amount() for row in notes), Decimal("0")) <= 0
+    return document_left(held, original, on) <= 0
+
+
+def priced_within(planned, held, original, on, line_model, already):
+    """
+    `planned` note lines giving back goods of `held`, [(corrected line, quantity, unit price, discount)], priced
+    again to the goods' share of what is left of the document, when a credit typed on no line (a goodwill credit of
+    part) has given some of it back (O448, decided by the owner on 22 November 2026): 1,000 of goods with 600 credited
+    as goodwill, all the goods returned give back the 400 left, half of them 200, where the note was refused and the
+    goods with it. The share is of the goods still held, each at its own price (`already(line)`, the quantity goods
+    notes gave back), total first, divided last: a return priced below its goods' value leaves the goods still held
+    at theirs, so the next one takes its share of what is left, not of a figure the first one bent. Each line's part
+    is booked exactly (_lines_booking), the last taking what is left, so the note adds up to the paisa. Never priced
+    up: without such a credit the goods give back what they always did.
+    """
+    def net(quantity, price, discount):
+        return line_model(quantity=quantity, unit_price=price, discount_percent=discount).net_amount()
+
+    def at_its_price(line, quantity):
+        return net(quantity, line.unit_price or Decimal("0"), line.discount_percent or Decimal("0"))
+
+    values = [net(quantity, price, discount) for _, quantity, price, discount in planned]
+    whole = sum(values, Decimal("0"))
+    going = sum((at_its_price(line, quantity) for line, quantity, _, _ in planned), Decimal("0"))
+    goods = sum((at_its_price(line, line.quantity - already(line)) for line in held.lines.all()), Decimal("0"))
+    left = document_left(held, original, on)
+    at_most = left if going >= goods else (round_money(left * going / goods) if goods > 0 else Decimal("0"))
+    if whole <= at_most:
+        return planned
+    at_most = max(at_most, Decimal("0"))
+    priced, given = [], Decimal("0")
+    for index, ((corrected, quantity, _, _), value) in enumerate(zip(planned, values)):
+        share = at_most - given if index == len(planned) - 1 else round_money(at_most * value / whole)
+        given += share
+        priced += [(corrected, part_quantity, price, discount)
+                   for part_quantity, price, discount in _lines_booking(share, quantity)]
+    return priced
 
 
 def refuse_a_line_past_the_document(line, document, original, corrects, on):

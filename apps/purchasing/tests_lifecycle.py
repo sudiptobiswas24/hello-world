@@ -428,6 +428,74 @@ class ADebitNoteByHandIsDatedByTheCorrectionRuleTests(PurchasingLifecycleTestCas
 
 
 
+class AReturnAfterAGoodwillDebitOfPartTests(PurchasingLifecycleTestCase):
+    """
+    O448, the sales mirror, decided by the owner on 22 November 2026: 10 at 5 received and billed (50.00), 30
+    debited as goodwill on no line, then goods sent back. Each return debits its goods' share of the 20 left: all ten,
+    20; four then six, 8 and 12. The goods go back, the vendor owes nothing, the accrual clears, and what the goodwill
+    gave the books (30 on its account) the return's lower price takes back as variance: nothing in all.
+    """
+
+    def goodwill_of(self, amount):
+        from apps.core.models import Company
+
+        Company.objects.update(purchase_price_variance_account=Account.objects.create(
+            code="5150", name="Purchase price variance", account_type=AccountType.EXPENSE))
+        order = self.make_order(quantity="10", price="5")
+        receipt = self.receive(order, 10)
+        bill = order.create_bill(self.payable, bill_date=datetime.date(2026, 1, 10))
+        bill.post()
+        goodwill = Bill.objects.create(vendor=bill.vendor, bill_date=bill.bill_date, payable_account=self.payable,
+                                       debits=bill)
+        BillLine.objects.create(bill=goodwill, description="goodwill", quantity=Decimal("1"),
+                                unit_price=Decimal(amount), expense_account=self.expense)
+        goodwill.post()
+        return receipt, bill
+
+    def sent_back(self, receipt, quantity):
+        back = receipt.create_return(quantities={receipt.lines.get(): Decimal(quantity)})
+        return [note.subtotal() for note in back.debit_notes_created]
+
+    def assert_ends_at_nothing(self, bill):
+        from apps.accounting.models import JournalLine
+
+        def balance(account):
+            rows = JournalLine.objects.filter(account=account, entry__posted=True)
+            return sum((row.debit - row.credit for row in rows), Decimal("0"))
+
+        everything = JournalLine.objects.filter(entry__posted=True).exclude(
+            account__in=[self.payable, self.inventory, self.grni]).values_list("account__code", flat=True).distinct()
+        bill.refresh_from_db()
+        self.assertEqual(self.item.on_hand_at(self.warehouse), Decimal("0"))
+        self.assertEqual((bill.amount_due(), balance(self.payable), balance(self.inventory), balance(self.grni)),
+                         (Decimal("0.00"), Decimal("0.00"), Decimal("0.00"), Decimal("0.00")))
+        others = sum((balance(account) for account in Account.objects.filter(code__in=list(everything))),
+                     Decimal("0"))
+        self.assertEqual(others, Decimal("0.00"))
+
+    def test_all_the_goods_debit_the_20_left(self):
+        receipt, bill = self.goodwill_of("30")
+        self.assertEqual(self.sent_back(receipt, "10"), [Decimal("20.00")])
+        self.assert_ends_at_nothing(bill)
+
+    def test_a_share_the_paisa_does_not_divide_books_exactly_and_clears_the_accrual(self):
+        # 32.97 of goodwill leaves 17.03 for ten: nine at 1.70 and one at 1.73, each row putting back its share of
+        # what the receipt accrued (45 and 5), so the accrual clears.
+        receipt, bill = self.goodwill_of("32.97")
+        back = receipt.create_return(quantities={receipt.lines.get(): Decimal("10")})
+        (note,) = back.debit_notes_created
+        self.assertEqual(sorted((row.quantity, row.unit_price, row.accrued_doc) for row in note.lines.all()),
+                         [(Decimal("1.0000"), Decimal("1.73"), Decimal("5.000000")),
+                          (Decimal("9.0000"), Decimal("1.70"), Decimal("45.000000"))])
+        self.assertEqual(note.subtotal(), Decimal("17.03"))
+        self.assert_ends_at_nothing(bill)
+
+    def test_four_then_six_take_their_share_and_what_is_left(self):
+        receipt, bill = self.goodwill_of("30")
+        self.assertEqual(self.sent_back(receipt, "4") + self.sent_back(receipt, "6"), [Decimal("8.00"), Decimal("12.00")])
+        self.assert_ends_at_nothing(bill)
+
+
 class OneCeilingForEveryDebitNoteTests(PurchasingLifecycleTestCase):
     """
     Review of O298 (probe p2), then O366: a goodwill debit of the whole bill, then a return. The return's note

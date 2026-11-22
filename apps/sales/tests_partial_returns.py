@@ -475,3 +475,72 @@ class OneCeilingForEveryCreditNoteTests(SalesTestCase):
         self.assertEqual(response.status_code, 200, response.content)
         self.assertEqual(response.json()["credit_notes"], [])
         self.assert_back_and_nothing_more_credited(invoice, on_hand)
+
+
+class AReturnAfterAGoodwillCreditOfPartTests(SalesTestCase):
+    """
+    O448, decided by the owner on 22 November 2026: 10 at 100 invoiced, 600 credited as goodwill on no line, then
+    goods returned. Each return gives back its goods' share of the 400 left: all ten, 400; five then five, 200 and
+    200; three then seven, 120 and the 280 left. The goods come back every time, and the invoice ends at nothing.
+    """
+
+    def goodwill_of(self, amount):
+        order = self.make_order(quantity="10", price="100")
+        self.on_hand = self.item.on_hand_at(self.warehouse)
+        delivery = self.ship(order, 10)
+        invoice = self.bill(order)
+        goodwill = Invoice.objects.create(customer=invoice.customer, invoice_date=invoice.invoice_date,
+                                          receivable_account=invoice.receivable_account, currency=invoice.currency,
+                                          credits=invoice)
+        InvoiceLine.objects.create(invoice=goodwill, description="goodwill", quantity=Decimal("1"),
+                                   unit_price=Decimal(amount), revenue_account=self.revenue)
+        goodwill.post()
+        return delivery, invoice
+
+    def returned(self, delivery, quantity):
+        back = delivery.create_return(quantities={delivery.lines.get(): Decimal(quantity)})
+        return [note.subtotal() for note in back.credit_notes_created]
+
+    def assert_ends_at_nothing(self, invoice):
+        from apps.accounting.models import JournalLine
+
+        def balance(account):
+            rows = JournalLine.objects.filter(account=account, entry__posted=True)
+            return sum((row.debit - row.credit for row in rows), Decimal("0"))
+
+        invoice.refresh_from_db()
+        self.assertEqual(self.item.on_hand_at(self.warehouse), self.on_hand)
+        self.assertEqual((invoice.amount_due(), balance(self.ar), balance(self.revenue), balance(self.cogs)),
+                         (Decimal("0.00"), Decimal("0.00"), Decimal("0.00"), Decimal("0.00")))
+
+    def test_all_the_goods_give_back_the_400_left(self):
+        delivery, invoice = self.goodwill_of("600")
+        self.assertEqual(self.returned(delivery, "10"), [Decimal("400.00")])
+        self.assert_ends_at_nothing(invoice)
+
+    def test_a_share_the_paisa_does_not_divide_books_exactly(self):
+        # 599.97 of goodwill leaves 400.03 for ten: nine at 40.00 and one at 40.03.
+        delivery, invoice = self.goodwill_of("599.97")
+        back = delivery.create_return(quantities={delivery.lines.get(): Decimal("10")})
+        (note,) = back.credit_notes_created
+        self.assertEqual(sorted((row.quantity, row.unit_price) for row in note.lines.all()),
+                         [(Decimal("1.0000"), Decimal("40.03")), (Decimal("9.0000"), Decimal("40.00"))])
+        self.assert_ends_at_nothing(invoice)
+
+    def test_half_and_half_give_back_half_each(self):
+        delivery, invoice = self.goodwill_of("600")
+        self.assertEqual(self.returned(delivery, "5") + self.returned(delivery, "5"),
+                         [Decimal("200.00"), Decimal("200.00")])
+        self.assert_ends_at_nothing(invoice)
+
+    def test_three_then_the_rest_take_their_share_and_what_is_left(self):
+        delivery, invoice = self.goodwill_of("600")
+        self.assertEqual(self.returned(delivery, "3") + self.returned(delivery, "7"),
+                         [Decimal("120.00"), Decimal("280.00")])
+        self.assert_ends_at_nothing(invoice)
+
+    def test_without_a_goodwill_credit_the_goods_give_back_their_price(self):
+        order = self.make_order(quantity="10", price="100")
+        delivery = self.ship(order, 10)
+        self.bill(order)
+        self.assertEqual(self.returned(delivery, "3"), [Decimal("300.00")])
