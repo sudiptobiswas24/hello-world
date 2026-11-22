@@ -15,8 +15,14 @@
   --ink-2: #3B3933;
   --ink-3: #524F45;
   --muted: #6F6B5E;
-  --subtle: #918D7E;
-  --faint: #B0AC9E;
+  /*
+   * Secondary text. Darkened from the design (#918D7E and #B0AC9E, 3.3:1 and
+   * 2.3:1 on white) to meet 4.5:1 on every surface grey text sits on, down to
+   * the brand-tint tiles (4.5:1). Nothing lighter passes there, so both share
+   * this value; size, weight and case still set them apart from --muted.
+   */
+  --subtle: #716E62;
+  --faint: #716E62;
 
   /* brand */
   --brand: #3D4ED9;

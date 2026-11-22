@@ -3,7 +3,7 @@
  * mirror the design, which has no global border-box rule.
  */
 .screen {
-  /* design draws units/basis in #918D7E (--subtle); darkened so small text meets 4.5:1 contrast */
+  /* units / basis text colour (--subtle) */
   --meta: var(--subtle);
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));

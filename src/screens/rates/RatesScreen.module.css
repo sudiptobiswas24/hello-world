@@ -3,7 +3,7 @@
  * mirror the design, which has no global border-box rule.
  */
 .screen {
-  /* secondary text colour, as in the design (#918D7E) */
+  /* secondary text colour (--subtle) */
   --meta: var(--subtle);
   display: grid;
   /* deviation: the design's 340px minimum squeezed material names to ~14px
