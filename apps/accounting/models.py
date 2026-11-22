@@ -1149,6 +1149,11 @@ class PartyTaxProfile(AuditModel):
     tds_rate_from = models.DateField(null=True, blank=True, help_text="A certificate's first day.")
     tds_rate_until = models.DateField(null=True, blank=True,
                                       help_text="A certificate's last day, in the financial year it was issued for.")
+    tds_rate_limit = models.DecimalField(
+        max_digits=18, decimal_places=2, null=True, blank=True,
+        help_text="The amount a certificate's rate applies up to, as the certificate states (section 197): past what "
+                  "is deducted at it between its days, the section's rate applies (O598). Empty on a nil-rate "
+                  "certificate, and on one entered before the amount was asked, which Health lists.")
     msme_category = models.CharField(
         max_length=8, blank=True, choices=[("micro", "Micro"), ("small", "Small"), ("medium", "Medium")],
         help_text="As its Udyam registration says. A micro or small vendor is paid within 45 days, or "
@@ -1218,9 +1223,9 @@ class PartyTaxProfile(AuditModel):
 
         dated = self.tds_rate_from is not None or self.tds_rate_until is not None
         if self.tds_rate_percent is None:
-            if self.tds_rate_basis or dated:
-                raise ValidationError({"tds_rate_basis": "A basis and dates belong to a rate of its own; give the "
-                                                         "rate, or leave them empty for the section's."})
+            if self.tds_rate_basis or dated or self.tds_rate_limit is not None:
+                raise ValidationError({"tds_rate_basis": "A basis, dates and an amount belong to a rate of its own; "
+                                                         "give the rate, or leave them empty for the section's."})
             return
         if not self.tds_rate_basis:
             raise ValidationError({"tds_rate_basis": "Say whether the rate is the deductee's own class (an "
@@ -1229,6 +1234,9 @@ class PartyTaxProfile(AuditModel):
         if self.tds_rate_basis == "deductee":
             if dated:
                 raise ValidationError({"tds_rate_from": "A deductee's own class has no dates; a certificate does."})
+            if self.tds_rate_limit is not None:
+                raise ValidationError({"tds_rate_limit": "A deductee's own class has no amount; a certificate "
+                                                         "does."})
             return
         if self.tds_rate_from is None or self.tds_rate_until is None:
             raise ValidationError({"tds_rate_from": "A lower-deduction certificate stands from its first day to its "
@@ -1241,6 +1249,18 @@ class PartyTaxProfile(AuditModel):
             raise ValidationError({"tds_rate_until": f"A certificate is issued for one financial year: this one "
                                                      f"starts in {start.year}-{end:%y}, so it ends by "
                                                      f"{end:%d %b %Y}."})
+        # Its rate applies up to the amount it states (O598). Nothing is recorded at a nil rate, so a nil-rate
+        # certificate's use cannot be counted against an amount (O618) and takes none.
+        if self.tds_rate_percent == 0:
+            if self.tds_rate_limit is not None:
+                raise ValidationError({"tds_rate_limit": "Nothing is deducted, so nothing is recorded, at a nil rate: "
+                                                         "what a nil-rate certificate has used cannot be counted "
+                                                         "against its amount. Leave the amount empty."})
+        elif self.tds_rate_limit is None:
+            raise ValidationError({"tds_rate_limit": "A lower-deduction certificate's rate applies up to the amount "
+                                                     "it states, and the section's rate past it; give the amount."})
+        elif self.tds_rate_limit <= 0:
+            raise ValidationError({"tds_rate_limit": "A certificate's amount is more than nothing."})
 
     def own_tds_rate_on(self, section, day):
         """

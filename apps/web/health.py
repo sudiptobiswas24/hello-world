@@ -322,20 +322,32 @@ def _own_tds_rates_without_a_basis(day):
     """
     A party's TDS rate of its own entered before the basis was asked (O247): it stands every day, as it did, so a
     lower-deduction certificate entered so goes on deducting at its rate after it lapses. Listed until each says
-    whether it is the deductee's class or a certificate, with a certificate's dates.
+    whether it is the deductee's class or a certificate, with a certificate's dates. And a certificate entered
+    before its amount was asked (O598): its rate goes on to its last day whatever is paid, until the amount is given.
     """
+    from django.db.models import Q
+
     from apps.accounting.models import PartyTaxProfile
 
-    profiles = list(PartyTaxProfile.objects.filter(tds_rate_percent__isnull=False, tds_rate_basis="")
+    no_amount = Q(tds_rate_basis="certificate", tds_rate_limit__isnull=True, tds_rate_percent__gt=0)
+    profiles = list(PartyTaxProfile.objects.filter(tds_rate_percent__isnull=False)
+                    .filter(Q(tds_rate_basis="") | no_amount)
                     .select_related("party", "tds_section").order_by("party__name", "pk"))
-    rows = [{"label": f"{profile.party}: {profile.tds_rate_percent.normalize():f}% under "
-                      f"{profile.tds_section.code if profile.tds_section else 'no section'}, resting on "
-                      f"{profile.tds_rate_reference or 'nothing said'}",
-             "href": f"/settings/gst-registrations/{profile.pk}"} for profile in profiles[:SHOW]]
+
+    def label(profile):
+        said = (f"{profile.party}: {profile.tds_rate_percent.normalize():f}% under "
+                f"{profile.tds_section.code if profile.tds_section else 'no section'}, resting on "
+                f"{profile.tds_rate_reference or 'nothing said'}")
+        return said if profile.tds_rate_basis == "" else f"{said}, with no amount"
+
+    rows = [{"label": label(profile), "href": f"/settings/gst-registrations/{profile.pk}"}
+            for profile in profiles[:SHOW]]
     return _finding(not profiles, len(profiles),
                     "Every TDS rate of a party's own says what it rests on." if not profiles
-                    else f"{len(profiles)} party TDS rate(s) of their own say nothing of what they rest on: each "
-                         "is deducted at every day, a lapsed certificate's included, until it says.",
+                    else f"{len(profiles)} party TDS rate(s) of their own say nothing of what they rest on, or are "
+                         "a certificate with no amount: one resting on nothing is deducted at every day, a lapsed "
+                         "certificate's included, and one with no amount to its last day whatever is paid, until "
+                         "each says.",
                     rows, "/settings/gst-registrations")
 
 
