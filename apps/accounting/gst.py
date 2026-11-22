@@ -330,6 +330,11 @@ def refuse_untaxed_lines(lines, party, what, purchase=False):
     item it varies (taxed_as, O617): a price variation or a rate difference
     whose taxes were cleared in the draft posted untaxed.
 
+    A charge line (freight, packing) is asked of its charge, as an item line of
+    its item (O494, decided by the owner on 22 November 2026): a charge that
+    keeps taxes for the line's side, or for both, bears tax, and its line naming
+    none is refused. Freight that truly bears none is a charge that keeps none.
+
     A line with no tax is lawful elsewhere and is left alone: an item that
     declares none (diesel, a non-GST supply the return puts in table 5); a
     party marked exempt; and on the purchase side, a vendor who is not a
@@ -345,17 +350,29 @@ def refuse_untaxed_lines(lines, party, what, purchase=False):
         return
     if purchase and not charges_gst(party):
         return
-    bare = []
+    bare, kinds = [], set()
     for line in lines:
         item = line.taxed_as() if hasattr(line, "taxed_as") else getattr(line, "item", None)
-        declared = item is not None and (item.purchase_taxes if purchase else item.sales_taxes).exists()
+        charge = getattr(line, "charge", None) if getattr(line, "charge_id", None) else None
+        if item is not None:
+            declared, kind = (item.purchase_taxes if purchase else item.sales_taxes).exists(), "item"
+        elif charge is not None:
+            # As default_taxes reads a charge: the taxes it keeps for this side or for both (O488, O494).
+            declared = charge.taxes.filter(scope__in=("purchase" if purchase else "sales", "both")).exists()
+            kind = "charge"
+        else:
+            declared = False
         if declared and not line.taxes.exists():
             bare.append(line.label())
+            kinds.add(kind)
     if bare:
+        noun = kinds.pop() if len(kinds) == 1 else "item or charge"
+        nouns = {"item": "items", "charge": "charges"}.get(noun, "items and charges")
         raise ValidationError(
             f"{what}: {', '.join(bare)} {'names' if len(bare) == 1 else 'name'} no tax, though "
-            f"{'its item bears' if len(bare) == 1 else 'their items bear'} tax. Give the line its taxes, as the "
-            "item's are; a supply that truly bears none is an item that declares none.")
+            f"{f'its {noun} bears' if len(bare) == 1 else f'their {nouns} bear'} tax. Give the line its taxes, as "
+            f"the {noun}'s are; a supply that truly bears none is {'an' if noun[0] in 'aeiou' else 'a'} {noun} "
+            "that declares none.")
 
 
 class LetterOfUndertaking(AuditModel):
