@@ -103,6 +103,28 @@ class LeadTests(CrmTestCase):
         self.assertEqual(self.dana.post(f"/api/sales/leads/{unowned['id']}/take/").status_code, 404)
         self.assertEqual(self.manager.post(f"/api/sales/leads/{unowned['id']}/take/").status_code, 400)
 
+    def test_a_new_lead_is_taken_up_as_being_worked_and_never_new_again(self):
+        # O571, decided by the owner on 22 November 2026: the one step its status takes by hand.
+        from .crm import Lead
+
+        lead = self.lead()
+        self.assertEqual(self.ravi.post(f"/api/sales/leads/{lead['id']}/work/").status_code, 404)  # not ravi's
+        worked = self.dana.post(f"/api/sales/leads/{lead['id']}/work/")
+        self.assertEqual((worked.status_code, worked.json()["status"]), (200, "working"))
+        again = self.dana.post(f"/api/sales/leads/{lead['id']}/work/")
+        self.assertEqual(again.status_code, 400)
+        self.assertIn("only a new lead is taken up", again.content.decode())
+        # Sent through the record, the status is still the server's.
+        self.assertEqual(self.dana.patch(f"/api/sales/leads/{lead['id']}/", {"status": "new"}, format="json")
+                         .json()["status"], "working")
+        row = Lead.objects.get(pk=lead["id"])
+        row.status = "new"
+        with self.assertRaisesMessage(ValidationError, "never goes back to new"):
+            row.save()
+        lost = self.dana.post(f"/api/sales/leads/{lead['id']}/lose/", {"reason": "Bought elsewhere"}, format="json")
+        self.assertEqual((lost.status_code, lost.json()["status"]), (200, "lost"))
+        self.assertEqual(self.dana.post(f"/api/sales/leads/{lead['id']}/work/").status_code, 400)
+
     def test_lost_with_a_reason_and_then_as_it_was(self):
         lead = self.lead()
         self.assertEqual(self.dana.post(f"/api/sales/leads/{lead['id']}/lose/", {"reason": ""}, format="json").status_code, 400)

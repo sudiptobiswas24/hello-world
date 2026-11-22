@@ -190,6 +190,10 @@ class Lead(AuditModel):
             before = Lead.objects.get(pk=self.pk)
             if not before.is_open():
                 raise ValidationError(f"{self} is {before.get_status_display().lower()}; what it said then stands.")
+            # New to being worked is the one step taken by hand (work(), O571); converting and losing close it.
+            if before.status != self.status and (before.status, self.status) != (LeadStatus.NEW, LeadStatus.WORKING):
+                raise ValidationError({"status": "A new lead is taken up as being worked; it is converted with "
+                                                 "convert() and lost with lose(), and never goes back to new."})
         if not closing and not self.is_open():
             raise ValidationError({"status": "A lead is converted with convert() and lost with lose()."})
         super().save(*args, **kwargs)
@@ -299,6 +303,17 @@ class Lead(AuditModel):
                                     owner=owner_for(user, self.owner) if user is not None else self.owner,
                                     done_on=timezone.localdate())
             return deliver(self, self.email, subject, body, user=user, what=f"Mail '{subject}'")
+
+    @serialised("status")
+    def work(self):
+        """
+        A new lead taken up by its rep: being worked (O571, decided by the owner on 22 November 2026). Nothing set
+        the status before, and the screen's choice was dropped. Only from new: a lead being worked is not new again.
+        """
+        if self.status != LeadStatus.NEW:
+            raise ValidationError(f"{self} is {self.get_status_display().lower()}; only a new lead is taken up.")
+        self.status = LeadStatus.WORKING
+        self.save(update_fields=["status", "updated_at"])
 
     @serialised("status")
     def lose(self, reason):
