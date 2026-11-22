@@ -135,7 +135,10 @@ class ProofOfDeliveryInTheBrowserTests(BrowserTestCase):
         # not read, and the delivery shows its signed copy, which the rep may open but not add to or take off.
         page = self.sign_in(rep, f"/app/sales/orders/{self.sale.pk}")
         expect(page.locator(".doc-head, .doc").first).to_contain_text(self.sale.number)
-        expect(page.get_by_role("region", name="Deliveries")).to_contain_text(self.delivery.number)
+        # A related list is a section under its heading, not a named region.
+        deliveries = page.locator("section.related-list").filter(
+            has=page.get_by_role("heading", name="Deliveries", exact=True))
+        expect(deliveries).to_contain_text(self.delivery.number)
         page.wait_for_load_state("networkidle")
         self.assertEqual(self.problems, [])
         page.goto(f"{self.live_server_url}/app/sales/deliveries/{self.delivery.pk}")
