@@ -1,0 +1,122 @@
+.field {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.label {
+  display: block;
+  margin-bottom: 4px;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  line-height: 16px;
+}
+.labelBrand {
+  color: var(--brand);
+}
+
+.hint {
+  margin-top: 3px;
+  font-size: var(--text-xs);
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+  line-height: 14px;
+}
+
+/* ---- inputs ---- */
+.input,
+.select,
+.textarea {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  font-size: var(--text-base);
+  line-height: 20px;
+  font-variant-numeric: tabular-nums;
+}
+.input:focus,
+.select:focus,
+.textarea:focus {
+  outline: none;
+  border-color: var(--brand);
+}
+.input:disabled,
+.select:disabled {
+  background: var(--surface-sunken);
+  color: var(--muted);
+}
+
+.select {
+  font-size: var(--text-md);
+  cursor: pointer;
+}
+
+.textarea {
+  resize: vertical;
+  font-variant-numeric: normal;
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-size: var(--text-md);
+}
+
+/* emphasised driver input (e.g. target weight / denier) */
+.brand {
+  border-color: var(--brand);
+  background: var(--brand-tint);
+}
+/* a required value is missing */
+.missing {
+  border-color: var(--warn-strong);
+  background: var(--warn-tint);
+}
+
+/* ---- table-cell inputs: borderless until hover/focus ---- */
+.cell {
+  padding: 4px 6px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  font-size: var(--text-base);
+  line-height: 20px;
+  font-variant-numeric: tabular-nums;
+}
+.cell:hover:not(:disabled) {
+  border-color: var(--line-strong);
+}
+.cell:focus {
+  outline: none;
+  border-color: var(--brand);
+  background: var(--surface);
+}
+.cellSelect {
+  padding: 4px;
+  font-size: var(--text-md);
+  cursor: pointer;
+}
+.right {
+  text-align: right;
+}
+
+/* ---- checkbox / toggle row ---- */
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-md);
+  color: var(--ink-2);
+  cursor: pointer;
+  user-select: none;
+}
+.check input {
+  margin: 0;
+  accent-color: var(--brand);
+  width: 14px;
+  height: 14px;
+}

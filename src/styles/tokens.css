@@ -1,0 +1,57 @@
+/*
+ * Design tokens taken from the PP Sacks Calculator design.
+ * Warm neutral "paper" greys, one indigo brand colour, and status colours.
+ */
+:root {
+  /* neutrals */
+  --paper: #FAFAF7;
+  --paper-2: #F7F6F1;
+  --surface: #FFFFFF;
+  --surface-sunken: #F4F3EE;
+  --line: #EBE9E2;
+  --line-soft: #F4F3EE;
+  --line-strong: #DAD7CC;
+  --ink: #18170F;
+  --ink-2: #3B3933;
+  --ink-3: #524F45;
+  --muted: #6F6B5E;
+  --subtle: #918D7E;
+  --faint: #B0AC9E;
+
+  /* brand */
+  --brand: #3D4ED9;
+  --brand-hover: #2F3DBF;
+  --brand-ink: #252F9E;
+  --brand-tint: #EEF0FE;
+  --brand-line: #B8C0F8;
+  --brand-soft: #C7CDF6;
+  --violet: #6B4EE6;
+
+  /* status */
+  --danger: #B42318;
+  --danger-strong: #F04438;
+  --danger-tint: #FEF3F2;
+  --danger-line: #FECDCA;
+  --warn: #B54708;
+  --warn-strong: #F79009;
+  --warn-tint: #FFFAEB;
+  --warn-line: #FEDF89;
+  --ok: #027A48;
+  --ok-tint: #ECFDF3;
+  --ok-line: #ABEFC6;
+
+  /* shape & depth */
+  --radius-sm: 4px;
+  --radius: 8px;
+  --radius-pill: 999px;
+  --shadow-card: 0 1px 2px rgba(20, 20, 24, 0.04);
+
+  /* type */
+  --font-sans: 'Inter Tight', 'Inter', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+  --text-xs: 10px;
+  --text-sm: 11px;
+  --text-md: 12px;
+  --text-base: 13px;
+  --text-lg: 15px;
+}

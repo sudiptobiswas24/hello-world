@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 56" width="220" height="56">
+  <defs>
+    <linearGradient id="bw-grad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#3D4ED9"></stop>
+      <stop offset="100%" stop-color="#6B4EE6"></stop>
+    </linearGradient>
+  </defs>
+  
+  <rect x="0" y="0" width="56" height="56" rx="12" fill="url(#bw-grad)"></rect>
+  <g fill="#FFFFFF" font-family="&#39;Inter Tight&#39;, Inter, sans-serif" font-weight="700">
+    <text x="28" y="36" text-anchor="middle" font-size="22" letter-spacing="-0.02em">BW</text>
+  </g>
+  
+  <text x="68" y="36" font-family="&#39;Inter Tight&#39;, Inter, sans-serif" font-weight="600" font-size="24" fill="#18170F" letter-spacing="-0.02em">Bellwort</text>
+</svg>

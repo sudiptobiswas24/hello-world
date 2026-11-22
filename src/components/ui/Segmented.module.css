@@ -1,0 +1,28 @@
+.group {
+  display: inline-flex;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  overflow: hidden;
+  flex: none;
+}
+
+.option {
+  padding: 6px 14px;
+  border: none;
+  background: var(--surface);
+  font-size: var(--text-md);
+  font-weight: 500;
+  color: var(--ink-3);
+  cursor: pointer;
+  line-height: 16px;
+}
+.active {
+  background: var(--brand);
+  color: #fff;
+  font-weight: 600;
+}
+
+.small .option {
+  padding: 4px 10px;
+  font-size: var(--text-sm);
+}

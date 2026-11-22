@@ -1,0 +1,121 @@
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  cursor: pointer;
+  white-space: nowrap;
+  line-height: 20px;
+  transition: background 120ms, border-color 120ms, color 120ms;
+}
+.button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* sizes */
+.xs {
+  padding: 1px 8px;
+  border-radius: 5px;
+  font-size: var(--text-sm);
+  font-weight: 500;
+  line-height: 18px;
+}
+.sm {
+  padding: 4px 10px;
+  font-size: var(--text-md);
+}
+.md {
+  padding: 6px 14px;
+  font-size: var(--text-base);
+  font-weight: 500;
+}
+
+/* variants */
+.primary {
+  background: var(--brand);
+  color: #fff;
+}
+.primary:hover:not(:disabled) {
+  background: var(--brand-hover);
+}
+
+.secondary {
+  background: var(--surface);
+  border-color: var(--line-strong);
+  color: var(--ink-2);
+}
+.secondary:hover:not(:disabled) {
+  background: var(--surface-sunken);
+}
+
+.danger {
+  background: var(--surface);
+  border-color: var(--line-strong);
+  color: var(--danger);
+}
+.danger:hover:not(:disabled) {
+  background: var(--danger-tint);
+}
+
+.soft {
+  background: var(--brand-tint);
+  border-color: var(--brand-soft);
+  color: var(--brand-ink);
+}
+.soft:hover:not(:disabled) {
+  background: #E3E7FD;
+}
+
+.dashed {
+  background: var(--brand-tint);
+  border: 1px dashed var(--brand-soft);
+  color: var(--brand-ink);
+  border-radius: var(--radius-sm);
+}
+.dashed:hover:not(:disabled) {
+  background: #E3E7FD;
+}
+
+.ghost {
+  background: transparent;
+  color: var(--subtle);
+}
+.ghost:hover:not(:disabled) {
+  background: var(--surface-sunken);
+  color: var(--ink);
+}
+
+.pill {
+  border-radius: var(--radius-pill);
+  background: var(--surface-sunken);
+  border-color: var(--line-strong);
+  color: var(--ink-3);
+}
+.pill:hover:not(:disabled) {
+  background: var(--line);
+}
+
+/* icon-only */
+.icon {
+  padding: 4px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--subtle);
+  line-height: 0;
+}
+.icon:hover:not(:disabled) {
+  color: var(--brand);
+  background: var(--brand-tint);
+}
+.iconDanger:hover:not(:disabled) {
+  color: var(--danger);
+  background: var(--danger-tint);
+}
+.iconNeutral:hover:not(:disabled) {
+  color: var(--ink);
+  background: var(--surface-sunken);
+}
