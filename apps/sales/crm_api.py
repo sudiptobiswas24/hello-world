@@ -93,7 +93,7 @@ class LeadViewSet(OwnedMixin, AuditableViewSetMixin, viewsets.ModelViewSet):
     search_fields = ["number", "company_name", "contact_name", "phone", "email", "city"]
     ordering_fields = ["created_at", "company_name"]
     action_permission_map = {"convert": "sales.add_opportunity", "lose": "sales.change_lead", "send": "sales.change_lead",
-                             "take": "sales.change_lead"}
+                             "take": "sales.change_lead", "work": "sales.change_lead"}
 
     @action(detail=True, methods=["post"])
     def convert(self, request, pk=None):
@@ -106,6 +106,14 @@ class LeadViewSet(OwnedMixin, AuditableViewSetMixin, viewsets.ModelViewSet):
                                   request.data.get("on_date"))
         return Response({"party": party.pk, "party_code": party.code, "opportunity": opportunity.pk,
                          "opportunity_number": opportunity.number, "lead": self.get_serializer(lead).data})
+
+    @action(detail=True, methods=["post"])
+    def work(self, request, pk=None):
+        """New to being worked (O571)."""
+        takes_only(request.data)
+        lead = self.get_object()
+        lead.work()
+        return Response(self.get_serializer(lead).data)
 
     @action(detail=True, methods=["post"])
     def lose(self, request, pk=None):

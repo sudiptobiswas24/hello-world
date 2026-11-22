@@ -16,8 +16,8 @@ export const LEAD_FIELDS: FieldDef[] = [
   { key: "campaign", label: "Campaign", kind: "ref", ref: CAMPAIGN_REF },
   { key: "interest", label: "What they asked for", wide: true, hint: "50 kg cement sacks, twenty thousand a month" },
   { key: "owner", label: "Rep", kind: "pick", pick: REP_PICK, hint: "A rep's leads are their own; empty, any rep may take it", show: (row) => String(row.owner_name || "Nobody yet") },
-  // The server keeps the state and moves it by Take it, Convert and Lost: sent, it was dropped (O565). A new
-  // lead starts at New, shown so and never sent (O588).
+  // The server keeps the state and moves it by Being worked, Convert and Lost: sent, it was dropped (O565). A new
+  // lead starts at New, shown so and never sent (O588); Being worked takes it up (O571).
   { key: "status", label: "Status", kind: "choice", choices: [["new", "New"], ["working", "Being worked"]], readOnly: true, initial: "new" },
   { key: "score_summary", label: "How warm", readOnly: true, existingOnly: true, wide: true,
     show: (row) => (open(row) ? `${String(row.score ?? "")} of 100: ${String(row.score_summary ?? "")}` : String(row.score_summary ?? "")) },
@@ -46,6 +46,7 @@ export default function LeadForm() {
       fields={LEAD_FIELDS}
       actions={[
         { label: "Take it", path: "take", permission: "sales.change_lead", when: (row) => open(row) && !row.owner, done: "Yours" },
+        { label: "Being worked", path: "work", permission: "sales.change_lead", when: (row) => row.status === "new", done: "Being worked" },
         { label: "Email them", path: "send", permission: "sales.change_lead", when: (row) => open(row) && Boolean(row.email),
           done: "Sent", fields: [
             { key: "subject", label: "Subject", kind: "text" },
