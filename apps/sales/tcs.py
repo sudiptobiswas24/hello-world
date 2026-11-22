@@ -11,12 +11,20 @@ them where the section says so: Dr Receivable / Cr TCS payable, its own
 entry, the amount kept on the invoice (Invoice.tcs_amount) so the buyer
 owes it with the invoice. A whole number of rupees, half up, as TDS.
 A declaration covering the day exempts: kept as a row collecting nothing,
-which the return reports as not collected.
+which the return reports as not collected. A buyer's certificate for a
+lower rate (section 206C(9), accounting.TcsCertificate) is collected at its
+rate up to what is left on its amount, and the rest at the section's: an
+invoice crossing it is two rows (O619). Advances counted against the
+invoice are counted on the certificate's row.
 
 The reverses: a credit note on such an invoice gives back the TCS on the
 value it credits (Dr TCS payable / Cr Receivable), at the rate it was
 collected at, the last of the invoice's value taking whatever is left so
-the two never differ by a rupee. A draft collects nothing, so deleting one
+the two never differ by a rupee. Split at a certificate's amount, the part
+past it is given back first, then the certificate's, which frees that much
+of the certificate again: what stands is what the net sale would have
+collected (decided by the owner, 22 November 2026). An advance refunded
+gives back the same way. A draft collects nothing, so deleting one
 gives nothing back. A challan is voided as a TDS challan is, and its rows
 wait for another.
 """
@@ -29,11 +37,11 @@ from django.core.exceptions import ValidationError
 from django.db import models
 from django.db.models import Q
 
-from apps.accounting.models import (Account, JournalEntry, JournalLine, TcsDeclaration, TcsRate, TcsSection,
-                                     round_money)
+from apps.accounting.models import (Account, JournalEntry, JournalLine, TcsCertificate, TcsDeclaration, TcsRate,
+                                     TcsSection, round_money)
 from apps.accounting.restatement import AsksTheRestatement
 from apps.accounting.tds import rupees
-from apps.core.models import AuditModel, Company, serialised, to_date
+from apps.core.models import AuditModel, Company, lock_rows, serialised, to_date
 
 
 from apps.core.models import takes_back  # noqa: E402  (O354: a correction step)
@@ -45,6 +53,11 @@ class TcsCollection(AsksTheRestatement, AuditModel):
     rate = models.ForeignKey(TcsRate, null=True, blank=True, on_delete=models.PROTECT, related_name="collections")
     declaration = models.ForeignKey(TcsDeclaration, null=True, blank=True, on_delete=models.PROTECT,
                                     related_name="collections")
+    certificate = models.ForeignKey(
+        TcsCertificate, null=True, blank=True, on_delete=models.PROTECT, related_name="collections", editable=False,
+        help_text="The buyer's lower-collection certificate (section 206C(9)) this part was collected at (O619). "
+                  "Empty at the section's rate, under a declaration, and on a credit note's row, whose certificate "
+                  "is the row it gives back's.")
     gives_back = models.ForeignKey("self", null=True, blank=True, on_delete=models.PROTECT,
                                    related_name="given_back", help_text="On a credit note: the collection it "
                                                                         "gives part of back.")
@@ -81,8 +94,14 @@ class TcsCollection(AsksTheRestatement, AuditModel):
             models.CheckConstraint(check=Q(amount__gte=0) & Q(base__gte=0), name="tcs_collection_not_negative"),
             models.CheckConstraint(check=Q(amount=0) | Q(posted_account__isnull=False),
                                    name="tcs_collection_keeps_its_account"),
-            models.UniqueConstraint(fields=["invoice", "section"], condition=Q(gives_back__isnull=True),
+            # One collection per invoice and section, which a certificate's amount splits in two at most (O619):
+            # the part at the certificate's rate and the part past it at the section's.
+            models.UniqueConstraint(fields=["invoice", "section"],
+                                    condition=Q(gives_back__isnull=True, certificate__isnull=True),
                                     name="one_tcs_collection_per_invoice_and_section"),
+            models.UniqueConstraint(fields=["invoice", "section"],
+                                    condition=Q(gives_back__isnull=True, certificate__isnull=False),
+                                    name="one_tcs_certificate_part_per_invoice_and_section"),
             # A credit note gives back what its invoice collected and, where the invoice drew down an
             # advance, what the advance collected on that value (O243): once each.
             models.UniqueConstraint(fields=["invoice", "gives_back"], condition=Q(gives_back__isnull=False),
@@ -97,8 +116,8 @@ class TcsCollection(AsksTheRestatement, AuditModel):
             before = TcsCollection.objects.get(pk=self.pk)
             if any(getattr(before, name) != getattr(self, name)
                    for name in ("invoice_id", "section_id", "base", "rate_percent", "amount", "date", "pan",
-                                "declaration_id", "gives_back_id", "posted_account_id", "section_code",
-                                "collection_code", "challan_id")):
+                                "declaration_id", "certificate_id", "gives_back_id", "posted_account_id",
+                                "section_code", "collection_code", "challan_id")):
                 # The challan too: a plain save released a paid row from its challan (review F16).
                 raise ValidationError("What an invoice collected is a fact, and so is the challan that paid it "
                                       "over; a credit note gives it back, and a void frees the challan's rows.")
@@ -223,23 +242,52 @@ def collect(invoice):
         percent = rate.rate_percent if pan else rate.no_pan_rate_percent
         counts = [] if invoice.is_down_payment else _count_advances(invoice, section, base)
         base -= sum((counted for _, counted in counts), Decimal("0"))
-        amount = rupees(base * percent / 100)
         # The account the section names today, read once at the event and kept with the collection.
         account = section.payable_account
-        entry = None
-        if amount:
-            entry = _entry(invoice, account, amount, f"TCS {section.code_on(day)} on {invoice.number}",
-                           give_back=False)
-        row = TcsCollection.objects.create(invoice=invoice, section=section, rate=rate, base=base,
-                                           rate_percent=percent, pan=pan, amount=amount, date=day,
-                                           journal_entry=entry, posted_account=account,
-                                           section_code=section.code_on(day),
-                                           # Read once at the event, as the account is (O245).
-                                           collection_code=section.form_code)
+        # (base, percent, rate row, certificate) of each row: at a buyer's certificate up to what is left on it, the
+        # rest at the section's (O619). Read under the certificate's lock, so two invoices at once cannot both take
+        # what is left. A buyer with no PAN on file is collected on at the rate for no PAN, certificate or none.
+        parts = [(base, percent, rate, None)]
+        certificate = TcsCertificate.covering(invoice.customer, section, day) if pan and base > 0 else None
+        if certificate is not None:
+            lock_rows(certificate)
+            at = min(base, certificate.left())
+            if at > 0:
+                parts = [(at, certificate.rate_percent, None, certificate)] + (
+                    [(base - at, percent, rate, None)] if base > at else [])
+        holder = None
+        for part_base, part_percent, part_rate, part_certificate in parts:
+            amount = rupees(part_base * part_percent / 100)
+            memo = f"TCS {section.code_on(day)} on {invoice.number}"
+            if len(parts) > 1:
+                memo += (f", at certificate {part_certificate.reference}" if part_certificate
+                         else ", past the certificate's amount")
+            entry = _entry(invoice, account, amount, memo, give_back=False) if amount else None
+            row = TcsCollection.objects.create(invoice=invoice, section=section, rate=part_rate,
+                                               certificate=part_certificate, base=part_base,
+                                               rate_percent=part_percent, pan=pan, amount=amount, date=day,
+                                               journal_entry=entry, posted_account=account,
+                                               section_code=section.code_on(day),
+                                               # Read once at the event, as the account is (O245).
+                                               collection_code=section.form_code)
+            # What advances counted goes on the certificate's row, given back last (_give_back).
+            if holder is None or part_certificate is not None:
+                holder = row
+            total += amount
         for advance, counted in counts:
-            TcsAdvanceCount.objects.create(collection=row, advance=advance, base=counted, date=day)
-        total += amount
+            TcsAdvanceCount.objects.create(collection=holder, advance=advance, base=counted, date=day)
     return total
+
+
+def _past_the_amount_first(rows):
+    """
+    `rows` of one document's collections grouped by section, each group in the order a credit gives back: the part
+    at the section's rate, then the certificate's (O619, decided by the owner on 22 November 2026).
+    """
+    groups = defaultdict(list)
+    for row in sorted(rows, key=lambda row: (row.certificate_id is not None, row.pk)):
+        groups[row.section].append(row)
+    return groups
 
 
 def _advance_bases(deposit):
@@ -305,67 +353,75 @@ def _give_back_advance(note):
     if not value:
         return Decimal("0")
     total = Decimal("0")
-    for collected in deposit.tcs_collected.filter(gives_back__isnull=True, amount__gt=0):
-        left = advance_left(collected)
-        base = min(round_money((note.total() - note.tcs_amount) * collected.base / value), left)
-        if base <= 0:
-            continue
-        given = sum((row.amount for row in TcsCollection.objects.filter(gives_back=collected)), Decimal("0"))
-        counted = collected.counted_by.aggregate(total=models.Sum("base"))["total"] or Decimal("0")
-        last = base >= left and not counted
-        amount = collected.amount - given if last else min(rupees(base * collected.rate_percent / 100),
-                                                            collected.amount - given)
-        if amount <= 0:
-            continue
-        entry = _entry(note, collected.posted_account, amount,
-                       f"TCS {collected.section_code} given back by {note.number} on {deposit.number}",
-                       give_back=True)
-        TcsCollection.objects.create(invoice=note, section=collected.section, rate=collected.rate,
-                                     gives_back=collected, base=base, rate_percent=collected.rate_percent,
-                                     pan=collected.pan, amount=amount, date=to_date(note.invoice_date),
-                                     journal_entry=entry, posted_account=collected.posted_account,
-                                     section_code=collected.section_code,
-                                     collection_code=collected.collection_code)
-        total += amount
+    rows = deposit.tcs_collected.filter(gives_back__isnull=True).filter(Q(amount__gt=0) | Q(certificate__isnull=False))
+    for section_rows in _past_the_amount_first(rows).values():
+        # The refund's share of the section's base, given back from the part past a certificate's amount first.
+        wanted = round_money((note.total() - note.tcs_amount) * sum((row.base for row in section_rows), Decimal("0"))
+                             / value)
+        for collected in section_rows:
+            left = advance_left(collected)
+            base = min(wanted, left)
+            if base <= 0:
+                continue
+            wanted -= base
+            given = sum((row.amount for row in TcsCollection.objects.filter(gives_back=collected)), Decimal("0"))
+            counted = collected.counted_by.aggregate(total=models.Sum("base"))["total"] or Decimal("0")
+            last = base >= left and not counted
+            amount = collected.amount - given if last else min(rupees(base * collected.rate_percent / 100),
+                                                                collected.amount - given)
+            total += _give_back_row(note, collected, base, amount, deposit)
     return total
+
+
+def _give_back_row(note, collected, base, amount, original):
+    """
+    A credit note's row giving back `amount` on `base` of `collected`, and its entry. A part at a certificate given
+    back at nothing is a row all the same, without an entry: it frees that much of the certificate (O619).
+    """
+    if amount <= 0 and collected.certificate_id is None:
+        return Decimal("0")
+    amount = max(amount, Decimal("0"))
+    entry = _entry(note, collected.posted_account, amount,
+                   f"TCS {collected.section_code} given back by {note.number} on {original.number}",
+                   give_back=True) if amount else None
+    TcsCollection.objects.create(invoice=note, section=collected.section, rate=collected.rate,
+                                 gives_back=collected, base=base, rate_percent=collected.rate_percent,
+                                 pan=collected.pan, amount=amount, date=to_date(note.invoice_date),
+                                 journal_entry=entry, posted_account=collected.posted_account,
+                                 section_code=collected.section_code,
+                                 collection_code=collected.collection_code)
+    return amount
 
 
 def _give_back(note):
     original = note.credits
     collections = [row for row in original.tcs_collected.filter(gives_back__isnull=True)
-                   if row.amount > 0 or row.counts.exists()]
+                   if row.amount > 0 or row.counts.exists() or row.certificate_id]
     if not collections:
         return Decimal("0")
     bases = _tcs_lines(note)
     total = Decimal("0")
-    for collected in collections:
-        base = bases.get(collected.section, Decimal("0"))
+    for section, section_rows in _past_the_amount_first(collections).items():
+        base = bases.get(section, Decimal("0"))
         if not base:
             continue
-        before = list(TcsCollection.objects.filter(gives_back=collected))
-        given = sum((row.amount for row in before), Decimal("0"))
-        own_left = collected.base - sum((row.base for row in before), Decimal("0"))
-        # What it collected on itself first; past that, the value an advance collected on, which it
-        # releases back to the advance (O243): its refund gives that back, or another invoice counts it.
-        total += _release_counts(collected, note, base - max(min(base, own_left), Decimal("0")))
-        base = max(min(base, own_left), Decimal("0"))
-        if not base:
-            continue
-        # The last of the invoice's value takes what is left: 266 then 797 would give back 1,063 of 1,062.
-        amount = (collected.amount - given if base >= own_left
-                  else min(rupees(base * collected.rate_percent / 100), collected.amount - given))
-        if amount <= 0:
-            continue
-        entry = _entry(note, collected.posted_account, amount,
-                       f"TCS {collected.section_code} given back by {note.number} on {original.number}",
-                       give_back=True)
-        TcsCollection.objects.create(invoice=note, section=collected.section, rate=collected.rate,
-                                     gives_back=collected, base=base, rate_percent=collected.rate_percent,
-                                     pan=collected.pan, amount=amount, date=to_date(note.invoice_date),
-                                     journal_entry=entry, posted_account=collected.posted_account,
-                                     section_code=collected.section_code,
-                                     collection_code=collected.collection_code)
-        total += amount
+        for collected in section_rows:
+            before = list(TcsCollection.objects.filter(gives_back=collected))
+            given = sum((row.amount for row in before), Decimal("0"))
+            own_left = collected.base - sum((row.base for row in before), Decimal("0"))
+            take = max(min(base, own_left), Decimal("0"))
+            # What it collected on itself first; past that, the value an advance collected on, which it
+            # releases back to the advance (O243): its refund gives that back, or another invoice counts it.
+            # Counted on the section's last row, the certificate's where there is one.
+            if collected is section_rows[-1]:
+                total += _release_counts(collected, note, base - take)
+            base -= take
+            if not take:
+                continue
+            # The last of the invoice's value takes what is left: 266 then 797 would give back 1,063 of 1,062.
+            amount = (collected.amount - given if take >= own_left
+                      else min(rupees(take * collected.rate_percent / 100), collected.amount - given))
+            total += _give_back_row(note, collected, take, amount, original)
     return total
 
 
@@ -538,7 +594,8 @@ def tcs_return(start, end):
     start, end = to_date(start), to_date(end)
     rows = []
     for row in (TcsCollection.objects.filter(date__gte=start, date__lte=end)
-                .select_related("invoice__customer", "section", "challan", "declaration", "gives_back__invoice")):
+                .select_related("invoice__customer", "section", "challan", "declaration", "certificate",
+                                "gives_back__invoice", "gives_back__certificate")):
         sign = -1 if row.gives_back_id else 1
         paid = row.is_paid_over()
         rows.append({
@@ -550,6 +607,9 @@ def tcs_return(start, end):
             "paid_on": row.challan.date if paid else None,
             "not_collected": DECLARED if row.declaration_id else "",
             "declaration": str(row.declaration.reference or row.declaration.pk) if row.declaration_id else "",
+            # A lower collection names its certificate (section 206C(9), O619); a give-back, the row's it gives back.
+            "certificate": certificate.reference if (certificate := row.certificate or (
+                row.gives_back.certificate if row.gives_back_id else None)) else "",
             "gives_back": row.gives_back.invoice.number if row.gives_back_id else "",
         })
     return sorted(rows, key=lambda row: (row["section"], row["date"], row["collection"]))

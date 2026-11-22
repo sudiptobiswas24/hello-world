@@ -431,6 +431,195 @@ class AnAdvanceOnAScrapOrderTests(TcsTestCase):
         self.assertEqual((note.tcs_amount, self.ledger("2290")), (D("266"), D("796.00")))
 
 
+class ALowerRateCertificateTests(TcsTestCase):
+    """
+    O619: a buyer's certificate for collection at a lower rate (section 206C(9)), up to its amount; past it the
+    section's rate. Scrap at 1%; a certificate at 0.25% for 1,50,000 for the year. Each invoice is 2,000 kg at 45,
+    1,06,200 with its GST, the base (calc_g57/o619.py):
+      1st  1,06,200 at 0.25% = 265.50 -> 266 (43,800 left)
+      2nd  43,800 at 0.25% = 109.50 -> 110, and 62,400 at 1% = 624: two rows, 734
+      3rd  1,06,200 at 1% = 1,062
+    Credited back, the part past the amount goes first (decided by the owner, 22 November 2026): 500 kg of the 2nd
+    (26,550) gives back 266 at 1%; the other 1,500 kg (79,650) the rest of the 1% part, 358, then the certificate's
+    43,800, 110, which is free again.
+    """
+
+    FROM, TO, CERT = datetime.date(2026, 4, 1), datetime.date(2027, 3, 31), "206C9/2026/03"
+
+    def certificate(self, rate="0.25", amount="150000", party=None, reference=None):
+        from apps.accounting.models import TcsCertificate
+
+        return TcsCertificate.objects.create(party=party or self.mh, section=self.section,
+                                             reference=reference or self.CERT, rate_percent=D(rate),
+                                             valid_from=self.FROM, valid_to=self.TO, amount=D(amount))
+
+    def rows(self, invoice):
+        return [(row.base, row.rate_percent, row.amount, row.certificate.reference if row.certificate_id else "",
+                 row.journal_entry_id is None)
+                for row in invoice.tcs_collected.order_by("pk")]
+
+    def test_what_is_refused(self):
+        from apps.accounting.models import TcsCertificate
+
+        shape = {"party": self.mh, "section": self.section, "reference": "X", "valid_from": self.FROM}
+        for field, wrong, said in [
+                ("amount", {"rate_percent": D("0.25"), "amount": D("0"), "valid_to": self.TO}, "more than nothing"),
+                ("rate_percent", {"rate_percent": D("-1"), "amount": D("1"), "valid_to": self.TO}, "nothing or more"),
+                ("valid_to", {"rate_percent": D("0.25"), "amount": D("1"), "valid_to": datetime.date(2027, 4, 30)},
+                 "one financial year"),
+                ("valid_to", {"rate_percent": D("0.25"), "amount": D("1"), "valid_to": datetime.date(2026, 3, 31)},
+                 "before it starts")]:
+            with self.subTest(said), self.assertRaisesMessage(ValidationError, said):
+                TcsCertificate.objects.create(**shape, **wrong)
+        certificate = self.certificate()
+        self.t1()
+        certificate.amount = D("200000")
+        with self.assertRaisesMessage(ValidationError, "record the officer's new one"):
+            certificate.save()
+        with self.assertRaisesMessage(ValidationError, "it stays"):
+            certificate.delete()
+
+    def test_collected_at_its_rate_up_to_its_amount_then_at_the_sections(self):
+        certificate = self.certificate()
+        first, second, third = self.t1(), self.t1(), self.t1()
+        self.assertEqual(self.rows(first), [(D("106200.00"), D("0.2500"), D("266.00"), self.CERT, False)])
+        self.assertEqual(self.rows(second), [(D("43800.00"), D("0.2500"), D("110.00"), self.CERT, False),
+                                             (D("62400.00"), D("1.0000"), D("624.00"), "", False)])
+        self.assertEqual(self.rows(third), [(D("106200.00"), D("1.0000"), D("1062.00"), "", False)])
+        self.assertEqual([invoice.total() for invoice in (first, second, third)],
+                         [D("106466.00"), D("106934.00"), D("107262.00")])
+        self.assertEqual((self.ledger("2290"), certificate.left()), (D("2062.00"), D("0.00")))
+        # The return lists each part, the lower collection under its certificate.
+        self.assertEqual([(row["invoice"], row["base"], row["amount"], row["certificate"])
+                          for row in tcs_return(datetime.date(2026, 7, 1), datetime.date(2026, 9, 30))], [
+            (first.number, D("106200.00"), D("266.00"), self.CERT),
+            (second.number, D("43800.00"), D("110.00"), self.CERT),
+            (second.number, D("62400.00"), D("624.00"), ""),
+            (third.number, D("106200.00"), D("1062.00"), "")])
+        text = " ".join(" ".join(printed_text(render_invoice_pdf, second)).split())
+        self.assertIn("the buyer's certificate for a lower rate, 206C9/2026/03.", text)
+
+    def test_a_credit_note_gives_back_the_part_past_the_amount_first(self):
+        certificate = self.certificate()
+        self.t1()
+        second = self.t1()
+        first_note = self.credit(second, "500", datetime.date(2026, 9, 20))
+        self.assertEqual([(row.base, row.amount, row.gives_back.certificate_id) for row in first_note.tcs_collected.all()],
+                         [(D("26550.00"), D("266.00"), None)])
+        self.assertEqual(certificate.left(), D("0.00"))
+        rest = self.credit(second, "1500", datetime.date(2026, 9, 25))
+        self.assertEqual(sorted((row.base, row.amount, row.gives_back.certificate_id is not None)
+                                for row in rest.tcs_collected.all()),
+                         [(D("35850.00"), D("358.00"), False), (D("43800.00"), D("110.00"), True)])
+        self.assertEqual((rest.tcs_amount, certificate.left(), self.ledger("2290")),
+                         (D("468.00"), D("43800.00"), D("266.00")))
+        returned = [(row["base"], row["amount"], row["certificate"])
+                    for row in tcs_return(datetime.date(2026, 9, 25), datetime.date(2026, 9, 25))]
+        self.assertEqual(sorted(returned), [(D("-43800.00"), D("-110.00"), self.CERT), (D("-35850.00"), D("-358.00"), "")])
+
+    def test_a_nil_certificate_collects_nothing_on_its_part_and_frees_it_when_credited(self):
+        certificate = self.certificate(rate="0", amount="100000")
+        invoice = self.t1()
+        self.assertEqual(self.rows(invoice), [(D("100000.00"), D("0.0000"), D("0.00"), self.CERT, True),
+                                              (D("6200.00"), D("1.0000"), D("62.00"), "", False)])
+        # No challan pays the part at nil: it collected nothing.
+        challan = TcsChallan.pay(self.section, datetime.date(2026, 9, 1), datetime.date(2026, 10, 7), self.bank,
+                                 "00030", "0510002")
+        self.assertEqual((challan.amount, [row.amount for row in challan.collections.all()]),
+                         (D("62.00"), [D("62.00")]))
+        challan.void(on_date=datetime.date(2026, 10, 8))
+        note = self.credit(invoice, "2000", datetime.date(2026, 10, 10))
+        self.assertEqual(sorted((row.base, row.amount, row.journal_entry_id is None) for row in note.tcs_collected.all()),
+                         [(D("6200.00"), D("62.00"), False), (D("100000.00"), D("0.00"), True)])
+        self.assertEqual((certificate.left(), self.ledger("2290")), (D("100000.00"), D("0")))
+
+    def test_a_buyer_with_no_pan_is_collected_on_at_the_rate_for_no_pan(self):
+        nopan = self.party("NOPAN")
+        self.address(nopan, "4 Station Road", "Nashik", "Maharashtra", "422001")
+        self.certificate(party=nopan)
+        invoice = self.t1(nopan)
+        self.assertEqual(self.rows(invoice), [(D("106200.00"), D("5.0000"), D("5310.00"), "", False)])
+
+    def test_kept_and_read_through_the_api(self):
+        call_command("setup_roles", verbosity=0)
+        controller = User.objects.create_user("controller")
+        controller.groups.add(Group.objects.get(name="Controller"))
+        client = APIClient()
+        client.force_authenticate(controller)
+        made = client.post("/api/accounting/tcs-certificates/", {
+            "party": self.mh.pk, "section": self.section.pk, "reference": self.CERT, "rate_percent": "0.25",
+            "valid_from": "2026-04-01", "valid_to": "2027-03-31", "amount": "150000"}, format="json")
+        self.assertEqual(made.status_code, 201, made.content)
+        refused = client.post("/api/accounting/tcs-certificates/", {
+            "party": self.mh.pk, "section": self.section.pk, "reference": "Y", "rate_percent": "0.25",
+            "valid_from": "2026-04-01", "valid_to": "2027-04-30", "amount": "150000"}, format="json")
+        self.assertEqual(refused.status_code, 400)
+        self.assertIn("one financial year", str(refused.json()))
+        self.t1()
+        read = client.get(f"/api/accounting/tcs-certificates/{made.json()['id']}/").json()
+        self.assertEqual((read["amount"], read["left"]), ("150000.00", "43800.00"))
+        [row] = client.get("/api/sales/tcs-collections/").json()
+        self.assertEqual((row["certificate"], row["amount"]), (made.json()["id"], "266.00"))
+
+
+class ALowerRateCertificateWithAnAdvanceTests(TcsTestCase):
+    """
+    O619 with O243's advance: the order of 2,000 kg at 45 (90,000) takes 30% ahead, 27,000. A certificate at 0.25%
+    for 50,000: the advance collects 27,000 at it, 68; the goods (1,06,200) count the advance and collect on 79,200,
+    23,000 at the certificate (58) and 56,200 at 1% (562): 688 in all, the advance counted on the certificate's row.
+    Credited whole, the 1% part, the certificate's, then the advance drawn: 688 back. A certificate for 20,000: the
+    advance is 20,000 at it (50) and 7,000 at 1% (70); half refunded (13,500) gives back the 7,000 first, 70, then
+    6,500 at 0.25%, 16.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from apps.core.models import Company
+        from apps.sales.models import SalesOrder, SalesOrderLine
+
+        Company.objects.update(customer_deposit_account=Account.objects.create(
+            code="2300", name="Customer deposits", account_type=AccountType.LIABILITY))
+        self.order = SalesOrder.objects.create(customer=self.mh, order_date=DAY, currency=self.inr)
+        SalesOrderLine.objects.create(order=self.order, item=self.scrap, uom=self.scrap.uom, quantity=D("2000"),
+                                      unit_price=D("45"), revenue_account=self.revenue)
+        self.order.confirm()
+
+    goods = AnAdvanceOnAScrapOrderTests.goods
+
+    def certified(self, amount):
+        from apps.accounting.models import TcsCertificate
+
+        certificate = TcsCertificate.objects.create(
+            party=self.mh, section=self.section, reference="206C9/2026/07", rate_percent=D("0.25"),
+            valid_from=datetime.date(2026, 4, 1), valid_to=datetime.date(2027, 3, 31), amount=D(amount))
+        self.advance = self.order.create_down_payment_invoice(self.ar, percent=30)
+        self.advance.post()
+        return certificate
+
+    def test_the_advance_and_the_goods_at_the_certificate_and_all_given_back(self):
+        certificate = self.certified("50000")
+        self.assertEqual([(row.base, row.amount, row.certificate_id) for row in self.advance.tcs_collected.all()],
+                         [(D("27000.00"), D("68.00"), certificate.pk)])
+        invoice = self.goods("2000")
+        rows = list(invoice.tcs_collected.order_by("pk"))
+        self.assertEqual([(row.base, row.amount, row.certificate_id) for row in rows],
+                         [(D("23000.00"), D("58.00"), certificate.pk), (D("56200.00"), D("562.00"), None)])
+        self.assertEqual(([count.base for count in rows[0].counts.all()], rows[1].counts.count()), ([D("27000.00")], 0))
+        self.assertEqual((self.ledger("2290"), certificate.left()), (D("688.00"), D("0.00")))
+        note = self.credit(invoice, "2000", datetime.date(2026, 9, 20))
+        self.assertEqual((note.tcs_amount, self.ledger("2290"), certificate.left()),
+                         (D("688.00"), D("0"), D("50000.00")))
+
+    def test_half_an_advance_past_the_amount_refunded_gives_back_the_part_past_it_first(self):
+        certificate = self.certified("20000")
+        self.assertEqual([(row.base, row.amount, row.certificate_id) for row in self.advance.tcs_collected.order_by("pk")],
+                         [(D("20000.00"), D("50.00"), certificate.pk), (D("7000.00"), D("70.00"), None)])
+        note = self.advance.create_credit_note(on_date=self.advance.invoice_date, amount=D("13500"))
+        self.assertEqual(sorted((row.base, row.amount) for row in note.tcs_collected.all()),
+                         [(D("6500.00"), D("16.00")), (D("7000.00"), D("70.00"))])
+        self.assertEqual((note.tcs_amount, certificate.left()), (D("86.00"), D("6500.00")))
+
+
 class ARowTheUpgradeCouldNotTellTests(TcsTestCase):
     """sales 0072 leaves a row's section empty where the books cannot say it; it is never printed or filed blank."""
 

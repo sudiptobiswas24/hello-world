@@ -29,7 +29,8 @@ class TcsCollectionSerializer(ModelSerializer):
     class Meta:
         model = TcsCollection
         fields = ["id", "invoice", "invoice_number", "buyer_name", "section", "section_code", "rate", "declaration",
-                  "gives_back", "base", "rate_percent", "pan", "amount", "date", "journal_entry", "challan"]
+                  "certificate", "gives_back", "base", "rate_percent", "pan", "amount", "date", "journal_entry",
+                  "challan"]
         read_only_fields = fields
 
 

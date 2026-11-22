@@ -9,7 +9,7 @@ from rest_framework.response import Response
 from apps.core.audit import AuditableViewSetMixin
 
 from .bank_rate import BankRate
-from .tcs import TcsDeclaration, TcsRate, TcsSection
+from .tcs import TcsCertificate, TcsDeclaration, TcsRate, TcsSection
 from .tds import TdsRate, TdsSection
 
 
@@ -141,6 +141,31 @@ class TcsDeclarationSerializer(ModelSerializer):
         fields = ["id", "party", "party_name", "section", "form", "pan", "reference", "received_on", "valid_from",
                   "valid_to"]
         read_only_fields = ["form"]
+
+
+class TcsCertificateSerializer(ModelSerializer):
+    party_name = serializers.CharField(source="party.name", read_only=True)
+    # What is left on its amount today: the part at its rate of the invoices collected on under it, less what
+    # credit notes gave back of them (O619).
+    left = serializers.SerializerMethodField()
+
+    class Meta:
+        model = TcsCertificate
+        fields = ["id", "party", "party_name", "section", "reference", "rate_percent", "valid_from", "valid_to",
+                  "amount", "left"]
+
+    def get_left(self, row):
+        return row.left()
+
+
+class TcsCertificateViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    """A buyer's certificate for collection at a lower rate (section 206C(9)), up to its amount (O619)."""
+
+    queryset = TcsCertificate.objects.select_related("party", "section")
+    serializer_class = TcsCertificateSerializer
+    filter_fields = ["party", "section"]
+    search_fields = ["party__name", "reference"]
+    date_field = "valid_from"
 
 
 class TcsDeclarationViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):

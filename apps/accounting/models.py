@@ -2525,7 +2525,7 @@ from .recurring import RecurringJournal, RecurringJournalLine  # noqa: E402,F401
 from .tds import TdsRate, TdsSection  # noqa: E402,F401
 from .bank_rate import BankRate  # noqa: E402,F401
 from .gst import LetterOfUndertaking  # noqa: E402,F401
-from .tcs import SeededDefault, TcsDeclaration, TcsRate, TcsSection  # noqa: E402,F401
+from .tcs import SeededDefault, TcsCertificate, TcsDeclaration, TcsRate, TcsSection  # noqa: E402,F401
 
 
 # The reference the go-live opening-balances entry carries (imports.importer): by it a second run finds the

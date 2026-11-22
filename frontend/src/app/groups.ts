@@ -56,7 +56,7 @@ export const GROUPS: Record<string, [string, string[]][]> = {
     ["GST", ["gst", "gstr2b", "e-invoices", "eway-bills", "where-goods-went", "ports", "self-invoices", "payment-vouchers", "gst-challans",
       "gst-cash-ledger"]],
     ["TDS and TCS", ["tds-deducted", "tds-challans", "tds-return", "customer-tds", "tcs-collected", "tcs-challans",
-      "tcs-return", "tcs-declarations"]],
+      "tcs-return", "tcs-declarations", "tcs-certificates"]],
     ["Assets", ["assets", "asset-register", "tax-depreciation", "asset-categories"]],
     ["Period end", ["periods", "restatements", "budgets", "bad-debts"]],
     ["Reporting", ["trial-balance", "profit-and-loss", "balance-sheet", "costs-by-centre", "budget-report",

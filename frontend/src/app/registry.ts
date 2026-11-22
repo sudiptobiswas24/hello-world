@@ -982,6 +982,12 @@ export const MODULES: Module[] = [
         detail: () => import("../modules/accounts/TcsDeclarationForm"),
       },
       {
+        path: "tcs-certificates", label: "TCS certificates", permission: "accounting.view_tcscertificate",
+        create: "accounting.add_tcscertificate",
+        keywords: "tcs lower rate collection certificate 206c(9) scrap buyer", load: () => import("../modules/accounts/TcsCertificates"),
+        detail: () => import("../modules/accounts/TcsCertificateForm"),
+      },
+      {
         path: "bank-stock-statement", label: "Bank stock statement", permission: "accounting.view_journalentry",
         keywords: "bank stock statement drawing power cash credit debtors creditors margin",
         load: () => import("../modules/accounts/BankStockStatement"),
