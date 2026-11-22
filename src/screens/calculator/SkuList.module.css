@@ -1,0 +1,282 @@
+/* ================= Sheet ================= */
+.sheetStack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.sheetScroll {
+  overflow: auto;
+  max-height: 248px;
+}
+.sheetScrollFull {
+  max-height: none;
+}
+
+.table {
+  width: 100%;
+  min-width: 1080px;
+}
+
+.th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: rgba(255, 255, 255, 0.97);
+  text-align: left;
+  padding: 9px 6px;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  border-bottom: 1px solid var(--line);
+}
+.thJob {
+  padding: 9px 10px 9px 14px;
+  white-space: nowrap;
+}
+.thType {
+  padding: 9px 10px;
+}
+.thLeft {
+  text-align: left;
+}
+.thRight {
+  text-align: right;
+}
+.thActions {
+  padding: 1px;
+}
+
+.tr {
+  cursor: pointer;
+}
+.sel {
+  background: var(--brand-tint);
+}
+.err {
+  background: var(--danger-tint);
+}
+
+.tr td {
+  border-bottom: 1px solid var(--line-soft);
+}
+.tdName {
+  padding: 3px 6px 3px 10px;
+}
+.tdType {
+  padding: 3px 6px;
+}
+.tdUnit,
+.tdBasis {
+  padding: 3px 4px;
+}
+.tdNum {
+  padding: 3px 4px;
+  text-align: right;
+}
+.nowrap {
+  white-space: nowrap;
+}
+.tdStat {
+  padding: 3px 10px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-3);
+}
+.cost {
+  color: inherit;
+  font-weight: 500;
+}
+.quote {
+  font-weight: 600;
+  color: var(--brand-ink);
+}
+.tdActions {
+  padding: 3px 10px 3px 2px;
+  white-space: nowrap;
+}
+
+/* inline-editable cells (sizes from the design) */
+.nameCell {
+  width: 130px;
+  font-weight: 500;
+}
+.typeCell {
+  max-width: 150px;
+}
+.tdUnit .unitCell {
+  padding: 4px 2px;
+}
+.dimCell {
+  width: 52px;
+}
+.tdNum .meshCell {
+  width: 38px;
+  padding: 4px;
+}
+.qtyCell {
+  width: 72px;
+}
+.times {
+  color: var(--subtle);
+}
+
+/* the driver value (target weight or denier) is always boxed */
+.driverCell {
+  width: 56px;
+  padding: 4px 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  font-size: var(--text-base);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.driverCell:focus {
+  outline: none;
+  border-color: var(--brand);
+}
+
+.modePill {
+  padding: 3px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-pill);
+  background: var(--surface-sunken);
+  font-size: var(--text-sm);
+  color: var(--ink-3);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.modePill:hover {
+  background: var(--line);
+}
+
+/* ================= Split ================= */
+.splitRow {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  width: 100%;
+  padding: 10px 14px;
+  border: none;
+  border-bottom: 1px solid var(--line-soft);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+.splitRow:focus-visible {
+  outline-offset: -2px;
+}
+.splitRow:hover {
+  background: var(--surface-sunken);
+}
+
+.splitMain {
+  display: block;
+  min-width: 0;
+}
+.splitName {
+  display: block;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.splitSub {
+  display: block;
+  font-size: var(--text-sm);
+  color: var(--muted);
+}
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+.splitSide {
+  display: block;
+  text-align: right;
+  flex: none;
+}
+.splitQuote {
+  display: block;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--brand-ink);
+}
+
+/* ================= Cards ================= */
+.cardsGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 12px;
+}
+
+.bagCard {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 14px;
+  box-shadow: var(--shadow-card);
+  cursor: pointer;
+}
+.bagCardSel {
+  border-color: var(--brand);
+}
+.bagCardErr {
+  border-color: var(--danger-strong);
+}
+.bagCard:hover {
+  border-color: var(--brand-line);
+}
+
+.cardHead {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: baseline;
+}
+.cardName {
+  font-weight: 600;
+}
+.cardType {
+  font-size: var(--text-sm);
+  color: var(--muted);
+  white-space: nowrap;
+}
+.cardSub {
+  display: block;
+  font-size: var(--text-md);
+  color: var(--muted);
+  margin-top: 2px;
+}
+.cardStats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 12px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line-soft);
+  font-variant-numeric: tabular-nums;
+}
+.stat,
+.statLabel,
+.statValue {
+  display: block;
+}
+.statLabel {
+  font-size: var(--text-xs);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--subtle);
+}
+.statValue {
+  font-weight: 500;
+}
+.statStrong {
+  font-weight: 600;
+  color: var(--brand-ink);
+}

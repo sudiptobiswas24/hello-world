@@ -12,7 +12,8 @@ export type FoldType = 'SFSS' | 'SFDS' | 'DFSS' | 'DFDS' | 'EZWF' | 'EZWOF';
 export type CalcMode = 'wt' | 'dn';
 export type LamSide = 'none' | 'single' | 'double';
 export type BoppVariant = 'none' | 'SS' | 'BS';
-export type Metallic = 'none' | 'metallic' | 'window';
+/** 'window' film is costed at half weight; 'metallic' is a legacy value treated like 'full'. */
+export type Metallic = 'none' | 'window' | 'full' | 'metallic';
 export type YesNo = 'yes' | 'no';
 export type Layout = 'sheet' | 'split' | 'cards';
 export type Tab = 'calc' | 'rates' | 'settings' | 'mach' | 'job' | 'quote';
@@ -90,7 +91,7 @@ export interface Sku {
   boppVariant: BoppVariant;
   boppW: NumInput;
   boppMic: NumInput;
-  finish: 'glossy' | 'matt';
+  finish: 'glossy' | 'matt' | 'metallic';
   metallic: Metallic;
   metW: NumInput;
   metMic: NumInput;

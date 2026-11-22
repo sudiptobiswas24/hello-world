@@ -1,0 +1,150 @@
+/* ---------- header: name + actions ---------- */
+.header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.nameInput {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  font-size: var(--text-lg);
+  font-weight: 600;
+}
+.nameInput:hover {
+  border-color: var(--line-strong);
+}
+.nameInput:focus {
+  outline: none;
+  border-color: var(--brand);
+  background: var(--surface);
+}
+
+.btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  font-size: var(--text-md);
+  cursor: pointer;
+}
+.btn:hover {
+  background: var(--surface-sunken);
+}
+.btnMedium {
+  font-weight: 500;
+}
+.btnDanger {
+  color: var(--danger);
+}
+.btnDanger:hover {
+  background: var(--danger-tint);
+}
+
+.save {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border: none;
+  border-radius: var(--radius);
+  background: var(--brand);
+  color: #fff;
+  font-size: var(--text-md);
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 120ms;
+}
+.saved {
+  background: var(--ok);
+}
+.save:hover {
+  background: var(--brand-hover);
+}
+
+.close {
+  padding: 5px 8px;
+  border: none;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--subtle);
+  font-size: 14px;
+  line-height: 14px;
+  cursor: pointer;
+}
+.close:hover {
+  background: var(--surface-sunken);
+  color: var(--ink);
+}
+
+/* ---------- lock banner + issues ---------- */
+.lockBanner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  background: var(--warn-tint);
+  border-bottom: 1px solid var(--warn-line);
+  font-size: var(--text-md);
+  color: var(--warn);
+}
+.lockBanner svg {
+  flex: none;
+}
+
+.issues {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 12px 16px;
+  list-style: none;
+  border-bottom: 1px solid var(--line);
+}
+.issue {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  padding: 7px 12px;
+  border-radius: var(--radius);
+  font-size: var(--text-md);
+  line-height: 17px;
+}
+.issueError {
+  background: var(--danger-tint);
+  color: var(--danger);
+}
+.issueWarn {
+  background: var(--warn-tint);
+  color: var(--warn);
+}
+.issueTag {
+  font-weight: 600;
+  flex: none;
+}
+
+/* ---------- body: spec form + results ---------- */
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px 16px;
+}
+.bodyLocked {
+  pointer-events: none;
+  opacity: 0.6;
+}
+
+.echo {
+  font-size: var(--text-md);
+  color: var(--muted);
+}

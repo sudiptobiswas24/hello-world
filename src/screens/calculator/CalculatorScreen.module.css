@@ -1,0 +1,84 @@
+/* toolbar: layout switch · count · New bag spec · Expand */
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+/* segmented options inherit the app's 20px line-height in the design */
+.layoutSwitch button {
+  line-height: 20px;
+}
+
+.count {
+  color: var(--muted);
+  font-size: var(--text-md);
+}
+
+.spacer {
+  flex: 1;
+}
+
+.newBtn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border: none;
+  border-radius: var(--radius);
+  background: var(--brand);
+  color: #fff;
+  font-weight: 500;
+  font-size: var(--text-base);
+  cursor: pointer;
+}
+.newBtn:hover {
+  background: var(--brand-hover);
+}
+
+.expandBtn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  font-size: var(--text-md);
+  font-weight: 500;
+  color: var(--ink-3);
+  cursor: pointer;
+}
+.expandBtn:hover {
+  background: var(--surface-sunken);
+}
+
+/* list + detail arrangement */
+.wrapSplit {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+}
+.wrapStack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.listSplit {
+  width: 340px;
+  flex: none;
+}
+.listStack {
+  width: 100%;
+}
+
+.detailSplit {
+  flex: 1;
+  min-width: 0;
+}
+.detailStack {
+  width: 100%;
+  max-width: 960px;
+}

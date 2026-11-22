@@ -1,0 +1,213 @@
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 14px;
+}
+
+.grow {
+  flex: 1;
+}
+
+/* "Tape plant · Blend ₹ x / kg · + Add" */
+.head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.headTitle {
+  margin: 0;
+  font-size: var(--text-md);
+  font-weight: 600;
+  color: var(--ink-2);
+}
+.blend {
+  font-size: var(--text-md);
+  color: var(--muted);
+}
+.addBtn {
+  padding: 3px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--surface);
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+.addBtn:hover {
+  background: var(--surface-sunken);
+}
+
+/* brand-tinted suggestion strip (ash → CC hint, recommended mix) */
+.hintBox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+  padding: 6px 8px;
+  background: var(--brand-tint);
+  border: 1px solid var(--brand-soft);
+  border-radius: 6px;
+  font-size: var(--text-sm);
+  color: var(--brand-ink);
+}
+.recBox {
+  margin-top: 6px;
+  margin-bottom: 0;
+}
+.applyBtn {
+  padding: 2px 8px;
+  border: none;
+  border-radius: 5px;
+  background: var(--brand);
+  color: #fff;
+  font-size: var(--text-sm);
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.applyBtn:hover {
+  background: var(--brand-hover);
+}
+
+/* blend rows */
+.table {
+  width: 100%;
+}
+.table td {
+  border-bottom: 1px solid var(--line-soft);
+}
+.tdSel {
+  padding: 3px 4px 3px 0;
+}
+.tdSel select {
+  padding: 4px 6px;
+}
+.tdWt {
+  width: 76px;
+  padding: 3px 4px;
+}
+.tdWt input {
+  padding: 4px 6px;
+  text-align: right;
+}
+.tdPct {
+  width: 52px;
+  padding: 3px 4px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-3);
+  font-size: var(--text-md);
+}
+.tdDel {
+  width: 24px;
+  padding: 3px 0 3px 2px;
+}
+.delBtn {
+  padding: 3px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--subtle);
+  cursor: pointer;
+}
+.delBtn:hover {
+  color: var(--danger);
+  background: var(--danger-tint);
+}
+
+/* mix analysis */
+.analysis {
+  margin-top: 8px;
+  padding: 8px 10px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.anaHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+.anaTitle {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.grade {
+  padding: 1px 8px;
+  border-radius: var(--radius-pill);
+  font-size: 10.5px;
+  font-weight: 600;
+}
+.gradeStandard {
+  background: var(--ok-tint);
+  color: var(--ok);
+}
+.gradeLocal {
+  background: var(--warn-tint);
+  color: var(--warn);
+}
+.gradeNone {
+  background: var(--surface-sunken);
+  color: var(--muted);
+}
+.stats {
+  font-size: var(--text-sm);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  cursor: default;
+}
+
+.findings {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.finding {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 3px 0;
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+.dot {
+  margin-top: 5px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.dotError {
+  background: var(--danger);
+}
+.dotWarn {
+  background: var(--warn);
+}
+.dotInfo {
+  background: var(--muted);
+}
+.dotGood {
+  background: var(--ok);
+}
+.findingMsg {
+  flex: 1;
+  color: var(--ink-2);
+}
+.fixBtn {
+  padding: 2px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  background: var(--surface);
+  font-size: 10.5px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.fixBtn:hover {
+  background: var(--surface-sunken);
+}

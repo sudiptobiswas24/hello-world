@@ -1,0 +1,436 @@
+/*
+ * Spec form (detail card body). Values follow the design: 11px uppercase
+ * labels, 34px inputs, grids that auto-fit per section.
+ */
+
+/* layout-neutral wrapper so the sections stay direct flex items of the card body */
+.form {
+  display: contents;
+}
+/* labels inherit the app's 20px line-height in the design */
+.form label {
+  line-height: 20px;
+}
+
+/* ---------- generic pieces ---------- */
+.lbl {
+  margin-bottom: 4px;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.subLabel {
+  display: block;
+  margin-bottom: 4px;
+  font-size: var(--text-xs);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--subtle);
+}
+
+/* unit equivalents under an input ("= 457 mm") */
+.eq {
+  margin-top: 3px;
+  font-size: var(--text-xs);
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/* QC predictions under an input */
+.pred {
+  margin-top: 3px;
+  font-size: var(--text-sm);
+  color: var(--subtle);
+  font-variant-numeric: tabular-nums;
+  cursor: default;
+}
+.predNowrap {
+  white-space: nowrap;
+}
+.toneOk {
+  color: var(--ok);
+}
+.toneWarn {
+  color: var(--warn);
+}
+.toneSubtle {
+  color: var(--subtle);
+}
+
+.full {
+  grid-column: 1 / -1;
+}
+.span2 {
+  grid-column: span 2;
+}
+
+/* ---------- grids ---------- */
+.grid {
+  display: grid;
+  gap: 10px;
+}
+/* dimensions & weave. Deviation: the design's 96px tracks let the 130px-min
+   Fill capacity / Bottom fold cells overlap their neighbours; 142px (130 + the
+   fold cell's 12px margin) keeps every cell inside its track */
+.g96 {
+  grid-template-columns: repeat(auto-fit, minmax(142px, 1fr));
+}
+.g100 {
+  grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
+}
+.g110 {
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+}
+.g120 {
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+}
+.g130 {
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+}
+.indent {
+  padding-left: 24px;
+}
+
+/* ---------- job row ---------- */
+.jobRow {
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
+  flex-wrap: wrap;
+}
+.jobRow select {
+  font-size: var(--text-base);
+}
+.jobIdField {
+  width: 96px;
+}
+.dateField input {
+  width: auto;
+  padding: 5px 8px;
+  font-size: var(--text-md);
+}
+.jobRow > .grow {
+  flex: 1;
+  min-width: 150px;
+}
+.jobRow > .typeField {
+  min-width: 170px;
+}
+.unitField select {
+  width: auto;
+}
+
+/* "Weight → GSM / Denier → weight" switch */
+.modeSeg button {
+  padding: 6px 12px;
+  line-height: 20px;
+  font-weight: 400;
+}
+.modeSeg button[aria-pressed='true'] {
+  font-weight: 600;
+}
+
+/* ---------- dimensions ---------- */
+.grid > .minw130 {
+  min-width: 130px;
+}
+.grid > .minw110 {
+  min-width: 110px;
+}
+.grid > .foldCell {
+  min-width: 130px;
+  margin-right: 12px;
+}
+.gussetRow {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.gussetRow select {
+  width: auto;
+  padding: 6px 4px;
+}
+
+/* ---------- films ---------- */
+.recBtn {
+  align-self: flex-start;
+  margin-top: 4px;
+  padding: 2px 8px;
+  border: 1px solid var(--brand-soft);
+  border-radius: 5px;
+  background: var(--brand-tint);
+  font-size: var(--text-sm);
+  color: var(--brand-ink);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.recBtn:hover {
+  background: #DDE1FB;
+}
+.filmNote {
+  margin-top: 6px;
+  font-size: var(--text-sm);
+  color: var(--subtle);
+}
+
+/* ---------- print / ink ---------- */
+.inkPills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.inkPill {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  font-size: var(--text-md);
+  cursor: pointer;
+}
+.inkPill:hover {
+  background: var(--surface-sunken);
+}
+.inkPill input,
+.checkRow input {
+  accent-color: var(--brand);
+}
+.inkCodes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+.inkCode {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.inkCodeName {
+  font-size: var(--text-sm);
+  color: var(--muted);
+  white-space: nowrap;
+}
+.codeInput {
+  width: 84px;
+  padding: 3px 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  font-size: var(--text-sm);
+  font-family: var(--font-mono);
+}
+.codeInput:focus {
+  outline: none;
+  border-color: var(--brand);
+}
+
+/* ---------- liner / handle / yarn ---------- */
+.stack12 {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.checkRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+  font-size: var(--text-md);
+  font-weight: 600;
+  color: var(--ink-2);
+}
+.subHead {
+  margin-bottom: 6px;
+  font-size: var(--text-md);
+  font-weight: 600;
+  color: var(--ink-2);
+}
+.linerCalc {
+  padding: 6px 8px;
+  background: var(--surface-sunken);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-md);
+  color: var(--ink-3);
+}
+.yarnList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.yarnItem {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.yarnItem input {
+  width: 112px;
+}
+.removeX {
+  margin-left: 4px;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--subtle);
+  font-size: var(--text-base);
+  line-height: 1;
+  cursor: pointer;
+}
+.removeX:hover {
+  background: var(--surface-sunken);
+  color: var(--danger);
+}
+.dashedBtn {
+  padding: 5px 10px;
+  border: 1px dashed var(--brand-soft);
+  border-radius: var(--radius-sm);
+  background: var(--brand-tint);
+  font-size: var(--text-sm);
+  color: var(--brand-ink);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.dashedBtn:hover {
+  background: #DDE1FB;
+}
+
+/* ---------- order & QC ---------- */
+.blendBox {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  min-height: 20px;
+  padding: 6px 8px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-2);
+  cursor: default;
+}
+.strong {
+  font-weight: 600;
+}
+.blendOther {
+  color: var(--subtle);
+}
+.modelRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.modelNote {
+  flex: 1;
+  font-size: var(--text-sm);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.tinyBtn {
+  padding: 3px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  background: var(--surface);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.tinyBtn:hover {
+  background: var(--surface-sunken);
+}
+
+/* ---------- bag images ---------- */
+.imgHead {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.imgTitle {
+  margin: 0;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--subtle);
+}
+.spacer {
+  flex: 1;
+}
+.imgCount {
+  font-size: var(--text-sm);
+  color: var(--subtle);
+}
+.attachBtn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  font-size: var(--text-md);
+  cursor: pointer;
+}
+.attachBtn:hover {
+  background: var(--surface-sunken);
+}
+.imgGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  gap: 10px;
+}
+.imgTile {
+  position: relative;
+  height: 110px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--surface-sunken);
+}
+.imgFill {
+  width: 100%;
+  height: 100%;
+  background-size: cover;
+  background-position: center;
+}
+.imgDel {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 6px;
+  background: rgba(20, 20, 24, 0.55);
+  color: #fff;
+  font-size: var(--text-base);
+  line-height: 1;
+  cursor: pointer;
+}
+.imgDel:hover {
+  background: var(--danger);
+}
