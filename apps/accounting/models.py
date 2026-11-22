@@ -1152,8 +1152,8 @@ class PartyTaxProfile(AuditModel):
     tds_rate_limit = models.DecimalField(
         max_digits=18, decimal_places=2, null=True, blank=True,
         help_text="The amount a certificate's rate applies up to, as the certificate states (section 197): past what "
-                  "is deducted at it between its days, the section's rate applies (O598). Empty on a nil-rate "
-                  "certificate, and on one entered before the amount was asked, which Health lists.")
+                  "is deducted at it between its days, the section's rate applies (O598), a nil rate's too (O618). Empty "
+                  "only on one entered before the amount was asked, which Health lists.")
     msme_category = models.CharField(
         max_length=8, blank=True, choices=[("micro", "Micro"), ("small", "Small"), ("medium", "Medium")],
         help_text="As its Udyam registration says. A micro or small vendor is paid within 45 days, or "
@@ -1249,14 +1249,9 @@ class PartyTaxProfile(AuditModel):
             raise ValidationError({"tds_rate_until": f"A certificate is issued for one financial year: this one "
                                                      f"starts in {start.year}-{end:%y}, so it ends by "
                                                      f"{end:%d %b %Y}."})
-        # Its rate applies up to the amount it states (O598). Nothing is recorded at a nil rate, so a nil-rate
-        # certificate's use cannot be counted against an amount (O618) and takes none.
-        if self.tds_rate_percent == 0:
-            if self.tds_rate_limit is not None:
-                raise ValidationError({"tds_rate_limit": "Nothing is deducted, so nothing is recorded, at a nil rate: "
-                                                         "what a nil-rate certificate has used cannot be counted "
-                                                         "against its amount. Leave the amount empty."})
-        elif self.tds_rate_limit is None:
+        # Its rate applies up to the amount it states (O598), a nil rate's as well: what is paid under it is recorded
+        # at nothing and counted against the amount (O618).
+        if self.tds_rate_limit is None:
             raise ValidationError({"tds_rate_limit": "A lower-deduction certificate's rate applies up to the amount "
                                                      "it states, and the section's rate past it; give the amount."})
         elif self.tds_rate_limit <= 0:

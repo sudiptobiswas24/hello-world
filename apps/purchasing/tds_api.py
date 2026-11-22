@@ -22,17 +22,22 @@ class TdsDeductionSerializer(ModelSerializer):
     vendor_name = serializers.CharField(source="bill.vendor.name", read_only=True)
     section_code = serializers.CharField(source="section.code", read_only=True)
     challan_label = serializers.SerializerMethodField()
-    reversed = serializers.BooleanField(source="reversed_entry_id", read_only=True)
+    # Yes or no: a standing row's empty day read through a BooleanField came out as null, not false.
+    reversed = serializers.SerializerMethodField()
 
     class Meta:
         model = TdsDeduction
         fields = ["id", "bill", "bill_number", "vendor_name", "section", "section_code", "base", "rate_percent",
-                  "pan", "certificate", "amount", "date", "covered_bills", "journal_entry", "reversed_entry", "reversed",
+                  "pan", "certificate", "amount", "date", "covered_bills", "journal_entry", "reversed_entry", "reversed_on",
+                  "reversed",
                   "challan", "challan_label"]
         read_only_fields = fields
 
     def get_challan_label(self, row):
         return str(row.challan) if row.is_paid_over() else ""
+
+    def get_reversed(self, row):
+        return row.reversed_on is not None
 
 
 class TdsDeductionViewSet(viewsets.ReadOnlyModelViewSet):
@@ -40,7 +45,8 @@ class TdsDeductionViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = TdsDeduction.objects.select_related("bill__vendor", "section", "challan").prefetch_related(
         "covered_bills")
     serializer_class = TdsDeductionSerializer
-    filter_fields = ["bill", "section", "challan", "reversed_entry__isnull"]
+    # Standing is not reversed on any day: a row at a nil rate has no reversal entry to look for (O618).
+    filter_fields = ["bill", "section", "challan", "reversed_on__isnull"]
     search_fields = ["bill__number", "bill__vendor__name", "pan"]
     date_field = "date"
     # Undoing a deduction posts against the bill it came from: the bill poster's decision, never
