@@ -329,7 +329,7 @@ def _own_tds_rates_without_a_basis(day):
 
     from apps.accounting.models import PartyTaxProfile
 
-    no_amount = Q(tds_rate_basis="certificate", tds_rate_limit__isnull=True, tds_rate_percent__gt=0)
+    no_amount = Q(tds_rate_basis="certificate", tds_rate_limit__isnull=True)
     profiles = list(PartyTaxProfile.objects.filter(tds_rate_percent__isnull=False)
                     .filter(Q(tds_rate_basis="") | no_amount)
                     .select_related("party", "tds_section").order_by("party__name", "pk"))

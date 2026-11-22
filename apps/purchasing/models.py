@@ -4058,6 +4058,8 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxesTakenUnder, TaxedDocumentMix
             rows.append((row.date, row.amount, [row.journal_entry, row.fx_entry],
                          f"prepayment {row.prepayment.number} drawn"))
         for row in self.tds_deductions.all():
+            if row.journal_entry_id is None:
+                continue  # at a certificate's nil rate: nothing deducted, nothing posted (O618)
             rows.append((row.date, row.amount, [row.journal_entry], "TDS deducted"))
             if row.reversed_entry_id:
                 rows.append((row.reversed_entry.date, -row.amount, [row.reversed_entry], "TDS reversed"))
