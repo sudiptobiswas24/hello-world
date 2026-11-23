@@ -50,6 +50,53 @@ pg_isready -q || service postgresql start                              # role er
 
 ## 2. Next steps, in order
 
+**g56 is pushed (3b130d6, 23 November 2026), all six lanes green on one tip (gated as edac0b0).** Eleven commits on
+3653f56: two of the register's rows that waited on nobody (O598, O618), the TCS mirror of the first (O619), and the
+seven rows the owner decided on 22 November, each as recommended: O558, O494, O557, O619's credit order, O571, O352,
+O448, and O312, which was found built already. The gate was started five times: twice as rows joined it (10:58 and
+12:46, to share one migration lane), once after the third run found one browser test wrong (the tenth commit), once
+after the machine restarted during the migration lane (down from about 18:20 on the 22nd to 12:31 on the 23rd), and
+once more because sales's migration tests, run beside the lane to save time as in g55, ran the machine out of memory:
+the kernel killed a sales worker (3.6 GiB) and an inventory one (5.0 GiB) at about 16:00, and each run waited for its
+lost worker until its timeout (the parallel runner never notices a worker killed). The lane went on to pass the apps
+after inventory alone, sales's 17 among them, and inventory's eleven passed alone on the restart (4,060 s). Nothing
+runs beside the migration lane now: one of its workers can hold 5 GiB, and two runs of two workers do not fit in the
+machine's 16. Lanes and apps that had passed on the tip were not run again.
+
+g56:
+- O598: a section 197 certificate's rate applies up to the amount it states (PartyTaxProfile.tds_rate_limit,
+  accounting 0042). A bill crossing what is left is deducted in two rows, at the certificate and past it at the
+  section's confirmed rate; the two are one deduction, reversed and paid over together (purchasing 0097). Posting
+  needs the section's rate only past the amount.
+- O618: a nil-rate certificate records each payment it covers as a row at nothing with no entry (purchasing 0098),
+  counted against its amount, listed in the return under it, and paid by no challan. Every reversal now keeps its
+  day (reversed_on), filled for past ones; going back is refused while a row at nil exists.
+- O619: a scrap buyer's lower-collection certificate (206C(9), accounting.TcsCertificate, accounting 0044, sales
+  0090) collects at its rate up to its amount; an invoice crossing it is two rows; advances count on the
+  certificate's row; a credit gives back the part past the amount first (decided), freeing the certificate after.
+  Screens keep it with what is left; the return and the paper name it.
+- O558: the Sales Rep role reads its own customers' deliveries and proof of delivery; it ships nothing.
+- O494: a charge line naming no tax is refused, as an item line is, when its charge keeps tax for that side.
+- O557: the dispatch board runs a crewed machine on its crewed shifts, the day's first first, up to its hours a
+  day: the minutes capacity counts.
+- O571: a rep takes up a new lead as being worked (Lead.work); save() refuses any other move.
+- O352: whoever reads the books is told an order's margin, as an approver is; the Controller reads sales orders and
+  sees the margin on the order page, and approves nothing.
+- O448: a return after a goodwill credit of part gives back its goods' share of what is left, sales and purchasing
+  (priced_within); on a purchase return the accrual comes back whole and the gap is price variance.
+- O312: timesheets were built in a56f5eb (O474), screens, roles and the pay run's approved hours; the row was never
+  taken off. The owner says some people are paid by the hour, so they are needed: closed with that evidence.
+
+Counts: Asia/Kolkata 9,098 (254 skipped), PostgreSQL 4,261 + 3,706 + 1,131 = 9,098, migration-tagged 66 of 66
+and the one PostgreSQL-only, vitest 91.
+
+Next: O620 (a rep is told an order's margin, as the cost sheets they quote from tell them; decided by the owner on 23
+November) is committed (a397905 on the dev tree) and gates as g57 on this entry's commit; it adds no migration, so the
+migration lane has nothing to run. After it nothing on the register waits on nobody. What is left waits on the tax
+adviser or the accountant (O153, O166, O214, O224, O240, O385, O387, O449, O500, O534, O535, O536, O538, O540, O559,
+O561, O562, O563), or recurs only as a test that a machine's load decided (O346, O564, O592, O595), or is a probe or
+sentinel item (O375, O377, O378, O381, O382, O384), or is minor (O248, O351, O389, O391, O550, O553).
+
 **g55 is pushed (bac7b9d, 22 November 2026), all six lanes green on one tip (gated as 84dc776).** Six commits on
 2f237a8. The first is O614 and O615, decided by the owner on 21 November as recommended: journals typed through a bank
 are matched like any movement, and a bank is reconciled from a day, with a list of what was outstanding then. The second
@@ -1363,6 +1410,15 @@ built.
 - **Agents and gates.** Fix agents work on their own branches. One
   integrator reviews and gates. A gate runs on the newest commit and
   covers everything pushed with it.
+- **A lower-rate certificate applies up to its amount** (TDS section 197, O598, O618; TCS 206C(9), O619). Past it the
+  section's rate applies, in a second row. A nil rate is recorded at nothing and counted. A credit on a TCS invoice
+  split at a certificate gives back the part past the amount first (owner, 22 November 2026).
+- **Decided by the owner on 22 November 2026, each as recommended:** a charge line bears its charge's GST as an item
+  line bears its item's (O494); the dispatch board runs a crewed machine on its crewed shifts, up to its hours
+  (O557); a Sales Rep reads its own customers' deliveries (O558); a rep moves a lead from New to Being worked, and
+  only that step by hand (O571); whoever reads the books sees an order's margin and the Controller approves nothing
+  (O352); a return after a goodwill credit of part gives back its goods' share of what is left (O448); some people
+  are paid by the hour, so timesheets stay (O312).
 
 ## 5. Loose ends
 
