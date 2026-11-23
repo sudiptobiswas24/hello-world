@@ -949,7 +949,8 @@ class ACutIsAskedTheMarginFloorTests(TradeRuleCase):
             widgets.save()
         with self.assertRaises(ValidationError) as refused1000:
             order.lines.get(item=self.item).delete()
-        # In full for whoever may approve; anyone else reads the floor alone (O299).
+        # In full for whoever is told cost (approves, reads the books or cost sheets); anyone else reads the floor alone
+        # (O299, O620).
         self.assertIn("Gross margin is 17.82%, below the 40.00% floor", refused1782.exception.in_full)
         self.assertIn("Gross margin is 10.00%, below the 40.00% floor", refused1000.exception.in_full)
         self.assertIn("The gross margin is below the 40.00% floor.", str(refused1782.exception))
