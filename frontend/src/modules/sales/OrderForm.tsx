@@ -74,9 +74,9 @@ export default function OrderForm() {
   const order = record.data;
   const draft = useDraft<Order>(isNew ? ({ customer: null, order_date: today(), reference: "" } as unknown as Order) : order);
   const act = useAct<Order>();
-  // An approver, and whoever reads the books, is told the order's cost (O299, O352): asked on any order for them,
-  // on a draft for everyone else, whose answer carries no figure.
-  const seesCost = can("sales.approve_order") || can("accounting.view_journalentry");
+  // An approver, whoever reads the books and whoever reads cost sheets is told the order's cost (O299, O352, O620):
+  // asked on any order for them, on a draft for everyone else, whose answer carries no figure.
+  const seesCost = can("sales.approve_order") || can("accounting.view_journalentry") || can("manufacturing.view_costsheet");
   const approval = useGet<Approval>(`${ENDPOINT}${order?.id}/approval/`, undefined,
     Boolean(order?.id) && (order?.status === "draft" || seesCost));
   const waiting = approval.data?.status === "pending";
