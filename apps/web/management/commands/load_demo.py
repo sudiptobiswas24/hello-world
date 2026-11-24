@@ -1640,13 +1640,11 @@ class Command(BaseCommand):
         with step("Stores: a count, a write-off, a move to the godown, and the gate"):
             # O613: the stores' own documents had nothing on the demo. The spares cupboard is counted two bearings
             # short; a hundred and fifty rice sacks spoilt by a roof leak are written off; ten thousand cement
-            # sacks go to the godown's first bay for the week's lorries.
+            # sacks go to the godown's first bay for the week's lorries. Yesterday's two post before today's count:
+            # a section is one transaction, and on the first of a month yesterday's period is the earlier one, which
+            # the lock order takes first.
             Reason = M("inventory.AdjustmentReason")
             lock_positions([(bearing, plant), (rice, plant), (cement, plant), (cement, godown)])
-            count = M("inventory.StockCount").objects.create(count_date=TODAY, warehouse=plant,
-                                                             reason=Reason.objects.get(code="SHORT"))
-            count.add(bearing, bearing.on_hand_at(plant) - 2)
-            count.post()
             spoilt = M("inventory.StockAdjustment").objects.create(adjustment_date=day(-1), warehouse=plant,
                                                                    reason=Reason.objects.get(code="DAMAGE"))
             M("inventory.StockAdjustmentLine").objects.create(adjustment=spoilt, item=rice, uom=rice.uom,
@@ -1657,6 +1655,10 @@ class Command(BaseCommand):
             M("inventory.StockTransferLine").objects.create(transfer=move, item=cement, uom=cement.uom,
                                                             quantity=D("10000"), to_bin=bins["A-01"])
             move.post(occurred_at=stamp(day(-1), 11))
+            count = M("inventory.StockCount").objects.create(count_date=TODAY, warehouse=plant,
+                                                             reason=Reason.objects.get(code="SHORT"))
+            count.add(bearing, bearing.on_hand_at(plant) - 2)
+            count.post()
 
             # The gate, on the gate's own clock: a laptop out for repair on a returnable pass the stores keeper
             # approved, and a visitor still on site. The lorry that brought the copolymer is in the register as well.
