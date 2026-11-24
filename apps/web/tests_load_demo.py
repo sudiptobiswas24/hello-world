@@ -826,3 +826,46 @@ class TheBooksAndTheFloorsMastersShowTheDemoTests(SignsInAsTheDemo, TestCase):
         invoice = self.read(f"/api/sales/invoices/{varied['invoice']}/", "rohit")
         self.assertEqual((invoice["customer_name"], invoice["posted"], invoice["subtotal"], invoice["tax_total"],
                           invoice["total"]), ("Sahyadri Cement Works", False, "39960.00", "7192.80", "47152.80"))
+
+
+class TheCementVariationWhateverTheDayTests(SignsInAsTheDemo, TestCase):
+    """
+    The demo's price variation bills Sahyadri's last cement order, 135,000 sacks at 0.296, 39,960.00, on any day it
+    is loaded. Its revision is dated from today and the story's orders by whole months, and the clause went on the
+    first sacks shipped since the revision: on the 1st to the 7th that was Sahyadri's 150,000 (44,400.00), on the 5th
+    to the 13th Narmada's 54,000, and on 31 January and 31 August nothing had shipped and the demo stopped. Every day
+    for two years in /home/user/work/calc_g58/variation_days.py; here one day of each kind, two years on. On 1 March
+    the order ships that day, so the bill runs to it.
+    """
+
+    def loaded_on(self, month, day):
+        from django.utils import timezone
+
+        today = timezone.localdate()
+        days_on = datetime.date(today.year + 2, month, day) - today
+        real = timezone.now
+        moved = mock.patch("django.utils.timezone.now", side_effect=lambda: real() + days_on)
+        moved.start()
+        self.addCleanup(moved.stop)
+        load(password="Trial-2026", stdout=StringIO(), stderr=StringIO())
+        self.assertEqual(timezone.localdate(), datetime.date(today.year + 2, month, day))
+        return self.as_("rohit")
+
+    def assert_the_variation(self, client):
+        (varied,) = json.loads(client.get("/api/sales/price-variation-bills/").content)
+        self.assertEqual([(row["quantity"], row["variation_per_unit"], row["amount"]) for row in varied["lines"]],
+                         [("135000.0000", "0.296000", "39960.00")])
+        invoice = json.loads(client.get(f"/api/sales/invoices/{varied['invoice']}/").content)
+        self.assertEqual((invoice["customer_name"], invoice["posted"], invoice["subtotal"]),
+                         ("Sahyadri Cement Works", False, "39960.00"))
+        (note,) = json.loads(self.as_("ravi").get("/api/purchasing/rate-differences/").content)
+        self.assertEqual(note["total"], "72000.00")
+
+    def test_on_the_first_of_march_the_order_ships_that_day_and_is_billed_to_it(self):
+        self.assert_the_variation(self.loaded_on(3, 1))
+
+    def test_on_the_tenth_it_is_sahyadris_order_not_narmadas(self):
+        self.assert_the_variation(self.loaded_on(6, 10))
+
+    def test_on_the_thirty_first_of_january_the_demo_loads_and_bills_it(self):
+        self.assert_the_variation(self.loaded_on(1, 31))
