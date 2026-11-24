@@ -1836,13 +1836,19 @@ class Command(BaseCommand):
             # on the raffia circular at 100, with a clause passing a move of more than 2% on at 74 g of polymer a sack.
             # Reliance then revised the circular to 104 from two days before the order on it. Granule House's note for
             # what came on that order is drafted as a supplementary bill: 4.00 a kg on 18,000 kg, 72,000.00.
-            revised_from = on_circular.order_date - datetime.timedelta(days=2)
+            # The clause is on Sahyadri's last cement order shipped, 135,000 sacks three days after the story's 28th,
+            # whatever the day. It was on the first sacks shipped since the revision, but the revision is dated from
+            # today and the story's orders by whole months: on the first thirteen days of a month that was another
+            # order (Sahyadri's 150,000 or Narmada's 54,000), and on 31 January and 31 August none had shipped and the
+            # demo stopped (calc_g58/variation_days.py, every day for two years). The revision starts no later than
+            # that shipment (on those two days, a day earlier than the order's), and the bill below ends no earlier.
             shipped_since = (M("sales.DeliveryLine").objects.filter(
-                delivery__posted=True, delivery__is_drop_ship=False, delivery__delivery_date__gte=revised_from,
+                delivery__posted=True, delivery__is_drop_ship=False, delivery__sales_order__customer=sahyadri,
                 delivery__sales_order__currency=inr, reverses_line__isnull=True, order_line__item=cement)
-                .select_related("order_line__order").order_by("delivery__delivery_date", "pk").first())
+                .select_related("order_line__order", "delivery").order_by("-delivery__delivery_date", "-pk").first())
             if shipped_since is None:
-                raise CommandError(f"No cement sacks shipped on or after {revised_from} to vary.")
+                raise CommandError("No cement sacks shipped to Sahyadri to vary.")
+            revised_from = min(on_circular.order_date - datetime.timedelta(days=2), shipped_since.delivery.delivery_date)
             M("sales.PriceVariationClause").objects.create(
                 order_line=shipped_since.order_line, index=circular, base_value=D("100.0000"), polymer_kg_per_unit=D("0.074"),
                 threshold_percent=D("2"))
@@ -1858,10 +1864,12 @@ class Command(BaseCommand):
         with step("The cement order's dispatch since the revision, billed under its clause"):
             # Its own step: a variation bill holds its order, which the lock order takes before the vendor and the bill
             # above. 0.296 a sack (4 on the circular, at 74 g) on the sacks shipped since: drafted as a supplementary
-            # invoice for review.
+            # invoice for review. Up to yesterday, or to today on a day it shipped today (the 1st of a month after a 30-
+            # day one, and the first three of March): its 28th, three days on, is never after today.
             from apps.sales.price_variation import bill_variation
 
-            bill_variation(shipped_since.order_line.order, revised_from, day(-1), ar, invoice_date=day(-1), by=admin)
+            billed_to = max(day(-1), shipped_since.delivery.delivery_date)
+            bill_variation(shipped_since.order_line.order, revised_from, billed_to, ar, invoice_date=billed_to, by=admin)
 
         with step("The bank's statements from its cut-off to last month, matched to the books"):
             # O613: bank statements answered nothing on the demo. HDFC is reconciled from the first of the month after
