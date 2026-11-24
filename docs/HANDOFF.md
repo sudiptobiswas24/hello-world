@@ -50,6 +50,33 @@ pg_isready -q || service postgresql start                              # role er
 
 ## 2. Next steps, in order
 
+**g57 is pushed (3e68938, 24 November 2026), all six lanes green on one tip (gated as 278be76).** Two commits on
+9121d12; the gate was started three times, the second after the container restarted at 23:54 on the 23rd during ist
+and pg-c, the third after the second failed one test, which the second commit fixes. The first is O620, decided by the
+owner on 23 November as recommended. Auditing O352 found a Sales Rep told an order's margin by one door and not
+another: the approval panel and a refusal said only "below the floor", as the margin gives the cost away, while the
+role reads cost sheets, which it quotes from, and through them the order profitability report's actual cost and margin
+on its own customers' orders. Reps see cost: whoever approves orders, reads the books or reads cost sheets
+(sales.models COST_SEEN_WITH) is told the margin on the approval panel, in a refused confirmation and in a refused
+price change, and the order page shows it. The stores and the floor, which read orders and none of those, read only
+that the margin is under the floor. Never a register row: decided as it was seen. The second came from the gate: its
+second run, after midnight on 24 November, loaded the demo two years on as 1 February 2029, and the stores section,
+one transaction, counted on the day and then wrote off and moved stock dated the day before, so it locked today's
+accounting period before yesterday's, against the lock order. Refused on the first of every month (and passed on every
+other day; g56 ran it as 30 January), it now posts yesterday's two first; a test loads the plant on 1 March two years
+on whatever the day. A probe of every section's period locks found no other section out of order once the periods
+exist. Neither commit adds a migration; the migration lane ran sales's alone, as O620 changed tests_approvals, which
+holds migration tests.
+
+Counts: Asia/Kolkata 9,102 (254 skipped), PostgreSQL 4,262 + 3,706 + 1,134 = 9,102, migration-tagged 17 of 66
+(sales's; the rest unchanged since 9121d12), vitest 91.
+
+Next: nothing on the register waits on nobody. What is left waits on the tax adviser or the accountant (O153, O166,
+O214, O224, O240, O385, O387, O449, O500, O534, O535, O536, O538, O540, O559, O561, O562, O563), or recurs only as a
+test that a machine's load decided (O346, O564, O592, O595), or is a probe or sentinel item (O375, O377, O378, O381,
+O382, O384), or is minor (O248, O351, O389, O391, O550, O553). O553 needs nothing more now: every reverse-charge
+bill a test dates by hand is more than thirty days old, and the tests dated today expect the self-invoice.
+
 **g56 is pushed (3b130d6, 23 November 2026), all six lanes green on one tip (gated as edac0b0).** Eleven commits on
 3653f56: two of the register's rows that waited on nobody (O598, O618), the TCS mirror of the first (O619), and the
 seven rows the owner decided on 22 November, each as recommended: O558, O494, O557, O619's credit order, O571, O352,
@@ -1419,6 +1446,8 @@ built.
   only that step by hand (O571); whoever reads the books sees an order's margin and the Controller approves nothing
   (O352); a return after a goodwill credit of part gives back its goods' share of what is left (O448); some people
   are paid by the hour, so timesheets stay (O312).
+- **Reps see cost** (O620, owner, 23 November 2026): whoever approves orders, reads the books or reads cost sheets is
+  told an order's margin; a role reading orders with none of these reads only that it is under the floor.
 
 ## 5. Loose ends
 
