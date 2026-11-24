@@ -13,6 +13,7 @@ the figures worked by hand:
 from decimal import Decimal as D
 
 from django.core.exceptions import ValidationError
+from django.utils import timezone
 
 from apps.sales.models import Invoice, InvoiceLine, claims
 
@@ -142,8 +143,8 @@ class ClaimApiTests(GstReturnTestCase):
             "invoice": self.invoice.pk, "net": "500", "reason": "quality"}, format="json")
         self.assertEqual(settled.status_code, 200, settled.content)
         self.assertEqual(settled.json()["cost"], "500.00")
-        # Settled today: the note is dated the day it is given.
-        [row] = claims(DAY, DAY.replace(month=12, day=31))
+        # Settled today: the note is dated the day it is given, so read to today, not to DAY's 31 December.
+        [row] = claims(DAY, timezone.localdate())
         self.assertEqual(row["complaint"], complaint.number)
 
     def test_a_settled_complaint_is_not_rejected_nor_a_rejected_one_settled(self):

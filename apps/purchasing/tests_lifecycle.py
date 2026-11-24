@@ -203,7 +203,9 @@ class NumberingTests(PurchasingLifecycleTestCase):
     def test_receipts_and_returns_number_separately(self):
         order = self.make_order()
         receipt = self.receive(order, "10")
-        returned = receipt.create_return()
+        # The day after the receipt: a number's year is its document's, and undated the return took today's,
+        # PRTN-2027 from 1 January 2027 (calc_g58, the clock moved).
+        returned = receipt.create_return(on_date=datetime.date(2026, 1, 6))
 
         self.assertEqual(receipt.number, "GRN-2026-00001")
         self.assertEqual(returned.number, "PRTN-2026-00001")
@@ -211,7 +213,7 @@ class NumberingTests(PurchasingLifecycleTestCase):
     def test_bills_and_debit_notes_number_separately(self):
         bill = self.make_bill()
         bill.post()
-        note = bill.create_debit_note()
+        note = bill.create_debit_note(on_date=datetime.date(2026, 1, 11))
 
         self.assertEqual(bill.number, "BILL-2026-00001")
         self.assertEqual(note.number, "DN-2026-00001")

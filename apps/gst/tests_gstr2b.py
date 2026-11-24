@@ -258,8 +258,11 @@ class SuppliersCreditNoteTests(GstReturnTestCase):
     def test_a_debit_note_meets_the_suppliers_credit_note(self):
         import datetime
 
+        # Each note dated the day the goods went back, CN-9's: dated today, the note fell in the next year's 2B
+        # period from 1 January 2027 and its bill outside the year read (calc_g58, the clock moved).
         note = self.bill.create_debit_note(quantities={self.bill.lines.get(): D("0.1")},
-                                           supplier_note_number="CN-9", supplier_note_date=datetime.date(2026, 9, 20))
+                                           supplier_note_number="CN-9", supplier_note_date=datetime.date(2026, 9, 20),
+                                           on_date=datetime.date(2026, 9, 20))
         self.assertEqual((note.total(), note.reference, note.supplier_note_number),
                          (D("1180.00"), "INV/27/0012", "CN-9"))
         self.assertEqual(self.report(note), (["INV-27-12", "CN-9"], [], []))
@@ -268,7 +271,7 @@ class SuppliersCreditNoteTests(GstReturnTestCase):
         import datetime
 
         note = self.bill.create_debit_note(quantities={self.bill.lines.get(): D("0.1")},
-                                           supplier_note_date=datetime.date(2026, 9, 20))
+                                           supplier_note_date=datetime.date(2026, 9, 20), on_date=datetime.date(2026, 9, 20))
         self.assertEqual(self.report(note), (["INV-27-12", "CN-9"], [], []))
 
     def test_a_draft_note_is_given_it_before_it_posts_and_not_after(self):
@@ -317,7 +320,8 @@ class SuppliersCreditNoteTests(GstReturnTestCase):
         reader.user_permissions.add(Permission.objects.get(content_type__app_label="purchasing", codename="view_bill"))
         reading = APIClient()
         reading.force_authenticate(reader)
-        note = self.bill.create_debit_note(quantities={self.bill.lines.get(): D("0.1")})
+        note = self.bill.create_debit_note(quantities={self.bill.lines.get(): D("0.1")},
+                                           on_date=datetime.date(2026, 9, 20))
         url = f"/api/purchasing/bills/{note.pk}/supplier_note/"
         given = {"supplier_note_number": "CN-8", "supplier_note_date": "2026-09-20"}
         self.assertEqual(reading.post(url, given, format="json").status_code, 403)

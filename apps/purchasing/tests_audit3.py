@@ -152,7 +152,9 @@ class BudgetReversalTests(AuditThreeTestCase):
         bill.post()
         self.assertEqual(budget.spent(), Decimal("3000"))
 
-        bill.create_debit_note()
+        # Inside the budget's year: dated today, the note was 2027's from 1 January and gave the money back to
+        # 2027's budget, not this one (calc_g58, the clock moved).
+        bill.create_debit_note(on_date=datetime.date(2026, 2, 10))
 
         self.assertEqual(budget.spent(), Decimal("0"))
         self.assertEqual(budget.available(), Decimal("10000"))
