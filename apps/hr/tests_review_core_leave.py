@@ -7,11 +7,18 @@ import datetime
 from django.core.exceptions import ValidationError
 from django.utils import timezone
 
+from apps.imports.tests import OnTheDay
+
 from .models import LeaveRequest, LeaveStatus, LeaveType
 from .tests_audit import AuditTestCase
 
 
-class CancelDatingTests(AuditTestCase):
+class CancelDatingTests(OnTheDay, AuditTestCase):
+    """
+    Run on 15 June: its leaves are dated from today, 30 to 34 days on, two and three days either side of it, and 28 to
+    24 days back, and a leave may not cross a year end. On 27 November to 1 December the first crossed 31 December and
+    was refused, as the others would be around New Year (seen with the clock moved to 1 December, calc_g58).
+    """
     def leave(self, start, end, name="C1"):
         person = self.employee(name)
         request = LeaveRequest.objects.create(employee=person, policy=self.policy, leave_type=LeaveType.VACATION,

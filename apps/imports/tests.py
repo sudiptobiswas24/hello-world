@@ -48,6 +48,24 @@ class TwoYearsOn:
         super().setUp()
 
 
+class OnTheDay(TwoYearsOn):
+    """
+    The case run on one day of the year, two calendar years on (ON = month, day): a fixture dated relative to today
+    whose sense needs it away from a boundary (a leave spanning today, inside one year), or at one (the first of a
+    month). Worked out as each test starts, not as the module is read, so a suite that crosses midnight cannot move
+    it a day.
+    """
+
+    ON = (6, 15)
+
+    def setUp(self):
+        from django.utils import timezone
+
+        today = timezone.localdate()
+        self.DAYS_ON = (datetime.date(today.year + 2, *self.ON) - today).days
+        super().setUp()
+
+
 class ImportTestCase(SalesTestCase):
     def setUp(self):
         super().setUp()
