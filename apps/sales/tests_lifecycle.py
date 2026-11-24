@@ -179,9 +179,9 @@ class BackorderTests(LifecycleTestCase):
 
 
 class QuotationRevisionTests(LifecycleTestCase):
-    def make_quotation(self, quantity="5", price="10"):
+    def make_quotation(self, quantity="5", price="10", **terms):
         quotation = Quotation.objects.create(
-            customer=self.customer, quotation_date=datetime.date(2026, 3, 1), currency=self.usd
+            customer=self.customer, quotation_date=datetime.date(2026, 3, 1), currency=self.usd, **terms
         )
         QuotationLine.objects.create(
             quotation=quotation, item=self.item, uom=self.uom,
@@ -201,6 +201,27 @@ class QuotationRevisionTests(LifecycleTestCase):
         self.assertEqual(revision.revision_of, quotation)
         self.assertEqual(revision.revision, 2)
         self.assertEqual(revision.status, QuotationStatus.DRAFT)
+
+    def test_a_lapsed_quote_is_revised_for_as_long_as_it_was_offered(self):
+        # Valid 1 to 31 March, thirty days. Revised on 4 May the copy kept 31 March and was refused, "valid_until
+        # cannot be before the quotation date", on any day after the 31st; the screen sends no dates to revise with.
+        quotation = self.make_quotation(valid_until=datetime.date(2026, 3, 31))
+        quotation.mark_sent()
+        revision = quotation.create_revision(quotation_date=datetime.date(2026, 5, 4))
+        self.assertEqual((revision.quotation_date, revision.valid_until),
+                         (datetime.date(2026, 5, 4), datetime.date(2026, 6, 3)))
+
+    def test_a_quote_still_open_is_revised_to_the_same_day(self):
+        quotation = self.make_quotation(valid_until=datetime.date(2026, 3, 31))
+        quotation.mark_sent()
+        revision = quotation.create_revision(quotation_date=datetime.date(2026, 3, 31))
+        self.assertEqual(revision.valid_until, datetime.date(2026, 3, 31))
+
+    def test_a_revision_given_a_day_before_its_own_is_still_refused(self):
+        quotation = self.make_quotation(valid_until=datetime.date(2026, 3, 31))
+        quotation.mark_sent()
+        with self.assertRaisesMessage(ValidationError, "valid_until cannot be before the quotation date"):
+            quotation.create_revision(quotation_date=datetime.date(2026, 5, 4), valid_until=datetime.date(2026, 5, 3))
 
     def test_a_revision_keeps_the_number_and_adds_its_revision(self):
         quotation = self.make_quotation()

@@ -88,11 +88,12 @@ export default function QuotationForm() {
           <ActionButton primary={quote.status === "sent"} pending={act.pending} disabled={quote.lines.length === 0}
             onClick={() => void run("accept", "Accepted: order created", (order) => `/sales/orders/${order.id}`)}>Accept</ActionButton>
         )}
+        {/* Expired too: accepting a quote too late says "Re-quote instead", and revising it is how. */}
+        {quote && ["sent", "expired"].includes(quote.status) && can("sales.change_quotation") && (
+          <ActionButton pending={act.pending} onClick={() => void run("revise", "Revision drafted", (rev) => `/sales/quotations/${rev.id}`)}>Revise</ActionButton>
+        )}
         {quote?.status === "sent" && can("sales.change_quotation") && (
-          <>
-            <ActionButton pending={act.pending} onClick={() => void run("revise", "Revision drafted", (rev) => `/sales/quotations/${rev.id}`)}>Revise</ActionButton>
-            <ActionButton danger pending={act.pending} onClick={() => void run("decline", "Marked as declined")}>Declined</ActionButton>
-          </>
+          <ActionButton danger pending={act.pending} onClick={() => void run("decline", "Marked as declined")}>Declined</ActionButton>
         )}
         {quote && <a className="btn" href={`${ENDPOINT}${quote.id}/pdf/`} target="_blank" rel="noopener">PDF</a>}
       </DocHeader>
