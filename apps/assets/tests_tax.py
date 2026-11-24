@@ -14,6 +14,7 @@ from django.contrib.auth.models import Group, User
 from django.core.exceptions import ValidationError
 from django.core.management import call_command
 from django.test import TestCase
+from django.utils import timezone
 from rest_framework.test import APIClient
 
 from apps.accounting.models import Account, AccountType, BooksOpening
@@ -21,7 +22,7 @@ from apps.core.models import Company, Currency
 
 from .management.commands.load_tax_depreciation_rates import load
 from .models import AssetCategory, FixedAsset
-from .tax import TaxBlock, TaxBlockOpening, TaxBlockRate, TaxDepreciationYear, days_used, schedule
+from .tax import TaxBlock, TaxBlockOpening, TaxBlockRate, TaxDepreciationYear, days_used, schedule, tax_year_of
 
 D = datetime.date
 YEAR = D(2025, 4, 1)
@@ -156,10 +157,12 @@ class FilingTests(TaxDepreciationTestCase):
         lathe.dispose(on_date=D(2026, 3, 1), proceeds=Decimal("1"))
 
     def test_a_year_not_ended(self):
+        # The year in progress, whatever today is: 2026-27 had ended by 1 April 2027, and was refused there for the
+        # unfiled year before it instead (seen with the clock moved, calc_g58).
         self.the_year()
         self.confirm_all()
         with self.assertRaisesMessage(ValidationError, "has not ended"):
-            TaxDepreciationYear.file(D(2026, 4, 1))
+            TaxDepreciationYear.file(tax_year_of(timezone.localdate()))
 
 
 class ThroughTheApiTests(TaxDepreciationTestCase):
