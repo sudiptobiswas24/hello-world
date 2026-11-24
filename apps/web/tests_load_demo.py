@@ -212,11 +212,14 @@ class WhatTheDemoShowsTests(TestCase):
             "601": Decimal("3000.00"), "602": Decimal("3000.00")})
         totals = dict(PayslipLine.objects.filter(payslip__run=run).values_list("component__code").annotate(Sum("amount")))
         self.assertEqual((totals["PF"], totals["PF-ER"]), (Decimal("37860.00"), Decimal("37860.00")))
-        self.assertEqual(run.payslips.get(employee__employee_number="101").net(), Decimal("76800.00"))
+        # Rohit's 80,000 less 3,000 of PF and the professional tax band, February's 300 (the story's months move with
+        # today: on 1 April 2027 the posted run was February's, seen with the clock moved, calc_g58).
+        band = Decimal("300") if run.period_start.month == 2 else Decimal("200")
+        self.assertEqual(run.payslips.get(employee__employee_number="101").net(), Decimal("80000.00") - 3000 - band)
         # The run's journal: wages 575,500 and the employer's 37,860 of PF with 667 of ESI, against what is owed.
         # Professional tax is 13 at 200, and February's band is 300 (the story's months move with today).
         # The gratuity provision, 21,524.75 (O560), is the employer's own cost: net pay is as it was.
-        tax = Decimal("3900") if run.period_start.month == 2 else Decimal("2600")
+        tax = 13 * band
         booked = {row["account__code"]: row["debit"] - row["credit"] for row in run.journal_entry.lines.values(
             "account__code").annotate(debit=Sum("debit"), credit=Sum("credit"))}
         self.assertEqual(booked, {"6000": Decimal("575500"), "6100": Decimal("38527"), "2410": Decimal("-75720"),

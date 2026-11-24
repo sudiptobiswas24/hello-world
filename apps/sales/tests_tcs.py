@@ -592,7 +592,9 @@ class ALowerRateCertificateWithAnAdvanceTests(TcsTestCase):
         certificate = TcsCertificate.objects.create(
             party=self.mh, section=self.section, reference="206C9/2026/07", rate_percent=D("0.25"),
             valid_from=datetime.date(2026, 4, 1), valid_to=datetime.date(2027, 3, 31), amount=D(amount))
-        self.advance = self.order.create_down_payment_invoice(self.ar, percent=30)
+        # Billed on the order's day, inside the certificate's year: dated today, from 1 April 2027 it fell after the
+        # certificate and was collected at 1% (seen with the clock moved, calc_g58).
+        self.advance = self.order.create_down_payment_invoice(self.ar, percent=30, invoice_date=DAY)
         self.advance.post()
         return certificate
 
