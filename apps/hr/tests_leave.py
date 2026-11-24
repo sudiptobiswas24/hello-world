@@ -35,6 +35,16 @@ from .models import (
 )
 
 
+def next_july():
+    """
+    The first Monday of July next year, worked out as the test runs: a week of leave still to come whatever day it is,
+    inside one year, Monday to Friday. Booked for July 2026 and then July 2027, the leaves became holidays taken once
+    each July passed, and were refused cancelling (calc_g58, on 1 August 2027 and 1 January 2028).
+    """
+    first = datetime.date(timezone.localdate().year + 1, 7, 1)
+    return first + datetime.timedelta(days=-first.weekday() % 7)
+
+
 class LeaveTestCase(TestCase):
     def setUp(self):
         self.policy = LeavePolicy.objects.create(
@@ -219,13 +229,10 @@ class WhoDecidesTests(LeaveTestCase):
 
 
 class ApprovalHasAReverseTests(LeaveTestCase):
-    # A holiday still to come, whatever day the tests run on: booked for July
-    # 2026, these two became a holiday taken and given back once July passed.
-    NEXT_JULY = datetime.date(timezone.localdate().year + 1, 7, 1)
-
     def test_an_approval_can_be_sent_back(self):
         person = self.employee("W1")
-        booking = self.request(person, self.NEXT_JULY, self.NEXT_JULY + datetime.timedelta(days=2))
+        july = next_july()
+        booking = self.request(person, july, july + datetime.timedelta(days=2))
         booking.approve(by=self.boss)
         booking.withdraw_approval(by=self.boss)
         self.assertEqual(booking.status, LeaveStatus.PENDING)
@@ -234,11 +241,12 @@ class ApprovalHasAReverseTests(LeaveTestCase):
 
     def test_sending_it_back_gives_the_days_back(self):
         person = self.employee("W2")
-        booking = self.request(person, self.NEXT_JULY, self.NEXT_JULY + datetime.timedelta(days=2))
+        july = next_july()
+        booking = self.request(person, july, july + datetime.timedelta(days=2))
         booking.approve(by=self.boss)
         booking.withdraw_approval(by=self.boss)
         booking.cancel(by=booking.employee)
-        self.assertEqual(leave_taken(person, self.policy, self.NEXT_JULY.year), Decimal("0"))
+        self.assertEqual(leave_taken(person, self.policy, july.year), Decimal("0"))
 
     def test_a_holiday_already_taken_is_not_sent_back_to_be_cancelled(self):
         # June's five days taken; sent back and cancelled in October, they were given back.
@@ -262,7 +270,8 @@ class ApprovalHasAReverseTests(LeaveTestCase):
 
     def test_approved_leave_is_not_deleted_but_cancelled(self):
         person = self.employee("W9")
-        booking = self.request(person, self.NEXT_JULY, self.NEXT_JULY + datetime.timedelta(days=2))
+        july = next_july()
+        booking = self.request(person, july, july + datetime.timedelta(days=2))
         booking.approve(by=self.boss)
         with self.assertRaisesMessage(ValidationError, "cancel it rather than delete it"):
             booking.delete()
@@ -272,7 +281,8 @@ class ApprovalHasAReverseTests(LeaveTestCase):
 
     def test_leave_is_not_handed_to_somebody_else(self):
         person, other = self.employee("W10"), self.employee("W11")
-        booking = self.request(person, self.NEXT_JULY, self.NEXT_JULY + datetime.timedelta(days=2))
+        july = next_july()
+        booking = self.request(person, july, july + datetime.timedelta(days=2))
         booking.approve(by=self.boss)
         booking.employee = other
         with self.assertRaisesMessage(ValidationError, "is not moved to another"):
@@ -283,30 +293,33 @@ class ApprovalHasAReverseTests(LeaveTestCase):
         # approved holiday permanent: somebody who comes back early had no
         # way to return the days.
         person = self.employee("W3")
-        booking = self.request(person, datetime.date(2027, 7, 1), datetime.date(2027, 7, 9))
+        july = next_july()
+        booking = self.request(person, july, july + datetime.timedelta(days=4))
         booking.approve(by=self.boss)
         booking.cancel(by=booking.employee)
         self.assertEqual(booking.status, LeaveStatus.CANCELLED)
-        self.assertEqual(leave_taken(person, self.policy, 2027), Decimal("0"))
+        self.assertEqual(leave_taken(person, self.policy, july.year), Decimal("0"))
 
     def test_cancelled_while_under_way_it_keeps_the_days_already_taken(self):
         # Coming back early is what cancel() took approved requests for, and it gave back every
-        # day: Monday 5 to Friday 9 July, back on the Thursday, returned all five. Cancelled on
+        # day: Monday to Friday, back on the Thursday, returned all five. Cancelled on
         # its first day, a leave has taken nothing and goes whole.
         person = self.employee("W6")
-        booking = self.request(person, datetime.date(2027, 7, 5), datetime.date(2027, 7, 9))
+        monday = next_july()
+        thursday, week_on = monday + datetime.timedelta(days=3), monday + datetime.timedelta(days=7)
+        booking = self.request(person, monday, monday + datetime.timedelta(days=4))
         booking.approve(by=self.boss)
         # Back on the Thursday, cancelled that day: a day still to come is refused (O32).
-        with mock.patch("django.utils.timezone.localdate", return_value=datetime.date(2027, 7, 8)):
-            booking.cancel(by=booking.employee, on_date=datetime.date(2027, 7, 8))
+        with mock.patch("django.utils.timezone.localdate", return_value=thursday):
+            booking.cancel(by=booking.employee, on_date=thursday)
         booking.refresh_from_db()
         self.assertEqual((booking.status, booking.end_date, booking.days_taken),
-                         (LeaveStatus.APPROVED, datetime.date(2027, 7, 7), Decimal("3.00")))
+                         (LeaveStatus.APPROVED, monday + datetime.timedelta(days=2), Decimal("3.00")))
 
-        unstarted = self.request(person, datetime.date(2027, 7, 12), datetime.date(2027, 7, 16))
+        unstarted = self.request(person, week_on, week_on + datetime.timedelta(days=4))
         unstarted.approve(by=self.boss)
-        unstarted.cancel(by=unstarted.employee, on_date=datetime.date(2027, 7, 12))
-        self.assertEqual((unstarted.status, leave_taken(person, self.policy, 2027)),
+        unstarted.cancel(by=unstarted.employee, on_date=week_on)
+        self.assertEqual((unstarted.status, leave_taken(person, self.policy, monday.year)),
                          (LeaveStatus.CANCELLED, Decimal("3.00")))
 
     def test_a_cancel_dated_before_the_leave_gives_back_nothing_already_taken(self):
@@ -317,10 +330,12 @@ class ApprovalHasAReverseTests(LeaveTestCase):
         booking.approve(by=self.boss)
         with self.assertRaisesMessage(ValidationError, "is not cancelled on 2026-01-30: the days before today are taken"):
             booking.cancel(by=booking.employee, on_date=datetime.date(2026, 1, 30))
-        ahead = self.request(person, datetime.date(2027, 7, 5), datetime.date(2027, 7, 9))
+        monday = next_july()
+        tuesday = monday + datetime.timedelta(days=1)
+        ahead = self.request(person, monday, monday + datetime.timedelta(days=4))
         ahead.approve(by=self.boss)
-        with self.assertRaisesMessage(ValidationError, "is not cancelled on 2027-07-06: that day has not come"):
-            ahead.cancel(by=ahead.employee, on_date=datetime.date(2027, 7, 6))
+        with self.assertRaisesMessage(ValidationError, f"is not cancelled on {tuesday}: that day has not come"):
+            ahead.cancel(by=ahead.employee, on_date=tuesday)
         booking.refresh_from_db()
         self.assertEqual((booking.status, booking.days_taken, leave_taken(person, self.policy, 2026)),
                          (LeaveStatus.APPROVED, Decimal("5.00"), Decimal("5.00")))
@@ -519,11 +534,12 @@ class BalanceTests(LeaveTestCase):
         # Derived, never stored: a running balance drifts the moment a
         # request is cancelled and nobody finds out but the employee.
         person = self.employee("B9")
-        booking = self.request(person, datetime.date(2027, 7, 5), datetime.date(2027, 7, 9))
+        july = next_july()
+        booking = self.request(person, july, july + datetime.timedelta(days=4))
         booking.approve(by=self.boss)
-        self.assertEqual(leave_balance(person, self.policy, 2027), Decimal("20.00"))
+        self.assertEqual(leave_balance(person, self.policy, july.year), Decimal("20.00"))
         booking.cancel(by=booking.employee)
-        self.assertEqual(leave_balance(person, self.policy, 2027), Decimal("25.00"))
+        self.assertEqual(leave_balance(person, self.policy, july.year), Decimal("25.00"))
 
     def test_more_than_the_allowance_is_refused(self):
         person = self.employee("B10")
@@ -676,7 +692,8 @@ class WhoCancelsLeaveTests(LeaveTestCase):
         call_command("setup_roles", verbosity=0)
         self.Group, self.User, self.APIClient = Group, User, APIClient
         self.person = self.employee("A1")
-        self.booking = self.request(self.person, datetime.date(2027, 7, 1), datetime.date(2027, 7, 3))
+        july = next_july()
+        self.booking = self.request(self.person, july, july + datetime.timedelta(days=2))
         self.booking.approve(by=self.boss)
 
     def as_(self, employee, *roles):

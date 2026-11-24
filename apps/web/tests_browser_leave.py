@@ -16,7 +16,7 @@ except ImportError:  # pragma: no cover - the base class skips, saying why
     expect = None
 
 from apps.hr.models import LeaveRequest, LeaveStatus
-from apps.hr.tests_leave import LeaveTestCase
+from apps.hr.tests_leave import LeaveTestCase, next_july
 from apps.imports.tests import OnTheDay
 
 from .tests_browser import BrowserMixin
@@ -72,8 +72,8 @@ class LeaveInTheBrowserTests(BrowserMixin, LeaveTestCase, StaticLiveServerTestCa
         weaver = self.employee("W-5")  # reports to self.boss
         # Next July, not yet begun whatever today is: dated 5 to 9 July 2027, it was over from then and could not be
         # cancelled (seen with the clock moved to 1 August 2027, calc_g58).
-        july = timezone.localdate().year + 1
-        leave = self.request(weaver, datetime.date(july, 7, 5), datetime.date(july, 7, 9))
+        july = next_july()
+        leave = self.request(weaver, july, july + datetime.timedelta(days=4))
         leave.approve(by=self.boss)
         manager = self.sign_in(self.linked("Line Manager", self.boss), f"/app/payroll/leave/{leave.pk}")
         manager.get_by_role("button", name="Cancel it").click()

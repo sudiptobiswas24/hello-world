@@ -12,6 +12,7 @@ from decimal import Decimal
 
 from django.db import IntegrityError
 from django.core.exceptions import ValidationError
+from django.utils import timezone
 
 from apps.accounting.models import Account, AccountType, ChargeType, Tax, TaxGroup
 
@@ -182,9 +183,10 @@ class ChargeCorrectionTests(ChargeLineTestCase):
 
 class ChargeOnQuotationTests(ChargeLineTestCase):
     def quote_with_charge(self):
+        # Open whatever day it is accepted or revised: valid until 1 April 2027, it had expired by 1 August (calc_g58).
         quotation = Quotation.objects.create(
             customer=self.customer, quotation_date=datetime.date(2026, 3, 1),
-            valid_until=datetime.date(2027, 4, 1), currency=self.usd,
+            valid_until=timezone.localdate() + datetime.timedelta(days=30), currency=self.usd,
         )
         QuotationLine.objects.create(
             quotation=quotation, item=self.item, uom=self.uom, quantity=Decimal("10"),

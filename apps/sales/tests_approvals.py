@@ -11,6 +11,7 @@ from decimal import Decimal
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
+from django.utils import timezone
 
 from .models import (
     ApprovalPolicy,
@@ -309,9 +310,10 @@ class QuotationApprovalTests(ApprovalTestCase):
     def quote(self, discount="40"):
         from .models import Quotation, QuotationLine
 
+        # Open whatever day it is accepted: valid until 1 April 2027, it had expired by 1 August (calc_g58).
         quotation = Quotation.objects.create(
             customer=self.customer, quotation_date=datetime.date(2026, 3, 1),
-            valid_until=datetime.date(2027, 4, 1), currency=self.usd,
+            valid_until=timezone.localdate() + datetime.timedelta(days=30), currency=self.usd,
         )
         QuotationLine.objects.create(
             quotation=quotation, item=self.item, uom=self.uom, quantity=Decimal("10"),
@@ -442,9 +444,10 @@ class SelfApprovalThroughARevisionTests(ApprovalTestCase):
     def sent_quote(self, writer):
         from .models import Quotation, QuotationLine, QuotationStatus
 
+        # Open whatever day it is accepted or revised: valid until 1 April 2027, it had expired by 1 August (calc_g58).
         quotation = Quotation.objects.create(customer=self.customer, quotation_date=datetime.date(2026, 3, 1),
-                                             valid_until=datetime.date(2027, 4, 1), currency=self.usd,
-                                             created_by=writer, updated_by=writer)
+                                             valid_until=timezone.localdate() + datetime.timedelta(days=30),
+                                             currency=self.usd, created_by=writer, updated_by=writer)
         QuotationLine.objects.create(quotation=quotation, item=self.item, uom=self.uom, quantity=Decimal("10"),
                                      unit_price=Decimal("100"), discount_percent=Decimal("40"),
                                      revenue_account=self.revenue, created_by=writer, updated_by=writer)
