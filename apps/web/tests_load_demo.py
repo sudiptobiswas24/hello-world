@@ -146,10 +146,14 @@ class LoadDemoTestsTwoYearsOn(TwoYearsOn, LoadDemoTests):
     """
 
 
-class LoadDemoTestsInMay(LoadDemoTestsTwoYearsOn):
-    """Loaded on 15 May two calendar years on: the story's two exports fall either side of 1 April (O569)."""
+class LoadDemoTestsInMay(OnTheDay, LoadDemoTests):
+    """
+    Loaded on 15 May two calendar years on: the story's two exports fall either side of 1 April (O569). Worked out
+    as each test starts from the plant's day (OnTheDay); it was worked out from the machine's date as the module was
+    read, which a moved clock did not move and which is the day before the plant's until 05:30 in Kolkata.
+    """
 
-    DAYS_ON = (datetime.date(datetime.date.today().year + 2, 5, 15) - datetime.date.today()).days
+    ON = (5, 15)
 
 
 class LoadDemoTestsOnTheFirst(OnTheDay, LoadDemoTests):

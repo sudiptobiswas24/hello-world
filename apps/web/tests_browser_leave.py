@@ -17,6 +17,7 @@ except ImportError:  # pragma: no cover - the base class skips, saying why
 
 from apps.hr.models import LeaveRequest, LeaveStatus
 from apps.hr.tests_leave import LeaveTestCase
+from apps.imports.tests import OnTheDay
 
 from .tests_browser import BrowserMixin
 
@@ -65,25 +66,14 @@ class LeaveInTheBrowserTests(BrowserMixin, LeaveTestCase, StaticLiveServerTestCa
         expect(colleague.get_by_text("No leave requests").first).to_be_visible()
         self.assertEqual(self.problems, [])
 
-    def test_back_early_the_weaver_ends_the_leave_and_keeps_the_days_taken(self):
-        # Cancelled while under way, a leave gave back the days already taken with the rest;
-        # it now ends the day before, and the page says so rather than "Cancelled".
-        today = timezone.localdate()
-        weaver = self.employee("W-4")  # reports to self.boss
-        leave = self.request(weaver, today - datetime.timedelta(days=7), today + datetime.timedelta(days=7))
-        leave.approve(by=self.boss)
-        page = self.sign_in(self.linked("Employee Self Service", weaver), f"/app/payroll/leave/{leave.pk}")
-        page.get_by_role("button", name="Cancel it").click()
-        expect(page.locator(".toast", has_text="the days after are back").first).to_be_visible()
-        leave.refresh_from_db()
-        self.assertEqual((leave.status, leave.end_date), (LeaveStatus.APPROVED, today - datetime.timedelta(days=1)))
-        self.assertEqual(self.problems, [])
-
     def test_the_manager_who_decides_it_is_offered_cancel(self):
         # O132: the server lets whoever decides a person's leave cancel it; the screen offered Cancel only
         # to the person and to HR, so their Line Manager had no button for what they may do.
         weaver = self.employee("W-5")  # reports to self.boss
-        leave = self.request(weaver, datetime.date(2027, 7, 5), datetime.date(2027, 7, 9))
+        # Next July, not yet begun whatever today is: dated 5 to 9 July 2027, it was over from then and could not be
+        # cancelled (seen with the clock moved to 1 August 2027, calc_g58).
+        july = timezone.localdate().year + 1
+        leave = self.request(weaver, datetime.date(july, 7, 5), datetime.date(july, 7, 9))
         leave.approve(by=self.boss)
         manager = self.sign_in(self.linked("Line Manager", self.boss), f"/app/payroll/leave/{leave.pk}")
         manager.get_by_role("button", name="Cancel it").click()
@@ -113,4 +103,28 @@ class LeaveInTheBrowserTests(BrowserMixin, LeaveTestCase, StaticLiveServerTestCa
         page = self.sign_in(self.login_for("Employee Self Service"), "/app/payroll/leave/new")
         expect(page.get_by_role("note")).to_contain_text("not linked to an employee")
         expect(page.get_by_role("button", name="Ask for it")).to_have_count(0)
+        self.assertEqual(self.problems, [])
+
+
+class BackEarlyInTheBrowserTests(OnTheDay, BrowserMixin, LeaveTestCase, StaticLiveServerTestCase):
+    """
+    Run on 15 June two years on: a leave under way, with days taken and days to come, lies inside one year only away
+    from New Year, and a leave may not cross a year end; on 1 January none can. Dated a week either side of today, it
+    was refused from 25 December to 7 January (seen with the clock moved to 1 January 2027, calc_g58).
+    """
+
+    linked = LeaveInTheBrowserTests.linked
+
+    def test_back_early_the_weaver_ends_the_leave_and_keeps_the_days_taken(self):
+        # Cancelled while under way, a leave gave back the days already taken with the rest;
+        # it now ends the day before, and the page says so rather than "Cancelled".
+        today = timezone.localdate()
+        weaver = self.employee("W-4")  # reports to self.boss
+        leave = self.request(weaver, today - datetime.timedelta(days=7), today + datetime.timedelta(days=7))
+        leave.approve(by=self.boss)
+        page = self.sign_in(self.linked("Employee Self Service", weaver), f"/app/payroll/leave/{leave.pk}")
+        page.get_by_role("button", name="Cancel it").click()
+        expect(page.locator(".toast", has_text="the days after are back").first).to_be_visible()
+        leave.refresh_from_db()
+        self.assertEqual((leave.status, leave.end_date), (LeaveStatus.APPROVED, today - datetime.timedelta(days=1)))
         self.assertEqual(self.problems, [])

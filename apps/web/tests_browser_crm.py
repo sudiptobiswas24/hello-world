@@ -5,6 +5,7 @@ taken to its first opportunity, values it and quotes it, landing on the
 draft quotation. Each step is read back from the database.
 """
 
+import datetime
 import re
 from decimal import Decimal
 
@@ -12,6 +13,8 @@ try:
     from playwright.sync_api import expect
 except ImportError:  # pragma: no cover - the base class skips, saying why
     expect = None
+
+from django.utils import timezone
 
 from apps.core.models import Party
 from apps.sales.crm import Activity, Lead, Opportunity
@@ -59,7 +62,8 @@ class LeadToQuotationInTheBrowserTests(BrowserTestCase):
         self.toast(page, "Saved")
         page.get_by_role("button", name="Quote it").click()
         quote = page.get_by_role("form", name="Quote it")
-        quote.get_by_label("Valid until").fill("2026-12-31")
+        # Thirty days on: typed as 31 December 2026, it was past from 1 January 2027 and refused (calc_g58).
+        quote.get_by_label("Valid until").fill((timezone.localdate() + datetime.timedelta(days=30)).isoformat())
         quote.get_by_role("button", name="Quote it").click()
         page.wait_for_url(re.compile(r"/sales/quotations/\d+$"))
         quotation = Quotation.objects.get()

@@ -4,9 +4,8 @@ may only be a path on this site. The auditor's probe (audit2_core C5): a
 browser reads `/\\host` and `/<tab>/host` as `//host`, which passed the old
 check of a leading `//` alone.
 """
-import datetime
-
 from django.contrib.auth.models import Group, User
+from django.utils import timezone
 
 from .chatter import same_site_path
 from .models import Party
@@ -31,7 +30,7 @@ class AFollowUpLinkStaysOnTheSiteTests(RolesTestCase):
     def plan(self, link):
         return self.rep.post("/api/core/follow-ups/", {
             "model": "core.party", "id": self.party.pk, "summary": "Call back",
-            "due_on": str(datetime.date.today()), "assigned_to": self.boss.pk, "link": link}, format="json")
+            "due_on": str(timezone.localdate()), "assigned_to": self.boss.pk, "link": link}, format="json")
 
     def test_a_rep_cannot_put_an_outside_address_on_the_controllers_home(self):
         answers = {link: (response.status_code, list(response.json())) for link in OFF_THE_SITE

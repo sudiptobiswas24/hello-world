@@ -26,6 +26,7 @@ from django.core.signals import request_finished, request_started
 from django.db import connections
 from django.db.backends.sqlite3.base import DatabaseWrapper as SQLiteDatabase
 from django.db.backends.sqlite3.base import SQLiteCursorWrapper
+from django.utils import timezone
 
 from apps.core.models import Party, PartyRole, PartyRoleAssignment
 from apps.sales.models import Invoice, InvoiceLine
@@ -314,7 +315,9 @@ class BrowserMixin:
         page.fill("#id_password", PASSWORD)
         page.click("button[type=submit]")
         if factor is not None:
-            page.fill("#id_code", pyotp.TOTP(factor.secret).now())
+            # The code for the moment the server checks it at (second_factor: timezone.now), the same as pyotp's now
+            # on the real clock, and still right when a test moves the plant's clock (OnTheDay).
+            page.fill("#id_code", pyotp.TOTP(factor.secret).at(timezone.now()))
             page.click("button[type=submit]")
         if path.startswith("/app"):
             # The application shows "Opening..." until it knows who this is,

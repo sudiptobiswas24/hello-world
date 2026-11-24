@@ -9,6 +9,7 @@ import datetime
 from decimal import Decimal
 
 from django.contrib.staticfiles.testing import StaticLiveServerTestCase
+from django.utils import timezone
 
 try:
     from playwright.sync_api import expect
@@ -59,7 +60,7 @@ class TheGateInTheBrowserTests(BrowserMixin, GateTestCase, StaticLiveServerTestC
     def test_the_stores_manager_approves_the_guards_pass_and_the_guard_takes_back_what_returns(self):
         visit = GateVisit.objects.create(vehicle_number="MH12AB1234", driver_name="Ramesh", purpose="gate_pass")
         made = GatePass.objects.create(kind="returnable", party_name="Shree Rewinding Works", visit=visit,
-                                       expected_return_date=datetime.date.today() + datetime.timedelta(days=7))
+                                       expected_return_date=timezone.localdate() + datetime.timedelta(days=7))
         line = GatePassLine.objects.create(gate_pass=made, item=self.polymer, quantity=Decimal("3"))
         manager = self.sign_in(self.person("Stores Manager"), f"/app/stores/gate-passes/{made.pk}")
         manager.get_by_role("button", name="Approve").click()

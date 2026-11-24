@@ -1,7 +1,6 @@
 """review_sechr probes: each test states a fact that SHOULD hold; a failure is a finding."""
-import datetime
-
 from django.contrib.auth.models import Group, User
+from django.utils import timezone
 
 from .models import Party
 from .tests_roles import RolesTestCase
@@ -17,7 +16,7 @@ class F1_SiteLinksProbe(RolesTestCase):
         for link in ("/.//pay-vendor.example/login", "/x/..//pay-vendor.example", "/%2e//pay-vendor.example",
                      "/./\t/x", "/a/%2e%2e//pay-vendor.example"):
             r = rep.post("/api/core/follow-ups/", {"model": "core.party", "id": party.pk, "summary": "Call",
-                         "due_on": str(datetime.date.today()), "assigned_to": boss.pk, "link": link}, format="json")
+                         "due_on": str(timezone.localdate()), "assigned_to": boss.pk, "link": link}, format="json")
             got[link] = r.status_code
         self.assertEqual({k: v for k, v in got.items() if v != 400}, {})
 

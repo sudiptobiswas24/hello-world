@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
+from django.utils import timezone
 
 from apps.sales.models import (
     CustomerProfile, Delivery, DeliveryLine, SalesOrder, SalesOrderLine,
@@ -164,7 +165,7 @@ class FillerAndUvTests(WovenTestCase):
         self.bag()
         problems = material_problems(
             self.profile(max_filler_percent=Decimal("5"), min_uv_percent=Decimal("0.5")),
-            self.bag_item, [], datetime.date.today())
+            self.bag_item, [], timezone.localdate())
         self.assertEqual(len(problems), 2)
         self.assertIn("filler; the most allowed is 5%", problems[0])
         self.assertIn("UV stabiliser; at least 0.5% is required", problems[1])
@@ -173,13 +174,13 @@ class FillerAndUvTests(WovenTestCase):
         self.bag()
         problems = material_problems(
             self.profile(max_filler_percent=Decimal("8"), min_uv_percent=Decimal("0")),
-            self.bag_item, [], datetime.date.today())
+            self.bag_item, [], timezone.localdate())
         self.assertEqual(problems, [])
 
     def test_the_bag_recipe_reaches_its_tape(self):
         self.bag()
         problems = material_problems(self.profile(virgin_only=True), self.bag_item, [],
-                                     datetime.date.today())
+                                     timezone.localdate())
         self.assertTrue(any("recipe uses REGRIND" in problem for problem in problems))
 
     def test_rules_are_percentages(self):
