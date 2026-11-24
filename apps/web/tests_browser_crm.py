@@ -14,11 +14,12 @@ try:
 except ImportError:  # pragma: no cover - the base class skips, saying why
     expect = None
 
+from django.core.exceptions import ValidationError
 from django.utils import timezone
 
 from apps.core.models import Party
 from apps.sales.crm import Activity, Lead, Opportunity
-from apps.sales.models import Quotation
+from apps.sales.models import Quotation, QuotationLine, QuotationStatus
 from apps.sales.tests_base import carries_every_customer
 
 from .tests_browser import BrowserTestCase
@@ -70,4 +71,36 @@ class LeadToQuotationInTheBrowserTests(BrowserTestCase):
         opportunity.refresh_from_db()
         self.assertEqual((quotation.customer, opportunity.stage, opportunity.value, opportunity.quotation),
                          (party, "quoted", Decimal("250000.00"), quotation))
+        self.assertEqual(self.problems, [])
+
+
+class ALapsedQuoteRevisedInTheBrowserTests(BrowserTestCase):
+    """
+    The customer comes back after the quote lapsed. Accepted, it is refused and marked expired: "Re-quote instead".
+    The screen offered Revise only on a sent quote, and on a sent one that had lapsed it was refused: the revision,
+    dated today, copied the old valid-until, and that was "valid_until cannot be before the quotation date".
+    """
+
+    def test_the_rep_revises_it_for_as_long_as_it_was_offered(self):
+        rep = self.person("Sales Rep")
+        carries_every_customer(rep)
+        today = timezone.localdate()
+        quotation = Quotation.objects.create(customer=self.customer, quotation_date=today - datetime.timedelta(days=60),
+                                             valid_until=today - datetime.timedelta(days=30), currency=self.usd)
+        QuotationLine.objects.create(quotation=quotation, item=self.item, uom=self.uom, quantity=Decimal("5"),
+                                     unit_price=Decimal("90"), revenue_account=self.revenue)
+        quotation.mark_sent()
+        with self.assertRaisesMessage(ValidationError, "Re-quote instead"):
+            quotation.accept()
+
+        page = self.sign_in(rep, f"/app/sales/quotations/{quotation.pk}")
+        expect(page.locator(".pill", has_text="expired")).to_be_visible()
+        page.get_by_role("button", name="Revise").click()
+        page.wait_for_url(re.compile(rf"/sales/quotations/(?!{quotation.pk}$)\d+$"))
+        revision = Quotation.objects.get(revision_of=quotation)
+        expect(page.get_by_label("Valid until")).to_have_value((today + datetime.timedelta(days=30)).isoformat())
+        quotation.refresh_from_db()
+        self.assertEqual((quotation.status, revision.status, revision.quotation_date, revision.valid_until),
+                         (QuotationStatus.SUPERSEDED, QuotationStatus.DRAFT, today,
+                          today + datetime.timedelta(days=30)))
         self.assertEqual(self.problems, [])

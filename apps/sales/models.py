@@ -6092,6 +6092,12 @@ class Quotation(PlacedWhereTheGoodsGo, TaxesTakenUnder, TaxedDocumentMixin, Audi
         thing and is now being told another, and both need to be on record.
         `by` is who revised it, stamped on the copy and its lines: copied in
         code they named nobody, so its writer could approve it.
+
+        Given no valid_until, the copy keeps the original's, unless that day
+        has gone by the copy's own date: then it is offered for as long as the
+        original was. Copied as it stood, a lapsed quote's revision was refused
+        ("valid_until cannot be before the quotation date"), and the screen,
+        which sends no dates, could not revise it at all.
         """
         if self.status == QuotationStatus.DRAFT:
             raise ValidationError(
@@ -6104,13 +6110,18 @@ class Quotation(PlacedWhereTheGoodsGo, TaxesTakenUnder, TaxedDocumentMixin, Audi
             raise ValidationError(
                 f"This quotation was already superseded by {self.revisions.first()}."
             )
+        dated = to_date(quotation_date) or timezone.localdate()
+        if valid_until is None:
+            valid_until = to_date(self.valid_until)
+            if valid_until is not None and valid_until < dated:
+                valid_until = dated + (valid_until - to_date(self.quotation_date))
         self._assign_number()
 
         revision = Quotation.objects.create(
             taxes_taken_under=self.taxes_taken_under,  # its lines' taxes are the revised one's (O446)
             customer=self.customer,
-            quotation_date=quotation_date or timezone.localdate(),
-            valid_until=valid_until if valid_until is not None else self.valid_until,
+            quotation_date=dated,
+            valid_until=valid_until,
             reference=self.reference,
             currency=self.currency,
             payment_terms=self.payment_terms,
