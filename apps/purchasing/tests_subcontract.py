@@ -34,6 +34,18 @@ from .models import (
 from .tests_lifecycle import PurchasingLifecycleTestCase
 
 
+def sooner():
+    """
+    The batch that expires first, well ahead of today. The batches expired on 31 December 2026 and 30 June 2027, and
+    components are sent today and refused once expired: from 1 January 2027 none of F-1 could go (calc_g58).
+    """
+    return timezone.localdate() + datetime.timedelta(days=60)
+
+
+def later():
+    return timezone.localdate() + datetime.timedelta(days=240)
+
+
 class SubcontractTestCase(PurchasingLifecycleTestCase):
     # Frames kept by batch from the day they are made, with none in stock until a test names its batch: tracking is
     # fixed once stock has moved (docs/RISKS.md, L5). Otherwise 100 at 8, in no batch.
@@ -385,22 +397,22 @@ class BatchKeptComponentsTests(SubcontractTestCase):
         self.assertEqual(self.frame.stock_value_at(self.subcontractor), Decimal("80.00"))
 
     def test_the_soonest_to_expire_goes_and_is_consumed(self):
-        sooner = self.batch("F-1", "40", datetime.date(2026, 12, 31))
-        later = self.batch("F-2", "60", datetime.date(2027, 6, 30))
+        first = self.batch("F-1", "40", sooner())
+        second = self.batch("F-2", "60", later())
         order = self.subcontract_order("10")
         order.issue_components(self.warehouse)
-        self.assertEqual((sooner.on_hand_at(self.subcontractor), later.on_hand_at(self.subcontractor)),
+        self.assertEqual((first.on_hand_at(self.subcontractor), second.on_hand_at(self.subcontractor)),
                          (Decimal("10"), Decimal("0")))
         self.receive(order, "10")
-        self.assertEqual(sooner.on_hand_at(self.subcontractor), Decimal("0"))
+        self.assertEqual(first.on_hand_at(self.subcontractor), Decimal("0"))
         # frame 8 + two motors at 12 + 5 of assembly
         self.assertEqual(self.assembly.average_cost_at(self.warehouse), Decimal("37.0000"))
 
     def test_a_batch_quality_holds_is_not_sent(self):
         from apps.quality.models import Characteristic, Inspection, InspectionPlan, PlanLine, Reading
 
-        held = self.batch("F-1", "40", datetime.date(2026, 12, 31))
-        good = self.batch("F-2", "60", datetime.date(2027, 6, 30))
+        held = self.batch("F-1", "40", sooner())
+        good = self.batch("F-2", "60", later())
         check = Characteristic.objects.create(code="FLAT", name="Flatness", uom=self.uom)
         plan = InspectionPlan.objects.create(item=self.frame, is_mandatory=False)
         line = PlanLine.objects.create(plan=plan, characteristic=check, lower_limit=Decimal("0"),
@@ -414,8 +426,8 @@ class BatchKeptComponentsTests(SubcontractTestCase):
 
     def test_assemblies_sent_back_put_each_batch_back(self):
         """Ten frames from two batches, 4 and 6; five assemblies back put 2 and 3 back."""
-        first = self.batch("F-1", "4", datetime.date(2026, 12, 31))
-        second = self.batch("F-2", "96", datetime.date(2027, 6, 30))
+        first = self.batch("F-1", "4", sooner())
+        second = self.batch("F-2", "96", later())
         order = self.subcontract_order("10")
         order.issue_components(self.warehouse)
         receipt = self.receive(order, "10")
@@ -606,8 +618,8 @@ class ComponentsComeBackBatchByBatchTests(_SentBatches):
     """O149: each batch gets back what it gave, however the assemblies come back."""
 
     def test_returned_one_at_a_time_each_batch_gets_back_what_it_gave(self):
-        first = self.batch("F-1", "1", datetime.date(2026, 12, 31))
-        second = self.batch("F-2", "99", datetime.date(2027, 6, 30))
+        first = self.batch("F-1", "1", sooner())
+        second = self.batch("F-2", "99", later())
         order = self.subcontract_order("3")
         order.issue_components(self.warehouse)
         receipt = self.receive(order, "3")
@@ -617,8 +629,8 @@ class ComponentsComeBackBatchByBatchTests(_SentBatches):
                          (Decimal("1"), Decimal("2")))
 
     def test_three_of_ten_put_back_whole_frames_and_the_rest_the_remainder(self):
-        first = self.batch("F-1", "4", datetime.date(2026, 12, 31))
-        second = self.batch("F-2", "96", datetime.date(2027, 6, 30))
+        first = self.batch("F-1", "4", sooner())
+        second = self.batch("F-2", "96", later())
         order = self.subcontract_order("10")
         order.issue_components(self.warehouse)
         receipt = self.receive(order, "10")
@@ -674,8 +686,8 @@ class EachOrderConsumesWhatWasSentOnItTests(_SentBatches):
         self.assembly.tracking = "lot"
         self.assembly.save()
         self.mandatory_plan()
-        self.f1 = self.batch("F-1", "10", datetime.date(2026, 12, 31))
-        self.f2 = self.batch("F-2", "10", datetime.date(2027, 6, 30))
+        self.f1 = self.batch("F-1", "10", sooner())
+        self.f2 = self.batch("F-2", "10", later())
         for batch in (self.f1, self.f2):
             self.inspect(batch, "0.5", datetime.date(2026, 1, 1))
         self.order_a = self.subcontract_order("10")
@@ -878,7 +890,7 @@ class HeldAssembliesKeepALotOfTheirOwnTests(_SentBatches):
         own = InspectionPlan.objects.create(item=self.assembly, is_mandatory=True)
         own_line = PlanLine.objects.create(plan=own, characteristic=torque, lower_limit=Decimal("0"),
                                            upper_limit=Decimal("1"))
-        sent = self.batch("F-1", "10", datetime.date(2026, 12, 31))
+        sent = self.batch("F-1", "10", sooner())
         self.inspect(sent, "0.5", datetime.date(2026, 1, 1))
         order = self.subcontract_order("10")
         order.issue_components(self.warehouse)
@@ -1136,8 +1148,8 @@ class FractionalReturnsBookTotalFirstTests(SubcontractTestCase):
         ppv = Account.objects.create(code="5900", name="PPV", account_type=AccountType.EXPENSE)
         company.purchase_price_variance_account = ppv
         company.save()
-        self.batch("F-1", "1.11", datetime.date(2026, 12, 31))
-        self.batch("F-2", "98.89", datetime.date(2027, 6, 30))
+        self.batch("F-1", "1.11", sooner())
+        self.batch("F-2", "98.89", later())
         order = self.subcontract_order("10", confirm=False)
         SubcontractComponent.objects.filter(item=self.frame).update(quantity_per=Decimal("0.333"))
         order.confirm()
