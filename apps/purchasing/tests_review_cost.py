@@ -603,7 +603,7 @@ class CapitaliseProbes(base.ProbeCase):
         self.assertEqual(reconcile_to_ledger()["difference"], D("0.00"))
 
 
-from .tests_subcontract import SubcontractTestCase  # noqa: E402
+from .tests_subcontract import SubcontractTestCase, later, sooner  # noqa: E402
 
 
 class SubcontractReturnProbes(SubcontractTestCase):
@@ -612,12 +612,12 @@ class SubcontractReturnProbes(SubcontractTestCase):
     frames_by_batch = True
 
     def lots(self):
-        import datetime as dt
-
         from apps.inventory.models import Lot, MovementType, StockMovement
         from django.utils import timezone
 
-        for code, quantity, expires in (("F-1", "1.11", dt.date(2026, 12, 31)), ("F-2", "98.89", dt.date(2027, 6, 30))):
+        # Expiring well ahead of today, F-1 first: on 31 December 2026 and 30 June 2027, both had expired by
+        # 1 August 2027 and no frame could be sent (calc_g58). tests_subcontract's batches moved in g58; these did not.
+        for code, quantity, expires in (("F-1", "1.11", sooner()), ("F-2", "98.89", later())):
             made = Lot.objects.create(item=self.frame, code=code, expires_on=expires)
             StockMovement.objects.create(item=self.frame, warehouse=self.warehouse, movement_type=MovementType.RECEIPT,
                                          uom=self.frame.uom, quantity=D(quantity), unit_cost=D("8"), lot=made,
