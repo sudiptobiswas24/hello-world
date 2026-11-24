@@ -17,7 +17,7 @@ from django.core.management.base import CommandError
 from django.test import TestCase
 
 from apps.core.models import Party, PartyRole, PartyRoleAssignment
-from apps.imports.tests import TwoYearsOn
+from apps.imports.tests import OnTheDay, TwoYearsOn
 from apps.web.health import integrity
 
 
@@ -152,21 +152,15 @@ class LoadDemoTestsInMay(LoadDemoTestsTwoYearsOn):
     DAYS_ON = (datetime.date(datetime.date.today().year + 2, 5, 15) - datetime.date.today()).days
 
 
-class LoadDemoTestsOnTheFirst(LoadDemoTestsTwoYearsOn):
+class LoadDemoTestsOnTheFirst(OnTheDay, LoadDemoTests):
     """
     Loaded on 1 March two calendar years on, the plant's day: yesterday is the last of February, in the period before
     today's. A section is one transaction, and one that posted today's document before yesterday's locked the later
     period first: the stores counted on the day and then wrote off and moved stock dated the day before, refused on
-    the first of every month (g57's pg-c and ist, run on 24 November, 800 days on from it being 1 February). Worked
-    out as the test runs, not as the module is read: a suite that crosses midnight would land on the 2nd.
+    the first of every month (g57's pg-c and ist, run on 24 November, 800 days on from it being 1 February).
     """
 
-    def setUp(self):
-        from django.utils import timezone
-
-        today = timezone.localdate()
-        self.DAYS_ON = (datetime.date(today.year + 2, 3, 1) - today).days
-        super().setUp()
+    ON = (3, 1)
 
 
 class WhatTheDemoShowsTests(TestCase):
