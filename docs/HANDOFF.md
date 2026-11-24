@@ -50,6 +50,41 @@ pg_isready -q || service postgresql start                              # role er
 
 ## 2. Next steps, in order
 
+**g58 is pushed (8cc37b8, 24 November 2026), all six lanes green on one tip (gated as 0aad1ff).** Four commits on
+b2a4db8, all from a calendar probe: the whole suite under Asia/Kolkata with the plant's clock moved to 1 December
+2026, 1 January 2027 and 1 April 2027 (calc_g58/clocksettings.py; it moves timezone.now and localdate, not
+time.time, date.today or the database's clock, so a second factor's code, a backup's age and the address bar's
+sign-in fail there and are its limit, not defects). One of the four changes the product, the demo's load_demo; the
+others change only tests.
+
+- The leave-cancel tests run on 15 June two years on (OnTheDay, apps/imports/tests.py): their leaves, dated from
+  today, crossed 31 December from 27 November to 1 December and around New Year, and a leave may not cross a year
+  end. LoadDemoTestsOnTheFirst uses the same mixin.
+- The demo's price variation bills Sahyadri's last cement order, wherever the day of the month falls: it chose an
+  order by a date relative to today and so billed 150,000 or 54,000 kg instead of 135,000 on days 1 to 13, and on
+  31 January and 31 August the demo stopped. A test loads it on 1 March, 10 June and 31 January.
+- Sixteen fixtures dated today that 1 January 2027 crosses: subcontract lots that expired on fixed days, a return
+  and a debit note numbered in the next year, a budget's money given back to the next year, a claim looked for to
+  31 December, three debit notes outside the 2B match's year. The last shows a gap of the product's own, O621 for
+  the tax adviser: the 2B match reads one fiscal year, so a March invoice a supplier files late reads "not booked"
+  in May's 2B though the bill was booked.
+- Four fixtures 1 April 2027 crosses: a tax year filed as in progress, a TCS advance billed today against a
+  2026-27 certificate, and the demo's February payslip, whose professional tax band is 300.
+
+The gate ran once, 10:34 to 15:40; the session's watchers were lost to a restart at about 12:50, the machine and
+the lanes were not.
+
+Counts: Asia/Kolkata 9,105 (254 skipped), PostgreSQL 4,262 + 3,706 + 1,137 = 9,105, migration-tagged 17 of 66
+(sales's, as tests_tcs changed; the rest unchanged since b2a4db8), vitest 91.
+
+Next: nothing on the register waits on nobody (unchanged from g57's list, plus O621 for the tax adviser). The probe is
+not finished. It ran 8,919 of the 9,105 tests it found. 180 of the 186 left are the browser tests (85 classes), which
+skip in setUpClass with no Chromium path set; a class skipped there counts as one skip and none of its tests as run. The
+other six are not yet named. So the three days are unproven for the browser; it runs next on each day with
+PLAYWRIGHT_CHROMIUM_EXECUTABLE (calc_g58/browser_probe.sh), and its count names the six. Then later days: tests_leave
+books leaves in July 2027, assets and MSME tests name 2027 and 2028 days; 1 August 2027 and 1 January 2028, after a
+gate, never beside a lane.
+
 **g57 is pushed (3e68938, 24 November 2026), all six lanes green on one tip (gated as 278be76).** Two commits on
 9121d12; the gate was started three times, the second after the container restarted at 23:54 on the 23rd during ist
 and pg-c, the third after the second failed one test, which the second commit fixes. The first is O620, decided by the
