@@ -50,6 +50,23 @@ pg_isready -q || service postgresql start                              # role er
 
 ## 2. Next steps, in order
 
+**PostgreSQL probe on a moved day (25 November 2026, no code changed).** The three PostgreSQL halves on b4fd040
+(9,109 tests; not the 66 migration-tagged ones) under Asia/Kolkata with the plant's clock at 00:30 on 1 April 2027,
+so for the whole run the plant's day was a new financial year and UTC's was still 31 March. Two failures, both the
+probe's own limits and both already named above: tests_edit_log's health check of the books log (PostgreSQL stamps a
+row with its own clock, 25 November 2026, outside the thirty days before the moved now; the two clocks agree on a
+real server) and tests_health's backup age (a file's time; it failed the same way on all five SQLite probe days).
+Read alongside: no raw SQL turns a timestamp into a date, no query carries its own time zone, product code reads
+neither date.today nor datetime.now (session_limits' time.time measures durations), and the migrations read the
+clock only as field defaults, so the migration-tagged tests on a moved day (7.5 hours on PostgreSQL) are not worth
+a run. Settings in /home/user/work/calc_g60 (not committed): pgclock.py is clocksettings.py on config.settings,
+with CLOCK_AT for a time of day in the plant's zone, one offset for every process of a run.
+
+Next: the calendar probes are done. The probe rows set aside in g57 are the next work, as they wait on nobody:
+O381 (a race() on PostgreSQL for a shelf row that does not exist yet, and for two first numbers while the company's
+numbering row is missing) and O377 (a receipt with two standard-costed lines; inventory 0040's net under one
+reference), then O378, O382 and O384, which want the sentinel or a PostgreSQL sweep rather than one probe.
+
 **g60 is pushed (b4fd040, 25 November 2026), all six lanes green on one tip (gated as 59add49).** One commit on
 f571220, O622: a gate lane that starts PostgreSQL now waits until it takes connections (lane.sh pg_up, called by
 pg_half and by the mig lane's PostgreSQL-only step, the two places that started it). After the restart of
