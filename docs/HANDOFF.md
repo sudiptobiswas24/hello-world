@@ -50,6 +50,42 @@ pg_isready -q || service postgresql start                              # role er
 
 ## 2. Next steps, in order
 
+**g59 is pushed (5d4181a, 25 November 2026), all six lanes green on one tip (gated as daad431).** Three commits on
+35b3ff7, the end of the calendar probe begun in g58 (calc_g58/clocksettings.py, the suite under Asia/Kolkata with the
+plant's clock moved). The probe now also moves the second factor's code (pyotp's now) and the browser's own clock
+(Playwright's clock.install), so what it still cannot move is a file's time (a backup's age) and the
+database's own clock.
+
+- The browser half on 1 December 2026, 1 January and 1 April 2027: the 186 tests that launch Chromium (180 in
+  apps/web, and the six StationScreenTests in apps/manufacturing/tests_station_browser.py, the six g58 had not
+  named). 1 December passed whole; 1 January failed three (a quotation typed valid until 31 December 2026, a leave
+  a week either side of today across New Year, a gate pass due back a week after date.today(), the machine's date),
+  1 April two of them. They are dated where their sense holds, and the six other tests that read date.today() for
+  the plant's day read timezone.localdate() (678ad33's message lists them).
+- The whole suite, browsers included, on 1 August 2027 and 1 January 2028: the same nineteen failed on both days.
+  Leave still to come was booked in July 2027 (now the first Monday of next July, next_july() in tests_leave); the
+  subcontract probes' frame batches expired on the days g58 moved tests_subcontract's off (now the same sooner()
+  and later()); quotations were valid until 1 April 2027 (now thirty days from today).
+- One defect of the product's own, fixed: a quotation that had lapsed could not be revised. Its revision, dated
+  today, copied the old valid-until and was refused, and the screen offered Revise only on a sent quote, so a
+  customer who came back late could be quoted only from nothing. A revision of a lapsed quote is now valid for as
+  long as the original was, from its own date (a draft, so the rep can change it), and an expired quote offers
+  Revise. Owner: if a revision should rather ask for the day, say so; it is one line in create_revision.
+
+The gate ran 21:52 to 02:34. The container restarted at 01:19 with pg-a and pg-b eighteen minutes in; run again,
+pg-a met PostgreSQL still recovering from the unclean shutdown and failed before any test ran (O622), pg-b did not.
+pg-a run again alone passed, and the chain then found all six lanes green on daad431.
+
+Counts: Asia/Kolkata 9,109 (254 skipped), PostgreSQL 4,265 + 3,706 + 1,138 = 9,109, migration-tagged 17 of 66
+(sales's, as tests_approvals changed; the rest unchanged since 35b3ff7), vitest 91.
+
+Next: O622 waits on nobody, and its fix (lane.sh pg_up, which waits for pg_isready) is drafted, uncommitted, in
+/home/user/work/g55, whose tree is 5d4181a's; test it with the server stopped and two lanes starting it, then gate
+it. Nothing else on the register waits on nobody (g57's list, plus O621 for the tax adviser). The calendar probe has
+run every test but the 66 migration-tagged ones on 1 December 2026, 1 January, 1 April and 1 August 2027 and 1
+January 2028; what it cannot see is the database's own clock and a file's age. The next probe, if any, is a
+PostgreSQL run on a moved day, since every probe so far ran on SQLite.
+
 **g58 is pushed (8cc37b8, 24 November 2026), all six lanes green on one tip (gated as 0aad1ff).** Four commits on
 b2a4db8, all from a calendar probe: the whole suite under Asia/Kolkata with the plant's clock moved to 1 December
 2026, 1 January 2027 and 1 April 2027 (calc_g58/clocksettings.py; it moves timezone.now and localdate, not
