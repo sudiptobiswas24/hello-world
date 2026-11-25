@@ -876,6 +876,49 @@ class StockAndPlantRaceTests(RaceCase):
             lambda: StockAdjustment.objects.get(pk=draft.pk).post()] * 2))
         self.assertEqual(self.item.on_hand_at(self.warehouse), Decimal("90"))
 
+    def test_two_first_numbers_while_the_companys_numbering_row_is_missing(self):
+        # O381: with no numbering row, both transactions make it (get_or_create); the second's insert waits on the
+        # first's, then reads the row the first committed. Neither may fail, and the numbers may not collide.
+        from apps.core.models import DocumentNumbering, DocumentSequence
+
+        stock_fixture.AdjustmentTestCase.setUp(self)
+        stock_fixture.AdjustmentTestCase.stock(self)
+        a, b = (stock_fixture.AdjustmentTestCase.adjust(self, "-10", post=False) for _ in range(2))
+        DocumentNumbering.objects.all().delete()
+        self.assertFalse(DocumentSequence.objects.filter(code="inventory.adjustment").exists())
+        outcomes = race(JournalEntry, *[lambda draft=draft: StockAdjustment.objects.get(pk=draft.pk).post()
+                                        for draft in (a, b)])
+        self.assertEqual(outcomes, ["done", "done"])
+        numbers = sorted(StockAdjustment.objects.filter(pk__in=[a.pk, b.pk]).values_list("number", flat=True))
+        self.assertEqual(len(set(numbers)), 2, numbers)
+        self.assertTrue(all(number.startswith("ADJ-") for number in numbers), numbers)
+        self.assertEqual(DocumentNumbering.objects.count(), 1)
+        self.assertEqual(DocumentSequence.objects.filter(code="inventory.adjustment").count(), 1)
+        self.assertEqual(self.item.on_hand_at(self.warehouse), Decimal("80"))
+
+    def test_two_write_offs_of_a_shelf_whose_position_row_is_not_made_yet(self):
+        # O381: 100 on a shelf with no position row and no numbering row, two write-offs of 60 at once. Both
+        # would make the position row; only one may find 100, and the other must then find 40 and refuse.
+        # Numbered already: a first number makes its sequence row, and the second waits on that insert before
+        # it reads the shelf, which orders the two whatever the locks do (with nothing held, this passed).
+        from apps.core.models import DocumentNumbering
+        from apps.inventory.locking import StockPosition
+
+        stock_fixture.AdjustmentTestCase.setUp(self)
+        stock_fixture.AdjustmentTestCase.stock(self)
+        a, b = (stock_fixture.AdjustmentTestCase.adjust(self, "-60", reason=self.shrink, post=False)
+                for _ in range(2))
+        for draft, number in ((a, "ADJ-RACE-1"), (b, "ADJ-RACE-2")):
+            StockAdjustment.objects.filter(pk=draft.pk).update(number=number)
+        StockPosition.objects.all().delete()
+        DocumentNumbering.objects.all().delete()
+        outcomes = race(JournalEntry, *[lambda draft=draft: StockAdjustment.objects.get(pk=draft.pk).post()
+                                        for draft in (a, b)])
+        self.once(outcomes)
+        self.assertIn("on hand", next(outcome for outcome in outcomes if outcome != "done"))
+        self.assertEqual(StockPosition.objects.filter(item=self.item, warehouse=self.warehouse).count(), 1)
+        self.assertEqual(self.item.on_hand_at(self.warehouse), Decimal("40"))
+
     def _count_and_adjustment(self, count_first):
         # O252: 100 on the shelf, a sheet counting 96, and an adjustment of -2 posted at once. The count asked
         # whether the books still read 100 before it held the shelf: the -2 landed between, and the count
