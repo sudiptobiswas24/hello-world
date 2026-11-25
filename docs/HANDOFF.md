@@ -50,6 +50,26 @@ pg_isready -q || service postgresql start                              # role er
 
 ## 2. Next steps, in order
 
+**g60 is pushed (b4fd040, 25 November 2026), all six lanes green on one tip (gated as 59add49).** One commit on
+f571220, O622: a gate lane that starts PostgreSQL now waits until it takes connections (lane.sh pg_up, called by
+pg_half and by the mig lane's PostgreSQL-only step, the two places that started it). After the restart of
+25 November `service postgresql start` returned while the server was still replaying its WAL, and pg-a failed in
+its first seconds. Reproduced on this machine with an immediate stop and two lanes starting the server at once: the
+old line failed one lane in each of three runs, pg_up none. scripts/gate/tests_lane.py tests pg_up against a stub
+server, and the ui lane now runs the gate's own tests (they ran only on GitHub before); the Gate line counts them as
+"gate tests".
+
+The gate ran 02:41 to 13:23 with no restart. Every app's migration-tagged tests ran, as they do whenever
+anything under scripts/gate other than a .md file changes (migneeded.py ALL_DIRS), so the migration lane took
+7.5 of the 10.7 hours; a change to the gate's own scripts costs that whole lane, so batch such changes.
+
+Counts: Asia/Kolkata 9,109 (254 skipped), PostgreSQL 4,265 + 3,706 + 1,138 = 9,109, migration-tagged 66 of 66
+and the one PostgreSQL-only, vitest 91, gate tests 46.
+
+Next: nothing on the register waits on nobody (g57's list, plus O621 for the tax adviser). The calendar probe has
+run every test but the 66 migration-tagged ones on five days; what it cannot see is the database's own clock and a
+file's age. The next probe, if any, is a PostgreSQL run on a moved day, since every probe so far ran on SQLite.
+
 **g59 is pushed (5d4181a, 25 November 2026), all six lanes green on one tip (gated as daad431).** Three commits on
 35b3ff7, the end of the calendar probe begun in g58 (calc_g58/clocksettings.py, the suite under Asia/Kolkata with the
 plant's clock moved). The probe now also moves the second factor's code (pyotp's now) and the browser's own clock
