@@ -290,6 +290,28 @@ class ABillIsNamedWhileTheOrderIsStillADraftTests(JobWorkTestCase):
         line.save()
         self.assertEqual(line.components.count(), 3)
 
+    def test_nor_taken_off_once_confirmed(self):
+        # O623: naming and swapping were refused, taking it off was not, and taking it off deletes the rows it
+        # computed: the receipt then consumed nothing and a return put back nothing.
+        _order, line = self.job_work(confirm=True)
+        line.bom = None
+        with self.assertRaises(ValidationError) as caught:
+            line.save()
+        self.assertIn("still a draft", str(caught.exception))
+        self.assertEqual(PurchaseOrderLine.objects.get(pk=line.pk).components.count(), 3)
+
+    def test_nor_after_the_receipt_and_a_return_still_puts_back_what_was_used(self):
+        # The figures of WhatWentInComesOutTests: 1,000 sacks used 10,401.52 of fabric at 92.00.
+        order, line = self.job_work(quantity="1000", confirm=True)
+        order.issue_components(self.warehouse)
+        receipt = self.receive(order, "1000")
+        line.refresh_from_db()
+        line.bom = None
+        with self.assertRaises(ValidationError):
+            line.save()
+        receipt.create_return(debit_bills=False)
+        self.assertEqual(self.fabric.valuation_at(self.subcontractor)[1], Decimal("10401.52"))
+
     def test_a_component_that_rounds_to_nothing(self):
         # A raw database constraint used to surface here instead of a
         # sentence naming the component.

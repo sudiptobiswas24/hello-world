@@ -27,6 +27,7 @@ from .models import (
     ReceiptInspection,
     ReorderRule,
     Budget,
+    OrderStatus,
     SubcontractComponent,
 )
 
@@ -38,17 +39,20 @@ class SubcontractComponentInline(admin.TabularInline):
     fields = ("item", "quantity_per", "is_computed")
     readonly_fields = ("is_computed",)
 
-    def _computed(self, obj):
-        return obj is not None and obj.components.filter(is_computed=True).exists()
+    def _fixed(self, obj):
+        # Computed from a bill of materials, or on an order past draft: what the job worker was sent (O623).
+        # Asked after the person's own permission, which these three once answered in its place.
+        return obj is not None and (obj.components.filter(is_computed=True).exists()
+                                    or obj.order.status != OrderStatus.DRAFT)
 
     def has_add_permission(self, request, obj=None):
-        return not self._computed(obj)
+        return super().has_add_permission(request, obj) and not self._fixed(obj)
 
     def has_change_permission(self, request, obj=None):
-        return not self._computed(obj)
+        return super().has_change_permission(request, obj) and not self._fixed(obj)
 
     def has_delete_permission(self, request, obj=None):
-        return not self._computed(obj)
+        return super().has_delete_permission(request, obj) and not self._fixed(obj)
 
 
 @admin.register(PurchaseOrderLine)

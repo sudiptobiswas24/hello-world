@@ -1209,7 +1209,32 @@ class SubcontractComponent(AuditModel):
     def __str__(self):
         return f"{self.quantity_per} x {self.item}"
 
+    # Shared rule B (O623): the issue sends these rows, a receipt consumes them and a return puts back what they
+    # say, each reading them as they stand. Changeable once the order was confirmed, a row taken off after a
+    # receipt left its motors consumed when the assemblies came back, and one added after it was put back as
+    # though it had been used.
+    AS_SENT = ("its components are what the job worker is sent, what a receipt consumes and what a return puts "
+               "back; they change while the order is still a draft.")
+
+    def locked_before_it(self):
+        """
+        The orders of the lines it leaves and joins, then those lines, as save() and delete() hold them
+        (apps.core.models.answer_to_its_document): the order's status is what is asked.
+        """
+        lines = documents_it_answers_to(self, "order_line")
+        orders = PurchaseOrder._base_manager.filter(lines__in=[line.pk for line in lines]).distinct().order_by("pk")
+        return list(orders) + lines
+
+    def _answer_to_its_order(self):
+        lock_rows(*self.locked_before_it(), refresh=False)
+        answer_to_its_document(
+            self, "order_line",
+            refused=lambda line: f"{line.order} is {line.order.get_status_display().lower()}: {self.AS_SENT}",
+            fixed=lambda line: line.order.status != OrderStatus.DRAFT)
+
+    @transaction.atomic
     def delete(self, *args, **kwargs):
+        self._answer_to_its_order()
         if self.is_computed and not getattr(self, "_rebuilding", False):
             raise ValidationError(
                 f"{self} is computed from {self.order_line.bom} and cannot be "
@@ -1217,6 +1242,7 @@ class SubcontractComponent(AuditModel):
             )
         return super().delete(*args, **kwargs)
 
+    @transaction.atomic
     def save(self, *args, **kwargs):
         """
         A component is specified against one of the finished item, which
@@ -1227,6 +1253,7 @@ class SubcontractComponent(AuditModel):
         created before its components are attached, so at line-save time
         there is nothing yet to say the line is subcontracted.
         """
+        self._answer_to_its_order()
         if self.is_computed and not getattr(self, "_rebuilding", False):
             raise ValidationError(
                 f"{self} is computed from {self.order_line.bom}. Change the "
@@ -3003,21 +3030,19 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
         Everything that could be wrong about the bill of materials on a
         job-work line, asked while the line is still a draft rather than
         when the fabric is already on the job worker's floor.
+
+        Named, swapped or taken off (O623): taking it off deletes the rows
+        it computed, and a return then put back none of what the receipt
+        had consumed. The order's status as stored, which save() holds.
         """
-        if self.bom_id is not None and self.order.status != OrderStatus.DRAFT:
-            previous = (
-                PurchaseOrderLine.objects.filter(pk=self.pk).first()
-                if self.pk else None
-            )
-            if previous is None or previous.bom_id != self.bom_id:
-                raise ValidationError(
-                    f"{self.order} is "
-                    f"{self.order.get_status_display().lower()}; a bill of "
-                    "materials has to be named while the order is still a "
-                    "draft. The job worker was sent what the order said at the "
-                    "time, and the components here are what the receipt will "
-                    "consume."
-                )
+        stored = PurchaseOrderLine._base_manager.filter(pk=self.pk).values_list("bom_id", flat=True).first() if (
+            self.pk) else None
+        order = PurchaseOrder._base_manager.filter(pk=self.order_id).first()
+        if stored != self.bom_id and order is not None and order.status != OrderStatus.DRAFT:
+            raise ValidationError(
+                f"{order} is {order.get_status_display().lower()}; a bill of materials is named, changed or "
+                "taken off while the order is still a draft. The job worker was sent what the order said at "
+                "the time, and the components here are what a receipt consumes and a return puts back.")
         if self.bom_id is None:
             return
         if self.item_id is None:

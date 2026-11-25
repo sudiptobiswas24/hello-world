@@ -310,6 +310,78 @@ class ComponentsGoOutOnceTests(SubcontractTestCase):
             order.issue_components(self.warehouse)
 
 
+class TypedComponentsAreWhatWasSentTests(SubcontractTestCase):
+    """
+    O623: a typed component row refused nothing but a computed one's edits, so on a confirmed order, received or
+    not, one could be added, changed or taken off (the admin's inline offered all three). The issue, the receipt
+    and a return each read the rows as they stand: a row taken off after a receipt left its motors unreturned, and
+    one added after it was put back as though consumed.
+    """
+
+    def test_one_is_not_added_once_confirmed(self):
+        self.subcontract_order()
+        bolt = Item.objects.create(sku="BLT", name="Bolt", uom=self.uom)
+        with self.assertRaisesMessage(ValidationError, "still a draft"):
+            SubcontractComponent.objects.create(order_line=self.line, item=bolt, quantity_per=Decimal("4"))
+        self.assertEqual(self.line.components.count(), 2)
+
+    def test_nor_changed(self):
+        self.subcontract_order()
+        row = self.line.components.get(item=self.motor)
+        row.quantity_per = Decimal("3")
+        with self.assertRaisesMessage(ValidationError, "still a draft"):
+            row.save()
+        self.assertEqual(SubcontractComponent.objects.get(pk=row.pk).quantity_per, Decimal("2"))
+
+    def test_nor_taken_off_and_a_return_still_puts_back_what_was_used(self):
+        # Ten assemblies used 10 frames at 8.00 and 20 motors at 12.00 at the subcontractor.
+        self.stock(self.frame, "10", "8", warehouse=self.subcontractor)
+        self.stock(self.motor, "20", "12", warehouse=self.subcontractor)
+        receipt = self.receive(self.subcontract_order("10"), "10")
+        with self.assertRaisesMessage(ValidationError, "still a draft"):
+            self.line.components.get(item=self.motor).delete()
+        receipt.create_return(debit_bills=False)
+        self.assertEqual(self.motor.on_hand_at(self.subcontractor), Decimal("20"))
+        self.assertEqual(self.motor.valuation_at(self.subcontractor)[1], Decimal("240.00"))
+
+    def test_a_draft_takes_all_three(self):
+        self.subcontract_order(confirm=False)
+        bolt = Item.objects.create(sku="BLT", name="Bolt", uom=self.uom)
+        SubcontractComponent.objects.create(order_line=self.line, item=bolt, quantity_per=Decimal("4"))
+        row = self.line.components.get(item=self.motor)
+        row.quantity_per = Decimal("3")
+        row.save()
+        self.line.components.get(item=self.frame).delete()
+        self.assertEqual(sorted((c.item.sku, c.quantity_per) for c in self.line.components.all()),
+                         [("BLT", Decimal("4")), ("MTR", Decimal("3"))])
+
+    def test_the_admin_offers_them_on_a_draft_and_only_to_whoever_may(self):
+        from django.contrib import admin
+        from django.contrib.auth.models import Permission, User
+        from django.test import RequestFactory
+
+        from .admin import SubcontractComponentInline
+
+        def offered(user, line):
+            request = RequestFactory().get("/")
+            request.user = User.objects.get(pk=user.pk)  # permissions read afresh
+            inline = SubcontractComponentInline(PurchaseOrderLine, admin.site)
+            return [inline.has_add_permission(request, line), inline.has_change_permission(request, line),
+                    inline.has_delete_permission(request, line)]
+
+        self.subcontract_order(confirm=False)
+        clerk = User.objects.create_user("clerk", is_staff=True)
+        clerk.user_permissions.add(Permission.objects.get(codename="change_purchaseorderline"))
+        # The order line's own permission was enough for all three (O623's review).
+        self.assertEqual(offered(clerk, self.line), [False, False, False])
+        clerk.user_permissions.add(*Permission.objects.filter(codename__in=[
+            "add_subcontractcomponent", "change_subcontractcomponent", "delete_subcontractcomponent"]))
+        self.assertEqual(offered(clerk, self.line), [True, True, True])
+        self.line.order.confirm()
+        self.line.refresh_from_db()
+        self.assertEqual(offered(clerk, self.line), [False, False, False])
+
+
 class ComponentTopUpTests(SubcontractTestCase):
     """A second issue was refused outright, so components the subcontractor
     scrapped could never be replaced and the order never received."""
