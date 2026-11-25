@@ -75,7 +75,7 @@ jobs:
             echo "::notice::register check not run: no base commit to read the push from (${GATE_BASE:-none})"
           fi
       - name: The gate's own tests
-        run: python3 -m unittest scripts/gate/tests_migneeded.py
+        run: python3 -m unittest scripts/gate/tests_migneeded.py scripts/gate/tests_lane.py
       - name: audit_invariants
         run: |
           set -o pipefail

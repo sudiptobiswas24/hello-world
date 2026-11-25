@@ -80,7 +80,8 @@ them all, and so does a base that cannot be read.
   g35's range needs 48 of the 51. The saving is the push with no migration
   at all, which g36 was.
 - `python3 -m unittest scripts/gate/tests_migneeded.py` tests the rule. It
-  needs git, not Django.
+  needs git, not Django. The ui lane runs it with `tests_lane.py` (lane.sh's
+  PostgreSQL start, O622) and the Gate line counts both as "gate tests".
 - `.github/workflows/gate.yml` runs the same lanes on GitHub for a push to
   `claude/**`, the mig job one app at a time for the apps `migneeded.py`
   names against the commit the branch stood at.

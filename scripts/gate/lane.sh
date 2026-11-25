@@ -62,11 +62,24 @@ built() {  # a test lane needs the office app built, and not being rebuilt under
     fi
 }
 keep() { [ -f "$1" ] && mv -f "$1" "$1.prev"; true; }  # keep <log>: the last run's log, read before it is lost
+pg_up() {  # PostgreSQL started if it is down, and waited for until it takes connections
+    # `service postgresql start` can return while a server shut down uncleanly is still recovering. After the
+    # container restart of 25 November g59's pg-a and pg-b started together and found it down; pg-a's drops
+    # and its run met "the database system is starting up" and it failed in its first seconds with no test
+    # run, while pg-b's drops came after recovery and it ran. pg_isready exits 1 while the server starts and
+    # 2 while nothing answers: start it on either, then wait for 0.
+    pg_isready -q || service postgresql start > /dev/null
+    local waited=0
+    until pg_isready -q; do
+        [ $waited -ge 600 ] && { echo "PostgreSQL is not taking connections after 600 seconds"; exit 4; }
+        sleep 2; waited=$((waited + 2))
+    done
+}
 
 pg_half() {  # pg_half <A|B> <database name> <labels...>
     local half=$1 db=$2; shift 2
     built "pg-$half"
-    pg_isready -q || service postgresql start > /dev/null
+    pg_up
     # Always fresh: a run killed mid-test leaves rows a kept database hands the next run.
     for n in "" _1 _2 _3 _4; do
         su postgres -c "psql -q -c 'DROP DATABASE IF EXISTS test_$db$n WITH (FORCE)'" 2>&1 | grep -v NOTICE
@@ -83,6 +96,9 @@ ui)
         echo "HEAD: $(git rev-parse HEAD) dirty=$(git status --short | wc -l)"
         echo "UI:"; (cd frontend && npx tsc -b && npx vite build > /dev/null && npx vitest run 2>&1 | grep -E "Tests |Test Files") || echo "UI FAILED"
         python3 "$HERE/names.py" apps/core/tests_roles.py apps/core/tests_settings.py
+        # The gate's own tests ran only on GitHub until g60; the lane that sets the Gate line runs them too.
+        echo "gate tests: $(python3 -m unittest "$HERE/tests_migneeded.py" "$HERE/tests_lane.py" 2>&1 \
+            | grep -E '^Ran|^OK|^FAILED' | tr '\n' ' ')"
         python3 "$HERE/registercheck.py" origin/claude/erp-creation-guidance-ox5afo HEAD || echo "REGISTER FAILED"
         .venv/bin/python "$HERE/screenkeys.py" || echo "SCREENS FAILED"
         echo "AUDIT:"; .venv/bin/python manage.py audit_invariants 2>&1 | tail -3
@@ -148,7 +164,7 @@ mig)
     rm -f "$M/pg.log"
     if [ -s "$M/skips.txt" ]; then
         if [ "$(cat "$PGDONE" 2>/dev/null)" != "$PGMARK" ]; then
-            pg_isready -q || service postgresql start > /dev/null
+            pg_up
             su postgres -c "psql -q -c 'DROP DATABASE IF EXISTS test_erp9 WITH (FORCE)'" 2>&1 | grep -v NOTICE
             timeout 3000 env DATABASE_URL="postgres://erp:erp@localhost:5432/erp9" .venv/bin/python manage.py test \
                 $(cat "$M/skips.txt") --tag migration --noinput > "$M/pg.run.log" 2>&1

@@ -96,6 +96,9 @@ if not vitest or "UI FAILED" in out:
     problems.append("UI lane not clean")
 if "names: clean" not in out:
     problems.append("names check not clean")
+gate_tests = re.search(r"^gate tests: Ran (\d+) tests? in \S+ OK\s*$", out, re.M)
+if not gate_tests:
+    problems.append("the gate's own tests (tests_migneeded, tests_lane) did not pass")
 if "No invariant findings" not in out or "No changes detected" not in out:
     problems.append("audit_invariants or makemigrations --check not clean")
 # Both printed a failure the gate line never read until g47: a commit naming a row still open passed.
@@ -109,5 +112,6 @@ migration = f"{mig}, one app at a time, the {mig_pg} PostgreSQL-only on PostgreS
 if unchanged:
     migration = unchanged + (f", the {mig_pg} PostgreSQL-only on PostgreSQL" if mig_pg else "")
 print(f"Gate: SQLite under Asia/Kolkata {ist} tests, {ist_skip} skipped; PostgreSQL {pg_a + pg_b + pg_c}; "
-      f"migration-tagged {migration}; vitest {vitest.group(1)}; names clean; register clean; screens clean; "
+      f"migration-tagged {migration}; vitest {vitest.group(1)}; gate tests {gate_tests.group(1)}; names clean; "
+      f"register clean; screens clean; "
       f"audit_invariants no findings; makemigrations --check no changes.")
