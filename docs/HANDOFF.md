@@ -50,6 +50,23 @@ pg_isready -q || service postgresql start                              # role er
 
 ## 2. Next steps, in order
 
+**g62 is pushed (6224a3b, 25 November 2026), all six lanes green on one tip (gated as 1b77f86).** One commit on
+542695c, O623: a subcontract line's components, and the bill of materials they are computed from, change only
+while its order is a draft. SubcontractComponent answers to its order by shared rule B (its save() and delete()
+hold the orders of the lines it leaves and joins, then those lines, and refuse past draft; locked_before_it()
+names the same rows); _check_bom refuses a bill of materials named, changed or taken off past draft, reading the
+order as stored; the admin inline offers add, change and delete on a draft only, and asks the person's own
+permission on the rows first (the three overrides had answered in its place). Seven tests, each failing on
+8943e3d. There is no path from confirmed back to draft (reopen is a closed-short line's, on a confirmed order), so
+the rows a return reads are the rows its receipt consumed. The gate ran 20:46 to 23:45 with no restart.
+
+O377 probed on 6224a3b and reworded latent: on a receipt whose consumption reads as nobody's, two standard-costed
+lines put a component back at its last arrival rate (frames consumed at 40.00 came back at 50.00, a 10.00 gain
+nobody earned); inventory 0040's half matters only to a database upgraded across it with data. No installation
+holds either. Probe kept at /home/user/work/o377 (probe.log; the test file was deleted).
+
+Next: O378, O382 and O384, which want the lock-order sentinel or a PostgreSQL sweep rather than one probe.
+
 **g61 is pushed (8943e3d, 25 November 2026), all six lanes green on one tip (gated as 20b78af).** One commit on
 138b09b, O381: two race() tests on PostgreSQL (apps/e2e/tests_races.py, StockAndPlantRaceTests). Two first
 adjustment numbers taken while the company's DocumentNumbering row is missing both post, with distinct numbers, one
