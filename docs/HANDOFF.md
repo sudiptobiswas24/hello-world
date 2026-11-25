@@ -50,6 +50,22 @@ pg_isready -q || service postgresql start                              # role er
 
 ## 2. Next steps, in order
 
+**g61 is pushed (8943e3d, 25 November 2026), all six lanes green on one tip (gated as 20b78af).** One commit on
+138b09b, O381: two race() tests on PostgreSQL (apps/e2e/tests_races.py, StockAndPlantRaceTests). Two first
+adjustment numbers taken while the company's DocumentNumbering row is missing both post, with distinct numbers, one
+numbering row and one sequence; two write-offs of 60 from a shelf of 100 whose StockPosition row is not made yet,
+one posts and the other is refused for want of stock. Each was proven by mutation: with hold()'s savepoint taken
+out the first fails, and with lock_position()'s create-then-select taken out the second posts both. The write-off
+drafts are numbered before the race, because a first sequence insert serialised the two transactions by itself and
+hid the mutation. The migration lane needed none of the 66; the gate ran 17:13 to 20:26 with no restart.
+
+Next: O623 (on the register; a subcontract line's components and its bill of materials change after the order is
+confirmed, and a return then puts back what the rows say now, not what the receipt consumed). The fix and its seven
+tests are written in /home/user/work/g62 (fix as /home/user/work/o623/fix.patch, red run in red.log there): the rows
+answer to their order by shared rule B and change only while it is a draft, the bill of materials is refused named,
+changed or taken off past draft, and the admin inline asks the person's own permission first. Then O377, O378, O382
+and O384.
+
 **PostgreSQL probe on a moved day (25 November 2026, no code changed).** The three PostgreSQL halves on b4fd040
 (9,109 tests; not the 66 migration-tagged ones) under Asia/Kolkata with the plant's clock at 00:30 on 1 April 2027,
 so for the whole run the plant's day was a new financial year and UTC's was still 31 March. Two failures, both the
