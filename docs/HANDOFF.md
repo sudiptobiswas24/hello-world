@@ -50,6 +50,35 @@ pg_isready -q || service postgresql start                              # role er
 
 ## 2. Next steps, in order
 
+**g64 is pushed (e09d59d, 26 November 2026), all six lanes green on one tip (gated as 279f451).** One commit on
+9241b78, O382: every select_for_update() of a business record takes the company's numbering row before it runs, at
+the compiler (apps.core.apps.numbering_before_a_lock, wrapping SQLCompiler.execute_sql), whether or not a row
+matches. Left out are the numbering row itself, a migration's models and a model that is no business record; the
+sequences are locked behind it (an edit over the API or in the admin holds one through lock_for_change), and the
+write hooks leave them out as before. row_lock_query() no longer takes it itself, so lock_rows() holds it once. The
+wrapper sends apps.core.apps.row_lock, which audit_invariants' sign-in check watches beside the write hooks. Eight
+tests in apps/core/tests_lock_order.py, four of which fail as before the commit; on PostgreSQL
+(ALockOfItsOwnBeforeANumberRaceTests) both transactions stand, and as before the commit PostgreSQL refused one
+("deadlock detected"). The wait for another session to be waiting on a lock is one helper (until_another_waits),
+which the O374 and O384 races had copied each. Every app's migration tests ran (apps/core/apps.py changed); the
+gate ran 13:09 to 23:14 with no restart.
+
+Next: two rows, each drafted, uncommitted, on 279f451, and to be gated together as g65 (apps/core/lock_order.py
+changes, so every app's migration tests run once for both). O553 in /home/user/work/o553w (snapshot
+claude/erp-wip-o553w): SelfInvoice.issue's refusal names the self-invoice standing and why one may stand unasked
+(raised as the bill posted, within Rule 47A's thirty days of receipt), and tests_rcm_raised asserts it; to do, the
+day sweep (/home/user/work/o553/sweep.sh, 24 days from 26 November 2026 to 1 April 2028, every day's log read), the
+assertion red on the old message, then the row closed citing the sweep. O378 in /home/user/work/o378w (snapshot
+claude/erp-wip-o378w): the sentinel refuses the numbering row taken after the transaction made a row with a unique
+key beyond its pk (made(), taken(), unique_keys()); an API create takes numbering_first() in
+AuditableViewSetMixin.perform_create, and the product sites the survey found take it first (third-party release,
+re-batch, importer, setup_payroll, setup_statutory, load_demo). The survey's unplaced exchange-rate site was a
+test's own code: under the test runner the command wrapper (execute_as_itself) stood as its call site, and _where()
+leaves it out now. To do: the suite, for refusals the rule makes visible and query counts an API create changes
+(each extra query checked to be the hold before any count moves); red with each site fix reverted and with the rule
+off; the re-batch race on PostgreSQL (ANewBatchCodeBeforeANumberRaceTests, "deadlock detected" with the fix out,
+both done with it in).
+
 **g63 is pushed (92cbef3, 26 November 2026), all six lanes green on one tip (gated as d79f2ae).** One commit on
 a208eab, O384: a bulk QuerySet.update() takes the company's numbering row before its rows, as a save of a row
 that stood does (apps.core.apps.numbering_before_an_update, installed in CoreConfig.ready and found through the
