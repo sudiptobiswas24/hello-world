@@ -44,7 +44,12 @@ LOCK_ORDER = (
     #    (25 October), a note numbered first and then refunded through a bank took the bank FOR SHARE after
     #    it (hold_money_account), which PostgreSQL alone showed (the gate's O261 fuzz). Every document that
     #    numbers takes it as the first lock of its outermost transaction (@serialised, numbering models);
-    #    what it then posts follows it. The cost, accepted: postings that number run one at a time.
+    #    what it then posts follows it. The cost, accepted: postings that number run one at a time. Every
+    #    select_for_update() of a business record takes it first at the compiler (O382), as a save, a delete and
+    #    a bulk update do, whether or not a row matches. So the ranks below order transactions that already run
+    #    one at a time behind it: a pair of them taken out of order where no test reaches (a period or a shelf
+    #    row a fixture never made) goes unseen, and cannot deadlock on them. What can still come before it is an insert
+    #    (O378) and raw SQL.
     "core.documentnumbering",
     # 1. a purchase order, then a sales order (a drop-ship receipt ships
     #    the customer's order)
