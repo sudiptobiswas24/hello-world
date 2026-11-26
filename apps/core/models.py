@@ -111,14 +111,13 @@ def row_lock_query(model, pk, no_key=True):
     for a number. FOR UPDATE (no_key=False) only where the row is deleted
     or its key changes: lock_rows(..., deleting=True).
     """
-    if model is not DocumentNumbering and not getattr(model, "numbering_exempt", None) and in_a_transaction_it_opened():
-        # Every row lock comes after the company's numbering row (O257), whatever the model: it is held to
-        # commit by whatever takes a number, and taken after any other row a transaction holds, it waited for
-        # a row whose holder then wanted it. lock_rows(), lock_in_turn(), @serialised, lock_for_change() and
-        # hold_what_it_names_first() all lock through here. The cost, decided: every transaction that locks a
-        # row runs one at a time across the plant; two postings at once wait for each other, and a long one (a
-        # pay run, the demo) holds the rest for its length.
-        DocumentNumbering.hold()
+    # Every row lock comes after the company's numbering row (O257), whatever the model: it is held to commit by
+    # whatever takes a number, and taken after any other row a transaction holds, it waited for a row whose
+    # holder then wanted it. lock_rows(), lock_in_turn(), @serialised, lock_for_change() and
+    # hold_what_it_names_first() all lock through here, and the compiler holds it before this query as before
+    # every select_for_update() (apps.core.apps.numbering_before_a_lock, O382). The cost, decided: every
+    # transaction that locks a row runs one at a time across the plant; two postings at once wait for each
+    # other, and a long one (a pay run, the demo) holds the rest for its length.
     return model._base_manager.select_for_update(no_key=no_key).filter(pk=pk).order_by().values_list(
         "pk", flat=True)
 
@@ -180,8 +179,9 @@ def lock_rows(*instances, refresh=True, deleting=False):
     UPDATE, for a row about to be deleted, which such a check must wait on.
 
     The first row lock of a transaction takes the company's numbering row
-    first (DocumentNumbering.hold(), in row_lock_query), whatever the
-    model, and later locks find it held (O257). So every transaction that
+    first (DocumentNumbering.hold(), which the compiler takes before every
+    select_for_update(): apps.core.apps.numbering_before_a_lock, O382),
+    whatever the model, and later locks find it held (O257). So every transaction that
     locks a row runs one at a time across the plant: two postings at once
     wait for each other, and a long one (a pay run, the demo) holds the
     rest for its length. Decided, for one plant: any narrower rule kept
@@ -370,9 +370,11 @@ def serialised(*state, held_first=False):
 
 def numbering_first():
     """
-    The company's numbering row before a row lock taken by a raw select_for_update() rather than through
-    lock_rows() (O257): every row lock of a transaction comes after it (row_lock_query). Outside a transaction
-    the code opened it holds nothing.
+    The company's numbering row, held now (O257): every row lock of a transaction comes after it. A
+    select_for_update() takes it of itself (apps.core.apps.numbering_before_a_lock, O382), and a save, a delete
+    or a bulk update of a business record does; this is for a lock the ORM does not compile (raw SQL), and for
+    a step that must follow the numbering row though it locks nothing yet (an insert another transaction could
+    wait on). Outside a transaction the code opened it holds nothing.
     """
     if in_a_transaction_it_opened():
         DocumentNumbering.hold()

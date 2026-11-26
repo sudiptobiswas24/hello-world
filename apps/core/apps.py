@@ -6,6 +6,8 @@ from django.dispatch import Signal
 # Django sends no signal of its own for one. What audit_invariants watches a sign-in for, beside pre_save,
 # pre_delete and m2m_changed.
 bulk_update = Signal()
+# And as a select_for_update() takes it (numbering_before_a_lock, O382).
+row_lock = Signal()
 
 
 def make_the_numbering_row(sender, using="default", **kwargs):
@@ -35,6 +37,31 @@ def numbering_exempt(model):
     return bool(getattr(model, "numbering_exempt", None))
 
 
+def locked_behind_the_numbering_row(model):
+    """
+    Whether a lock of `model`'s rows comes after the company's numbering row (O257): every model's but the
+    row's own, a migration's model, and one that is not a business record (numbering_exempt). The sequences
+    too, though a number takes them behind it already (DocumentSequence.next_value): a sequence edited over the
+    API or in the admin is held from read to write (lock_for_change), and that hold took the numbering row first
+    in row_lock_query() before the compiler did.
+    """
+    from .models import DocumentNumbering
+
+    return model is not None and model is not DocumentNumbering and model.__module__ != "__fake__" and \
+        not numbering_exempt(model)
+
+
+def written_behind_the_numbering_row(model):
+    """
+    Whether a save, a delete or a bulk update of `model`'s rows takes the company's numbering row first: what is
+    locked behind it (locked_behind_the_numbering_row), but the sequences, written only behind it (a number
+    holds it before its sequence, and an edit's hold before its save).
+    """
+    from .models import DocumentSequence, DocumentSequenceYear
+
+    return locked_behind_the_numbering_row(model) and model not in (DocumentSequence, DocumentSequenceYear)
+
+
 def numbering_before_a_write(sender, instance, **kwargs):
     """
     A save of a row that stood, or a delete, locks that row: it comes after the company's numbering row as
@@ -43,11 +70,9 @@ def numbering_before_a_write(sender, instance, **kwargs):
     nor a migration's row, nor a model that is not a business record (numbering_exempt). A model built with its
     key and saved runs an UPDATE, so a key set is held, adding or not (review_lockfirst F2).
     """
-    from .models import DocumentNumbering, DocumentSequence, DocumentSequenceYear, numbering_first
+    from .models import numbering_first
 
-    if sender in (DocumentNumbering, DocumentSequence, DocumentSequenceYear) or sender.__module__ == "__fake__":
-        return
-    if kwargs.get("raw") or numbering_exempt(sender) or instance.pk is None:
+    if kwargs.get("raw") or instance.pk is None or not written_behind_the_numbering_row(sender):
         return
     numbering_first()
 
@@ -63,12 +88,10 @@ def numbering_before_an_update(update):
     (numbering_exempt).
     """
     def update_behind_the_numbering_row(self, **kwargs):
-        from .models import DocumentNumbering, DocumentSequence, DocumentSequenceYear, numbering_first
+        from .models import numbering_first
 
-        model = self.model
-        if model not in (DocumentNumbering, DocumentSequence, DocumentSequenceYear) and \
-                model.__module__ != "__fake__" and not numbering_exempt(model):
-            bulk_update.send(sender=model)
+        if written_behind_the_numbering_row(self.model):
+            bulk_update.send(sender=self.model)
             numbering_first()
         return update(self, **kwargs)
 
@@ -77,8 +100,35 @@ def numbering_before_an_update(update):
     return update_behind_the_numbering_row
 
 
+def numbering_before_a_lock(execute_sql):
+    """
+    SQLCompiler.execute_sql(), wrapped (O382). A select_for_update() of a business record comes after the
+    company's numbering row, whoever asks for it and whether or not a row matches. Each lock took it by hand
+    before: row_lock_query() for lock_rows() and every helper that locks through it, and a numbering_first()
+    written before each select_for_update() of its own. One written without it was seen by the sentinel only
+    where a test gave it a row to lock: the job-work challan's period was, once a test had an open period. In
+    the plant, where the row stands, such a lock held its row while it waited for the numbering row, which a
+    posting behind it held while it waited for the row: the shape O257 deadlocked on. Raw SQL is not compiled
+    here; the one raw lock (accounting.money.hold_money_account) holds the numbering row itself.
+    """
+    def execute_behind_the_numbering_row(self, *args, **kwargs):
+        if self.query.select_for_update and locked_behind_the_numbering_row(self.query.model):
+            from .models import numbering_first
+
+            row_lock.send(sender=self.query.model)
+            numbering_first()
+        return execute_sql(self, *args, **kwargs)
+
+    execute_behind_the_numbering_row.__wrapped__ = execute_sql
+    execute_behind_the_numbering_row.numbering_first = True
+    return execute_behind_the_numbering_row
+
+
 def holds_the_numbering_row_first(function):
-    """Whether this QuerySet.update(), or one it wraps (the edit log wraps it too, apps.core.history), is ours."""
+    """
+    Whether this QuerySet.update() or SQLCompiler.execute_sql(), or one it wraps (the edit log wraps the first,
+    apps.core.history), is ours.
+    """
     while function is not None:
         if getattr(function, "numbering_first", False):
             return True
@@ -133,9 +183,13 @@ class CoreConfig(AppConfig):
         pre_delete.connect(numbering_before_a_write, weak=False, dispatch_uid="apps.core.numbering_before_delete")
         m2m_changed.connect(numbering_before_a_link, weak=False, dispatch_uid="apps.core.numbering_before_link")
         from django.db.models.query import QuerySet
+        from django.db.models.sql.compiler import SQLCompiler
 
         if not holds_the_numbering_row_first(QuerySet.update):
             QuerySet.update = numbering_before_an_update(QuerySet.update)
+        # Before the sentinel, which wraps it in turn and so sees the numbering row taken before the rows.
+        if not holds_the_numbering_row_first(SQLCompiler.execute_sql):
+            SQLCompiler.execute_sql = numbering_before_a_lock(SQLCompiler.execute_sql)
 
         if getattr(settings, "LOCK_ORDER_SENTINEL", False):
             from apps.core import lock_order

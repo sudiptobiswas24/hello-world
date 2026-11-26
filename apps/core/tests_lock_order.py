@@ -409,7 +409,88 @@ class ABulkUpdateComesAfterTheNumberingRowTests(TestCase):
         self.addCleanup(user_logged_in.disconnect, dispatch_uid="planted-bulk-sign-in")
         found = Command().sign_in_writes_unmarked()
         self.assertEqual([kind for kind, _detail in found], ["sign-in writes a business record"], found)
-        self.assertIn("core.Party is written by a sign-in", found[0][1])
+        self.assertIn("core.Party is written or locked by a sign-in", found[0][1])
+
+
+class ALockComesAfterTheNumberingRowWhateverAsksForItTests(TestCase):
+    """
+    O382: a select_for_update() took the numbering row only where its own code took it first, by
+    row_lock_query() or a numbering_first() written before it, and one written without it was seen by the
+    sentinel only where a test gave it a row to lock. The compiler takes it before every select_for_update() of
+    a business record now (apps.core.apps.numbering_before_a_lock), whether or not a row matches.
+    """
+
+    def setUp(self):
+        self.party = Party.objects.create(code="LOCK", name="Held")
+
+    def taken(self):
+        return list(dict.fromkeys((getattr(connection, "_lock_order_state", None) or {}).get("taken", [])))
+
+    def test_a_lock_of_its_own_takes_it_before_its_row(self):
+        with transaction.atomic():
+            list(Party.objects.select_for_update(no_key=True).filter(pk=self.party.pk))
+            self.assertEqual(self.taken(), ["core.documentnumbering", "core.party"])
+
+    def test_and_where_no_row_matches_yet(self):
+        # What a test without the row (an open period, stock on the shelf) never showed: the lock the plant takes
+        # once the row stands comes after the numbering row all the same.
+        with transaction.atomic():
+            list(Party.objects.select_for_update(no_key=True).filter(code="NONE"))
+            self.assertEqual(self.taken(), ["core.documentnumbering"])
+
+    def test_so_a_number_taken_after_one_is_in_order(self):
+        # Unwrapped: "core.documentnumbering 1 locked after core.party (select_for_update): the numbering row is
+        # the first lock of a transaction that numbers".
+        from .models import DocumentSequence
+
+        with transaction.atomic():
+            Party.objects.select_for_update(no_key=True).get(pk=self.party.pk)
+            number = DocumentSequence.next_for("test.lock", "2026-10-01", name="Lock", prefix="L-")
+        self.assertEqual(number, "L-2026-00001")
+
+    def test_lock_rows_holds_it_once_not_twice(self):
+        from unittest import mock
+
+        with transaction.atomic(), mock.patch.object(DocumentNumbering, "hold", wraps=DocumentNumbering.hold) as hold:
+            lock_rows(self.party, refresh=False)
+        self.assertEqual(hold.call_count, 1)
+
+    def test_a_sequence_held_for_an_edit_takes_it_too(self):
+        # The API and the admin hold a sequence from read to write (lock_for_change). row_lock_query() took the
+        # numbering row before it until the compiler did; a sequence's save takes none, written behind it.
+        from .models import DocumentSequence, lock_for_change
+
+        sequence = DocumentSequence.objects.create(code="test.edit", name="Edit", prefix="E-")
+        with transaction.atomic():
+            lock_for_change(sequence, {"prefix": "X-"})
+            self.assertEqual(self.taken(), ["core.documentnumbering", "core.documentsequence"])
+
+    def test_not_for_a_row_that_is_no_business_record(self):
+        from django.contrib.sessions.models import Session
+
+        with transaction.atomic():
+            list(Session.objects.select_for_update(no_key=True).filter(session_key="none"))
+            self.assertNotIn("core.documentnumbering", self.taken())
+
+    def test_a_sign_in_that_locked_a_business_record_is_reported(self):
+        from django.contrib.auth.signals import user_logged_in
+
+        from apps.core.management.commands.audit_invariants import Command
+
+        def planted(sender, user, **kwargs):
+            with transaction.atomic():
+                list(Party.objects.select_for_update(no_key=True).filter(pk=self.party.pk))
+
+        user_logged_in.connect(planted, weak=False, dispatch_uid="planted-lock-sign-in")
+        self.addCleanup(user_logged_in.disconnect, dispatch_uid="planted-lock-sign-in")
+        found = Command().sign_in_writes_unmarked()
+        self.assertEqual([kind for kind, _detail in found], ["sign-in writes a business record"], found)
+        self.assertIn("core.Party is written or locked by a sign-in", found[0][1])
+
+    def test_nor_outside_a_transaction_the_code_opened_which_the_sentinel_refuses_as_before(self):
+        with self.assertRaisesMessage(LockedOutsideATransaction, "core.party locked outside any transaction"):
+            list(Party.objects.select_for_update(no_key=True).filter(pk=self.party.pk))
+        self.assertNotIn("core.documentnumbering", self.taken())
 
 
 class APlainForUpdateIsReportedTests(TestCase):
@@ -598,7 +679,8 @@ class TheNumberingRowIsTheFirstLockTests(TestCase):
 class ASignInWritesOnlyRowsThatTakeNoNumberingTests(TestCase):
     """
     O257, review_lockfirst F1: audit_invariants drives a sign-in, a session refresh, a sign-out and end_sessions,
-    and reports a model they write (a row saved with its key, deleted, or linked) that is not numbering_exempt.
+    and reports a model they write (a row saved with its key, deleted, linked or updated in bulk) or lock that is not
+    numbering_exempt.
     """
 
     def test_a_business_record_written_at_sign_in_is_reported_and_the_marked_ones_are_not(self):
@@ -616,4 +698,4 @@ class ASignInWritesOnlyRowsThatTakeNoNumberingTests(TestCase):
         self.addCleanup(user_logged_in.disconnect, dispatch_uid="planted-sign-in-write")
         found = Command().sign_in_writes_unmarked()
         self.assertEqual([kind for kind, _detail in found], ["sign-in writes a business record"], found)
-        self.assertIn("core.Party is written by a sign-in", found[0][1])
+        self.assertIn("core.Party is written or locked by a sign-in", found[0][1])

@@ -211,6 +211,23 @@ def stale_behind_a_lock(first, second, timeout=60):
     return outcomes
 
 
+def until_another_waits(what, tries=400):
+    """
+    Return once another session of this database is waiting on a lock, read from pg_stat_activity, not a clock;
+    refused, naming `what`, if none does within `tries` looks (20 seconds). PostgreSQL only.
+    """
+    import time
+
+    with connection.cursor() as cursor:
+        for _ in range(tries):
+            cursor.execute("SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() "
+                           "AND wait_event_type = 'Lock' AND pid <> pg_backend_pid()")
+            if cursor.fetchone()[0]:
+                return
+            time.sleep(0.05)
+    raise RuntimeError(f"{what} never waited")
+
+
 def fixture(test, cls):
     """
     `cls`'s own setUp, run as a `cls`: its helpers and what it builds, for
@@ -2898,8 +2915,6 @@ class APersonBeforeTheirBankRaceTests(RaceCase):
     """
 
     def test_a_receipt_from_a_person_waits_for_them_before_its_bank_and_both_stand(self):
-        import time
-
         from django.utils import timezone
 
         from apps.accounting.models import Account
@@ -2923,15 +2938,7 @@ class APersonBeforeTheirBankRaceTests(RaceCase):
         def the_person_then_the_bank():
             written(Employee, shop.weaver.pk)
             person_held.set()
-            with connection.cursor() as cursor:
-                for _ in range(400):
-                    cursor.execute("SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() "
-                                   "AND wait_event_type = 'Lock' AND pid <> pg_backend_pid()")
-                    if cursor.fetchone()[0]:
-                        break
-                    time.sleep(0.05)
-                else:
-                    raise RuntimeError("the receipt never waited for the weaver")
+            until_another_waits("the receipt, for the weaver,")
             written(Account, shop.bank.pk)
 
         # Held by the two events, not at a save: neither saves a person.
@@ -2953,8 +2960,6 @@ class ABulkUpdateBeforeANumberRaceTests(RaceCase):
     """
 
     def test_a_party_updated_in_bulk_and_then_numbered_beside_a_posting_that_holds_it(self):
-        import time
-
         from apps.core.models import DocumentNumbering, DocumentSequence, Party, lock_rows
 
         party = Party.objects.create(code="RACE-BULK", name="Before")
@@ -2963,15 +2968,7 @@ class ABulkUpdateBeforeANumberRaceTests(RaceCase):
         def updated_then_numbered():
             Party.objects.filter(pk=party.pk).update(name="Updated in bulk")
             updated.set()
-            with connection.cursor() as cursor:
-                for _ in range(400):
-                    cursor.execute("SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() "
-                                   "AND wait_event_type = 'Lock' AND pid <> pg_backend_pid()")
-                    if cursor.fetchone()[0]:
-                        break
-                    time.sleep(0.05)
-                else:
-                    raise RuntimeError("the posting never waited")
+            until_another_waits("the posting")
             DocumentSequence.next_for("test.bulk-race", datetime.date(2026, 10, 1), name="Bulk", prefix="B-")
 
         def numbering_then_the_party():
@@ -2983,6 +2980,40 @@ class ABulkUpdateBeforeANumberRaceTests(RaceCase):
         outcomes = race(Party, updated_then_numbered, numbering_then_the_party)
         self.assertEqual(outcomes, ["done", "done"], outcomes)
         self.assertEqual(Party.objects.get(pk=party.pk).name, "Updated in bulk")
+
+
+@tag("race")
+@unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
+class ALockOfItsOwnBeforeANumberRaceTests(RaceCase):
+    """
+    O382: a select_for_update() written without a numbering_first() before it took no numbering row. A
+    transaction that locked a party so and then took a number, beside one that held the numbering row and then
+    the party, as every posting holds it first: each held what the other wanted, and PostgreSQL refused one
+    ("deadlock detected"). The sentinel saw such a lock only where a test gave it a row; here the row stands, as
+    it does in the plant. The compiler takes the numbering row before every select_for_update() now: the other
+    waits there, and both stand.
+    """
+
+    def test_a_party_locked_by_a_query_of_its_own_and_then_numbered_beside_a_posting_that_holds_it(self):
+        from apps.core.models import DocumentNumbering, DocumentSequence, Party, lock_rows
+
+        party = Party.objects.create(code="RACE-LOCK", name="Held")
+        locked = threading.Event()
+
+        def locked_then_numbered():
+            list(Party.objects.select_for_update(no_key=True).filter(pk=party.pk))
+            locked.set()
+            until_another_waits("the posting")
+            DocumentSequence.next_for("test.lock-race", datetime.date(2026, 10, 1), name="Lock", prefix="L-")
+
+        def numbering_then_the_party():
+            locked.wait(timeout=5)
+            DocumentNumbering.hold()
+            lock_rows(Party(pk=party.pk))
+
+        # Held by the event, not at a save: neither saves a party.
+        outcomes = race(Party, locked_then_numbered, numbering_then_the_party)
+        self.assertEqual(outcomes, ["done", "done"], outcomes)
 
 
 @tag("race")

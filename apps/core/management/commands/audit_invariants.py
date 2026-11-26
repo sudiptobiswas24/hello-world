@@ -3627,9 +3627,9 @@ class Command(BaseCommand):
         A model a sign-in, a sign-out or a session's refresh writes that does not say it is no business record
         (O257, review_lockfirst F1). Every save of a row that stood and every delete takes the company's numbering
         row first unless the model is numbering_exempt: signing out waited the whole of a pay run on the session's
-        delete. So does every bulk update (O384, apps.core.apps.bulk_update). Driven for real, in a transaction
-        rolled back: a login made, signed in over an open session, a page read, signed out, its password changed
-        (end_sessions).
+        delete. So does every bulk update (O384, apps.core.apps.bulk_update) and every select_for_update() (O382,
+        apps.core.apps.row_lock). Driven for real, in a transaction rolled back: a login made, signed in over an
+        open session, a page read, signed out, its password changed (end_sessions).
         """
         import uuid
 
@@ -3638,7 +3638,7 @@ class Command(BaseCommand):
         from django.db.models.signals import m2m_changed, pre_delete, pre_save
         from django.test import Client
 
-        from apps.core.apps import bulk_update, numbering_exempt
+        from apps.core.apps import bulk_update, numbering_exempt, row_lock
 
         from django.db import connection
 
@@ -3659,7 +3659,7 @@ class Command(BaseCommand):
 
         def note(sender, **kwargs):
             # What the hook holds for (apps.core.apps): a row with its key saved, a delete, a link changed, a bulk
-            # update. A fresh insert takes no hold, so a first sign-in waits for nothing.
+            # update, a lock. A fresh insert takes no hold, so a first sign-in waits for nothing.
             instance, action = kwargs.get("instance"), kwargs.get("action")
             if action is not None and action not in ("pre_add", "pre_remove", "pre_clear"):
                 return
@@ -3675,7 +3675,7 @@ class Command(BaseCommand):
             with transaction.atomic():
                 user = get_user_model().objects.create_user(username=f"audit-{uuid.uuid4().hex[:12]}",
                                                             password=password)
-                for signal in (pre_save, pre_delete, m2m_changed, bulk_update):
+                for signal in (pre_save, pre_delete, m2m_changed, bulk_update, row_lock):
                     signal.connect(note, weak=False, dispatch_uid=("audit-sign-in", signal))
                 try:
                     client = Client(HTTP_HOST="localhost")
@@ -3690,15 +3690,16 @@ class Command(BaseCommand):
 
                     end_sessions(user)
                 finally:
-                    for signal in (pre_save, pre_delete, m2m_changed, bulk_update):
+                    for signal in (pre_save, pre_delete, m2m_changed, bulk_update, row_lock):
                         signal.disconnect(dispatch_uid=("audit-sign-in", signal))
                 raise Rollback
         except Rollback:
             pass
         return [("sign-in writes a business record",
-                 f"{model._meta.label} is written by a sign-in, a sign-out or a session's refresh and is not "
-                 "numbering_exempt: each waits behind the company's numbering row for the whole of a posting "
-                 "(O257). Give the class a numbering_exempt reason, or keep the write off the sign-in path.")
+                 f"{model._meta.label} is written or locked by a sign-in, a sign-out or a session's refresh and is "
+                 "not numbering_exempt: each waits behind the company's numbering row for the whole of a posting "
+                 "(O257). Give the class a numbering_exempt reason, or keep the write or the lock off the sign-in "
+                 "path.")
                 for model in sorted(written, key=lambda m: m._meta.label) if not numbering_exempt(model)]
 
     def plain_for_update(self, labels, sources):
