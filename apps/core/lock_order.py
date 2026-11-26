@@ -242,6 +242,9 @@ def taken(connection, label, pks, how=SELECTED):
         if how == SHARED and pk is not None:
             state.setdefault("shared", set()).add((label, pk))
         _guard_first(state, label, pk, how)
+        if label == FIRST and _SURVEY:
+            for made_label, keys, made_where in state.get("made_first", []):
+                _survey("made_before_first", made_label, keys, made_where)
         if label == FIRST:
             before = [taken_label for taken_label in dict.fromkeys(state["taken"])
                       if taken_label != FIRST and not _exempt(taken_label)]
@@ -362,10 +365,36 @@ def _snapshot(connection):
             "keys": dict(state["keys"]), "shared": set(state.get("shared", ()))}
 
 
+_NATURAL = {}
+
+
+def _natural_keys(label):
+    """PROBE O378: the unconditional unique keys beyond the pk, which another transaction's insert can collide on."""
+    if label not in _NATURAL:
+        from django.apps import apps
+        from django.db.models import UniqueConstraint
+
+        try:
+            model = apps.get_model(*label.split("."))
+        except (LookupError, ValueError):
+            _NATURAL[label] = []
+            return []
+        keys = [(f.name,) for f in model._meta.local_fields if f.unique and not f.primary_key]
+        keys += [tuple(c.fields) for c in model._meta.constraints
+                 if isinstance(c, UniqueConstraint) and c.condition is None and c.fields]
+        keys += [tuple(u) for u in model._meta.unique_together]
+        _NATURAL[label] = keys
+    return _NATURAL[label]
+
+
 def made(connection, label, pks):
     """Rows this transaction made: no other can see them until it commits, so taking them waits for nothing."""
     if connection.in_atomic_block and _in_a_transaction_of_its_own(connection):
         state = _state(connection)
+        if _SURVEY and _natural_keys(label) and not _holds(state, FIRST) and not _exempt(label):
+            noted = state.setdefault("made_first", [])
+            if len(noted) < 20:
+                noted.append((label, "|".join("+".join(k) for k in _natural_keys(label)), _where()))
         for pk in pks:
             if pk is not None and (label, pk) not in state["held"]:
                 # Made is held, and another making the same key waits on it: a guard made after a row it
