@@ -2886,10 +2886,12 @@ class APersonBeforeTheirBankRaceTests(RaceCase):
     """
     O374: a person is held before the account money moves through (apps.core.lock_order). A receipt of 300.00
     from the weaver (the O215 fixture) posts beside a transaction that writes the weaver's row and then the
-    bank's, in that order, as the demo holds its people and then pays a claim through a bank, here as plain
-    writes that take no numbering row first (O384). The receipt shared its bank (hold_money_account) and then
-    asked for the weaver (hold_the_payer, a payment check): it waited for the weaver, the other for the bank
-    the receipt shared, and PostgreSQL refused one ("deadlock detected"). Now post() asks its checks first: the
+    bank's, in that order, as the demo holds its people and then pays a claim through a bank, here as raw
+    writes, which take no numbering row first: a bulk update takes it since O384, and behind it the receipt
+    waited at the numbering row and never came to the question asked here. The receipt shared its bank
+    (hold_money_account) and then asked for the weaver (hold_the_payer, a payment check): it waited for the
+    weaver, the other for the bank the receipt shared, and PostgreSQL refused one ("deadlock detected"). Now
+    post() asks its checks first: the
     receipt waits for the weaver before it touches the bank, the other writes the bank and commits, and the
     receipt posts. The bank is written only once the receipt is waiting on a lock, read from pg_stat_activity,
     not a clock.
@@ -2913,8 +2915,13 @@ class APersonBeforeTheirBankRaceTests(RaceCase):
             person_held.wait(timeout=5)
             Payment.objects.get(pk=draft.pk).post()
 
+        def written(model, pk):
+            with connection.cursor() as cursor:
+                cursor.execute(f'UPDATE "{model._meta.db_table}" SET updated_at = %s WHERE id = %s',
+                               [timezone.now(), pk])
+
         def the_person_then_the_bank():
-            Employee.objects.filter(pk=shop.weaver.pk).update(updated_at=timezone.now())
+            written(Employee, shop.weaver.pk)
             person_held.set()
             with connection.cursor() as cursor:
                 for _ in range(400):
@@ -2925,12 +2932,57 @@ class APersonBeforeTheirBankRaceTests(RaceCase):
                     time.sleep(0.05)
                 else:
                     raise RuntimeError("the receipt never waited for the weaver")
-            Account.objects.filter(pk=shop.bank.pk).update(updated_at=timezone.now())
+            written(Account, shop.bank.pk)
 
         # Held by the two events, not at a save: neither saves a person.
         outcomes = race(Employee, post, the_person_then_the_bank)
         self.assertEqual(outcomes, ["done", "done"], outcomes)
         self.assertTrue(Payment.objects.get(pk=draft.pk).posted)
+
+
+@tag("race")
+@unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
+class ABulkUpdateBeforeANumberRaceTests(RaceCase):
+    """
+    O384: a bulk update took no numbering row. A transaction that updated a party so and then took a number,
+    beside one that held the numbering row and then the party, as every posting holds it first: each held what
+    the other wanted, and PostgreSQL refused one ("deadlock detected"; the sentinel refuses the first instead,
+    the numbering row after the party). The update takes the numbering row first now: the other waits there,
+    and both stand. The number is asked only once the other is waiting on a lock, read from pg_stat_activity,
+    not a clock.
+    """
+
+    def test_a_party_updated_in_bulk_and_then_numbered_beside_a_posting_that_holds_it(self):
+        import time
+
+        from apps.core.models import DocumentNumbering, DocumentSequence, Party, lock_rows
+
+        party = Party.objects.create(code="RACE-BULK", name="Before")
+        updated = threading.Event()
+
+        def updated_then_numbered():
+            Party.objects.filter(pk=party.pk).update(name="Updated in bulk")
+            updated.set()
+            with connection.cursor() as cursor:
+                for _ in range(400):
+                    cursor.execute("SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() "
+                                   "AND wait_event_type = 'Lock' AND pid <> pg_backend_pid()")
+                    if cursor.fetchone()[0]:
+                        break
+                    time.sleep(0.05)
+                else:
+                    raise RuntimeError("the posting never waited")
+            DocumentSequence.next_for("test.bulk-race", datetime.date(2026, 10, 1), name="Bulk", prefix="B-")
+
+        def numbering_then_the_party():
+            updated.wait(timeout=5)
+            DocumentNumbering.hold()
+            lock_rows(Party(pk=party.pk))
+
+        # Held by the event, not at a save: neither saves a party.
+        outcomes = race(Party, updated_then_numbered, numbering_then_the_party)
+        self.assertEqual(outcomes, ["done", "done"], outcomes)
+        self.assertEqual(Party.objects.get(pk=party.pk).name, "Updated in bulk")
 
 
 @tag("race")

@@ -1,5 +1,11 @@
 from django.apps import AppConfig
 from django.db.models.signals import m2m_changed, post_migrate, pre_delete, pre_save
+from django.dispatch import Signal
+
+# Sent, with the model as sender, as a bulk update takes the company's numbering row (numbering_before_an_update):
+# Django sends no signal of its own for one. What audit_invariants watches a sign-in for, beside pre_save,
+# pre_delete and m2m_changed.
+bulk_update = Signal()
 
 
 def make_the_numbering_row(sender, using="default", **kwargs):
@@ -44,6 +50,40 @@ def numbering_before_a_write(sender, instance, **kwargs):
     if kwargs.get("raw") or numbering_exempt(sender) or instance.pk is None:
         return
     numbering_first()
+
+
+def numbering_before_an_update(update):
+    """
+    QuerySet.update(), wrapped (O384). A bulk update locks the rows it matches as a save of a row that stood does,
+    and Django sends no signal for it, so it took no numbering row: a transaction that updated a row so and then
+    took a number held that row while it waited for the numbering row, which a posting behind it held while it
+    waited for the row, the shape O257 deadlocked on. It comes after the company's numbering row now, as every
+    row lock does. A bulk delete sends pre_delete for each row it collects, which numbering_before_a_write
+    answers. Not the numbering rows themselves, a migration's model, nor a model that is not a business record
+    (numbering_exempt).
+    """
+    def update_behind_the_numbering_row(self, **kwargs):
+        from .models import DocumentNumbering, DocumentSequence, DocumentSequenceYear, numbering_first
+
+        model = self.model
+        if model not in (DocumentNumbering, DocumentSequence, DocumentSequenceYear) and \
+                model.__module__ != "__fake__" and not numbering_exempt(model):
+            bulk_update.send(sender=model)
+            numbering_first()
+        return update(self, **kwargs)
+
+    update_behind_the_numbering_row.__wrapped__ = update
+    update_behind_the_numbering_row.numbering_first = True
+    return update_behind_the_numbering_row
+
+
+def holds_the_numbering_row_first(function):
+    """Whether this QuerySet.update(), or one it wraps (the edit log wraps it too, apps.core.history), is ours."""
+    while function is not None:
+        if getattr(function, "numbering_first", False):
+            return True
+        function = getattr(function, "__wrapped__", None)
+    return False
 
 
 def numbering_before_a_link(sender, action, **kwargs):
@@ -92,6 +132,10 @@ class CoreConfig(AppConfig):
         pre_save.connect(numbering_before_a_write, weak=False, dispatch_uid="apps.core.numbering_before_save")
         pre_delete.connect(numbering_before_a_write, weak=False, dispatch_uid="apps.core.numbering_before_delete")
         m2m_changed.connect(numbering_before_a_link, weak=False, dispatch_uid="apps.core.numbering_before_link")
+        from django.db.models.query import QuerySet
+
+        if not holds_the_numbering_row_first(QuerySet.update):
+            QuerySet.update = numbering_before_an_update(QuerySet.update)
 
         if getattr(settings, "LOCK_ORDER_SENTINEL", False):
             from apps.core import lock_order

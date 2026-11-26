@@ -345,6 +345,73 @@ class NumberingIsHeldBehindTheCompanysOneRowTests(TestCase):
             DocumentNumbering.hold()
 
 
+class ABulkUpdateComesAfterTheNumberingRowTests(TestCase):
+    """
+    O384: QuerySet.update() locks the rows it matches and sends no signal, so it took no numbering row, and a
+    transaction that updated a party so and then took a number held the party while it waited for the numbering
+    row: the shape O257 deadlocked on. It is held first now (apps.core.apps.numbering_before_an_update). A bulk
+    delete sends pre_delete for each row, which held it already.
+    """
+
+    def setUp(self):
+        self.party = Party.objects.create(code="BULK", name="Before")
+
+    def taken(self):
+        return list(dict.fromkeys((getattr(connection, "_lock_order_state", None) or {}).get("taken", [])))
+
+    def test_it_is_installed_beside_the_edit_log(self):
+        from django.db.models.query import QuerySet
+
+        from .apps import holds_the_numbering_row_first
+
+        self.assertTrue(holds_the_numbering_row_first(QuerySet.update))
+        self.assertTrue(getattr(QuerySet.update, "edit_logged", False))
+
+    def test_a_bulk_update_takes_it_before_its_rows(self):
+        with transaction.atomic():
+            Party.objects.filter(pk=self.party.pk).update(name="After")
+            self.assertEqual(self.taken(), ["core.documentnumbering", "core.party"])
+        self.assertEqual(Party.objects.get(pk=self.party.pk).name, "After")
+
+    def test_so_a_number_taken_after_one_is_in_order(self):
+        # Unwrapped: "core.documentnumbering 1 locked after core.party (select_for_update): the numbering row is
+        # the first lock of a transaction that numbers".
+        from .models import DocumentSequence
+
+        with transaction.atomic():
+            Party.objects.filter(pk=self.party.pk).update(name="After")
+            number = DocumentSequence.next_for("test.bulk", "2026-10-01", name="Bulk", prefix="B-")
+        self.assertEqual(number, "B-2026-00001")
+
+    def test_as_a_bulk_delete_did_already(self):
+        with transaction.atomic():
+            Party.objects.filter(pk=self.party.pk).delete()
+            self.assertEqual(self.taken()[0], "core.documentnumbering")
+
+    def test_not_for_a_row_that_is_no_business_record_nor_outside_a_transaction(self):
+        from django.contrib.sessions.models import Session
+
+        with transaction.atomic():
+            Session.objects.filter(session_key="none").update(session_data="")
+            self.assertNotIn("core.documentnumbering", self.taken())
+        Party.objects.filter(pk=self.party.pk).update(name="Alone")  # a statement of its own holds nothing after it
+        self.assertEqual(Party.objects.get(pk=self.party.pk).name, "Alone")
+
+    def test_a_sign_in_that_updated_a_business_record_in_bulk_is_reported(self):
+        from django.contrib.auth.signals import user_logged_in
+
+        from apps.core.management.commands.audit_invariants import Command
+
+        def planted(sender, user, **kwargs):
+            Party.objects.filter(pk=self.party.pk).update(name="Signed in")
+
+        user_logged_in.connect(planted, weak=False, dispatch_uid="planted-bulk-sign-in")
+        self.addCleanup(user_logged_in.disconnect, dispatch_uid="planted-bulk-sign-in")
+        found = Command().sign_in_writes_unmarked()
+        self.assertEqual([kind for kind, _detail in found], ["sign-in writes a business record"], found)
+        self.assertIn("core.Party is written by a sign-in", found[0][1])
+
+
 class APlainForUpdateIsReportedTests(TestCase):
     """
     O257: a lock that only serialises a decision is FOR NO KEY UPDATE, which a deferred foreign-key check (FOR KEY

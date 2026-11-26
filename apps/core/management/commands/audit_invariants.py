@@ -3627,8 +3627,9 @@ class Command(BaseCommand):
         A model a sign-in, a sign-out or a session's refresh writes that does not say it is no business record
         (O257, review_lockfirst F1). Every save of a row that stood and every delete takes the company's numbering
         row first unless the model is numbering_exempt: signing out waited the whole of a pay run on the session's
-        delete. Driven for real, in a transaction rolled back: a login made, signed in over an open session,
-        a page read, signed out, its password changed (end_sessions).
+        delete. So does every bulk update (O384, apps.core.apps.bulk_update). Driven for real, in a transaction
+        rolled back: a login made, signed in over an open session, a page read, signed out, its password changed
+        (end_sessions).
         """
         import uuid
 
@@ -3637,7 +3638,7 @@ class Command(BaseCommand):
         from django.db.models.signals import m2m_changed, pre_delete, pre_save
         from django.test import Client
 
-        from apps.core.apps import numbering_exempt
+        from apps.core.apps import bulk_update, numbering_exempt
 
         from django.db import connection
 
@@ -3657,8 +3658,8 @@ class Command(BaseCommand):
         written = set()
 
         def note(sender, **kwargs):
-            # What the hook holds for (apps.core.apps): a row with its key saved, a delete, a link changed. A fresh
-            # insert takes no hold, so a first sign-in waits for nothing.
+            # What the hook holds for (apps.core.apps): a row with its key saved, a delete, a link changed, a bulk
+            # update. A fresh insert takes no hold, so a first sign-in waits for nothing.
             instance, action = kwargs.get("instance"), kwargs.get("action")
             if action is not None and action not in ("pre_add", "pre_remove", "pre_clear"):
                 return
@@ -3674,7 +3675,7 @@ class Command(BaseCommand):
             with transaction.atomic():
                 user = get_user_model().objects.create_user(username=f"audit-{uuid.uuid4().hex[:12]}",
                                                             password=password)
-                for signal in (pre_save, pre_delete, m2m_changed):
+                for signal in (pre_save, pre_delete, m2m_changed, bulk_update):
                     signal.connect(note, weak=False, dispatch_uid=("audit-sign-in", signal))
                 try:
                     client = Client(HTTP_HOST="localhost")
@@ -3689,7 +3690,7 @@ class Command(BaseCommand):
 
                     end_sessions(user)
                 finally:
-                    for signal in (pre_save, pre_delete, m2m_changed):
+                    for signal in (pre_save, pre_delete, m2m_changed, bulk_update):
                         signal.disconnect(dispatch_uid=("audit-sign-in", signal))
                 raise Rollback
         except Rollback:
