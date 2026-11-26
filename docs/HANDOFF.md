@@ -50,6 +50,27 @@ pg_isready -q || service postgresql start                              # role er
 
 ## 2. Next steps, in order
 
+**g63 is pushed (92cbef3, 26 November 2026), all six lanes green on one tip (gated as d79f2ae).** One commit on
+a208eab, O384: a bulk QuerySet.update() takes the company's numbering row before its rows, as a save of a row
+that stood does (apps.core.apps.numbering_before_an_update, installed in CoreConfig.ready and found through the
+edit log's wrapper). A bulk delete was held already: Django sends pre_delete for each row it collects. The wrapper
+sends apps.core.apps.bulk_update, which audit_invariants' sign-in check watches beside pre_save, pre_delete and
+m2m_changed. Six tests in apps/core/tests_lock_order.py, four of which fail with the wrapper off; on PostgreSQL
+(ABulkUpdateBeforeANumberRaceTests) both transactions stand, and with the wrapper off PostgreSQL refused one
+("deadlock detected"). The O374 race wrote its rows as bulk updates, which now take the numbering row and so hid
+O374's own mutation; it writes them as raw updates, and with O374 taken back out PostgreSQL refuses one again.
+O378's row is reworded with the survey of 26 November: no posting path makes a row with a unique key before the
+numbering row; eight other sites do. Every app's migration tests ran (apps/core/apps.py changed); the gate ran
+01:56 to 12:23 with no restart.
+
+Next: O382, written and not yet run, uncommitted in /home/user/work/o382w on d79f2ae (message draft
+/home/user/work/o382_msg.txt, its measured figures still to fill). The compiler (SQLCompiler.execute_sql) takes
+the numbering row before every select_for_update() of a business record, whether or not a row matches, so a lock
+written without numbering_first() can no longer hold its row while it waits for the numbering row. Locks leave out
+only the numbering row itself (the sequences included: an edit over the API or in the admin holds one through
+lock_for_change); writes leave the sequences out as before. Prove it red and green on SQLite and PostgreSQL, then
+gate it as g64 with every app's migration tests (apps/core/apps.py again).
+
 **g62 is pushed (6224a3b, 25 November 2026), all six lanes green on one tip (gated as 1b77f86).** One commit on
 542695c, O623: a subcontract line's components, and the bill of materials they are computed from, change only
 while its order is a draft. SubcontractComponent answers to its order by shared rule B (its save() and delete()
