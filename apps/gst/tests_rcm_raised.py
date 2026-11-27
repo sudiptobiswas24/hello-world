@@ -54,7 +54,9 @@ class RaisedAsTheBillPostsTests(ReverseChargeCashTestCase):
                          (f"SI-{self.today.year}-00001", self.today, self.today, D("10000.00"), D("500.00"),
                           self.trucker.name))
         self.assertEqual(awaiting_self_invoice(), [])
-        with self.assertRaisesMessage(ValidationError, "has a self-invoice standing"):
+        # Named, with the day it was raised: a hand issue after the bill posted meets the one the posting raised.
+        with self.assertRaisesMessage(ValidationError, f"has a self-invoice standing, SI-{self.today.year}-00001 of "
+                                                       f"{self.today:%d-%m-%Y} (a bill that posts within Rule 47A's"):
             SelfInvoice.issue(bill, on_date=self.today)
         # The next from the series, for a supply received on the last of the thirty days.
         last = self.freight_bill(day=self.today - datetime.timedelta(days=30))
