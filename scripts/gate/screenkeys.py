@@ -153,7 +153,10 @@ def action_at(url):
     name = actions.get("post") or actions.get("patch") or actions.get("put")
     if view is None or name is None:
         return None
-    owner = next((cls for cls in view.__mro__ if name in vars(cls)), None)
+    # The first class defining it as a function: the mixin's create() and update() are descriptors handing the
+    # request to DRF's (apps.core.audit._WhereTheViewSetHasIt), whose serializer says the keys (O625).
+    owner = next((cls for cls in view.__mro__ if name in vars(cls)
+                  and inspect.isfunction(inspect.unwrap(vars(cls)[name]))), None)
     if name in ("create", "update", "partial_update"):
         return view, name, record_keys(view, name, owner)
     return view, name, taken(owner, name, view)

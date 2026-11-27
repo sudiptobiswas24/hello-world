@@ -10,7 +10,8 @@ this, and what did they do" is handled consistently everywhere.
 from django.db import transaction
 
 from .history import DOING, EventKind, edit_logged, record_by_id
-from .models import lock_for_change
+from .apps import written_behind_the_numbering_row
+from .models import lock_for_change, numbering_first
 
 
 class RowHeldAdminMixin:
@@ -75,6 +76,25 @@ class RowHeldViewSetMixin:
     (an e-invoice, an e-way bill, a month's GSTR-2B): without it, their
     edits took no lock (O17).
     """
+
+    # A POST that makes a row in one transaction, from before its validation
+    # to the write, behind the company's numbering row (O625). An edit is
+    # asked behind its row, which get_object() holds and which takes the
+    # numbering row first; a create held nothing until its save's pre_save,
+    # after the serializer's validators, the viewset's own checks before
+    # super() (a rep's customers, an integration's login) and the save()'s
+    # checks of other rows (a twin bill of entry, a second set of settings).
+    # Asked unheld, two made at once could each pass a check the other made
+    # untrue. A model that is no business record (the logins) holds nothing,
+    # so a sign-in waits for nothing (O378).
+    @_WhereTheViewSetHasIt
+    def create(self, request, *args, **kwargs):
+        with transaction.atomic():
+            made = getattr(getattr(self.get_serializer_class(), "Meta", None), "model", None) or getattr(
+                getattr(self, "queryset", None), "model", None)
+            if made is None or written_behind_the_numbering_row(made):
+                numbering_first()
+            return super().create(request, *args, **kwargs)
 
     # A PUT, PATCH or DELETE in one transaction, from the read to the
     # write: get_object() reads its row under the lock. Only where the

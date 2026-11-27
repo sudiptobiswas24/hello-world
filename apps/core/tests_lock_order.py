@@ -601,6 +601,92 @@ class ARowMadeWithAUniqueKeyComesAfterTheNumberingRowTests(TestCase):
         self.assertEqual(seen, [["core.documentnumbering"]])
 
 
+class ASaveAsksAfterTheNumberingRowTests(TestCase):
+    """
+    O625: a save()'s own checks of other rows come before its pre_save, where the write hook takes the numbering
+    row, and an insert of a row with no unique key takes none there. Asked before any lock, two made at once could
+    both pass a check that one of them made untrue: twin bills of entry, a second set of settings. A create over
+    the API takes the numbering row before the save now, as an edit's hold of its row does, and the one row of a
+    model that keeps one is made behind it (apps.core.models.the_one).
+    """
+
+    def taken(self):
+        return list(dict.fromkeys((getattr(connection, "_lock_order_state", None) or {}).get("taken", [])))
+
+    def test_a_create_over_the_api_holds_the_numbering_row_before_it_asks_anything(self):
+        # A party's create replaces the mixin's perform_create (make_party), as a viewset may: the hold is the
+        # create's, from before the serializer validates to the save.
+        from unittest import mock
+
+        from django.contrib.auth.models import User
+        from rest_framework.test import APIClient
+
+        from .serializers import PartySerializer
+
+        seen, validating, saving = [], PartySerializer.is_valid, Party.save
+
+        def first_thing_in_validation(serializer, *args, **kwargs):
+            seen.append(("validated", self.taken()))
+            return validating(serializer, *args, **kwargs)
+
+        def first_thing_in_save(party, *args, **kwargs):
+            if party._state.adding:
+                seen.append(("saved", self.taken()))
+            return saving(party, *args, **kwargs)
+
+        client = APIClient()
+        client.force_authenticate(User.objects.create_superuser("o625"))
+        with mock.patch.object(PartySerializer, "is_valid", first_thing_in_validation), \
+                mock.patch.object(Party, "save", first_thing_in_save):
+            response = client.post("/api/core/parties/", {"code": "ASKS", "name": "Asks after"}, format="json")
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertEqual(seen, [("validated", ["core.documentnumbering"]), ("saved", ["core.documentnumbering"])])
+
+    def test_a_login_made_over_the_api_holds_nothing(self):
+        # Not a business record: a login waits for no posting (O378).
+        from unittest import mock
+
+        from django.contrib.auth.models import User
+        from rest_framework.test import APIClient
+
+        seen, saving = [], User.save
+
+        def first_thing_in_save(user, *args, **kwargs):
+            if user._state.adding:
+                seen.append(self.taken())
+            return saving(user, *args, **kwargs)
+
+        client = APIClient()
+        client.force_authenticate(User.objects.create_superuser("o625"))
+        with mock.patch.object(User, "save", first_thing_in_save):
+            response = client.post("/api/core/users/", {"username": "asks-nothing", "password": "Pallets-of-sacks-1987"},
+                                   format="json")
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertEqual(seen, [[]])
+
+    def test_the_one_standing_is_read_holding_nothing(self):
+        from apps.quality.models import QualitySettings
+
+        made = QualitySettings.objects.create()
+        with transaction.atomic():
+            self.assertEqual(QualitySettings.get(), made)
+            self.assertEqual(self.taken(), [])
+
+    def test_none_standing_it_is_made_behind_the_numbering_row_and_once(self):
+        from apps.planning.models import PlanningSettings
+        from apps.quality.models import QualitySettings
+
+        self.assertFalse(QualitySettings.objects.exists())
+        with transaction.atomic():
+            made = QualitySettings.get()
+            self.assertEqual(self.taken(), ["core.documentnumbering"])
+        self.assertEqual(list(QualitySettings.objects.all()), [made])
+        self.assertEqual(QualitySettings.get(), made)
+        self.assertFalse(PlanningSettings.objects.exists())
+        self.assertEqual(PlanningSettings.get(), PlanningSettings.get())
+        self.assertEqual(PlanningSettings.objects.count(), 1)
+
+
 class APlainForUpdateIsReportedTests(TestCase):
     """
     O257: a lock that only serialises a decision is FOR NO KEY UPDATE, which a deferred foreign-key check (FOR KEY

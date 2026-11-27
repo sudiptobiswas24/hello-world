@@ -211,6 +211,69 @@ def stale_behind_a_lock(first, second, timeout=60):
     return outcomes
 
 
+def asked_before_the_first_commits(first, second, timeout=60):
+    """
+    `first` makes what it makes and keeps its transaction open; `second` starts then, asks and writes; `first`
+    commits once `second` has finished or is seen waiting on it. The order stale_behind_a_lock does not hold: what
+    `second` asks is asked while what `first` made stands uncommitted, which a check made before any lock cannot see
+    (O625), and a check made behind the numbering row waits out. PostgreSQL only. Outcomes are in (first, second)
+    order.
+    """
+    import time
+
+    made, finished = threading.Event(), threading.Event()
+    behind_pid = []
+    outcomes = [None, None]
+
+    def waiting_on_us():
+        # On this transaction (pg_backend_pid() is ours), not on any lock (O590).
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT pg_backend_pid() = ANY(pg_blocking_pids(%s))", [behind_pid[0]])
+            return cursor.fetchone()[0]
+
+    def ahead():
+        try:
+            with transaction.atomic():
+                first()
+                made.set()
+                deadline = time.monotonic() + timeout
+                while not (finished.is_set() or (behind_pid and waiting_on_us())):
+                    if time.monotonic() > deadline:
+                        raise AssertionError("the second neither ended nor waited on the first")
+                    time.sleep(0.05)
+            outcomes[0] = "done"
+        except Exception as exc:
+            outcomes[0] = f"refused: {exc}"
+        finally:
+            made.set()
+            connection.close()
+
+    def behind():
+        try:
+            if not made.wait(timeout):
+                raise AssertionError("the first never made what it makes")
+            if outcomes[0] is not None:
+                raise AssertionError(f"the first ended before the second started: {outcomes[0]}")
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT pg_backend_pid()")
+                behind_pid.append(cursor.fetchone()[0])
+            with transaction.atomic():
+                second()
+            outcomes[1] = "done"
+        except Exception as exc:
+            outcomes[1] = f"refused: {exc}"
+        finally:
+            finished.set()
+            connection.close()
+
+    threads = [threading.Thread(target=ahead), threading.Thread(target=behind)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout + 30)
+    return outcomes
+
+
 def until_another_waits(what, tries=400):
     """
     Return once another session of this database is waiting on a lock, read from pg_stat_activity, not a clock;
@@ -3136,6 +3199,110 @@ class TwoChangeOrdersRaisedAtOnceRaceTests(RaceCase):
                                            lambda: changes.raise_change(one, NOV_5, "second"))
         self.assertEqual(outcomes[0], "done", outcomes)
         self.assertIn("one_bom_per_item_and_version", outcomes[1])
+
+
+def answered(client, path, body, status=201):
+    """A POST, refused unless it answers `status`, with what it said."""
+    response = client.post(path, body, format="json")
+    if response.status_code != status:
+        raise AssertionError(f"{response.status_code}: {response.content.decode()}")
+    return response
+
+
+@tag("race")
+@unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
+class ASecondMadeWhileTheFirstIsUncommittedRaceTests(RaceCase):
+    """
+    O625: a create's checks of other rows were asked before any lock, the numbering row being taken in the save's
+    pre_save, and for a row with no unique key not at all. Made while the first stood uncommitted, the second's
+    check could not see it: two bills of entry of one number, port and day both stood, two first asks for the
+    settings each made a set, and a second integration of one name, asked before the view's transaction, was
+    refused by auth_user's unique key in the database's words. Each second here is made while the first stands
+    uncommitted (asked_before_the_first_commits); each waits on the numbering row now, which a create over the API
+    takes before it validates (RowHeldViewSetMixin.create) and the_one before it asks again, and asks once the first
+    has committed. Each control takes that lock away.
+    """
+
+    def test_two_first_asks_for_the_quality_settings_make_one(self):
+        from apps.quality.models import QualitySettings
+
+        outcomes = asked_before_the_first_commits(QualitySettings.get, QualitySettings.get)
+        self.assertEqual(outcomes, ["done", "done"], outcomes)
+        self.assertEqual(QualitySettings.objects.count(), 1)
+
+    def test_with_the_lock_taken_away_each_makes_a_set(self):
+        from unittest import mock
+
+        from apps.core import models as core_models
+        from apps.quality.models import QualitySettings
+
+        with mock.patch.object(core_models, "numbering_first", lambda: None):
+            outcomes = asked_before_the_first_commits(QualitySettings.get, QualitySettings.get)
+        self.assertEqual(outcomes, ["done", "done"], outcomes)
+        self.assertEqual(QualitySettings.objects.count(), 2)
+
+    def bills_of_entry(self):
+        from apps.purchasing import tests_imports
+
+        made = fixture(self, tests_imports.ImportPlantTestCase)
+        body = {"be_number": "4417823", "be_date": "2026-10-06", "port_code": "INCCU1", "currency": made.usd.pk,
+                "customs_rate": "84.1000", "freight": "1500.00", "bcd_rate": "7.5", "customs_party": made.customs.pk,
+                "payable_account": made.duty_payable.pk, "duty_account": made.duty.pk, "igst_account": made.igst_in.pk}
+        first, second = made.client_as("AP Manager", "ap-first"), made.client_as("AP Manager", "ap-second")
+        path = "/api/purchasing/bills-of-entry/"
+        return (lambda: answered(first, path, body)), (lambda: answered(second, path, body))
+
+    def test_a_twin_bill_of_entry_made_at_once_is_refused_naming_the_first(self):
+        from apps.purchasing.imports import BillOfEntry
+
+        outcomes = asked_before_the_first_commits(*self.bills_of_entry())
+        self.assertEqual(outcomes[0], "done", outcomes)
+        self.assertTrue(outcomes[1].startswith("refused: 400") and "is entered already" in outcomes[1], outcomes)
+        self.assertEqual(BillOfEntry.objects.count(), 1)
+
+    def test_with_the_lock_taken_away_both_stand(self):
+        from unittest import mock
+
+        from apps.core import audit
+        from apps.purchasing.imports import BillOfEntry
+
+        with mock.patch.object(audit, "numbering_first", lambda: None):
+            outcomes = asked_before_the_first_commits(*self.bills_of_entry())
+        self.assertEqual(outcomes, ["done", "done"], outcomes)
+        self.assertEqual(BillOfEntry.objects.count(), 2)
+
+    def integrations(self):
+        from django.contrib.auth.models import User
+        from rest_framework.test import APIClient
+
+        clients = []
+        for name in ("keys-first", "keys-second"):
+            client = APIClient()
+            client.force_authenticate(User.objects.create_superuser(name))
+            clients.append(client)
+        return [lambda client=client: answered(client, "/api/core/integrations/", {"name": "Tally"})
+                for client in clients]
+
+    def test_a_second_integration_of_one_name_is_refused_in_words(self):
+        from apps.core.api_keys import Integration
+
+        # Validated behind the numbering row, the name's own unique check sees the first, now committed.
+        outcomes = asked_before_the_first_commits(*self.integrations())
+        self.assertEqual(outcomes, ["done", 'refused: 400: {"name":["integration with this name already exists."]}'])
+        self.assertEqual(Integration.objects.count(), 1)
+
+    def test_with_the_lock_taken_away_the_database_refuses_its_login(self):
+        # Validated and asked before the first commits, the second finds no login of the name and is refused at
+        # auth_user's unique key, beside a field the request never sent.
+        from unittest import mock
+
+        from apps.core import audit
+        from apps.core.api_keys import Integration
+
+        with mock.patch.object(audit, "numbering_first", lambda: None):
+            outcomes = asked_before_the_first_commits(*self.integrations())
+        self.assertEqual(outcomes, ["done", 'refused: 400: {"username":["Another record already has this username."]}'])
+        self.assertEqual(Integration.objects.count(), 1)
 
 
 @tag("race")

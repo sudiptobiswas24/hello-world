@@ -1290,6 +1290,10 @@ class Command(BaseCommand):
             if owner is None or not owner.__module__.startswith("apps.") or owner in seen:
                 continue
             seen.add(owner)
+            # The mixin's own create() (RowHeldViewSetMixin, O625) is a descriptor that reads no body, as its
+            # update() and destroy() are: what the neighbouring checks pass over (inspect.isfunction).
+            if not inspect.isfunction(inspect.unwrap(vars(owner)["create"])):
+                continue
             source = inspect.getsource(vars(owner)["create"])
             if "request.data" not in source or "takes_only(" in source or "data=request.data" in source:
                 continue
