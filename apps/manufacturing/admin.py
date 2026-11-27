@@ -842,3 +842,7 @@ class ManufacturingSettingsAdmin(AuditableAdminMixin, admin.ModelAdmin):
         # One company, one set of accounts. A second row would be read by
         # nothing and quietly disagree with the first.
         return not ManufacturingSettings.objects.exists()
+
+    def has_delete_permission(self, request, obj=None):
+        # Deleted, the next ask made a fresh set with no accounts named (O626).
+        return False

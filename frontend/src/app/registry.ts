@@ -458,7 +458,7 @@ export const MODULES: Module[] = [
         detail: () => import("../modules/production/MasterScheduleForm"),
       },
       {
-        path: "planning-settings", label: "Planning settings", permission: "planning.view_planningsettings", create: "planning.add_planningsettings",
+        path: "planning-settings", label: "Planning settings", permission: "planning.view_planningsettings",
         keep: "planning.change_planningsettings",
         keywords: "horizon fence lead time requisition", load: () => import("../modules/production/PlanningSettingsList"),
         detail: () => import("../modules/production/PlanningSettingsForm"),

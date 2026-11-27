@@ -155,8 +155,19 @@ class ForecastViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 
 class PlanningSettingsViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    """
+    The one set, made the first time it is read and changed in place, as the quality and manufacturing settings
+    are (O626). With a POST a second set was made that nothing read, PlanningSettings.get() reading the first; with
+    a DELETE the one there was went, and the next plan ran on a fresh set at the defaults.
+    """
+
     queryset = PlanningSettings.objects.select_related("requisition_requester")
     serializer_class = PlanningSettingsSerializer
+    http_method_names = ["get", "patch", "put", "head", "options"]
+
+    def get_queryset(self):
+        PlanningSettings.get()
+        return super().get_queryset()
 
 
 class PlanningRunViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
