@@ -194,8 +194,15 @@ class SelfInvoice(AuditModel):
                 raise ValidationError(
                     f"{bill.vendor} was registered ({bill.party_gstin}) when {bill.number} posted: the supplier's "
                     "own tax invoice is the document, and no self-invoice is issued (s.31(3)(f)).")
-            if cls.objects.filter(bill=bill, cancelled_on__isnull=True).exists():
-                raise ValidationError(f"{bill.number} has a self-invoice standing; cancel it before issuing another.")
+            standing = cls.objects.filter(bill=bill, cancelled_on__isnull=True).first()
+            if standing is not None:
+                # Named, with why one may stand unasked: raised as the bill posted (raise_self_invoice), within
+                # thirty days of receipt counted to the day it posted. A fixture that posts such a bill near the day
+                # the suite runs and issues by hand meets this on some days only (O553).
+                raise ValidationError(
+                    f"{bill.number} has a self-invoice standing, {standing.number} of {standing.date:%d-%m-%Y} (a "
+                    "bill that posts within Rule 47A's thirty days of receipt is given one as it posts); cancel it "
+                    "before issuing another.")
             if _left_after_notes(bill) <= 0:
                 raise ValidationError(f"Debit notes took back all of {bill.number}'s supply; there is nothing "
                                       "received to invoice.")
