@@ -2,6 +2,7 @@ import { ListView, type Column } from "../../views/ListView";
 
 type Row = Record<string, unknown> & { id: number };
 
+// One record, made the first time it is read, changed in place (O626).
 const columns: Column<Row>[] = [
   { key: "horizon_days", label: "Horizon (days)", kind: "quantity" },
   { key: "planning_fence_days", label: "Planning fence (days)", kind: "quantity" },
@@ -16,8 +17,7 @@ export default function PlanningSettingsList() {
       columns={columns}
       rowKey={(row) => row.id}
       rowHref={(row) => `/production/planning-settings/${row.id}`}
-      searchHint="Code or name"
-      create={{ href: "/production/planning-settings/new", permission: "planning.add_planningsettings" }}
+      searchHint="Nothing to search"
     />
   );
 }

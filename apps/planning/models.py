@@ -121,6 +121,11 @@ class PlanningSettings(AuditModel):
     def __str__(self):
         return "Planning settings"
 
+    def save(self, *args, **kwargs):
+        if self._state.adding and PlanningSettings.objects.exists():
+            raise ValidationError("There is one set of planning settings; change it rather than adding another.")
+        super().save(*args, **kwargs)
+
     @classmethod
     def get(cls):
         return the_one(cls)

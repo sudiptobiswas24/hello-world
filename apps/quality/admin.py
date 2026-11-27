@@ -160,3 +160,7 @@ class QualitySettingsAdmin(AuditableAdminMixin, admin.ModelAdmin):
 
     def has_add_permission(self, request):
         return not QualitySettings.objects.exists()
+
+    def has_delete_permission(self, request, obj=None):
+        # Deleted, the next ask made a fresh set at the defaults: concessions back to needing nobody else (O626).
+        return False

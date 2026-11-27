@@ -13,7 +13,7 @@ export default function PlanningSettingsForm() {
       backLabel="Planning settings"
       newTitle="New planning settings"
       heading={(row) => String(row.horizon_days ?? "")}
-      permissions={{ add: "planning.add_planningsettings", change: "planning.change_planningsettings", delete: "planning.delete_planningsettings" }}
+      permissions={{ change: "planning.change_planningsettings" }}
       fields={[
         { key: "horizon_days", label: "Horizon days", kind: "integer", initial: 90, hint: "How far ahead to plan" },
         { key: "default_buy_lead_days", label: "Default buy lead days", kind: "integer", hint: "Used when no agreed vendor price names a lead time" },

@@ -46,6 +46,14 @@ class PlanningSettingsAdmin(AuditableAdminMixin, admin.ModelAdmin):
                     "default_make_lead_days", "queue_days",
                     "planning_fence_days", "demand_fence_days"]
 
+    # One set, changed in place (O626): a second would be read by nothing, and with the one deleted the next plan
+    # ran on a fresh set at the defaults.
+    def has_add_permission(self, request):
+        return not PlanningSettings.objects.exists()
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
 
 class PlannedDemandInline(admin.TabularInline):
     model = PlannedDemand
