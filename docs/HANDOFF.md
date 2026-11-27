@@ -50,6 +50,32 @@ pg_isready -q || service postgresql start                              # role er
 
 ## 2. Next steps, in order
 
+**g66 is pushed (c57b460, 27 November 2026), all six lanes green on one tip (gated as c1e2961).** One commit on
+f7b755d, O624: raise_change locks the bill inside the transaction that makes the new version, before it asks whether
+a change order is open or reads the item's highest version; the lock is the transaction's first, so it takes the
+company's numbering row (O382). TwoChangeOrdersRaisedAtOnceRaceTests (apps/e2e/tests_races.py, PostgreSQL) raises a
+second behind a first that holds the numbering row until the second waits: on one version the second is refused as
+already open, on two versions of one item both are numbered one after the other, and with the lock taken away the
+second is refused by one_bom_per_item_and_version in the database's words. No migration changed, so the migration
+lane ran none. The gate ran 15:58 to 19:08; a container restart at about 18:00 stopped this session's watchers, not
+the chain.
+
+Next: O625, drafted, uncommitted and not yet run, on c1e2961 in /home/user/work/o625w (snapshot
+claude/erp-wip-o625w). AuditableViewSetMixin.perform_create takes numbering_first() before the save for a model
+written behind the numbering row, so a create over the API asks its save()'s checks of other rows behind it, as an
+edit does; apps.core.models.the_one(model) makes a one-row model's row behind the numbering row when none stands,
+and reads a standing one holding nothing (Company.get and the manufacturing, planning and quality settings);
+IntegrationViewSet asks whether the login exists inside its transaction, behind the numbering row. Tests:
+ASaveAsksAfterTheNumberingRowTests (apps/core/tests_lock_order.py, three) and
+ASecondMadeWhileTheFirstIsUncommittedRaceTests (apps/e2e/tests_races.py, PostgreSQL, six, each fix with a control
+that takes its lock away). To do: bring it onto the pushed tip, run both classes, red with perform_create's
+numbering_first() taken out, the suite, audit_invariants, makemigrations --check. The commit takes O625's row off
+and adds O626: the planning settings take a POST and a DELETE and their save() refuses nothing, where the quality and
+manufacturing settings refuse both. O626 is fixed next as its own commit, the planning settings made as the quality
+settings are (GET, PUT and PATCH read through get(), save() refusing a second, the admin's Add only while none
+stands, no New on the screen), and both are gated together as g67. O625 changes apps/core/models.py's locking code,
+so g67's migration lane runs every app's.
+
 **g65 is pushed (3771d04, 27 November 2026), all six lanes green on one tip (gated as 9c9549d).** Two commits on
 149323a. O378: an insert of a row with a unique key beyond its pk takes the company's numbering row first
 (apps.core.apps.inserted_behind_the_numbering_row, in numbering_before_a_write), and so does QuerySet.bulk_create
