@@ -17,7 +17,7 @@ from django.db import models, transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from apps.core.models import AuditModel, DocumentSequence, check_login_acts, serialised, to_date
+from apps.core.models import AuditModel, DocumentSequence, check_login_acts, lock_rows, serialised, to_date
 
 from .bom import BillOfMaterials, BomByproduct, BomComponent, BomSubstitute
 
@@ -128,28 +128,38 @@ def raise_change(bom, effective_from, reason, by=None):
     A new version of `bom`, copied line for line to be edited, and the
     order that will put it in force from `effective_from`. One open
     change per version; a computed bill is changed at its specification.
+
+    The bill is locked before anything about it is asked (O624). Asked
+    first, two raised at once on one version each found none open, and
+    two on one item each read the same highest version, the second then
+    refused by the database's unique key in its own words. The lock is
+    the transaction's first, so it takes the company's numbering row
+    first (O382), which a change being raised elsewhere holds until it
+    commits: the bill, its open change and the item's highest version
+    are all read after that one stands.
     """
     effective_from = to_date(effective_from)
     if effective_from is None:
         raise ValidationError({"effective_from": ["Say the first day output is made to the new version."]})
     if not (reason or "").strip():
         raise ValidationError({"reason": ["Say what changes and why."]})
-    if bom.is_computed:
-        raise ValidationError(
-            f"{bom} is computed from {bom.computed_by() or 'a specification'}; change that, and this bill "
-            "is rebuilt from it.")
-    if not bom.is_active:
-        raise ValidationError(f"{bom} is out of use; raise the change on the version in use.")
-    if BomChangeOrder.objects.filter(supersedes=bom, status=ChangeStatus.DRAFT).exists():
-        raise ValidationError(f"{bom} already has a change order open; apply or reject that one first.")
-    if bom.valid_from is not None and effective_from <= bom.valid_from:
-        raise ValidationError({"effective_from": [
-            f"{bom} itself starts on {bom.valid_from:%d %b %Y}; a change to it takes effect after that."]})
-    if bom.valid_to is not None and effective_from > bom.valid_to + datetime.timedelta(days=1):
-        raise ValidationError({"effective_from": [
-            f"{bom} ends on {bom.valid_to:%d %b %Y}; the change takes effect by the day after, "
-            "or the days between have no recipe."]})
     with transaction.atomic():
+        lock_rows(bom)
+        if bom.is_computed:
+            raise ValidationError(
+                f"{bom} is computed from {bom.computed_by() or 'a specification'}; change that, and this bill "
+                "is rebuilt from it.")
+        if not bom.is_active:
+            raise ValidationError(f"{bom} is out of use; raise the change on the version in use.")
+        if BomChangeOrder.objects.filter(supersedes=bom, status=ChangeStatus.DRAFT).exists():
+            raise ValidationError(f"{bom} already has a change order open; apply or reject that one first.")
+        if bom.valid_from is not None and effective_from <= bom.valid_from:
+            raise ValidationError({"effective_from": [
+                f"{bom} itself starts on {bom.valid_from:%d %b %Y}; a change to it takes effect after that."]})
+        if bom.valid_to is not None and effective_from > bom.valid_to + datetime.timedelta(days=1):
+            raise ValidationError({"effective_from": [
+                f"{bom} ends on {bom.valid_to:%d %b %Y}; the change takes effect by the day after, "
+                "or the days between have no recipe."]})
         version = (bom.item.boms.aggregate(top=models.Max("version"))["top"] or 0) + 1
         new = BillOfMaterials.objects.create(
             item=bom.item, version=version, name=bom.name, is_rework=bom.is_rework, backflush=bom.backflush,
