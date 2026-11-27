@@ -3018,6 +3018,63 @@ class ALockOfItsOwnBeforeANumberRaceTests(RaceCase):
 
 @tag("race")
 @unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
+class ANewBatchCodeBeforeANumberRaceTests(RaceCase):
+    """
+    O378: a row made is held from its insert to commit, and another transaction making the same key waits on it. A
+    re-batch recorded over the API made its new batch, unique by item and code, and then took the numbering row as
+    it posted; beside it a transaction that held the numbering row made the same batch, and waited on the insert:
+    each held what the other wanted, and PostgreSQL refused one ("deadlock detected"). SQLite takes no row lock, so
+    no test saw it. An insert of a row with a unique key takes the numbering row first now
+    (apps.core.apps.inserted_behind_the_numbering_row): the other waits there, and finds the batch made once the
+    re-batch commits.
+    """
+
+    def test_a_rebatch_making_a_new_batch_beside_a_posting_that_holds_the_numbering_row_and_makes_it(self):
+        from django.contrib.auth.models import User
+        from django.db.models.signals import post_save
+        from rest_framework.test import APIClient
+
+        from apps.core.models import DocumentNumbering, Party
+        from apps.inventory.models import Lot
+        from apps.manufacturing import tests_rebatch
+
+        made = fixture(self, tests_rebatch.RebatchTestCase)
+        client = APIClient()
+        client.force_authenticate(User.objects.create_superuser("race-stores"))
+        recording, batch_made = threading.local(), threading.Event()
+
+        def until_the_posting_waits(sender, instance, created, **kwargs):
+            if created and instance.code == "RB-RACE" and getattr(recording, "it", False):
+                batch_made.set()
+                until_another_waits("the posting")
+
+        post_save.connect(until_the_posting_waits, sender=Lot, weak=False, dispatch_uid="o378-race")
+        self.addCleanup(post_save.disconnect, sender=Lot, dispatch_uid="o378-race")
+        answers = []
+
+        def rebatch_making_the_batch():
+            recording.it = True
+            response = client.post("/api/manufacturing/rebatches/record/", {
+                "item": made.bag.pk, "warehouse": made.plant.pk, "reason": "Re-sort", "rebatched_on": "2026-06-01",
+                "taken": [{"lot": made.b1.pk, "quantity": "300"}],
+                "made": [{"code": "RB-RACE", "quantity": "200"}, {"code": "RB-RACE-B", "quantity": "100"}],
+            }, format="json")
+            answers.append((response.status_code, response.content))
+
+        def numbering_then_the_batch():
+            batch_made.wait(timeout=5)
+            DocumentNumbering.hold()
+            Lot.objects.get_or_create(item=made.bag, code="RB-RACE")
+
+        # Held by the event and the wait, not at a save: neither saves a party.
+        outcomes = race(Party, rebatch_making_the_batch, numbering_then_the_batch)
+        self.assertEqual(outcomes, ["done", "done"], outcomes)
+        self.assertEqual([status for status, _body in answers], [201], answers)
+        self.assertEqual(Lot.objects.filter(item=made.bag, code="RB-RACE").count(), 1)
+
+
+@tag("race")
+@unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
 class TwoDocumentsNumberingEachOthersTypeRaceTests(RaceCase):
     """
     O257: a document numbering a second type inside its own transaction (an invoice posting its delivery's

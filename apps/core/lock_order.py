@@ -48,8 +48,11 @@ LOCK_ORDER = (
     #    select_for_update() of a business record takes it first at the compiler (O382), as a save, a delete and
     #    a bulk update do, whether or not a row matches. So the ranks below order transactions that already run
     #    one at a time behind it: a pair of them taken out of order where no test reaches (a period or a shelf
-    #    row a fixture never made) goes unseen, and cannot deadlock on them. What can still come before it is an insert
-    #    (O378) and raw SQL.
+    #    row a fixture never made) goes unseen, and cannot deadlock on them. An insert of a row with a unique key
+    #    beyond its pk takes it first, saved or in bulk (O378, apps.core.apps.inserted_behind_the_numbering_row):
+    #    another transaction holding the numbering row and making the same key waited on that insert, while this one
+    #    waited for the numbering row. What can still come before it is raw SQL, and an insert around the hooks (a
+    #    row saved raw), which is refused when the numbering row follows (made() and taken()).
     "core.documentnumbering",
     # 1. a purchase order, then a sales order (a drop-ship receipt ships
     #    the customer's order)
@@ -155,8 +158,11 @@ def _in_a_transaction_of_its_own(connection):
 
 
 def _where():
+    # Not execute_as_itself, the wrapper every command runs inside (apps.core.history), manage.py test included: it
+    # is never the site, and under the test runner it stood in a message for a test's own code (O378).
     frames = [f for f in traceback.extract_stack()[:-3]
-              if "/apps/" in f.filename and "lock_order.py" not in f.filename and "/tests" not in f.filename]
+              if "/apps/" in f.filename and "lock_order.py" not in f.filename and "/tests" not in f.filename
+              and f.name != "execute_as_itself"]
     return " < ".join(f"{f.filename.split('/apps/')[-1]}:{f.lineno} {f.name}" for f in reversed(frames[-4:]))
 
 
@@ -258,6 +264,22 @@ def taken(connection, label, pks, how=SELECTED):
                            "of a transaction that numbers (apps.core.lock_order)")
                 if _SURVEY:
                     _survey("violation", before[0], label, how)
+                else:
+                    raise LockOrderViolation(message)
+            if state.get("made_first"):
+                # A row made is held to commit, and another transaction making its key waits on it: one holding the
+                # numbering row and making the same key (a batch code typed twice, a party imported as another
+                # posting makes it) waited on this one, which then waited for the numbering row. PostgreSQL ends
+                # one as a deadlock; SQLite takes no row lock, so only this sees it (O378). The write hooks take it
+                # before every such insert they see; this one went around them.
+                made_label, keys, where = state["made_first"][0]
+                message = (f"{label} {pk} locked after this transaction made a {made_label} row, at {where}: its "
+                           f"unique key ({keys}) is held from the insert to commit, and a transaction holding the "
+                           "numbering row that makes the same key waits on it while this one waits for the numbering "
+                           "row. A save or a bulk insert takes it first (apps.core.apps.inserted_behind_the_numbering_"
+                           "row); made around them, take numbering_first() before it (O378)")
+                if _SURVEY:
+                    _survey("made_before_first", made_label, keys, where)
                 else:
                     raise LockOrderViolation(message)
         rank = RANK.get(label)
@@ -364,13 +386,24 @@ def _tables():
 def _snapshot(connection):
     state = _state(connection)
     return {"held": set(state["held"]), "top": state["top"], "taken": list(state["taken"]),
-            "keys": dict(state["keys"]), "shared": set(state.get("shared", ()))}
+            "keys": dict(state["keys"]), "shared": set(state.get("shared", ())),
+            "made_first": list(state.get("made_first", ()))}
 
 
-def made(connection, label, pks):
-    """Rows this transaction made: no other can see them until it commits, so taking them waits for nothing."""
+def made(connection, label, pks, model=None):
+    """
+    Rows this transaction made: no other can see them until it commits, so taking them waits for nothing. The first
+    made with a unique key before the numbering row is noted, for taken() to refuse the numbering row after it
+    (O378); not a migration's (`model`, _historical), which runs alone.
+    """
     if connection.in_atomic_block and _in_a_transaction_of_its_own(connection):
+        from .apps import unique_keys
+
         state = _state(connection)
+        if pks and model is not None and not state.get("made_first") and label != FIRST and \
+                not _holds(state, FIRST) and unique_keys(model) and not _exempt(label) and not _historical(model):
+            state["made_first"] = [(label, "; ".join(", ".join(key) for key in unique_keys(model)),
+                                    _where() or "a test's own code")]
         for pk in pks:
             if pk is not None and (label, pk) not in state["held"]:
                 # Made is held, and another making the same key waits on it: a guard made after a row it
@@ -549,14 +582,17 @@ def install():
 
     def on_save(sender, instance, created, using, **kwargs):
         if created:
-            made(connections[using], instance._meta.label_lower, [instance.pk])
+            made(connections[using], instance._meta.label_lower, [instance.pk], model=sender)
 
     bulk_create = QuerySet.bulk_create
 
     def checked_bulk_create(self, objs, *args, **kwargs):
         objs = bulk_create(self, objs, *args, **kwargs)
-        made(connections[self.db], self.model._meta.label_lower, [obj.pk for obj in objs])
+        made(connections[self.db], self.model._meta.label_lower, [obj.pk for obj in objs], model=self.model)
         return objs
+
+    # So the numbering row's wrapper beneath is found through this one (apps.core.apps.holds_the_numbering_row_first).
+    checked_bulk_create.__wrapped__ = bulk_create
 
     def watch_raw_sql(sender, connection, **kwargs):
         if raw_shared_lock not in connection.execute_wrappers:

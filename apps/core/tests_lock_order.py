@@ -493,6 +493,114 @@ class ALockComesAfterTheNumberingRowWhateverAsksForItTests(TestCase):
         self.assertNotIn("core.documentnumbering", self.taken())
 
 
+class ARowMadeWithAUniqueKeyComesAfterTheNumberingRowTests(TestCase):
+    """
+    O378: a row made is held from its insert to commit, and another transaction making the same key waits on it.
+    A transaction that made a row with a unique key and then took the numbering row waited for it holding that key,
+    while a posting that held the numbering row and made the same key waited on the insert: PostgreSQL ends one as a
+    deadlock. Such an insert takes the numbering row first now, saved or in bulk
+    (apps.core.apps.inserted_behind_the_numbering_row); one made around the hooks (saved raw, as a fixture loads)
+    and then followed by the numbering row is refused by the sentinel, as SQLite takes no row lock to show it.
+    """
+
+    def taken(self):
+        return list(dict.fromkeys((getattr(connection, "_lock_order_state", None) or {}).get("taken", [])))
+
+    def test_a_party_made_takes_the_numbering_row_before_its_insert(self):
+        seen = []
+
+        def made(sender, instance, created, **kwargs):
+            if created and sender is Party:
+                seen.append(self.taken())
+
+        from django.db.models.signals import post_save
+
+        post_save.connect(made, weak=False, dispatch_uid="o378-made")
+        self.addCleanup(post_save.disconnect, dispatch_uid="o378-made")
+        with transaction.atomic():
+            Party.objects.create(code="MADE", name="Made")
+            DocumentNumbering.hold()
+        self.assertEqual(seen, [["core.documentnumbering"]])
+
+    def test_and_made_in_bulk(self):
+        from django.db.models.query import QuerySet
+
+        from .apps import holds_the_numbering_row_first
+
+        self.assertTrue(holds_the_numbering_row_first(QuerySet.bulk_create))
+        with transaction.atomic():
+            Party.objects.bulk_create([Party(code="BULK", name="Bulk")])
+            self.assertEqual(self.taken(), ["core.documentnumbering"])
+            DocumentNumbering.hold()
+
+    def test_a_row_with_no_unique_key_that_binds_every_row_takes_none(self):
+        from .apps import unique_keys
+        from .models import Address
+
+        self.assertEqual(unique_keys(Address), [])
+        self.assertEqual(unique_keys(Party), [("code",)])
+        with transaction.atomic():
+            Address.objects.create(line1="1 Mill Road", city="Kolkata")
+            Address.objects.bulk_create([Address(line1="2 Mill Road", city="Kolkata")])
+            self.assertEqual(self.taken(), [])
+            DocumentNumbering.hold()
+
+    def test_nor_a_row_that_is_no_business_record(self):
+        from django.contrib.auth.models import User
+
+        with transaction.atomic():
+            User.objects.create(username="made-first")
+            self.assertEqual(self.taken(), [])
+            DocumentNumbering.hold()
+
+    def test_one_saved_around_the_hooks_and_then_the_numbering_row_is_refused_saying_which_and_why(self):
+        from django.utils.timezone import now
+
+        # Saved raw, as loaddata saves a fixture: the write hook takes nothing for it (numbering_before_a_write).
+        # The site is application code only: a test's frames are never the site, nor the command every test runs
+        # inside (manage.py test, through apps.core.history's execute_as_itself).
+        with self.assertRaises(LockOrderViolation) as refused:
+            with transaction.atomic():
+                Party(code="RAW", name="Raw", created_at=now(), updated_at=now()).save_base(raw=True)
+                DocumentNumbering.hold()
+        self.assertTrue(str(refused.exception).startswith(
+            "core.documentnumbering 1 locked after this transaction made a core.party row, at a test's own code: its "
+            "unique key (code) is held from the insert to commit"), str(refused.exception))
+        self.assertNotIn("execute_as_itself", str(refused.exception))
+
+    def test_nor_one_made_so_in_a_savepoint_rolled_back(self):
+        from django.utils.timezone import now
+
+        with transaction.atomic():
+            try:
+                with transaction.atomic():
+                    Party(code="GONE", name="Gone", created_at=now(), updated_at=now()).save_base(raw=True)
+                    raise RuntimeError("rolled back")
+            except RuntimeError:
+                pass
+            DocumentNumbering.hold()
+        self.assertFalse(Party.objects.filter(code="GONE").exists())
+
+    def test_a_create_over_the_api_takes_the_numbering_row_before_its_row(self):
+        from django.contrib.auth.models import User
+        from django.db.models.signals import post_save
+        from rest_framework.test import APIClient
+
+        seen = []
+
+        def made(sender, instance, created, **kwargs):
+            if created and sender is Party:
+                seen.append(self.taken())
+
+        post_save.connect(made, weak=False, dispatch_uid="o378-made")
+        self.addCleanup(post_save.disconnect, dispatch_uid="o378-made")
+        client = APIClient()
+        client.force_authenticate(User.objects.create_superuser("o378"))
+        response = client.post("/api/core/parties/", {"code": "API", "name": "Over the API"}, format="json")
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertEqual(seen, [["core.documentnumbering"]])
+
+
 class APlainForUpdateIsReportedTests(TestCase):
     """
     O257: a lock that only serialises a decision is FOR NO KEY UPDATE, which a deferred foreign-key check (FOR KEY
