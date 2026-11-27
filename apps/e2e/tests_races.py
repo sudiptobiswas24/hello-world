@@ -3075,6 +3075,71 @@ class ANewBatchCodeBeforeANumberRaceTests(RaceCase):
 
 @tag("race")
 @unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
+class TwoChangeOrdersRaisedAtOnceRaceTests(RaceCase):
+    """
+    O624: raise_change asked whether the bill had a change open, and read the item's highest version, before any
+    lock: two raised at once on one version each found none open, and two on one item each numbered the same
+    version, the second refused by the database's unique key in its own words. It locks the bill first now, and
+    asks after. Each second here is raised behind a first that holds the company's numbering row until the second
+    is seen waiting on it (stale_behind_a_lock): the second's reads come after the first commits, or before it
+    when the lock is taken away.
+    """
+
+    def scenario(self):
+        from apps.manufacturing import tests_change_orders
+
+        made = fixture(self, tests_change_orders.ChangeTestCase)
+        return made, made.one
+
+    def test_the_second_on_one_version_is_told_the_first_is_open(self):
+        from apps.manufacturing.changes import BomChangeOrder, ChangeStatus, raise_change
+        from apps.manufacturing.tests_change_orders import NOV_5
+        from apps.manufacturing.tests_effectivity import NOV_1
+
+        made, one = self.scenario()
+        outcomes = stale_behind_a_lock(lambda: raise_change(one, NOV_1, "first"),
+                                       lambda: raise_change(one, NOV_5, "second"))
+        self.assertEqual(outcomes[0], "done", outcomes)
+        self.assertTrue(outcomes[1].startswith("refused: ") and "already has a change order open" in outcomes[1],
+                        outcomes)
+        self.assertEqual(list(BomChangeOrder.objects.filter(supersedes=one, status=ChangeStatus.DRAFT)
+                              .values_list("reason", "draft__version")), [("first", 2)])
+
+    def test_two_on_two_versions_of_one_item_are_numbered_one_after_the_other(self):
+        from apps.manufacturing.changes import BomChangeOrder, raise_change
+        from apps.manufacturing.tests_change_orders import NOV_5
+        from apps.manufacturing.tests_effectivity import NOV_1
+
+        made, one = self.scenario()
+        two = made.recipe(2, valid_from=NOV_1, is_default=False)
+        outcomes = stale_behind_a_lock(lambda: raise_change(one, NOV_5, "on one"),
+                                       lambda: raise_change(two, datetime.date(2026, 12, 1), "on two"))
+        self.assertEqual(outcomes, ["done", "done"], outcomes)
+        self.assertEqual(sorted(BomChangeOrder.objects.values_list("reason", "draft__version")),
+                         [("on one", 3), ("on two", 4)])
+
+    def test_with_the_lock_taken_away_the_second_reads_before_the_first_commits(self):
+        """
+        Soundness: with raise_change's lock taken away, the second asks and numbers before the first commits, then
+        waits on the numbering row at its new version's insert (O378), and the database refuses the version the
+        first made.
+        """
+        from unittest import mock
+
+        from apps.manufacturing import changes
+        from apps.manufacturing.tests_change_orders import NOV_5
+        from apps.manufacturing.tests_effectivity import NOV_1
+
+        made, one = self.scenario()
+        with mock.patch.object(changes, "lock_rows", lambda *rows, **kwargs: None):
+            outcomes = stale_behind_a_lock(lambda: changes.raise_change(one, NOV_1, "first"),
+                                           lambda: changes.raise_change(one, NOV_5, "second"))
+        self.assertEqual(outcomes[0], "done", outcomes)
+        self.assertIn("one_bom_per_item_and_version", outcomes[1])
+
+
+@tag("race")
+@unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
 class TwoDocumentsNumberingEachOthersTypeRaceTests(RaceCase):
     """
     O257: a document numbering a second type inside its own transaction (an invoice posting its delivery's
