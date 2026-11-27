@@ -50,6 +50,31 @@ pg_isready -q || service postgresql start                              # role er
 
 ## 2. Next steps, in order
 
+**g65 is pushed (3771d04, 27 November 2026), all six lanes green on one tip (gated as 9c9549d).** Two commits on
+149323a. O378: an insert of a row with a unique key beyond its pk takes the company's numbering row first
+(apps.core.apps.inserted_behind_the_numbering_row, in numbering_before_a_write), and so does QuerySet.bulk_create
+(numbering_before_a_bulk_insert, which sends apps.core.apps.bulk_insert for audit_invariants' sign-in check); the
+sentinel refuses the numbering row taken after a transaction the code opened made such a row, naming the model, its
+keys and the site. It is one rule rather than the survey's per-site calls: drafted per site, the suite failed 924 of
+9136, 923 of them at TapeSpecification.save(), which the survey had not listed. On PostgreSQL the re-batch race
+(ANewBatchCodeBeforeANumberRaceTests) leaves both transactions standing; with the hook's insert branch out, PostgreSQL
+refused one ("deadlock detected"). O553: SelfInvoice.issue's refusal names the self-invoice standing and its date,
+and says a bill that posts within Rule 47A's thirty days is given one as it posts; the reverse-charge modules that
+date their bills by the plant's day ran under Asia/Kolkata on 24 days, 27 November 2026 to 1 April 2028, and no
+failure was the day's, so the row closes. Every app's migration tests ran (apps/core/apps.py changed), 06:02 to
+13:19. The gate ran 04:09 to 14:37; a container restart at about 05:05 stopped this session's watchers, not the
+chain.
+
+Next: O624, drafted, uncommitted, on 9c9549d in /home/user/work/o624w (snapshot claude/erp-wip-o624w). raise_change
+locks the bill inside its transaction before it asks whether a change is open or reads the item's highest version,
+and TwoChangeOrdersRaisedAtOnceRaceTests (apps/e2e/tests_races.py, PostgreSQL) raises a second behind a first that
+holds the numbering row until the second waits (stale_behind_a_lock): on one version, refused as already open; on two
+versions of one item, numbered one after the other; with the lock taken away, refused by the unique key. To do:
+bring it onto the pushed tip, the suite, audit_invariants, makemigrations --check, the race class on PostgreSQL, red
+with lock_rows taken out of raise_change, then gate g66. The commit takes O624's row off and adds O625: 22 checks in
+save() overrides that ask about other rows before the numbering row is taken in pre_save, and IntegrationViewSet's
+login check before its transaction, seen by reading; a general cure must leave out the sign-in writes (O378).
+
 **g64 is pushed (e09d59d, 26 November 2026), all six lanes green on one tip (gated as 279f451).** One commit on
 9241b78, O382: every select_for_update() of a business record takes the company's numbering row before it runs, at
 the compiler (apps.core.apps.numbering_before_a_lock, wrapping SQLCompiler.execute_sql), whether or not a row
