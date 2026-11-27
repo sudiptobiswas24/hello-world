@@ -59,6 +59,7 @@ from apps.core.models import (
     lock_rows,
     refuse_changing_what_moved,
     serialised,
+    the_one,
     to_date,
 )
 from apps.hr.calendars import WorkingCalendar, parse_working_days
@@ -184,7 +185,7 @@ class ManufacturingSettings(AuditModel):
 
     @classmethod
     def get(cls):
-        return cls.objects.first() or cls.objects.create()
+        return the_one(cls)
 
     NAMES = {
         "wip": "work in progress",

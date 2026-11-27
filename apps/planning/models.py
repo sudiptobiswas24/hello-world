@@ -31,7 +31,7 @@ from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils import timezone
 
-from apps.core.models import AuditModel, serialised
+from apps.core.models import AuditModel, serialised, the_one
 from apps.inventory.models import Item, Warehouse
 
 from .forecast import Forecast, coverage, forecast_demand  # noqa: F401
@@ -123,7 +123,7 @@ class PlanningSettings(AuditModel):
 
     @classmethod
     def get(cls):
-        return cls.objects.first() or cls.objects.create()
+        return the_one(cls)
 
 
 class PlannedOrderKind(models.TextChoices):

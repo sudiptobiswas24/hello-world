@@ -56,6 +56,7 @@ from apps.core.models import (
     documents_it_answers_to,
     lock_rows,
     serialised,
+    the_one,
     to_date,
 )
 from apps.inventory.models import Item, Lot
@@ -93,7 +94,7 @@ class QualitySettings(AuditModel):
 
     @classmethod
     def get(cls):
-        return cls.objects.first() or cls.objects.create()
+        return the_one(cls)
 
 
 class CharacteristicKind(models.TextChoices):

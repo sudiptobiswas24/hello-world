@@ -380,6 +380,22 @@ def numbering_first():
         DocumentNumbering.hold()
 
 
+def the_one(model, **made_with):
+    """
+    The one row of a model that keeps one (the company, a module's settings), made with `made_with` if none
+    stands yet. One standing is read and nothing held. Two first asks at once each found none and each made one,
+    the settings having no unique key to refuse the second and their save()'s "there is one" asked before any
+    lock (O625): none found, the numbering row is taken and the question asked again behind it, which the first
+    holds from before its insert to its commit.
+    """
+    row = model.objects.first()
+    if row is not None:
+        return row
+    with transaction.atomic():
+        numbering_first()
+        return model.objects.first() or model.objects.create(**made_with)
+
+
 def update_or_create_held(source, defaults=None, create_defaults=None, **lookup):
     """
     QuerySet.update_or_create(), holding the row it finds FOR NO KEY UPDATE (O379). Returns (row, created).
@@ -2059,7 +2075,7 @@ class Company(AuditModel):
         held = _COMPANY.get()
         if held is not None and "company" in held:
             return held["company"]
-        company = cls.objects.first() or cls.objects.create(name="My Company")
+        company = the_one(cls, name="My Company")
         if held is not None:
             held["company"] = company
         return company
