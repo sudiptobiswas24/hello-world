@@ -8,6 +8,8 @@ from django.dispatch import Signal
 bulk_update = Signal()
 # And as a select_for_update() takes it (numbering_before_a_lock, O382).
 row_lock = Signal()
+# And as a bulk insert of rows with a unique key takes it (numbering_before_a_bulk_insert, O378).
+bulk_insert = Signal()
 
 
 def make_the_numbering_row(sender, using="default", **kwargs):
@@ -62,17 +64,53 @@ def written_behind_the_numbering_row(model):
     return locked_behind_the_numbering_row(model) and model not in (DocumentSequence, DocumentSequenceYear)
 
 
+_UNIQUE_KEYS = {}
+
+
+def unique_keys(model):
+    """
+    The unique keys of `model` beyond its pk that bind whatever a row holds: a field's unique=True (a one-to-one
+    included), a UniqueConstraint with no condition, unique_together. A row made with one is held from its insert
+    to commit, and another transaction making the same key waits on it (O378). A conditional constraint is left
+    out, as the survey of 26 November left it: a number is given behind the numbering row, and a primary address
+    or contact holds its party first (take_primary).
+    """
+    if model not in _UNIQUE_KEYS:
+        from django.db.models import UniqueConstraint
+
+        keys = [(field.name,) for field in model._meta.local_fields if field.unique and not field.primary_key]
+        keys += [tuple(constraint.fields) for constraint in model._meta.constraints
+                 if isinstance(constraint, UniqueConstraint) and constraint.condition is None and constraint.fields]
+        keys += [tuple(together) for together in model._meta.unique_together]
+        _UNIQUE_KEYS[model] = keys
+    return _UNIQUE_KEYS[model]
+
+
+def inserted_behind_the_numbering_row(model):
+    """
+    Whether an insert of `model`'s rows takes the company's numbering row first (O378): one written behind it whose
+    rows carry a unique key beyond the pk. A transaction that made such a row and then took the numbering row
+    waited for it holding the key, while a posting that held the numbering row and made the same key waited on
+    that insert: PostgreSQL ends one of them as a deadlock. A row with no such key binds nothing another
+    transaction makes, so a first sign-in waits for nothing.
+    """
+    return written_behind_the_numbering_row(model) and bool(unique_keys(model))
+
+
 def numbering_before_a_write(sender, instance, **kwargs):
     """
     A save of a row that stood, or a delete, locks that row: it comes after the company's numbering row as
     every row lock does (O257, row_lock_query). A password reset saved the user, then locked a row, and held the
-    user while it waited for the numbering row. Not a fresh insert (no key yet: a first sign-in does not wait),
-    nor a migration's row, nor a model that is not a business record (numbering_exempt). A model built with its
-    key and saved runs an UPDATE, so a key set is held, adding or not (review_lockfirst F2).
+    user while it waited for the numbering row. A fresh insert comes after it where its row has a unique key
+    (inserted_behind_the_numbering_row, O378: a tape specification made, and then its bill and plan locked), and
+    not otherwise; nor a migration's row, nor a model that is not a business record (numbering_exempt). A model
+    built with its key and saved runs an UPDATE, so a key set is held, adding or not (review_lockfirst F2).
     """
     from .models import numbering_first
 
-    if kwargs.get("raw") or instance.pk is None or not written_behind_the_numbering_row(sender):
+    if kwargs.get("raw") or not written_behind_the_numbering_row(sender):
+        return
+    if instance.pk is None and not inserted_behind_the_numbering_row(sender):
         return
     numbering_first()
 
@@ -98,6 +136,24 @@ def numbering_before_an_update(update):
     update_behind_the_numbering_row.__wrapped__ = update
     update_behind_the_numbering_row.numbering_first = True
     return update_behind_the_numbering_row
+
+
+def numbering_before_a_bulk_insert(bulk_create):
+    """
+    QuerySet.bulk_create(), wrapped (O378). Django sends no pre_save for a bulk insert, so rows with a unique key
+    made so took no numbering row, where the same rows saved one by one do (numbering_before_a_write).
+    """
+    def bulk_create_behind_the_numbering_row(self, objs, *args, **kwargs):
+        if inserted_behind_the_numbering_row(self.model):
+            from .models import numbering_first
+
+            bulk_insert.send(sender=self.model)
+            numbering_first()
+        return bulk_create(self, objs, *args, **kwargs)
+
+    bulk_create_behind_the_numbering_row.__wrapped__ = bulk_create
+    bulk_create_behind_the_numbering_row.numbering_first = True
+    return bulk_create_behind_the_numbering_row
 
 
 def numbering_before_a_lock(execute_sql):
@@ -126,8 +182,8 @@ def numbering_before_a_lock(execute_sql):
 
 def holds_the_numbering_row_first(function):
     """
-    Whether this QuerySet.update() or SQLCompiler.execute_sql(), or one it wraps (the edit log wraps the first,
-    apps.core.history), is ours.
+    Whether this QuerySet.update(), QuerySet.bulk_create() or SQLCompiler.execute_sql(), or one it wraps (the edit
+    log wraps the first two, apps.core.history), is ours.
     """
     while function is not None:
         if getattr(function, "numbering_first", False):
@@ -187,6 +243,8 @@ class CoreConfig(AppConfig):
 
         if not holds_the_numbering_row_first(QuerySet.update):
             QuerySet.update = numbering_before_an_update(QuerySet.update)
+        if not holds_the_numbering_row_first(QuerySet.bulk_create):
+            QuerySet.bulk_create = numbering_before_a_bulk_insert(QuerySet.bulk_create)
         # Before the sentinel, which wraps it in turn and so sees the numbering row taken before the rows.
         if not holds_the_numbering_row_first(SQLCompiler.execute_sql):
             SQLCompiler.execute_sql = numbering_before_a_lock(SQLCompiler.execute_sql)
