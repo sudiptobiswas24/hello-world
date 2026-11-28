@@ -1794,12 +1794,10 @@ class Command(BaseCommand):
         with step("Payroll paid: the salary file marked paid by its payment"):
             transfers.mark_paid(salaries_paid)
 
-        with step("A tape batch split for two looms, the laminator's trim, a shipment's test certificate"):
-            # O613: rebatches, job-work losses and test certificates answered nothing on the demo. Part of the
-            # second tape batch is split into two for the night shift's looms (the same tape at the same cost, its
-            # inspection carried); the laminator states the edge trim it kept from the fabric on its challan; and
-            # the latest shipment is certified with what was measured on it.
-            from apps.manufacturing.certificates import issue
+        with step("A tape batch split for two looms, and the laminator's trim"):
+            # O613: rebatches and job-work losses answered nothing on the demo. Part of the second tape batch is
+            # split into two for the night shift's looms (the same tape at the same cost, its inspection carried),
+            # and the laminator states the edge trim it kept from the fabric on its challan.
             from apps.manufacturing.rebatch import rebatch
 
             Lot = M("inventory.Lot")
@@ -1811,6 +1809,13 @@ class Command(BaseCommand):
                 line=M("manufacturing.JobWorkLine").objects.get(challan__job_worker=laminator), loss_date=day(-1),
                 quantity=D("9.5"),
                 note="Edge trim kept by the laminator, as its delivery note states")
+
+        with step("A shipment's test certificate"):
+            # O613: test certificates answered nothing; the latest shipment is certified with what was measured on
+            # it. Its own step: issue() locks the shipment first (O627), which the lock order takes before the
+            # period the rebatch above was posted into.
+            from apps.manufacturing.certificates import issue
+
             shipped = (M("sales.Delivery").objects.filter(posted=True, is_drop_ship=False)
                        .order_by("-delivery_date", "-pk"))
             latest = next((delivery for delivery in shipped if not delivery.is_return()), None)

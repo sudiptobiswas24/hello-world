@@ -3201,6 +3201,53 @@ class TwoChangeOrdersRaisedAtOnceRaceTests(RaceCase):
         self.assertIn("one_bom_per_item_and_version", outcomes[1])
 
 
+@tag("race")
+@unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
+class TwoCertificatesIssuedAtOnceRaceTests(RaceCase):
+    """
+    O627: certificates.issue asked whether the shipment was certified before any lock: two issued at once for one
+    shipment each found none, and the second, waiting at the numbering row while the first numbered, was refused by
+    one_standing_certificate_per_delivery in the database's words. It locks the shipment first now, and asks after.
+    The second is issued behind a first that holds the company's numbering row until the second is seen waiting on
+    it (stale_behind_a_lock).
+    """
+
+    def scenario(self):
+        from apps.manufacturing import tests_certificates
+
+        made = fixture(self, tests_certificates.CertificateTestCase)
+        made.inspect(made.tape_plan, made.tape_lot, ["1000", "1010", "990"])
+        return made.shipped().pk
+
+    def test_the_second_is_told_the_shipment_is_certified(self):
+        from apps.manufacturing.certificates import TestCertificate, issue
+        from apps.sales.models import Delivery
+
+        shipment = self.scenario()
+        outcomes = stale_behind_a_lock(lambda: issue(Delivery.objects.get(pk=shipment)),
+                                       lambda: issue(Delivery.objects.get(pk=shipment)))
+        self.assertEqual(outcomes[0], "done", outcomes)
+        self.assertTrue(outcomes[1].startswith("refused: ") and "is already certified" in outcomes[1], outcomes)
+        self.assertEqual(TestCertificate.objects.filter(delivery_id=shipment).count(), 1)
+
+    def test_with_the_lock_taken_away_the_second_asks_before_the_first_commits(self):
+        """
+        Soundness: with issue()'s lock taken away, the second asks before the first commits and finds none, waits on
+        the numbering row as it numbers, and the database refuses the second standing certificate.
+        """
+        from unittest import mock
+
+        from apps.manufacturing import certificates
+        from apps.sales.models import Delivery
+
+        shipment = self.scenario()
+        with mock.patch.object(certificates, "lock_rows", lambda *rows, **kwargs: None):
+            outcomes = stale_behind_a_lock(lambda: certificates.issue(Delivery.objects.get(pk=shipment)),
+                                           lambda: certificates.issue(Delivery.objects.get(pk=shipment)))
+        self.assertEqual(outcomes[0], "done", outcomes)
+        self.assertIn("one_standing_certificate_per_delivery", outcomes[1])
+
+
 def answered(client, path, body, status=201):
     """A POST, refused unless it answers `status`, with what it said."""
     response = client.post(path, body, format="json")

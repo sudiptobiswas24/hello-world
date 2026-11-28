@@ -1030,7 +1030,8 @@ class Command(BaseCommand):
         "manufacturing.BomChangeOrderViewSet.create": "raise_change() is its own transaction and stamps created_by",
         "sales.PriceVariationBillViewSet.create": "bill_variation() is its own transaction; it stamps created_by from by= (O202)",
         "manufacturing.CostSheetViewSet.create": "quoting.cost() is its own transaction; it stamps created_by from by= (O202)",
-        "manufacturing.TestCertificateViewSet.create": "certificates.issue() is its own transaction; it stamps created_by from by= (O202)",
+        "manufacturing.TestCertificateViewSet.create": "certificates.issue() is its own transaction, asks behind the "
+                                                       "shipment's lock (O627) and stamps created_by from by= (O202)",
     }
     MIXIN_WRITES = ("create", "update", "destroy", "perform_create", "perform_update", "perform_destroy")
 
