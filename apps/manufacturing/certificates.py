@@ -32,7 +32,7 @@ from django.db import models, transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from apps.core.models import AuditModel, DocumentSequence, serialised
+from apps.core.models import AuditModel, DocumentSequence, lock_rows, serialised
 
 MAX_DEPTH = 4
 
@@ -202,7 +202,17 @@ def _specification(item, on_date):
 
 @transaction.atomic
 def issue(delivery, on_date=None, by=None):
-    """Certify a posted shipment, frozen."""
+    """
+    Certify a posted shipment, frozen.
+
+    The shipment is locked before anything about it is asked (O627). Asked first, two issued at once for one
+    shipment each found none standing; the second waited at the numbering row while the first numbered its
+    certificate, and was then refused by one_standing_certificate_per_delivery in the database's words. A row
+    lock takes the company's numbering row first (O382), which a certificate being issued elsewhere holds until
+    it commits, so the shipment and whether one stands for it are read after that one stands. Here rather than
+    in the view, whose create is its own, so whatever issues one asks behind it.
+    """
+    lock_rows(delivery)
     if not delivery.posted:
         raise ValidationError(f"{delivery} has not shipped; there is nothing to certify.")
     if delivery.is_return():
