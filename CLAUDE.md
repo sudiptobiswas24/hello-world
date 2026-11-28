@@ -250,6 +250,14 @@ Go through it before running anything.
   rep was offered the Accounts tab for a week while the test said no.
   `sign_in()` now waits for the rail; anything else asserted absent waits
   first for something that must be present.
+- A changed address is not a changed screen. After a jump from one record
+  to another of the same screen (Revise, a credit note), `wait_for_url`
+  returns while the old record is still drawn, and `to_have_value` on a
+  label that is an `<output>` there fails at its first look, without
+  waiting. Wait first for something only the new record shows. Run the
+  browser tests with `GATE_BROWSER_SLOWDOWN=4` to find a test the
+  machine's speed decides: the lapsed-quote test failed 11 of 11 so, and
+  two gate lanes at once in g67 (O628).
 - On SQLite every cursor call is serialised (`OneCallAtATime` in
   `apps/web/tests_browser.py`). Without it two requests at once deadlock
   on the GIL inside Django's date functions and the whole run hangs,

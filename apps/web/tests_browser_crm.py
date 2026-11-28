@@ -98,6 +98,10 @@ class ALapsedQuoteRevisedInTheBrowserTests(BrowserTestCase):
         page.get_by_role("button", name="Revise").click()
         page.wait_for_url(re.compile(rf"/sales/quotations/(?!{quotation.pk}$)\d+$"))
         revision = Quotation.objects.get(revision_of=quotation)
+        # The address names the revision before the screen draws it: until then the screen is the old quotation,
+        # superseded now, whose Valid until is an <output>, and to_have_value refuses that at its first look rather
+        # than waiting (O628). Only the revision links back to the quotation it revises.
+        expect(page.get_by_role("link", name="The earlier quotation")).to_be_visible()
         expect(page.get_by_label("Valid until")).to_have_value((today + datetime.timedelta(days=30)).isoformat())
         quotation.refresh_from_db()
         self.assertEqual((quotation.status, revision.status, revision.quotation_date, revision.valid_until),
