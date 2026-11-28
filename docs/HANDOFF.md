@@ -50,6 +50,25 @@ pg_isready -q || service postgresql start                              # role er
 
 ## 2. Next steps, in order
 
+**Probe of refusals built on sums or lists, 28 November 2026, no code changed; nothing found.** g69's Next, run on
+6856f66: probe/asked_unlocked_sums.py in the session's scratchpad (the second half of asked_unlocked.py) lists 54
+functions that refuse on an .aggregate(), Sum(), .values_list(), .values() or a sum() or list() over a queryset
+before any lock of their own. None is a race. The limits read across other rows are each asked under a lock their
+caller takes first, and since O382 any lock takes the company's numbering row: the credit limit (confirm locks the
+customer; a confirmed line that grows and a line reopened lock it too), a note past its original (the note's post
+holds the credited invoice or bill), a gate pass past its movement (approve is @serialised), a day's hours on a
+timesheet (save holds the employee), an asset put into service while the opening balances name its accounts
+(place_in_service is @serialised). The rest read the record's own stored row (status, gstin, account_type: an edit
+over the API holds it first), a document's own lines (posted under its lock), a key the database also holds (a
+shift's code), the ids a request names, or taxes_recorded=False, which nothing posts any more. With the seven
+viewsets written around the mixin settled too, the lock-order shape this run of rounds followed has no candidate left.
+
+Next: the audit skill's first shape, the mirror gap, on the newest money paths, the lower-deduction certificates of
+g56 and g57 (O598: a bill split at the certificate's amount; O618: a nil-rate certificate; O619: TCS under 206C(9),
+given back past-the-amount first). For each, name its reverse and prove it: a bill debited or a payment voided after
+the split, an invoice credited after a collection at the lower rate, a certificate whose amount is used up and then
+given back, each with the amount left on the certificate worked by hand first.
+
 **g69 is pushed (2c601cf, 28 November 2026), all six lanes green on one tip (gated as 215fd5f).** Three commits on
 4666009, each locking a record before it asks what stands on it. O627: certificates.issue locks the shipment first,
 and the demo certifies its shipment in a section of its own, since in the rebatch's section the shipment's lock came
