@@ -50,6 +50,46 @@ pg_isready -q || service postgresql start                              # role er
 
 ## 2. Next steps, in order
 
+**g68 is pushed (37321fa, 28 November 2026), all six lanes green on one tip (gated as 0a15bfe).** Three commits on
+413aed7. O625: a create over the API takes the company's numbering row before its serializer validates
+(RowHeldViewSetMixin.create), and apps.core.models.the_one makes the one row of a model that keeps one behind it
+(Company.get and the manufacturing, planning and quality settings). O626: the planning settings are one set, changed
+in place, as the quality and manufacturing settings are, and no module's settings are deleted in the admin. O628:
+g67 stopped on ist and pg-c at ALapsedQuoteRevisedInTheBrowserTests, "Not an input element", a race in the test that
+was there before O625 and O626 (413aed7 failed it too): after Revise the address names the revision before the screen
+draws it, and to_have_value on the superseded quotation's <output> fails at its first look. The test waits for the
+revision's own link now, and GATE_BROWSER_SLOWDOWN=4 slows each browser's CPU so such a test fails in one run: this
+one failed 11 of 11 so, and all 176 browser tests pass at that speed. O625 changes apps/core/models.py's locking
+code, so the migration lane ran every app's. The gate ran 01:04 to 11:07 UTC; a machine restart at 10:04 stopped
+pg-a and pg-b, which ran again from the start, the four lanes green on this tip kept.
+
+The rows waiting on the tax adviser and the accountant are put to them as 18 questions over 19 rows in the owner's
+doc "Questions for the tax adviser and accountant" (28 November). Writing it, O166 was found to read the code
+wrongly from the start: the challan it saw was a job-work return's, and a sale's delivery has been refused its own
+e-way bill since 7b4a130. The row is reworded to what the code does and stays open for the adviser to confirm.
+
+Next: three drafts on 0a15bfe, uncommitted and not yet run, each in its own worktree (snapshots
+claude/erp-wip-o627w, -o629w, -o630w), committed one at a time in this order and gated together as g69; 0a15bfe and
+37321fa hold one tree, so each applies as it stands. O627, /home/user/work/o627w: certificates.issue locks the
+shipment before it asks whether a certificate stands (TwoCertificatesIssuedAtOnceRaceTests, PostgreSQL, the refusal
+and a control with the lock taken away); the row comes off in its commit. O629, /home/user/work/o629w:
+NewPartyViewSet.create validates its party behind the numbering row, as a create through the mixin does; validated
+before it, two opened at once with one code each found it free and the second was refused by the database's key as a
+top-level "code", which the screen marks beside no box
+(AccountsOpensACustomerTests.test_who_they_are_is_asked_behind_the_numbering_row on SQLite, and
+TwoNewCustomersOfOneCodeRaceTests, two). O630, /home/user/work/o630w: void_mount, void_roll and void_film lock their
+row before they ask what stands on it, where weigh_roll and mount_roll take the numbering row first; by reading, a
+mount withdrawn as a roll was weighed off it gave its material back with the roll standing
+(AWithdrawalWhileSomethingIsMadeOnItRaceTests, six: mount, roll and film roll, each with a control). The film roll's
+control is expected, by reading, to be refused by the shelf rather than to withdraw the roll: on a run that does not
+backflush, the mount issues the whole lot, and the void's take-back then finds nothing on the shelf
+(allow_negative_stock is off). If so, the race is a hole only where the mount issues nothing (a backflushed run) or
+the warehouse allows negative stock; the control is rebuilt on a backflushed run and the commit says so. O629 and O630 were found by a
+scan for refusals asked before any lock (probe/asked_unlocked.py in the session's scratchpad, 96 candidates; the rest
+are asked again under a later lock, or backed by a key or a foreign key). For each: its race class on PostgreSQL
+with the controls failing as they say, its module's tests, the suite, audit_invariants, makemigrations --check, then
+commit; O629 and O630 cherry-picked onto the commit before them.
+
 **g66 is pushed (c57b460, 27 November 2026), all six lanes green on one tip (gated as c1e2961).** One commit on
 f7b755d, O624: raise_change locks the bill inside the transaction that makes the new version, before it asks whether
 a change order is open or reads the item's highest version; the lock is the transaction's first, so it takes the
