@@ -3915,3 +3915,128 @@ class AKeptCredentialHeldBesideAKeyShareRaceTests(RaceCase):
         self.assertEqual(outcomes, ["done", "done"], outcomes)
         kept.refresh_from_db()
         self.assertTrue(kept.as_confirmer)
+
+
+@tag("race")
+@unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
+class AWithdrawalWhileSomethingIsMadeOnItRaceTests(RaceCase):
+    """
+    O630: void_mount asked whether a roll had been weighed off the mount, and void_roll whether the roll had been
+    mounted, before any lock, where weigh_roll and mount_roll take the company's numbering row first. Each second here
+    is a withdrawal behind a first that holds the numbering row until the withdrawal is seen waiting on it
+    (stale_behind_a_lock): it asks after the first commits now, and is refused; with the lock taken away it asks
+    before, and withdraws what the first has just built on.
+    """
+
+    def scenario(self):
+        from apps.manufacturing import tests_process_rolls
+
+        return fixture(self, tests_process_rolls.RollsTestCase)
+
+    def withdraw_mount(self, made, mount, process_rolls):
+        return lambda: process_rolls.void_mount(process_rolls.RollMount.objects.get(pk=mount.pk), made.kx,
+                                                made.supervisor, made.operator, "Wrong roll")
+
+    def test_a_mount_is_not_withdrawn_once_a_roll_is_weighed_off_it(self):
+        from apps.manufacturing import process_rolls
+
+        made = self.scenario()
+        mount = made.mount()
+        outcomes = stale_behind_a_lock(made.laminated, self.withdraw_mount(made, mount, process_rolls))
+        self.assertEqual(outcomes[0], "done", outcomes)
+        self.assertTrue(outcomes[1].startswith("refused: ") and "Something was made from" in outcomes[1], outcomes)
+        mount.refresh_from_db()
+        self.assertIsNone(mount.voided_at)
+
+    def test_with_the_lock_taken_away_the_mount_goes_back_with_a_roll_made_from_it(self):
+        from unittest import mock
+
+        from apps.manufacturing import process_rolls
+
+        made = self.scenario()
+        mount = made.mount()
+        with mock.patch.object(process_rolls, "lock_rows", lambda *rows, **kwargs: None):
+            outcomes = stale_behind_a_lock(made.laminated, self.withdraw_mount(made, mount, process_rolls))
+        self.assertEqual(outcomes, ["done", "done"], outcomes)
+        mount.refresh_from_db()
+        self.assertIsNotNone(mount.voided_at)
+        self.assertEqual(mount.made.filter(voided_at__isnull=True).count(), 1)
+
+    def mounted_and_withdrawn(self, made, roll, process_rolls):
+        from apps.manufacturing.tests_station import at
+        from apps.manufacturing.tests_orders import TODAY
+
+        return ((lambda: process_rolls.mount_roll(made.cv, made.operator, made.c2, roll.code, at=at(TODAY, 11, 30))),
+                (lambda: process_rolls.void_roll(process_rolls.ProcessRoll.objects.get(pk=roll.pk), made.kx,
+                                                 made.supervisor, made.operator, "Wrong roll")))
+
+    def test_a_roll_is_not_withdrawn_once_it_is_mounted(self):
+        from apps.manufacturing import process_rolls
+
+        made = self.scenario()
+        made.mount()
+        roll = made.laminated()
+        outcomes = stale_behind_a_lock(*self.mounted_and_withdrawn(made, roll, process_rolls))
+        self.assertEqual(outcomes[0], "done", outcomes)
+        self.assertTrue(outcomes[1].startswith("refused: ") and "has been mounted since" in outcomes[1], outcomes)
+        roll.refresh_from_db()
+        self.assertIsNone(roll.voided_at)
+
+    def test_with_the_lock_taken_away_a_mounted_roll_is_withdrawn(self):
+        from unittest import mock
+
+        from apps.manufacturing import process_rolls
+
+        made = self.scenario()
+        made.mount()
+        roll = made.laminated()
+        with mock.patch.object(process_rolls, "lock_rows", lambda *rows, **kwargs: None):
+            outcomes = stale_behind_a_lock(*self.mounted_and_withdrawn(made, roll, process_rolls))
+        self.assertEqual(outcomes, ["done", "done"], outcomes)
+        roll.refresh_from_db()
+        self.assertIsNotNone(roll.voided_at)
+        self.assertEqual(roll.mounts.filter(voided_at__isnull=True).count(), 1)
+
+    def film_mounted_and_withdrawn(self, station_film):
+        from apps.manufacturing import tests_liners
+        from apps.manufacturing.process_rolls import mount_roll
+        from apps.manufacturing.tests_orders import TODAY
+        from apps.manufacturing.tests_station import at
+
+        from apps.manufacturing.models import WorkOrder
+
+        made = fixture(self, tests_liners.LinerTestCase)
+        # On a liner run that backflushes, where the mount issues nothing. On one that does not, the mount issues the
+        # whole lot, and a withdrawal asked before it commits was refused anyway when it took the film back off the
+        # shelf: "Only 0 of batch ... cannot move 150.0000", the right refusal in the wrong words. Here nothing on the
+        # shelf stops it, and only the question asked after the lock does.
+        WorkOrder.objects.filter(pk=made.liner_run.pk).update(backflush=True)
+        roll = made.wind()
+        return roll, ((lambda: mount_roll(made.cs, made.operator, made.cs1, roll.lot.code, at=at(TODAY, 10, 30))),
+                      (lambda: station_film.void_film(station_film.FilmRoll.objects.get(pk=roll.pk), made.bf,
+                                                      made.supervisor, made.operator, "Wrong run")))
+
+    def test_a_film_roll_is_not_withdrawn_once_it_is_mounted(self):
+        from apps.manufacturing import station_film
+
+        roll, (mounting, withdrawing) = self.film_mounted_and_withdrawn(station_film)
+        outcomes = stale_behind_a_lock(mounting, withdrawing)
+        self.assertEqual(outcomes[0], "done", outcomes)
+        self.assertTrue(outcomes[1].startswith("refused: ") and "has been mounted since" in outcomes[1], outcomes)
+        roll.refresh_from_db()
+        self.assertIsNone(roll.voided_at)
+
+    def test_with_the_lock_taken_away_a_mounted_film_roll_is_withdrawn(self):
+        from unittest import mock
+
+        from apps.manufacturing import station_film
+
+        roll, (mounting, withdrawing) = self.film_mounted_and_withdrawn(station_film)
+        with mock.patch.object(station_film, "lock_rows", lambda *rows, **kwargs: None):
+            outcomes = stale_behind_a_lock(mounting, withdrawing)
+        self.assertEqual(outcomes, ["done", "done"], outcomes)
+        roll.refresh_from_db()
+        self.assertIsNotNone(roll.voided_at)
+        from apps.manufacturing.process_rolls import RollMount
+
+        self.assertEqual(RollMount.objects.filter(lot=roll.lot, voided_at__isnull=True).count(), 1)

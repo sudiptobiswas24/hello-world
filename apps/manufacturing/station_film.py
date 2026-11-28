@@ -20,7 +20,7 @@ from django.core.exceptions import ValidationError
 from django.db import models, transaction
 from django.utils import timezone
 
-from apps.core.models import numbering_first, AuditModel
+from apps.core.models import numbering_first, AuditModel, lock_rows
 
 from .station_scale import TYPED_REASONS
 
@@ -149,6 +149,9 @@ def void_film(roll, station, supervisor, operator, reason):
     from .process_rolls import RollMount
     from .station_gauge import void_gauged
 
+    # Locked before it is asked whether the roll is mounted, behind the numbering row, which mount_roll takes
+    # first (O630): asked before it, a mount not yet committed went unseen.
+    lock_rows(roll)
     if RollMount.objects.filter(lot=roll.lot, voided_at__isnull=True).exists():
         raise ValidationError(f"{roll} has been mounted since; withdraw that first.")
     return void_gauged(roll, station, supervisor, operator, reason, "roll")
