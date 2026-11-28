@@ -1024,7 +1024,8 @@ class Command(BaseCommand):
     # A write that replaces the mixin's own on purpose, with the reason. An
     # entry the check no longer needs is reported as stale.
     WRITES_AROUND_THE_MIXIN_ON_PURPOSE = {
-        "core.NewPartyViewSet.create": "a party and its sections in one transaction of its own, each stamped",
+        "core.NewPartyViewSet.create": "a party and its sections in one transaction of its own, each stamped, the "
+                                        "party validated behind the numbering row (O629)",
         "core.PartyViewSet.perform_create": "make_party() is its own transaction and stamps the party and its role",
         "core.UserViewSet.perform_destroy": "refuses every delete and writes nothing: a login is deactivated",
         "manufacturing.BomChangeOrderViewSet.create": "raise_change() is its own transaction and stamps created_by",

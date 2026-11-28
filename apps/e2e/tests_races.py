@@ -3354,6 +3354,58 @@ class ASecondMadeWhileTheFirstIsUncommittedRaceTests(RaceCase):
 
 @tag("race")
 @unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
+class TwoNewCustomersOfOneCodeRaceTests(RaceCase):
+    """
+    O629: a party opened in one go (NewPartyViewSet, which makes its own create) was validated before its
+    transaction, so its code's unique check was asked before any lock. Opened while the first stood uncommitted, the
+    second found the code free and was refused by the database's unique key, as a "code" at the top of the answer,
+    where the screen reads a party's refusals under "party" and marks no box. Validated behind the numbering row now,
+    it waits for the first and is refused by its own check.
+    """
+
+    def customers(self):
+        from django.contrib.auth.models import User
+        from rest_framework.test import APIClient
+
+        clients = []
+        for name in ("opens-first", "opens-second"):
+            client = APIClient()
+            client.force_authenticate(User.objects.create_superuser(name))
+            clients.append(client)
+        body = {"party": {"code": "KFL", "name": "Konkan Fertilisers"}}
+        return [lambda client=client: answered(client, "/api/sales/customers/", body) for client in clients]
+
+    def refusal(self, outcome):
+        import json
+
+        said = "refused: 400: "
+        self.assertTrue(outcome.startswith(said), outcome)
+        return json.loads(outcome[len(said):])
+
+    def test_the_second_is_refused_beside_its_code(self):
+        from apps.core.models import Party
+
+        outcomes = asked_before_the_first_commits(*self.customers())
+        self.assertEqual(outcomes[0], "done", outcomes)
+        self.assertEqual(list(self.refusal(outcomes[1])), ["party"], outcomes)
+        self.assertEqual(list(self.refusal(outcomes[1])["party"]), ["code"], outcomes)
+        self.assertEqual(Party.objects.filter(code="KFL").count(), 1)
+
+    def test_with_the_lock_taken_away_the_database_refuses_it(self):
+        from unittest import mock
+
+        from apps.core import views
+        from apps.core.models import Party
+
+        with mock.patch.object(views, "numbering_first", lambda: None):
+            outcomes = asked_before_the_first_commits(*self.customers())
+        self.assertEqual(outcomes[0], "done", outcomes)
+        self.assertEqual(list(self.refusal(outcomes[1])), ["code"], outcomes)
+        self.assertEqual(Party.objects.filter(code="KFL").count(), 1)
+
+
+@tag("race")
+@unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
 class TwoDocumentsNumberingEachOthersTypeRaceTests(RaceCase):
     """
     O257: a document numbering a second type inside its own transaction (an invoice posting its delivery's
