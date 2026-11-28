@@ -44,13 +44,14 @@ class PurchasingConfig(AppConfig):
         register_scan_document(ScanDocument("purchase_order", "purchase order", _orders, order_scan_actions,
                                             state=lambda order: order.status, open={"status": "confirmed"},
                                             describe=lambda order: str(order.vendor)))
-        from apps.accounting.models import register_bank_movements, register_payment_check, register_void_follow_up
+        from apps.accounting.models import (register_bank_movements, register_certificate_use, register_payment_check,
+                                            register_void_follow_up)
         from apps.accounting.settlement import register_allocation_model
         from apps.quality.release import register_lot_decided, register_lot_sources, register_lot_supplier
         from apps.sales.models import register_awaited_provider
 
         from .models import BillPayment, received_from, assembled_from, assemblies_made_from, receipts_quality_released, drop_ship_awaited, refuse_held_payment, undo_what_it_settled
-        from .tds import challans_paid
+        from .tds import challans_paid, deducted_under
 
         register_awaited_provider(drop_ship_awaited)
         from apps.accounting.restatement import register_restatement_source
@@ -79,6 +80,8 @@ class PurchasingConfig(AppConfig):
         register_payment_check(refuse_held_payment)
         register_void_follow_up(undo_what_it_settled)
         register_bank_movements(challans_paid)
+        # A lower-deduction certificate keeps its terms on the vendor's profile once tax was deducted under it (O631).
+        register_certificate_use(deducted_under)
         # A subcontractor's assemblies stand as the batches they were made from (O135, O148).
         register_lot_sources(assembled_from, assemblies_made_from)
         # Quality's verdict may leave a held receipt with nothing held: its to-dos close (review F4).

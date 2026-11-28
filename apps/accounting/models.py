@@ -1172,7 +1172,61 @@ class PartyTaxProfile(AuditModel):
         # fixture, and `clean()` is not called for those — which is how
         # an exempt party with no exemption on file got through before.
         self._check()
+        self._refuse_rewriting_a_used_certificate()
         super().save(*args, **kwargs)
+
+    CERTIFICATE_TERMS = ("tds_section_id", "tds_rate_percent", "tds_rate_basis", "tds_rate_reference",
+                         "tds_rate_from", "tds_rate_until", "tds_rate_limit")
+
+    def _refuse_rewriting_a_used_certificate(self):
+        """
+        A lower-deduction certificate's terms stay as they stood once tax was deducted under it (O631), as a TCS
+        certificate's do once invoices were collected on under it (O619), but for an edit that can only deduct more
+        (_deducts_no_less_than), which is how a figure typed too generously is put right. What is left on it is read
+        from these fields: its number corrected or its first day moved, the tax already deducted under it went
+        uncounted and the next bill was deducted at its rate past its amount. The officer's new certificate goes in
+        under its own number, from a day after the tax deducted under the one before; a certificate withdrawn is
+        removed (the section's rate applies from then), and a number tax was deducted under is not entered again,
+        with other terms or the same ones. Each deduction keeps the number and rate it was made at, so what was
+        deducted stands either way.
+        """
+        def certificate(profile):
+            if profile is None or profile.tds_rate_basis != "certificate" or profile.tds_rate_percent is None:
+                return None
+            return profile.tds_rate_reference
+
+        stored = None if self._state.adding else PartyTaxProfile.objects.filter(pk=self.pk).first()
+        before, now = certificate(stored), certificate(self)
+        # Asked first: a number used before is refused as that, whatever else the edit does.
+        if now and now != before and certificate_used_on(self.party, now):
+            raise ValidationError({"tds_rate_reference": (
+                f"Tax was deducted under certificate {now} before it was replaced or removed; it is not entered "
+                "again. The officer's new certificate goes in under its own number.")})
+        if before and any(getattr(stored, name) != getattr(self, name) for name in self.CERTIFICATE_TERMS):
+            used = certificate_used_on(self.party, before)
+            if used and now == before and not self._deducts_no_less_than(stored, used[-1]):
+                raise ValidationError({"tds_rate_reference": (
+                    f"Tax was deducted under certificate {before} as it stands, last on {used[-1]:%d %b %Y}; its "
+                    "terms stay, but for its amount lowered, its rate raised or its last day brought forward to "
+                    "that day, which deduct no less. Enter the officer's new certificate under its own number, from "
+                    "the day it starts, or remove this one if it was withdrawn.")})
+            if used and now and now != before and self.tds_rate_from <= used[-1]:  # _check() asked for its days
+                raise ValidationError({"tds_rate_from": (
+                    f"Tax was deducted under certificate {before} up to {used[-1]:%d %b %Y}; certificate {now} "
+                    f"starts after that, not on {self.tds_rate_from:%d %b %Y}.")})
+
+    def _deducts_no_less_than(self, stored, last_used):
+        """
+        Whether a used certificate's terms, as edited, can only deduct as much or more than they did: its amount
+        lowered, its rate raised, its last day brought forward but not before the last day tax was deducted under it
+        (O631). An amount or a last day typed too long is put right this way; what frees part of what was used, or
+        lets a later bill go at its rate, is not.
+        """
+        return (self.tds_section_id == stored.tds_section_id and self.tds_rate_basis == stored.tds_rate_basis
+                and self.tds_rate_from == stored.tds_rate_from
+                and self.tds_rate_percent >= stored.tds_rate_percent
+                and self.tds_rate_limit <= stored.tds_rate_limit
+                and last_used <= self.tds_rate_until <= stored.tds_rate_until)
 
     def _check(self):
         from .gst import STATES, validate_gstin
@@ -1330,6 +1384,21 @@ VOID_FOLLOW_UPS = []
 def register_void_follow_up(follow_up):
     if follow_up not in VOID_FOLLOW_UPS:
         VOID_FOLLOW_UPS.append(follow_up)
+
+
+# The days tax stands deducted under a party's lower-deduction certificate, asked of the side that deducts it
+# (accounting imports neither): a profile's certificate keeps its terms once used (O631).
+CERTIFICATE_USES = []
+
+
+def register_certificate_use(reader):
+    if reader not in CERTIFICATE_USES:
+        CERTIFICATE_USES.append(reader)
+
+
+def certificate_used_on(party, reference):
+    """The days tax stands deducted under `party`'s certificate `reference`, earliest first; empty where none."""
+    return sorted(day for reader in CERTIFICATE_USES for day in reader(party, reference))
 
 
 # Money a document moves through a bank without a Payment: a TDS challan paid

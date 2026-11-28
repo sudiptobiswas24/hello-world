@@ -237,6 +237,15 @@ def certificate_left(party, section, day):
     return max(Decimal("0"), profile.tds_rate_limit - (used or Decimal("0")))
 
 
+def deducted_under(party, reference):
+    """
+    The days tax stands deducted under `party`'s certificate `reference`, a row at a nil rate included (O618): what
+    certificate_left counts, under any section and on any day, so a certificate once used keeps its terms (O631).
+    """
+    return list(_live(TdsDeduction.objects.filter(bill__vendor=party, certificate=reference))
+                .values_list("date", flat=True))
+
+
 def at_the_certificate(base, rate, left):
     """
     How much of `base` is deducted at a certificate's `rate` with `left` on its amount (O598); the rest goes at the

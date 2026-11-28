@@ -473,8 +473,10 @@ class TheCertificatesAmountTests(TdsTestCase):
         profile.tds_rate_limit = Decimal("30000")
         profile.save()
         self.bill("45000", day=datetime.date(2026, 7, 1), vendor=Party.objects.get(pk=party.pk)).deduct_tds()
-        # A new certificate counts from nothing: the rows deducted at the old one keep its number.
+        # A new certificate counts from nothing: the rows deducted at the old one keep its number. It starts after the
+        # tax deducted under the old one, here on the day of its first bill (O631).
         profile.tds_rate_reference, profile.tds_rate_limit = "197/2026/15", Decimal("50000")
+        profile.tds_rate_from = datetime.date(2026, 8, 1)
         profile.save()
         self.bill("35000", day=datetime.date(2026, 8, 1), vendor=Party.objects.get(pk=party.pk)).deduct_tds()
         self.assertEqual(self.rows(party), [
@@ -516,6 +518,135 @@ class TheCertificatesAmountTests(TdsTestCase):
             PartyTaxProfile.objects.get(party=party).save()
         PartyTaxProfile.objects.filter(party=party).update(tds_rate_limit=Decimal("100000"))
         self.assertTrue(_own_tds_rates_without_a_basis(None)["ok"])
+
+
+class ACertificateUsedKeepsItsTermsTests(TdsTestCase):
+    """
+    O631: a lower-deduction certificate's terms on the vendor's profile stay once tax was deducted under it, as a TCS
+    certificate's do (O619). The certificate above, 1,00,000 at 0.5% under 194C (2%), from 1 June to 30 September;
+    40,000 deducted on 15 June, 60,000 left. Rewritten, 60,000 read 1,00,000 and a bill of 80,000 on 1 July was
+    deducted 400, all at 0.5%, where the certificate as issued gives 300 at 0.5% on 60,000 and 400 at 2% on 20,000
+    (calc_o631/o631.py). A new certificate from 1 July, 50,000 at 1%: 500 at 1% and 600 at 2% on the 30,000 past it.
+    Withdrawn: 1,600 at 2%.
+    """
+
+    FROM, UNTIL, CERT = TheCertificatesAmountTests.FROM, TheCertificatesAmountTests.UNTIL, "197/2026/14"
+    holder = TheCertificatesAmountTests.holder
+    JULY = datetime.date(2026, 7, 1)
+
+    def used(self):
+        party = self.holder()
+        self.bill("40000", day=datetime.date(2026, 6, 15), vendor=party).deduct_tds()
+        return party
+
+    def edited(self, party, **terms):
+        profile = PartyTaxProfile.objects.get(party=party)
+        for name, value in terms.items():
+            setattr(profile, name, value)
+        profile.save()
+        return profile
+
+    def july(self, party):
+        made = self.bill("80000", day=self.JULY, vendor=party).deduct_tds()
+        return [(part.base, part.rate_percent, part.amount, part.certificate) for part in made.parts()]
+
+    def left(self, party):
+        from .tds import certificate_left
+
+        return certificate_left(Party.objects.get(pk=party.pk), self.contract, self.JULY)
+
+    def test_once_tax_was_deducted_under_it_no_term_is_made_more_generous(self):
+        party = self.used()
+        for terms in ({"tds_rate_from": datetime.date(2026, 6, 20)}, {"tds_rate_from": datetime.date(2026, 5, 1)},
+                      {"tds_rate_limit": Decimal("200000")}, {"tds_rate_percent": Decimal("0.25")},
+                      {"tds_rate_until": datetime.date(2026, 12, 31)}, {"tds_rate_until": datetime.date(2026, 6, 14)}):
+            with self.subTest(terms=terms), self.assertRaisesMessage(
+                    ValidationError, "Tax was deducted under certificate 197/2026/14 as it stands, last on 15 Jun "
+                                     "2026; its terms stay"):
+                self.edited(party, **terms)
+        # Its number corrected is a new certificate, and one starts after the tax deducted under the one before.
+        for start in (self.FROM, datetime.date(2026, 6, 15)):
+            with self.subTest(start=start), self.assertRaisesMessage(
+                    ValidationError, f"Tax was deducted under certificate 197/2026/14 up to 15 Jun 2026; certificate "
+                                     f"197/2026/014 starts after that, not on {start:%d %b %Y}."):
+                self.edited(party, tds_rate_reference="197/2026/014", tds_rate_from=start)
+        self.assertEqual(self.left(party), Decimal("60000.00"))
+        # Saved untouched, it stands as it was.
+        self.edited(party)
+        self.assertEqual(self.july(party), [(Decimal("60000.00"), Decimal("0.5000"), Decimal("300.00"), self.CERT),
+                                            (Decimal("20000.00"), Decimal("2.0000"), Decimal("400.00"), "")])
+
+    def test_a_term_typed_too_generously_is_put_right(self):
+        # What can only deduct more: its amount lowered, its rate raised, its last day brought forward to the day
+        # tax was last deducted under it, after which it stands no more.
+        party = self.used()
+        self.edited(party, tds_rate_limit=Decimal("50000"), tds_rate_percent=Decimal("1"),
+                    tds_rate_until=datetime.date(2026, 6, 15))
+        self.assertIsNone(self.left(party))
+
+    def test_an_amount_typed_too_long_is_lowered(self):
+        party = self.used()
+        self.edited(party, tds_rate_limit=Decimal("50000"))
+        self.assertEqual(self.left(party), Decimal("10000.00"))
+
+    def test_the_officers_new_certificate_goes_in_under_its_own_number_and_the_old_one_is_not_entered_again(self):
+        party = self.used()
+        self.edited(party, tds_rate_reference="197/2026/15", tds_rate_from=self.JULY, tds_rate_percent=Decimal("1"),
+                    tds_rate_limit=Decimal("50000"))
+        self.assertEqual(self.left(party), Decimal("50000.00"))
+        self.assertEqual(self.july(party), [(Decimal("50000.00"), Decimal("1.0000"), Decimal("500.00"), "197/2026/15"),
+                                            (Decimal("30000.00"), Decimal("2.0000"), Decimal("600.00"), "")])
+        with self.assertRaisesMessage(ValidationError, "Tax was deducted under certificate 197/2026/14 before it was "
+                                                       "replaced or removed; it is not entered again."):
+            self.edited(party, tds_rate_reference=self.CERT, tds_rate_from=self.FROM, tds_rate_percent=Decimal("0.5"),
+                        tds_rate_limit=Decimal("100000"))
+
+    def test_withdrawn_it_is_removed_and_not_entered_again(self):
+        party = self.used()
+        self.edited(party, tds_rate_percent=None, tds_rate_reference="", tds_rate_basis="", tds_rate_from=None,
+                    tds_rate_until=None, tds_rate_limit=None)
+        self.assertEqual(self.july(party), [(Decimal("80000.00"), Decimal("2.0000"), Decimal("1600.00"), "")])
+        with self.assertRaisesMessage(ValidationError, "it is not entered again"):
+            self.edited(party, tds_rate_percent=Decimal("0.5"), tds_rate_reference=self.CERT,
+                        tds_rate_basis="certificate", tds_rate_from=self.FROM, tds_rate_until=self.UNTIL,
+                        tds_rate_limit=Decimal("100000"))
+        # Made again from nothing, the profile is asked the same.
+        PartyTaxProfile.objects.filter(party=party).delete()
+        with self.assertRaisesMessage(ValidationError, "it is not entered again"):
+            PartyTaxProfile.objects.create(party=party, pan="AAAPL1234C", tds_section=self.contract,
+                                           tds_rate_percent=Decimal("0.5"), tds_rate_reference=self.CERT,
+                                           tds_rate_basis="certificate", tds_rate_from=self.FROM,
+                                           tds_rate_until=self.UNTIL, tds_rate_limit=Decimal("200000"))
+
+    def test_with_its_tax_reversed_its_terms_may_be_put_right(self):
+        from .tds import TdsDeduction
+
+        party = self.used()
+        TdsDeduction.objects.get(bill__vendor=party).reverse()
+        self.edited(party, tds_rate_reference="197/2026/014")
+        self.assertEqual(self.left(party), Decimal("100000.00"))
+
+    def test_a_row_at_a_nil_rate_counts_as_used(self):
+        from .tds import TdsDeduction
+
+        party = TheNilCertificateTests.holder(self)  # at nil, under this class's number
+        self.bill("40000", day=datetime.date(2026, 6, 15), vendor=party).deduct_tds()
+        self.assertEqual(TdsDeduction.objects.get(bill__vendor=party).amount, Decimal("0.00"))
+        with self.assertRaisesMessage(ValidationError, f"Tax was deducted under certificate {self.CERT} as it stands"):
+            self.edited(party, tds_rate_limit=Decimal("200000"))
+
+    def test_over_the_api_the_gst_officer_is_refused_beside_the_number(self):
+        from django.core.management import call_command
+
+        call_command("setup_roles", verbosity=0)
+        party = self.used()
+        profile = PartyTaxProfile.objects.get(party=party)
+        response = ApiTests.as_(self, "GST Officer").patch(f"/api/accounting/party-tax-profiles/{profile.pk}/",
+                                                           {"tds_rate_limit": "200000"}, format="json")
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("its terms stay", " ".join(response.json()["tds_rate_reference"]))
+        profile.refresh_from_db()
+        self.assertEqual(profile.tds_rate_limit, Decimal("100000.00"))
 
 
 class TheNilCertificateTests(TdsTestCase):
