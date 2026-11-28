@@ -50,6 +50,25 @@ pg_isready -q || service postgresql start                              # role er
 
 ## 2. Next steps, in order
 
+**g69 is pushed (2c601cf, 28 November 2026), all six lanes green on one tip (gated as 215fd5f).** Three commits on
+4666009, each locking a record before it asks what stands on it. O627: certificates.issue locks the shipment first,
+and the demo certifies its shipment in a section of its own, since in the rebatch's section the shipment's lock came
+after the accounting period's, against the lock order (the first suite run: 30 errors, every test that loads the
+demo). O629: NewPartyViewSet.create validates its party behind the numbering row. O630: void_mount, void_roll and
+void_film lock their row first; the film roll's control ran first on a liner run that does not backflush, where the
+shelf already refused the withdrawal ("Only 0 of batch ... cannot move 150.0000"), and both film tests run on a
+backflushed run now, where nothing on the shelf stops it. Ten race tests, all on PostgreSQL in pg-c. No migration
+changed, so the migration lane ran none. The gate ran 15:26 to 18:12 UTC.
+
+Next: the register holds nothing that waits on nobody. Of the seven viewsets that write around the mixin
+(WRITES_AROUND_THE_MIXIN_ON_PURPOSE), where O624, O627 and O629 were, every one is now settled: those three fixed,
+bill_variation and quoting.cost read and found safe, UserViewSet.perform_destroy writing nothing, and
+PartyViewSet.perform_create replacing only the save, behind the mixin's create and so behind O625's hold. The next
+probe widens the scan that found O629 and O630 (probe/asked_unlocked.py read only .exists(), .count() and .first()):
+a refusal built on a sum or a list of other rows (.aggregate(), Sum(), .values_list(), a sum() over a queryset)
+asked before the transaction's first lock, in a function not @serialised. Each candidate is read for whether a later
+lock asks again; a real one gets a race test with a control before its fix.
+
 **g68 is pushed (37321fa, 28 November 2026), all six lanes green on one tip (gated as 0a15bfe).** Three commits on
 413aed7. O625: a create over the API takes the company's numbering row before its serializer validates
 (RowHeldViewSetMixin.create), and apps.core.models.the_one makes the one row of a model that keeps one behind it
