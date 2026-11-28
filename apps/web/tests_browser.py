@@ -244,6 +244,11 @@ class BrowserMixin:
         self.contexts.append(context)
         self.context = context
         page = context.new_page()
+        # A test the machine's speed can decide is a defect. GATE_BROWSER_SLOWDOWN=4 runs each browser at a quarter of
+        # its speed, which shows one in a single run instead of in one gate of many (O628).
+        slowdown = os.environ.get("GATE_BROWSER_SLOWDOWN")
+        if slowdown:
+            context.new_cdp_session(page).send("Emulation.setCPUThrottlingRate", {"rate": float(slowdown)})
         page.on("console", lambda message: message.type == "error" and self.problems.append(message.text))
         page.on("pageerror", lambda error: self.problems.append(str(error)))
         # A refusal, a missing page or a server fault, with its address:
