@@ -92,6 +92,27 @@ class AccountsOpensACustomerTests(NewCustomerTestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("code", response.json()["party"])
 
+    def test_who_they_are_is_asked_behind_the_numbering_row(self):
+        # O629: the party's checks of other rows (its code is unique) are asked behind the company's numbering row,
+        # which a party being made elsewhere holds until it commits, as a create through the mixin asks them (O625).
+        # Asked before it, two opened at once with one code each found the code free.
+        from unittest import mock
+
+        from django.db import connection
+
+        from apps.core.serializers import PartySerializer
+
+        seen, validating = [], PartySerializer.is_valid
+
+        def first_thing_in_validation(serializer, *args, **kwargs):
+            seen.append(list(dict.fromkeys((getattr(connection, "_lock_order_state", None) or {}).get("taken", []))))
+            return validating(serializer, *args, **kwargs)
+
+        with mock.patch.object(PartySerializer, "is_valid", first_thing_in_validation):
+            response = self.accounts().post(CUSTOMERS, self.konkan(), format="json")
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertEqual(seen[:1], [["core.documentnumbering"]])
+
     def test_the_tax_standing_is_not_the_ar_managers_alone(self):
         client = self.as_role("AR Manager")
         response = client.post(CUSTOMERS, self.konkan(), format="json")

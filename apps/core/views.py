@@ -30,6 +30,7 @@ from .models import (
     PartyTag,
     PaymentTerms,
     UnitOfMeasure,
+    numbering_first,
 )
 from .serializers import (
     AddressSerializer,
@@ -143,11 +144,16 @@ class NewPartyViewSet(AuditableViewSetMixin, viewsets.GenericViewSet):
         party_given = data.get("party")
         if not isinstance(party_given, dict):
             raise DRFValidationError({"party": [f"Say who the {self.role} is."]})
-        party_serializer = self.get_serializer(data=party_given)
-        if not party_serializer.is_valid():
-            raise DRFValidationError({"party": party_serializer.errors})
         errors = {}
         with transaction.atomic():
+            # The party is validated behind the company's numbering row, as a create through the mixin is (O625):
+            # validated before it, two made at once with one code each found the code free, and the second was
+            # refused by the database's unique key as a "code" beside no section, where the screen reads a party's
+            # refusals under "party" (O629). The sections are validated after the party's insert, which holds it.
+            numbering_first()
+            party_serializer = self.get_serializer(data=party_given)
+            if not party_serializer.is_valid():
+                raise DRFValidationError({"party": party_serializer.errors})
             party = make_party(party_serializer, self.role, user)
             context = self.get_serializer_context()
             sections = [(f"{name}.{i}", serializer, None, row)
