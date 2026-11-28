@@ -1,0 +1,1940 @@
+"""
+A demo plant to try the application on: Deccan Polysacks at Chakan, a
+woven-sack maker, with a quarter of sales and purchases, production
+runs, quality, maintenance, payroll, people, assets and the CRM, all
+made through the application's own posting paths.
+
+For a fresh installation only. It refuses a database that already holds
+a company, an account, a party or an item, so it can never mix invented
+records into a plant's books.
+
+    docker compose run --rm web python manage.py load_demo
+    python manage.py load_demo --password <password for every demo login>
+
+The story ends on the day it is loaded: its months move forward to end
+in the current one, and nothing in it is dated after today. Every name,
+GSTIN and figure in it is invented.
+"""
+
+import calendar
+import contextlib
+import datetime
+import secrets
+import traceback
+from decimal import Decimal as D
+
+from django.apps import apps
+from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Group
+from django.core.management import call_command
+from django.core.management.base import BaseCommand, CommandError
+from django.db import connection, transaction
+from django.db.migrations.executor import MigrationExecutor
+from django.utils import timezone
+
+from apps.core.models import lock_rows
+from apps.inventory.locking import lock_positions
+
+M = apps.get_model
+# The day the story was written for; loaded later, it moves with the calendar.
+WRITTEN_FOR = datetime.date(2026, 10, 7)
+LOGINS = [
+    ("rohit", "Sales manager", "AR Manager, Line Manager"),
+    ("imran", "Sales executive", "Sales Rep: sees only their own customers"),
+    ("priya", "Sales executive, south and export", "Sales Rep"),
+    ("ravi", "Purchase officer", "Purchasing Clerk, AP Manager, Purchase Manager"),
+    ("sunita", "Stores keeper", "Stores Manager, Warehouse Staff"),
+    ("suresh", "Production supervisor", "Production Supervisor, Planner, Process Engineer"),
+    ("meena", "Quality inspector", "Quality Inspector, Quality Manager"),
+    ("vikas", "Maintenance technician", "Maintenance"),
+    ("anita", "Accountant", "Controller, Bookkeeper, GST Officer"),
+    ("kiran", "HR and payroll", "HR Admin, Payroll Officer"),
+]
+
+
+class Story:
+    """The story's calendar, moved by whole months to end in the current one."""
+
+    def __init__(self, today):
+        self.today = today
+        self.shift = (today.year - WRITTEN_FOR.year) * 12 + today.month - WRITTEN_FOR.month
+
+    def month(self, year, month, offset=0):
+        """(year, month) of a story month, moved."""
+        index = year * 12 + month - 1 + self.shift + offset
+        return index // 12, index % 12 + 1
+
+    def on(self, year, month, day):
+        """A story date, moved; never after today."""
+        y, m = self.month(year, month)
+        return min(datetime.date(y, m, min(day, calendar.monthrange(y, m)[1])), self.today)
+
+    def month_span(self, year, month, offset=0):
+        y, m = self.month(year, month, offset)
+        return datetime.date(y, m, 1), datetime.date(y, m, calendar.monthrange(y, m)[1])
+
+    def day(self, offset):
+        return self.today + datetime.timedelta(days=offset)
+
+
+class Command(BaseCommand):
+    help = "Load a demo woven-sack plant into an empty database, to try the application on."
+
+    def add_arguments(self, parser):
+        parser.add_argument("--password", help="The password for every demo login. Left out, a random one is made and printed.")
+
+    def handle(self, *args, **options):
+        # Run while the first start is still building the database, the roles would refuse permissions that
+        # do not exist yet, in words that say nothing about waiting.
+        executor = MigrationExecutor(connection)
+        pending = executor.migration_plan(executor.loader.graph.leaf_nodes())
+        if pending:
+            raise CommandError(f"The database is still being built: {len(pending)} migration(s) to go. Wait until "
+                               "the web process says it is listening (docker compose logs -f web), then run this again.")
+        held = [label for label in ("core.Company", "accounting.Account", "core.Party", "inventory.Item")
+                if M(label).objects.exists()]
+        if held:
+            raise CommandError(
+                "This database already holds records (" + ", ".join(str(M(label)._meta.verbose_name_plural) for label in held)
+                + "). The demo is for an empty installation only; it never mixes into real books.")
+        call_command("setup_roles", verbosity=0)
+        password = options.get("password") or secrets.token_urlsafe(9)
+        failed = []
+        self.load(Story(timezone.localdate()), password, failed)
+        if failed:
+            raise CommandError(f"The demo loaded only in part; these sections failed: {', '.join(failed)}. "
+                               "Each is reported above.")
+        self.stdout.write("\nThe demo plant is loaded. Sign in at /app/ as any of these, with the password "
+                          f"{'you gave' if options.get('password') else password}:")
+        self.stdout.write(f"  {'admin':8}  plant administrator, sees everything")
+        for login, title, roles in LOGINS:
+            self.stdout.write(f"  {login:8}  {title}: {roles}")
+        self.stdout.write(f"  {'floor':8}  Shop-floor tablet: Station, at /station/LOOM-EXIT/, TAPE-1 and CONV-1")
+        if getattr(self, "pins", None):
+            self.stdout.write("Operators sign in at a station with their PIN, shown this once: "
+                              + ", ".join(f"{name} {pin}" for name, pin in self.pins.items()))
+
+    @contextlib.contextmanager
+    def step(self, name, failed):
+        """One section in its own transaction: a failure is reported, rolled back and named at the end."""
+        self.stdout.write(f"  {name}")
+        try:
+            with transaction.atomic():
+                yield
+        except Exception as exc:  # reported here and refused at the end, never swallowed
+            failed.append(name)
+            self.stderr.write(f"    FAILED: {type(exc).__name__}: {exc}")
+            self.stderr.write("".join(traceback.format_exc(limit=4)))
+
+    def load(self, s, password, failed):
+        """The plant, told in order: each section uses what the ones before it made."""
+        from apps.accounting.gst import STATES, gstin_check_character
+        from apps.manufacturing.changes import raise_change
+
+        def step(name):
+            return self.step(name, failed)
+
+        on, day, TODAY = s.on, s.day, s.today
+
+        def gstin(prefix14):
+            return prefix14 + gstin_check_character(prefix14)
+
+        def stamp(date, hour=9):
+            return timezone.make_aware(datetime.datetime(date.year, date.month, date.day, hour))
+
+        # ---------------------------------------------------------- kernel
+        with step("Company, currencies, units and the chart of accounts"):
+            inr = M("core.Currency").objects.create(code="INR", name="Indian Rupee", symbol="₹", is_base=True)
+            usd = M("core.Currency").objects.create(code="USD", name="US Dollar", symbol="$")
+            M("core.ExchangeRate").objects.create(currency=usd, rate=D("83.4500"), valid_from=on(2026, 4, 1))
+            M("core.ExchangeRate").objects.create(currency=usd, rate=D("84.1200"), valid_from=on(2026, 9, 1))
+            UOM = M("core.UnitOfMeasure")
+            kg = UOM.objects.create(code="kg", name="Kilogram", category="weight")
+            nos = UOM.objects.create(code="nos", name="Numbers", category="count")
+            M("gst.UnitQuantityCode").objects.create(uom=kg, code="KGS")
+            M("gst.UnitQuantityCode").objects.create(uom=nos, code="NOS")
+            Terms = M("core.PaymentTerms")
+            net15 = Terms.objects.create(code="N15", name="Net 15 days", net_days=15)
+            net30 = Terms.objects.create(code="N30", name="Net 30 days", net_days=30)
+            net45 = Terms.objects.create(code="N45", name="Net 45 days", net_days=45)
+
+            def acc(code, name, kind, holds_money=False):
+                return M("accounting.Account").objects.create(code=code, name=name, account_type=kind,
+                                                              holds_money=holds_money)
+
+            bank = acc("1010", "HDFC Bank current account", "asset", holds_money=True)
+            acc("1020", "Cash in hand", "asset", holds_money=True)
+            ar = acc("1100", "Sundry debtors", "asset")
+            stock_acc = acc("1200", "Stock in trade", "asset")
+            wip = acc("1250", "Work in progress", "asset")
+            vendor_adv = acc("1280", "Advances to suppliers", "asset")
+            cgst_in, sgst_in, igst_in = (acc("1311", "CGST input", "asset"), acc("1312", "SGST input", "asset"),
+                                         acc("1313", "IGST input", "asset"))
+            plant_acc = acc("1500", "Plant and machinery", "asset")
+            office_acc = acc("1510", "Office equipment", "asset")
+            accumulated = acc("1590", "Accumulated depreciation", "asset")
+            ap = acc("2000", "Sundry creditors", "liability")
+            grni = acc("2150", "Goods received, not billed", "liability")
+            deposits = acc("2200", "Customer advances", "liability")
+            cgst_out, sgst_out, igst_out = (acc("2201", "CGST output", "liability"), acc("2202", "SGST output", "liability"),
+                                            acc("2203", "IGST output", "liability"))
+            igst0_out = acc("2204", "IGST output, zero-rated", "liability")
+            # The payroll accounts (2410 to 2440, 6000, 6100) are setup_payroll's, seeded in the next step; what
+            # the run owes its people is the company's own default, under the code setup_indian_books gives it.
+            net_pay = acc("2400", "Salaries payable", "liability")
+            acc("3000", "Share capital", "equity")
+            opening_eq = acc("3900", "Opening balances", "equity")
+            sales_sacks = acc("4000", "Sales: woven sacks", "income")
+            acc("4010", "Sales: fabric and tape", "income")
+            export_sales = acc("4020", "Export sales", "income")
+            fx_gain = acc("4910", "Exchange gain", "income")
+            cogs = acc("5000", "Cost of goods sold", "expense")
+            variance = acc("5100", "Production variance", "expense")
+            ppv = acc("5150", "Purchase price variance", "expense")
+            scrap_acc = acc("5200", "Production scrap", "expense")
+            power = acc("5300", "Power and fuel", "expense")
+            repairs = acc("5400", "Repairs and maintenance", "expense")
+            freight = acc("5600", "Freight outward", "expense")
+            travel = acc("5700", "Travel and conveyance", "expense")
+            rent = acc("5750", "Rent", "expense")
+            bank_charges = acc("5800", "Bank charges", "expense")
+            discounts = acc("5810", "Settlement discounts", "expense")
+            bad_debts = acc("5820", "Bad debts", "expense")
+            fx_loss = acc("5830", "Exchange loss", "expense")
+            depreciation = acc("5900", "Depreciation", "expense")
+            # The other sides of a stock adjustment (O403); 5300 here is power, so these sit beside it.
+            written_off = acc("5250", "Stock written off", "expense")
+            found_on_count = acc("4200", "Stock found on count", "income")
+            M("core.Company").objects.create(
+                name="Deccan Polysacks Pvt Ltd", legal_name="Deccan Polysacks Private Limited",
+                email="accounts@deccanpolysacks.example", phone="+91 20 6712 4400", website="deccanpolysacks.example",
+                bank_name="HDFC Bank, Chakan", bank_account_number="50200012345678", bank_ifsc="HDFC0001234",
+                base_currency=inr, fiscal_year_start_month=4, tan="PNED04821F",
+                default_inventory_account=stock_acc, default_cogs_account=cogs, grni_account=grni,
+                settlement_discount_account=discounts, bad_debt_account=bad_debts, default_revenue_account=sales_sacks,
+                default_receivable_account=ar, default_payable_account=ap, default_bank_account=bank,
+                fx_gain_account=fx_gain, fx_loss_account=fx_loss, vendor_prepayment_account=vendor_adv,
+                net_pay_account=net_pay, customer_deposit_account=deposits, purchase_price_variance_account=ppv,
+            )
+            M("manufacturing.ManufacturingSettings").objects.create(wip_account=wip, variance_account=variance,
+                                                                    scrap_account=scrap_acc)
+
+        with step("Payroll accounts and pay components, as setup_payroll seeds them"):
+            # O532: the plant's own setup, called, not a second definition beside it. The demo's own components
+            # took PF on basic and HRA with no ceiling, which no plant set up by setup_payroll does: PF and PF-ER
+            # are a per cent of BASIC and DA up to the dated EPF wage ceiling.
+            from apps.accounting.management.commands.setup_indian_books import Command as Books
+            from apps.hr.management.commands.setup_payroll import seed_payroll
+
+            books = Books(stdout=self.stdout, stderr=self.stderr)
+            books.made, books.kept, books.collisions = [], [], []
+            pay_components = seed_payroll(books)
+            if books.collisions:
+                raise CommandError("; ".join(books.collisions))
+            wages = pay_components["BASIC"].expense_account
+            # O537: where tax deducted and collected at source is owed, under the codes and names the Indian books
+            # setup gives them (its own rows, through its own loader), and its countries: without the first no
+            # section could deduct, and without the second no address could say India or an export where it went.
+            from apps.accounting.management.commands.setup_indian_books import ACCOUNTS as BOOK_ACCOUNTS
+            from apps.core.countries import seed_countries
+
+            for code, name, kind, money in BOOK_ACCOUNTS:
+                if code in ("2250", "2260"):
+                    books.account(code, name, kind, money)
+            if books.collisions:
+                raise CommandError("; ".join(books.collisions))
+            seed_countries()
+            countries = {code: M("core.Country").objects.get(code=code) for code in ("IN", "AE")}
+            # The plant's own address, which an e-invoice and an e-way bill print as the seller's and the consignor's.
+            company = M("core.Company").get()
+            company.address = M("core.Address").objects.create(
+                address_type="office", line1="Gat 212, Chakan MIDC Phase II", city="Pune", state=STATES["27"],
+                postal_code="410501", country=countries["IN"])
+            company.save()
+
+        with step("GST: rates, the inter-state and export positions, the registration"):
+            Tax, Position, Mapping = M("accounting.Tax"), M("accounting.FiscalPosition"), M("accounting.FiscalPositionTaxMapping")
+            cgst = Tax.objects.create(code="CGST9", name="CGST", rate=D("9"), gst_head="cgst",
+                                      collected_account=cgst_out, paid_account=cgst_in)
+            sgst = Tax.objects.create(code="SGST9", name="SGST", rate=D("9"), gst_head="sgst",
+                                      collected_account=sgst_out, paid_account=sgst_in)
+            igst = Tax.objects.create(code="IGST18", name="IGST", rate=D("18"), gst_head="igst",
+                                      collected_account=igst_out, paid_account=igst_in)
+            igst0 = Tax.objects.create(code="IGST0", name="IGST, zero-rated", rate=D("0"), gst_head="igst",
+                                       collected_account=igst0_out, paid_account=igst_in)
+            gst18 = [cgst, sgst]
+
+            def position(code, name, cgst_to):
+                fiscal = Position.objects.create(code=code, name=name)
+                Mapping.objects.create(fiscal_position=fiscal, source_tax=cgst, target_tax=cgst_to)
+                Mapping.objects.create(fiscal_position=fiscal, source_tax=sgst, target_tax=None)
+                return fiscal
+
+            inter = position("INTER", "Inter-state supply", igst)
+            lut = position("LUT", "Export under LUT", igst0)
+            registration = M("accounting.GstSettings").objects.create(
+                gstin=gstin("27AAECD4821K1Z"), interstate_position=inter,
+                # Declared over five crore of turnover: every invoice of the story carries an IRN (O537).
+                einvoicing_from=on(2026, 4, 1))
+            # Freight as a line on a document (O495, O496): recharged to a customer or charged by a carrier, GST 18%
+            # either way, booked to its own accounts so recharged freight does not flatter the sacks' margin.
+            charge = M("accounting.ChargeType").objects.create(
+                code="FREIGHT", name="Freight", hsn_code="9965",
+                revenue_account=acc("4300", "Freight recharged", "income"),
+                expense_account=acc("5610", "Freight inward", "expense"))
+            charge.taxes.set(gst18)
+            # Exports go out under LUT, and posting one asks for the LUT in force on its day (O218). An LUT is for
+            # one financial year, so the plant has one for each year the story's months fall in, from its first
+            # (July) to today, its year worked out from its dates: a fixed "2026-27" with dates that moved refused
+            # every load from April 2027 (O569), and a load in April or May has an export either side of 1 April.
+            # Each filed a week before its year opens and valid to its end, so an export made after the load is
+            # covered too.
+            from apps.accounting.tds import financial_year
+
+            year_opens, year_ends = financial_year(on(2026, 7, 1))
+            while year_opens <= TODAY:
+                filed = year_opens - datetime.timedelta(days=8)
+                M("accounting.LetterOfUndertaking").objects.create(
+                    registration=registration, arn=f"AD27{filed:%m%y}000123X",
+                    financial_year=f"{year_opens.year}-{year_ends.year % 100:02d}",
+                    filed_on=filed, valid_from=year_opens, valid_to=year_ends)
+                year_opens, year_ends = financial_year(year_ends + datetime.timedelta(days=1))
+
+        with step("Warehouses, bins, items and the opening stock"):
+            # A count's difference and a write-off need a reason to book against (O403), and an export customer a
+            # country.
+            from apps.core.countries import seed_countries
+
+            seed_countries()
+            for code, name, account, direction in (("DAMAGE", "Damaged or spoilt", written_off, "decrease"),
+                                                   ("SHORT", "Short on count", written_off, "decrease"),
+                                                   ("FOUND", "Found on count", found_on_count, "increase")):
+                M("inventory.AdjustmentReason").objects.create(code=code, name=name, account=account,
+                                                               direction=direction)
+            Warehouse, Bin, Item = M("inventory.Warehouse"), M("inventory.StorageBin"), M("inventory.Item")
+            # O415: where a purchase or requisition line naming no warehouse is received and planned.
+            plant = Warehouse.objects.create(code="PLANT", name="Chakan plant", receives_by_default=True)
+            godown = Warehouse.objects.create(code="FG", name="Finished goods godown", requires_bins=True)
+            bins = {code: Bin.objects.create(warehouse=godown, code=code, name=name, sequence=n)
+                    for n, (code, name) in enumerate([("A-01", "Aisle A, bay 1"), ("A-02", "Aisle A, bay 2"),
+                                                      ("B-01", "Aisle B, bay 1"), ("B-02", "Aisle B, bay 2")], start=1)}
+
+            def item(sku, name, uom, cost, price=None, hsn=""):
+                made = Item.objects.create(sku=sku, name=name, uom=uom, standard_cost=D(cost),
+                                           sale_price=D(price) if price else None, hsn_code=hsn)
+                # What a line typed on screen takes (O395): every good here bears 18%, as the demo's lines do.
+                made.sales_taxes.set(gst18)
+                made.purchase_taxes.set(gst18)
+                return made
+
+            virgin = item("PP-RAFFIA", "PP raffia granule, homopolymer", kg, "112", hsn="39021000")
+            filler = item("CACO3-MB", "Calcium carbonate filler masterbatch", kg, "38", hsn="38249900")
+            uv = item("UV-MB", "UV stabiliser masterbatch", kg, "310", hsn="38123990")
+            regrind = item("REGRIND", "Reprocessed PP (own trim)", kg, "60", hsn="39159090")
+            liner_film = item("LDPE-FILM", "LDPE liner film, 40 micron", kg, "125", hsn="39201019")
+            thread = item("THREAD-PE", "Polyester stitching thread", kg, "260", hsn="54023300")
+            ink = item("INK-BLUE", "Flexo printing ink, reflex blue", kg, "420", hsn="32151190")
+            tape = item("TAPE-900", "PP tape, 900 denier", kg, "128", hsn="54062000")
+            fabric = item("FAB-60", "Circular woven fabric, 60 cm", kg, "139", hsn="54074200")
+            cement = item("SACK-CEM50", "Cement sack 50 kg, 2-colour print", nos, "7.10", "9.80", "63053300")
+            fert = item("SACK-FERT50", "Fertiliser sack 50 kg with liner", nos, "10.60", "14.50", "63053300")
+            rice = item("SACK-RICE25", "Rice bag 25 kg, 4-colour print", nos, "8.30", "11.20", "63053300")
+            bearing = item("SP-6205", "Bearing 6205 (loom)", nos, "240", hsn="84821011")
+            heater = item("SP-HEATER", "Extruder heater band", nos, "1850", hsn="85168000")
+
+            Movement = M("inventory.StockMovement")
+            opened = on(2026, 7, 1)
+            shelf = [(virgin, "18000", "112", plant, None), (filler, "6000", "38", plant, None),
+                     (uv, "250", "310", plant, None), (regrind, "1500", "60", plant, None),
+                     (liner_film, "3500", "125", plant, None), (thread, "400", "260", plant, None),
+                     (ink, "300", "420", plant, None), (tape, "6000", "128", plant, None),
+                     (fabric, "9000", "139", plant, None), (cement, "760000", "7.10", plant, None),
+                     (fert, "300000", "10.60", plant, None), (rice, "150000", "8.30", plant, None),
+                     (bearing, "40", "240", plant, None), (heater, "12", "1850", plant, None),
+                     (cement, "80000", "7.10", godown, "A-01"), (cement, "60000", "7.10", godown, "B-02"),
+                     (fert, "45000", "10.60", godown, "A-02"), (rice, "20000", "8.30", godown, "B-01")]
+            for it, qty, cost, where, bin_code in shelf:
+                Movement.objects.create(item=it, warehouse=where, bin=bins.get(bin_code), movement_type="receipt",
+                                        uom=it.uom, quantity=D(qty), unit_cost=D(cost), value=D(qty) * D(cost),
+                                        occurred_at=stamp(opened, 8), notes="Opening stock")
+            # The shelves' value into the books, as a cutover does it.
+            value = sum((D(qty) * D(cost) for _, qty, cost, _, _ in shelf), D("0"))
+            entry = M("accounting.JournalEntry").objects.create(date=opened, memo="Opening stock at cutover")
+            M("accounting.JournalLine").objects.create(entry=entry, account=stock_acc, debit=value, credit=D("0"))
+            M("accounting.JournalLine").objects.create(entry=entry, account=opening_eq, debit=D("0"), credit=value)
+            entry.post()
+
+        # --------------------------------------------------------- parties
+        with step("Customers and vendors, with GST registrations and agreed prices"):
+            Party, Role = M("core.Party"), M("core.PartyRoleAssignment")
+
+            def party(code, name, role, city, pin, gst, terms, contact, email, currency=None, state=None,
+                      country="IN", **tax):
+                # O537: the state is the one the party's GSTIN is registered in (its first two digits), spelt as
+                # the GST network spells it; a party with no GSTIN is told its state or, overseas, its country.
+                p = Party.objects.create(code=code, name=name, legal_name=name, email=email,
+                                         default_currency=currency or inr, payment_terms=terms)
+                Role.objects.create(party=p, role=role)
+                M("core.Address").objects.create(party=p, line1="Plot 14, MIDC industrial area", city=city,
+                                                 state=state or (STATES[gst[:2]] if gst else ""), postal_code=pin,
+                                                 country=countries[country], is_primary=True)
+                first, last, title = contact
+                M("core.Contact").objects.create(party=p, first_name=first, last_name=last, job_title=title,
+                                                 email=email, is_primary=True)
+                M("accounting.PartyTaxProfile").objects.create(party=p, gstin=gstin(gst) if gst else "", **tax)
+                return p
+
+            sahyadri = party("C-SAHY", "Sahyadri Cement Works", "customer", "Pune", "411019", "27AAHCS4410M1Z", net45,
+                             ("Rahul", "Mehta", "Purchase manager"), "purchase@sahyadricement.example")
+            godavari = party("C-GODA", "Godavari Fertilisers Ltd", "customer", "Kakinada", "533003", "37AACCG7731P1Z", net30,
+                             ("K.", "Srinivas", "Stores head"), "stores@godavarifert.example")
+            konkan = party("C-KONK", "Konkan Agro Foods", "customer", "Ratnagiri", "415612", "27AAFCK2290Q1Z", net30,
+                           ("Sneha", "Sawant", "Owner"), "sneha@konkanagro.example")
+            narmada = party("C-NARM", "Narmada Sugar Mills", "customer", "Bharuch", "392001", "24AABCN5512R1Z", net30,
+                            ("Hitesh", "Patel", "Purchase"), "buy@narmadasugar.example")
+            malwa = party("C-MALW", "Malwa Seeds and Grains", "customer", "Indore", "452001", "23AAGFM8814S1Z", net15,
+                          ("Arjun", "Tiwari", "Partner"), "arjun@malwaseeds.example")
+            kaveri = party("C-KAVR", "Kaveri Feeds", "customer", "Mysuru", "570016", "29AAFCK6627T1Z", net30,
+                           ("Deepa", "Gowda", "Accounts"), "accounts@kaverifeeds.example")
+            gulf = party("C-GULF", "Gulf Bulk Packaging Trading LLC", "customer", "Dubai", "", None, net45,
+                         ("Omar", "Haddad", "Buyer"), "omar@gulfbulk.example", currency=usd, country="AE",
+                         gst_registration="overseas", fiscal_position=lut)
+            granule = party("V-GRAN", "Granule House Polymers", "vendor", "Vadodara", "390010", "24AACCG1180A1Z", net30,
+                            ("Nilesh", "Shah", "Sales"), "sales@granulehouse.example")
+            western = party("V-WMB", "Western Masterbatch Pvt Ltd", "vendor", "Thane", "400601", "27AABCW3391B1Z", net30,
+                            ("Farhan", "Qureshi", "Sales"), "orders@westernmb.example", msme_category="small",
+                            udyam_number="UDYAM-MH-33-0012345")
+            inks = party("V-INK", "Bharat Printing Inks", "vendor", "Mumbai", "400093", "27AAFFB5562C1Z", net30,
+                         ("Ketan", "Desai", "Sales"), "ketan@bharatinks.example")
+            liner = party("V-LINER", "Deccan Liner Films", "vendor", "Pune", "411026", "27AADCD7720D1Z", net15,
+                          ("Vaibhav", "Kale", "Sales"), "vk@deccanliner.example")
+            threads = party("V-THRD", "Shakti Thread Mills", "vendor", "Surat", "395003", "24AAJFS9935E1Z", net30,
+                            ("Bhavesh", "Joshi", "Sales"), "sales@shaktithread.example")
+            spares = party("V-SPAR", "Loomtech Spares", "vendor", "Coimbatore", "641018", "33AAKFL4407F1Z", net30,
+                           ("Senthil", "Kumar", "Service"), "service@loomtech.example")
+            roadways = party("V-SRW", "Sharma Roadways", "vendor", "Pune", "411019", "27AAKFS5521G1Z", net15,
+                             ("Manoj", "Sharma", "Bookings"), "bookings@sharmaroadways.example")
+            for vendor, it, price, lead in ((granule, virgin, "112", 7), (western, filler, "38", 5), (western, uv, "310", 5),
+                                            (inks, ink, "420", 4), (liner, liner_film, "125", 3), (threads, thread, "260", 6),
+                                            (spares, bearing, "240", 10), (spares, heater, "1850", 10)):
+                M("purchasing.VendorPrice").objects.create(vendor=vendor, item=it, unit_price=D(price), currency=inr,
+                                                           lead_time_days=lead, is_preferred=True, valid_from=on(2026, 4, 1))
+
+        with step("Departments, cost centres, staff and their logins"):
+            centres = {code: M("accounting.CostCentre").objects.create(code=code, name=name) for code, name in (
+                ("EXT", "Tape extrusion"), ("LOOM", "Loom shed"), ("PRINT", "Printing"),
+                ("CONV", "Conversion and baling"), ("OFFICE", "Office and sales"))}
+            depts = {code: M("hr.Department").objects.create(code=code, name=name, centre=centres[centre])
+                     for code, name, centre in (("SALES", "Sales", "OFFICE"), ("PURCH", "Purchase and stores", "OFFICE"),
+                                                ("PROD", "Production", "LOOM"), ("QA", "Quality", "OFFICE"),
+                                                ("MAINT", "Maintenance", "LOOM"), ("ACCT", "Accounts and HR", "OFFICE"))}
+            groups = {g.name: g for g in Group.objects.all()}
+            User = get_user_model()
+            people = {}
+
+            def person(number, name, dept, title, hired, login=None, roles=()):
+                p = Party.objects.create(code=f"E-{number}", name=name,
+                                         email=f"{name.split()[0].lower()}@deccanpolysacks.example")
+                Role.objects.create(party=p, role="employee")
+                user = None
+                if login and not User.objects.filter(username=login).exists():
+                    user = User.objects.create_user(login, password=password, email=p.email,
+                                                    first_name=name.split()[0], last_name=name.split()[-1])
+                    user.groups.add(*[groups[role] for role in roles if role in groups])
+                # A UAN for the ECR to name each member by (O537): twelve digits, and plainly invented.
+                employee = M("hr.Employee").objects.create(party=p, employee_number=number, hire_date=hired,
+                                                           department=depts[dept], job_title=title, user=user,
+                                                           uan=f"1009{int(number):08d}")
+                people[login or number] = employee
+                return employee
+
+            d = datetime.date
+            rohit = person("101", "Rohit Bhosale", "SALES", "Sales manager", d(2019, 6, 1), "rohit", ["AR Manager", "Line Manager"])
+            imran = person("102", "Imran Shaikh", "SALES", "Sales executive", d(2022, 1, 10), "imran",
+                           ["Sales Rep", "Employee Self Service"])
+            priya = person("103", "Priya Nair", "SALES", "Sales executive, south and export", d(2023, 3, 1), "priya",
+                           ["Sales Rep", "Employee Self Service"])
+            ravi = person("201", "Ravi Kulkarni", "PURCH", "Purchase officer", d(2020, 8, 1), "ravi",
+                          ["Purchasing Clerk", "AP Manager", "Purchase Manager"])
+            sunita = person("202", "Sunita Pawar", "PURCH", "Stores keeper", d(2021, 2, 15), "sunita",
+                            ["Stores Manager", "Warehouse Staff"])
+            suresh = person("301", "Suresh Patil", "PROD", "Production supervisor", d(2018, 4, 1), "suresh",
+                            ["Production Supervisor", "Production Planner", "Process Engineer", "Line Manager"])
+            mahesh = person("302", "Mahesh Jadhav", "PROD", "Extrusion operator", d(2021, 7, 1))
+            lakshmi = person("303", "Lakshmi Rao", "PROD", "Loom operator", d(2022, 9, 1))
+            ganesh = person("304", "Ganesh More", "PROD", "Stitching operator", d(2023, 5, 1))
+            meena = person("401", "Meena Joshi", "QA", "Quality inspector", d(2020, 11, 1), "meena",
+                           ["Quality Inspector", "Quality Manager"])
+            vikas = person("501", "Vikas Pawar", "MAINT", "Maintenance technician", d(2019, 1, 7), "vikas", ["Maintenance"])
+            anita = person("601", "Anita Deshmukh", "ACCT", "Accountant", d(2017, 10, 1), "anita",
+                           ["Controller", "Bookkeeper", "GST Officer"])
+            kiran = person("602", "Kiran Shetty", "ACCT", "HR and payroll", d(2021, 6, 1), "kiran", ["HR Admin", "Payroll Officer"])
+            # Who keeps the gate register and passes (L17, L18): the demo had no one, so nobody in it could (O405).
+            raju = person("203", "Raju Gaikwad", "PURCH", "Security guard", d(2022, 4, 1), "raju", ["Security Guard"])
+            for employee, boss in ((imran, rohit), (priya, rohit), (mahesh, suresh), (lakshmi, suresh), (ganesh, suresh),
+                                   (sunita, ravi), (raju, ravi), (ravi, anita), (suresh, anita), (meena, suresh), (vikas, suresh),
+                                   (kiran, anita), (rohit, anita)):
+                employee.manager = boss
+                employee.save()
+            admin = User.objects.filter(username="admin").first() or User.objects.create_superuser(
+                "admin", "admin@deccanpolysacks.example", password, first_name="Plant", last_name="Administrator")
+
+        with step("The statutory figures, as setup_statutory loads them, and what the Controller confirms"):
+            # O537: every dated file of statutory/, through the command's own loader, each row unconfirmed until
+            # the Controller confirms it. Anita confirms what applies to a plant at Chakan, as the plant's
+            # Controller would after reading each against its source: the TDS and TCS rates, the EPF and EPS wage
+            # ceilings (O532), ESI's rates and ceiling (O452), the bonus and overtime figures, and Maharashtra's
+            # professional tax (O405, O461) and welfare fund. Other states' schedules and the minimum wages wait
+            # on Settings for her, as they would at a plant, and go_live_check says so.
+            from apps.accounting.statutory_load import Loader
+            from apps.hr.management.commands.setup_statutory import load_all
+
+            load_all(Loader())
+            controller = anita.user
+            for model, here in (("hr.StatutoryFigure", {"state__in": ("", "MH")}),
+                                ("hr.PayComponentSlab", {"state": "MH"}),
+                                ("accounting.TdsRate", {}), ("accounting.TcsRate", {})):
+                for row in M(model).objects.filter(confirmed_on=None, **here).order_by("pk"):
+                    row.confirm(controller)
+
+        with step("Sales reps, teams, targets and what each customer is allowed"):
+            Rep, Team = M("sales.SalesRep"), M("sales.SalesTeam")
+            # The executives earn 1.5% of what they invoice (O405); the manager is on salary alone.
+            on_invoices = M("sales.CommissionPlan").objects.create(code="EXEC-1.5", name="Sales executive",
+                                                                   percent=D("1.50"), basis="invoiced")
+            rep_rohit = Rep.objects.create(party=rohit.party)
+            rep_imran, rep_priya = (Rep.objects.create(party=e.party, plan=on_invoices) for e in (imran, priya))
+            west = Team.objects.create(code="WEST", name="West zone", leader=rep_rohit)
+            south = Team.objects.create(code="SOUTH", name="South and export", leader=rep_priya)
+            for rep, team in ((rep_rohit, west), (rep_imran, west), (rep_priya, south)):
+                rep.team = team
+                rep.save()
+            # What they fill, how the goods travel and how they are packed: each new order records them.
+            for customer, rep, limit, trade, carriage, bale, extra in (
+                    (sahyadri, imran, "12000000", "cement", "for_destination", 500,
+                     {"transporter": roadways, "marking": "Brand and batch on the front; month of manufacture on the back"}),
+                    (konkan, imran, "2500000", "food_grain", "ex_works", 250, {}),
+                    (narmada, rohit, "5000000", "sugar", "for_destination", 500, {"transporter": roadways}),
+                    (malwa, imran, "1500000", "food_grain", "ex_works", 250, {}),
+                    (godavari, priya, "6000000", "fertiliser", "to_pay", 500, {"marking": "Batch number on the gusset"}),
+                    (kaveri, priya, "3000000", "feed", "for_destination", 500, {}),
+                    (gulf, priya, "12000000", "other", "", 1000, {"incoterm": "CIF", "port_of_discharge": "Jebel Ali"})):
+                M("sales.CustomerProfile").objects.create(party=customer, sales_rep=rep.party, credit_limit=D(limit),
+                                                          industry=trade, freight_terms=carriage, sacks_per_bale=bale,
+                                                          **extra)
+            quarter = (s.month_span(2026, 7)[0], s.month_span(2026, 9)[1])
+            this_month = s.month_span(2026, 10)
+            for who, span, amount in (({"team": west}, quarter, "7500000"), ({"team": south}, quarter, "5500000"),
+                                      ({"rep": rep_imran}, quarter, "5500000"), ({"rep": rep_priya}, quarter, "5000000"),
+                                      ({"team": west}, this_month, "3000000"), ({"rep": rep_imran}, this_month, "1800000")):
+                M("sales.SalesTarget").objects.create(period_start=span[0], period_end=span[1], amount=D(amount), **who)
+
+        # ----------------------------------------------------------- sales
+        with step("Three months of orders, deliveries, invoices and money received"):
+            Order, OrderLine = M("sales.SalesOrder"), M("sales.SalesOrderLine")
+            Delivery, DeliveryLine = M("sales.Delivery"), M("sales.DeliveryLine")
+            Payment, Allocation = M("accounting.Payment"), M("sales.InvoicePayment")
+            invoices = []
+            # One transaction confirms every customer's orders in date order; held first, in key
+            # order, each confirm finds its customer already held (O183).
+            lock_rows(sahyadri, konkan, narmada, malwa, godavari, kaveri, gulf, refresh=False)
+
+            # Where an export leaves the plant for: its invoice does not post without it (O545).
+            jnpt = M("core.Address").objects.create(
+                label="JNPT (Nhava Sheva)", address_type="other", line1="Jawaharlal Nehru Port, Sheva", city="Navi Mumbai",
+                state="Maharashtra", postal_code="400707")
+
+            def order(customer, when, lines, currency=None):
+                o = Order.objects.create(customer=customer, order_date=when, currency=currency or inr,
+                                         port_address=jnpt if customer == gulf else None)
+                for it, qty, price in lines:
+                    line = OrderLine.objects.create(
+                        order=o, item=it, uom=it.uom, quantity=D(qty), unit_price=D(price), warehouse=plant,
+                        revenue_account=export_sales if customer == gulf else sales_sacks,
+                        delivery_date=when + datetime.timedelta(days=7))
+                    line.taxes.set(gst18)
+                o.confirm()
+                return o
+
+            def sell(customer, when, lines, paid=None, currency=None):
+                o = order(customer, when, lines, currency)
+                shipped = min(when + datetime.timedelta(days=3), TODAY)
+                delivery = Delivery.objects.create(sales_order=o, delivery_date=shipped)
+                for line in o.lines.all():
+                    DeliveryLine.objects.create(delivery=delivery, order_line=line, warehouse=plant,
+                                                quantity_shipped=line.quantity)
+                delivery.post()
+                invoice = o.create_invoice(ar, invoice_date=shipped)
+                invoice.post()
+                invoices.append(invoice)
+                received = min(invoice.invoice_date + datetime.timedelta(days=28), TODAY)
+                if paid and received < TODAY:
+                    amount = (invoice.total() * D(paid)).quantize(D("0.01"))
+                    payment = Payment.objects.create(
+                        party=customer, direction="receipt", amount=amount, payment_date=received,
+                        currency=currency or inr, bank_account=bank, counterpart_account=ar,
+                        reference=f"NEFT {customer.code[-4:]}{invoice.pk:05d}")
+                    payment.post()
+                    Allocation.objects.create(invoice=invoice, payment=payment, amount=amount, date=received)
+                return invoice
+
+            sell(sahyadri, on(2026, 7, 6), [(cement, "180000", "9.80")], paid="1")
+            sell(godavari, on(2026, 7, 9), [(fert, "75000", "14.50")], paid="1")
+            sell(konkan, on(2026, 7, 14), [(rice, "36000", "11.20")], paid="1")
+            short = sell(narmada, on(2026, 7, 21), [(cement, "45000", "9.60"), (rice, "15000", "11.00")], paid="1")
+            sell(sahyadri, on(2026, 8, 3), [(cement, "165000", "9.80")], paid="1")
+            sell(kaveri, on(2026, 8, 6), [(fert, "30000", "14.20"), (rice, "18000", "11.20")], paid="1")
+            sell(gulf, on(2026, 8, 10), [(fert, "90000", "0.19")], paid="1", currency=usd)
+            sell(malwa, on(2026, 8, 18), [(rice, "24000", "11.40")], paid="0.5")
+            sell(godavari, on(2026, 8, 25), [(fert, "60000", "14.50")], paid="1")
+            sell(sahyadri, on(2026, 9, 2), [(cement, "150000", "9.90")], paid="1")
+            sell(narmada, on(2026, 9, 8), [(cement, "54000", "9.60")])
+            sell(konkan, on(2026, 9, 15), [(rice, "27000", "11.20")], paid="1")
+            sell(kaveri, on(2026, 9, 22), [(fert, "36000", "14.20")])
+            sell(sahyadri, on(2026, 9, 28), [(cement, "135000", "9.90")])
+            sell(malwa, on(2026, 10, 1), [(rice, "18000", "11.40")])
+            # O416: one export left open, so the aging carries a dollar invoice at the rate it was booked at and
+            # still foots to the receivable. Paid, every foreign figure is gone by the time anyone reads one.
+            sell(gulf, on(2026, 10, 6), [(fert, "6000", "0.19")], currency=usd)
+            short.create_credit_note(quantities={short.lines.first(): D("2400")}, memo="2,400 sacks short-stitched, credited")
+            # Open orders: to ship this week, two of them drafted from the godown's bins.
+            open_cement = order(sahyadri, day(-2), [(cement, "120000", "9.90")])
+            order(godavari, day(-1), [(fert, "54000", "14.50")])
+            open_rice = order(konkan, TODAY, [(rice, "45000", "11.20")])
+            for o, qty in ((open_cement, "120000"), (open_rice, "45000")):
+                draft = Delivery.objects.create(sales_order=o, delivery_date=TODAY)
+                DeliveryLine.objects.create(delivery=draft, order_line=o.lines.first(), warehouse=godown, quantity_shipped=D(qty))
+            unconfirmed = Order.objects.create(customer=narmada, order_date=TODAY, currency=inr)
+            OrderLine.objects.create(order=unconfirmed, item=cement, uom=nos, quantity=D("60000"), unit_price=D("9.60"),
+                                     revenue_account=sales_sacks, warehouse=plant, delivery_date=day(14)).taxes.set(gst18)
+
+        with step("Quotations"):
+            for customer, when, it, qty, price in ((kaveri, day(-6), fert, "45000", "14.20"),
+                                                   (narmada, day(-3), cement, "90000", "9.55"),
+                                                   (gulf, day(-1), fert, "120000", "0.185")):
+                quote = M("sales.Quotation").objects.create(customer=customer, quotation_date=when,
+                                                            valid_until=when + datetime.timedelta(days=15),
+                                                            currency=usd if customer == gulf else inr)
+                M("sales.QuotationLine").objects.create(
+                    quotation=quote, item=it, uom=it.uom, quantity=D(qty), unit_price=D(price),
+                    revenue_account=export_sales if customer == gulf else sales_sacks).taxes.set(gst18)
+
+        with step("The CRM: a campaign, leads, opportunities and calls"):
+            Lead, Opportunity, Activity = M("sales.Lead"), M("sales.Opportunity"), M("sales.Activity")
+            expo = M("sales.Campaign").objects.create(code="AGRI26", name="Agri packaging expo, Nagpur",
+                                                      channel="exhibition", starts_on=on(2026, 9, 12),
+                                                      ends_on=on(2026, 9, 14), budget=D("180000"))
+            leads = [Lead.objects.create(company_name=company, contact_name=contact, phone=phone, email=email, city=city,
+                                         source=source, interest=interest, owner=owner.party if owner else None,
+                                         campaign=campaign)
+                     for company, contact, phone, email, city, source, interest, owner, campaign in (
+                         ("Vidarbha Rice Exports", "Sanjay Wankhede", "98230 41122", "sanjay@vidarbharice.example", "Nagpur",
+                          "exhibition", "25 kg BOPP rice bags, 40,000 a month", imran, expo),
+                         ("Satpura Pulses", "Neha Agrawal", "98260 77310", "", "Jabalpur", "exhibition",
+                          "50 kg plain sacks for dal", imran, expo),
+                         ("Coastal Salt Works", "Joseph Fernandes", "", "joseph@coastalsalt.example", "Thoothukudi", "web",
+                          "Laminated 25 kg salt bags", priya, None),
+                         ("Sangli Turmeric Traders", "", "97300 11245", "", "Sangli", "phone", "", None, None),
+                         ("Bharat Cement Kurnool", "Ravi Teja", "99490 55678", "procure@bharatcementknl.example", "Kurnool",
+                          "referral", "Cement sacks, a lakh a month, valve type", priya, None),
+                         ("Shree Ganesh Feeds", "Amol Kadam", "98500 33421", "amol@ganeshfeeds.example", "Kolhapur", "walk_in",
+                          "Feed bags with liner", imran, None))]
+            leads[0].status = "working"
+            leads[0].save()
+            for lead, kind, summary, done in ((leads[0], "visit", "Visited the stall; sample bags sent", on(2026, 9, 13)),
+                                              (leads[0], "call", "Wants a quote for two sizes", on(2026, 9, 20)),
+                                              (leads[4], "visit", "Plant visit with the purchase head", on(2026, 9, 25))):
+                Activity.objects.create(kind=kind, lead=lead, owner=lead.owner, summary=summary, done_on=done)
+            Activity.objects.create(kind="call", lead=leads[1], owner=imran.party, summary="Follow up after the expo",
+                                    due_on=day(1))
+            Lead.objects.filter(pk=leads[3].pk).update(created_at=timezone.now() - datetime.timedelta(days=120))
+            leads[3].refresh_from_db()
+            leads[3].lose("Buys jute; no interest in woven PP")
+            opportunities = [Opportunity.objects.create(customer=customer, title=title, owner=owner.party, stage=stage,
+                                                        value=D(value), expected_on=expected)
+                             for customer, title, owner, stage, value, expected in (
+                                 (sahyadri, "Valve sacks for the new Satara grinding unit", imran, "qualified", "4200000", day(40)),
+                                 (godavari, "Rabi season: 1.5 lakh fertiliser sacks", priya, "quoted", "2175000", day(20)),
+                                 (narmada, "Laminated sugar bags trial", rohit, "new", "650000", day(60)),
+                                 (kaveri, "Feed bags with liner, annual contract", priya, "qualified", "1800000", day(35)),
+                                 (gulf, "FIBC liners, export trial", priya, "new", "1200000", day(75)),
+                                 (konkan, "Mango pulp carton liners", imran, "quoted", "320000", day(10)))]
+            Opportunity.objects.create(customer=malwa, title="Seed bags, kharif repeat", owner=imran.party,
+                                       value=D("380000"), stage="quoted").win(on_date=on(2026, 9, 30))
+            Opportunity.objects.create(customer=narmada, title="Jumbo bags", owner=rohit.party,
+                                       value=D("900000")).lose("Price: a Gujarat mill quoted 6% lower", on_date=on(2026, 9, 18))
+            Activity.objects.create(kind="call", opportunity=opportunities[1], owner=priya.party,
+                                    summary="Confirm print artwork for the rabi bags", due_on=day(2))
+            Activity.objects.create(kind="visit", opportunity=opportunities[0], owner=imran.party,
+                                    summary="Sample trial at Satara", due_on=day(5))
+
+        # ------------------------------------------------------ purchasing
+        with step("Purchase orders, goods in, bills and money paid"):
+            PO, POLine = M("purchasing.PurchaseOrder"), M("purchasing.PurchaseOrderLine")
+
+            billed = []
+
+            def buy(vendor, when, lines, receive=True, bill=True, pay=False, part=None):
+                po = PO.objects.create(vendor=vendor, order_date=when, currency=inr)
+                for it, qty, price in lines:
+                    POLine.objects.create(order=po, item=it, uom=it.uom, quantity=D(qty), unit_price=D(price),
+                                          warehouse=plant, expected_date=when + datetime.timedelta(days=7)).taxes.set(gst18)
+                po.confirm()
+                if not receive:
+                    return
+                receipt = po.create_receipt(receipt_date=min(when + datetime.timedelta(days=5), TODAY), warehouse=plant)
+                if part:
+                    for row in receipt.lines.all():
+                        row.quantity_received = (row.quantity_received * D(part)).quantize(D("1"))
+                        row.save()
+                receipt.post()
+                if not bill:
+                    return
+                b = po.create_bill(ap, bill_date=min(when + datetime.timedelta(days=6), TODAY),
+                                   reference=f"{vendor.code[-4:]}/{when:%y%m}/{po.pk:03d}")
+                b.post()
+                billed.append(b)
+                paid_on = b.bill_date + datetime.timedelta(days=25)
+                if pay and paid_on < TODAY:
+                    payment = Payment.objects.create(party=vendor, direction="disbursement", amount=b.total(),
+                                                     payment_date=paid_on, currency=inr, bank_account=bank,
+                                                     counterpart_account=ap, reference=f"RTGS {po.pk:04d}")
+                    payment.post()
+                    M("purchasing.BillPayment").objects.create(bill=b, payment=payment, amount=b.total(),
+                                                               date=paid_on)
+
+            buy(granule, on(2026, 7, 3), [(virgin, "15000", "112")], pay=True)
+            buy(western, on(2026, 7, 8), [(filler, "4000", "38"), (uv, "150", "310")], pay=True)
+            buy(threads, on(2026, 7, 15), [(thread, "250", "260")], pay=True)
+            buy(granule, on(2026, 8, 4), [(virgin, "16000", "113.50")], pay=True)
+            buy(inks, on(2026, 8, 11), [(ink, "200", "420")], pay=True)
+            buy(liner, on(2026, 8, 19), [(liner_film, "2500", "125")], pay=True)
+            buy(granule, on(2026, 9, 3), [(virgin, "18000", "115")])
+            buy(western, on(2026, 9, 10), [(filler, "5000", "38.50")])
+            buy(spares, on(2026, 9, 16), [(bearing, "24", "240"), (heater, "4", "1850")])
+            buy(granule, on(2026, 9, 29), [(virgin, "12000", "116")], bill=False, part="0.5")
+            buy(threads, day(-3), [(thread, "300", "262")], receive=False)
+            buy(liner, day(-1), [(liner_film, "3000", "124")], receive=False)
+
+        with step("Polymer imported through customs"):
+            # L21: a container of polymer from overseas, received and billed in dollars; its bill of entry is
+            # the accountant's to enter from the BE customs gave. The duty is owed to the customs house.
+            acc("2460", "Customs duty payable", "liability")
+            acc("5160", "Customs duty", "expense")
+            gulf_polymers = party("V-GULFP", "Gulf Polymers FZE", "vendor", "Jebel Ali", "", None, net30,
+                                  ("Imran", "Sheikh", "Sales"), "sales@gulfpolymers.example", currency=usd,
+                                  country="AE", gst_registration="overseas")
+            party("V-CUSTOMS", "Commissioner of Customs (Port), Kolkata", "vendor", "Kolkata", "700001", None,
+                  net15, ("Duty", "Desk", "ICEGATE"), "icegate@customs.example", state=STATES["19"])
+            imported = PO.objects.create(vendor=gulf_polymers, order_date=day(-30), currency=usd)
+            for it, qty, price in ((virgin, "25000", "1.10"), (filler, "18000", "1.25")):
+                POLine.objects.create(order=imported, item=it, uom=it.uom, quantity=D(qty), unit_price=D(price),
+                                      warehouse=plant)
+            imported.confirm()
+            landed = imported.create_receipt(receipt_date=day(-12), warehouse=plant)
+            landed.post()
+            import_bill = imported.create_bill(ap, bill_date=day(-12), reference="GPF/26/0912")
+            import_bill.post()
+            # O613: entered from the BE customs gave, against the receipt and bill it clears, and left for the
+            # accountant to check against the paper and post: posting raises the duty bill to the customs house.
+            Account = M("accounting.Account")
+            entry = M("purchasing.BillOfEntry").objects.create(
+                be_number="4418210", be_date=day(-13), port_code="INCCU1", currency=usd, customs_rate=D("84.1000"),
+                freight=D("1150.00"), insurance=D("52.00"), customs_party=M("core.Party").objects.get(code="V-CUSTOMS"),
+                payable_account=Account.objects.get(code="2460"), duty_account=Account.objects.get(code="5160"),
+                igst_account=igst_in)
+            entry.clear_receipt(landed, import_bill)
+
+        with step("The container paid by telegraphic transfer"):
+            # Its own section, as the office pays in its own request: posted in the transaction that received the
+            # container, the bank was shared after the stock rows, against apps.core.lock_order (PostgreSQL only).
+            # Paid by telegraphic transfer in dollars, as the supplier's terms ask.
+            remitted = Payment.objects.create(party=gulf_polymers, direction="disbursement", amount=import_bill.total(),
+                                              payment_date=day(-10), currency=usd, bank_account=bank,
+                                              counterpart_account=ap, reference="TT 0912")
+            remitted.post()
+            M("purchasing.BillPayment").objects.create(bill=import_bill, payment=remitted, amount=import_bill.total(),
+                                                       date=day(-10))
+
+        with step("The next container from the Gulf"):
+            # O416: the next container, landed and billed, and not yet remitted: the payable holds it at the rate
+            # its bill was booked at, and the aging has to say the same in rupees.
+            following = PO.objects.create(vendor=gulf_polymers, order_date=day(-15), currency=usd)
+            POLine.objects.create(order=following, item=filler, uom=filler.uom, quantity=D("16000"), unit_price=D("1.25"),
+                                  warehouse=plant)
+            following.confirm()
+            following.create_receipt(receipt_date=day(-4), warehouse=plant).post()
+            following.create_bill(ap, bill_date=day(-4), reference="GPF/26/0951").post()
+
+        with step("Polymer bought on a circular"):
+            # Its own section, as each receipt is its own request: received in the transaction that landed the
+            # filler, the raffia's shelf was taken after the filler's, against key order (apps.core.lock_order).
+            # L16: the maker's circular for raffia, a contract with Granule House at 1.50 off it, and an order
+            # priced there, received in three lots and billed. A revision back-dated is the Purchase Manager's.
+            Index, Value = M("sales.PriceIndex"), M("sales.PriceIndexValue")
+            circular = Index.objects.create(code="RIL-H030SG", name="Reliance raffia H030SG circular (Kolkata)")
+            Value.objects.create(index=circular, valid_from=day(-45), value=D("100.0000"), published_on=day(-45))
+            contract = M("purchasing.PurchaseRateContract").objects.create(
+                vendor=granule, index=circular, discount_per_kg=D("1.50"), valid_from=day(-45), valid_to=day(60),
+                note="Raffia at the circular less 1.50 a kg")
+            M("purchasing.RateContractLine").objects.create(contract=contract, item=virgin, quantity_kg=D("60000"))
+            on_circular = PO.objects.create(vendor=granule, order_date=day(-28), currency=inr)
+            # No price typed: the contract prices it, the circular on the order's day less the discount.
+            POLine.objects.create(order=on_circular, item=virgin, uom=kg, quantity=D("18000"), warehouse=plant,
+                                  expected_date=day(-21)).taxes.set(gst18)
+            on_circular.confirm()
+            for when, qty in ((day(-26), "6000"), (day(-22), "7000"), (day(-18), "5000")):
+                lot = on_circular.create_receipt(receipt_date=when, warehouse=plant)
+                for row in lot.lines.all():
+                    row.quantity_received = D(qty)
+                    row.save()
+                lot.post()
+            on_circular.create_bill(ap, bill_date=day(-17), reference="GRAN/2610/118").post()
+
+        with step("Requisitions, and one out for quotes with three answers"):
+            Requisition, RequisitionLine = M("purchasing.PurchaseRequisition"), M("purchasing.PurchaseRequisitionLine")
+
+            def requisition(when, needed, rows, why, approve=True):
+                r = Requisition.objects.create(requested_by=sunita.party, request_date=when, needed_by=needed, justification=why)
+                for it, qty, estimate, vendor in rows:
+                    RequisitionLine.objects.create(requisition=r, item=it, uom=it.uom, quantity=D(qty),
+                                                   estimated_price=D(estimate), suggested_vendor=vendor)
+                r.submit()
+                if approve:
+                    r.approve(by=admin, note="Within the month's budget")
+                return r
+
+            asked = requisition(day(-8), day(10), [(uv, "200", "305", western), (ink, "150", "415", inks)],
+                                "UV for the export order; ink for the rabi print run")
+            rfq = asked.create_rfq(response_due=day(3))
+            M("purchasing.RfqInvitation").objects.create(rfq=rfq, vendor=granule)
+            rfq.issue()
+            for vendor, prices in ((western, {"UV-MB": "298"}), (inks, {"INK-BLUE": "409"}),
+                                   (granule, {"UV-MB": "312", "INK-BLUE": "430"})):
+                invitation = rfq.invited.get(vendor=vendor)
+                for line in rfq.lines.all():
+                    if line.item.sku in prices:
+                        invitation.quote(line, D(prices[line.item.sku]), lead_time_days=6)
+            requisition(day(-4), day(14), [(bearing, "30", "240", spares), (heater, "6", "1850", None)],
+                        "Loom shed spares for the quarter")
+            requisition(day(-1), day(20), [(liner_film, "4000", "123", liner)], "Liner for 60,000 fertiliser sacks",
+                        approve=False)
+
+        # ------------------------------------------------------ production
+        with step("Work centres, machines, routings, bills of materials, shifts and reasons"):
+            WorkCentre, Machine = M("manufacturing.WorkCentre"), M("manufacturing.Machine")
+            ext = WorkCentre.objects.create(code="EXT", name="Tape extrusion", capacity_per_hour=D("450"),
+                                            capacity_uom=kg, available_hours_per_day=D("24"))
+            looms = WorkCentre.objects.create(code="LOOM", name="Circular looms", capacity_per_hour=D("360"),
+                                              capacity_uom=kg, available_hours_per_day=D("24"))
+            press = WorkCentre.objects.create(code="PRINT", name="Flexo printing", capacity_per_hour=D("6000"),
+                                              capacity_uom=nos, available_hours_per_day=D("16"))
+            conv = WorkCentre.objects.create(code="CONV", name="Cutting and stitching", capacity_per_hour=D("5000"),
+                                             capacity_uom=nos, available_hours_per_day=D("16"))
+            machines = {"EXT-1": Machine.objects.create(work_centre=ext, code="EXT-1", name="Tape line, 120 mm"),
+                        "PRN-1": Machine.objects.create(work_centre=press, code="PRN-1", name="4-colour flexo press")}
+            for n in range(1, 7):
+                machines[f"LOOM-{n:02d}"] = Machine.objects.create(work_centre=looms, code=f"LOOM-{n:02d}",
+                                                                   name=f"6-shuttle circular loom {n}")
+            for n in (1, 2):
+                machines[f"STITCH-{n}"] = Machine.objects.create(work_centre=conv, code=f"STITCH-{n}",
+                                                                 name=f"Cut-and-stitch line {n}")
+
+            # The floor's terminals (O405): a station at the loom exit, the tape line and the stitching lines, a
+            # shared tablet login that can do nothing but run them, and a PIN for each operator, printed once.
+            Station = M("manufacturing.LoomStation")
+            for code, name, kind, served in (
+                    ("LOOM-EXIT", "Loom shed exit scale", "loom_exit", [f"LOOM-{n:02d}" for n in range(1, 7)]),
+                    ("TAPE-1", "Tape line take-up", "extrusion", ["EXT-1"]),
+                    ("CONV-1", "Cutting and stitching tables", "conversion", ["STITCH-1", "STITCH-2"])):
+                station = Station.objects.create(code=code, name=name, kind=kind, warehouse=plant,
+                                                 scale_code=f"SC-{code}", printer_code=f"PR-{code}")
+                station.machines.set([machines[m] for m in served])
+                station.supervisors.set([suresh])
+            if not User.objects.filter(username="floor").exists():
+                User.objects.create_user("floor", password=password, first_name="Shop-floor",
+                                         last_name="tablet").groups.add(Group.objects.get(name="Station"))
+            self.pins = {employee.party.name: employee.issue_pin()
+                         for employee in sorted((suresh, mahesh, lakshmi, ganesh), key=lambda e: e.pk)}  # key order
+
+            def routing(code, name, operations):
+                r = M("manufacturing.Routing").objects.create(code=code, name=name)
+                for n, (operation, centre, setup) in enumerate(operations, start=1):
+                    M("manufacturing.RoutingOperation").objects.create(routing=r, sequence=n * 10, name=operation,
+                                                                       work_centre=centre, setup_minutes=D(setup))
+                return r
+
+            def bom(it, name, per, r, rows, byproduct=None):
+                b = M("manufacturing.BillOfMaterials").objects.create(item=it, name=name, quantity_produced=D(per),
+                                                                      uom=it.uom, routing=r)
+                for n, (component, qty, waste) in enumerate(rows, start=1):
+                    M("manufacturing.BomComponent").objects.create(bom=b, item=component, quantity=D(qty), uom=component.uom,
+                                                                   waste_percent=D(waste), line_number=n)
+                if byproduct:
+                    M("manufacturing.BomByproduct").objects.create(bom=b, item=byproduct[0], quantity=D(byproduct[1]),
+                                                                   uom=byproduct[0].uom, valuation="standard")
+                return b
+
+            tape_bom = bom(tape, "Tape 900 den, 16% filler", "100", routing("R-TAPE", "Extrude tape", [("Extrude and stretch", ext, "90")]),
+                           [(virgin, "78", "3"), (filler, "16", "3"), (uv, "1", "3"), (regrind, "5", "3")], (regrind, "2.4742"))
+            fabric_bom = bom(fabric, "Fabric 60 cm, 10x10", "100", routing("R-FAB", "Weave fabric", [("Weave", looms, "30")]),
+                             [(tape, "100", "2")])
+            sack_route = routing("R-SACK", "Print, cut and stitch", [("Print", press, "45"), ("Cut and stitch", conv, "20")])
+            cement_bom = bom(cement, "Cement 50 kg, 2-colour", "1000", sack_route,
+                             [(fabric, "74", "1.5"), (thread, "1.2", "0"), (ink, "0.5", "0")])
+            fert_bom = bom(fert, "Fertiliser 50 kg with liner", "1000", sack_route,
+                           [(fabric, "92", "1.5"), (liner_film, "38", "1"), (thread, "1.4", "0"), (ink, "0.6", "0")])
+            rice_bom = bom(rice, "Rice 25 kg, 4-colour", "1000", sack_route,
+                           [(fabric, "48", "1.5"), (thread, "0.9", "0"), (ink, "0.8", "0")])
+            shifts = [M("manufacturing.Shift").objects.create(code=code, name=f"Shift {code}", starts_at=starts, hours=D("8"))
+                      for code, starts in (("A", datetime.time(6)), ("B", datetime.time(14)), ("C", datetime.time(22)))]
+            reasons = {code: M("manufacturing.DowntimeReason").objects.create(code=code, name=name, is_planned=planned)
+                       for code, name, planned in (("BRK", "Breakdown", False), ("NOMAT", "Waiting for material", False),
+                                                   ("PM", "Planned maintenance", True), ("CHG", "Size or print changeover", True))}
+            for code, name in (("EDGE", "Edge trim"), ("PRINT", "Misprint"), ("STITCH", "Stitching fault"),
+                               ("TAPE", "Tape breaks")):
+                M("manufacturing.ScrapReason").objects.create(code=code, name=name)
+
+        with step("Production runs: one closed, one weaving, one waiting, two not released, one to close"):
+            WorkOrder, Issue, IssueLine = (M("manufacturing.WorkOrder"), M("manufacturing.MaterialIssue"),
+                                           M("manufacturing.MaterialIssueLine"))
+
+            def start_run(it, b, qty, centre, start, hours, release=True):
+                w = WorkOrder.objects.create(item=it, bom=b, quantity_ordered=D(qty), uom=it.uom, warehouse=plant,
+                                             work_centre=centre, routing=b.routing, scheduled_start=stamp(start, 6),
+                                             scheduled_end=stamp(start, 6) + datetime.timedelta(hours=hours))
+                if release:
+                    w.release(on_date=min(start, TODAY))
+                return w
+
+            def issue_all(w, when):
+                document = Issue.objects.create(work_order=w, issue_date=when, warehouse=plant)
+                for n, component in enumerate(w.components.all(), start=1):
+                    IssueLine.objects.create(issue=document, item=component.item, quantity=component.quantity_required,
+                                             uom=component.uom, line_number=n)
+                document.post()
+
+            def produce(w, when, qty):
+                M("manufacturing.ProductionEntry").objects.create(
+                    work_order=w, entry_date=when, warehouse=plant, quantity_produced=D(qty), quantity_scrapped=D("0"),
+                    uom=w.uom, work_centre=w.work_centre).post()
+
+            # One transaction for the section (step), where each document posts in a request of its own
+            # in the plant: the shelves its runs move, held first in key order, so each posting after
+            # the first takes rows already held instead of reaching back for an earlier one (O182).
+            lock_positions([(it, plant) for it in (tape, fabric, rice)] + [
+                (row.item, plant) for b in (tape_bom, fabric_bom, rice_bom) for row in b.components.all()])
+            closed = start_run(tape, tape_bom, "6000", ext, on(2026, 9, 21), 16)
+            issue_all(closed, on(2026, 9, 21))
+            produce(closed, on(2026, 9, 22), "5890")
+            closed.close(on_date=on(2026, 9, 23))
+            weaving = start_run(fabric, fabric_bom, "4000", looms, day(-2), 12)
+            issue_all(weaving, day(-2))
+            produce(weaving, day(-1), "1650")
+            produce(weaving, TODAY, "820")
+            start_run(cement, cement_bom, "40000", press, day(1), 10)
+            start_run(fert, fert_bom, "20000", press, day(4), 8, release=False)
+            start_run(rice, rice_bom, "15000", press, day(6), 6, release=False)
+            done = start_run(rice, rice_bom, "10000", conv, day(-4), 6)
+            issue_all(done, day(-4))
+            produce(done, day(-3), "10000")
+
+        with step("A change order on the cement sack's bill of materials"):
+            raise_change(cement_bom, day(14), "Thread to 1,000 denier polyester after the seam complaint", by=admin)
+
+        with step("Specifications: a tape, a fabric, a film and an atta sack, their recipes built from them"):
+            # O405: the plant writes what it makes as specifications and the recipes and inspection plans follow
+            # from them. On items of their own, so the hand-written recipes the runs above used stay as they are.
+            # The tape is kept by lot, so its specification writes a plan, and two lots of it are inspected.
+            Tape, Fabric, Bag = (M("manufacturing.TapeSpecification"), M("manufacturing.FabricSpecification"),
+                                 M("manufacturing.BagSpecification"))
+            tape_1000 = item("TAPE-1000", "PP tape, 1,000 denier", kg, "130", hsn="54062000")
+            tape_1000.tracking = "lot"
+            tape_1000.save()
+            fabric_50 = item("FAB-50-87", "Circular woven fabric, 50 cm, 87.5 GSM", kg, "141", hsn="54074200")
+            atta = item("SACK-ATTA25", "Atta flour sack 25 kg, 2-colour print", nos, "6.40", "8.90", "63053300")
+            # A roll off the loom and a bundle off the stitching line are each a batch (O605), and kept so from the
+            # start: tracking is fixed once stock has moved.
+            for by_batch in (fabric_50, atta):
+                by_batch.tracking = "lot"
+                by_batch.save()
+            ldpe = item("LDPE-GRAN", "LDPE granule, film grade", kg, "118", hsn="39011010")
+            film_40 = item("FILM-LF40", "LDPE lay-flat film, 40 micron", kg, "132", hsn="39201019")
+            t1000 = Tape.objects.create(
+                code="T-1000", tape_item=tape_1000, denier=D("1000"), tape_width_mm=D("2.5"), virgin_granule=virgin,
+                regrind_item=regrind, regrind_percent=D("5"), filler_item=filler, filler_percent=D("16"),
+                masterbatch_item=uv, masterbatch_percent=D("1"), extrusion_waste_percent=D("3"),
+                waste_recovered_percent=D("80"), routing=tape_bom.routing)
+            f50 = Fabric.objects.create(
+                code="F-50", fabric_item=fabric_50, warp_tape=t1000, ends_per_inch=D("10"), picks_per_inch=D("10"),
+                lay_flat_width_cm=D("50"), weave="tubular", shrink_percent=D("0"), target_gsm=D("87.5"),
+                gsm_tolerance_percent=D("5"), weaving_waste_percent=D("2"), waste_recovered_percent=D("85"),
+                loom_waste_item=regrind, routing=fabric_bom.routing)
+            Bag.objects.create(
+                code="B-ATTA25", bag_item=atta, fabric=f50, bag_width_cm=D("50"), bag_length_cm=D("75"),
+                bottom_hem_cm=D("3"), top_hem_cm=D("2"), thread_item=thread, thread_grams_per_bag=D("1.0"),
+                print_colours=2, ink_item=ink, conversion_waste_percent=D("2.5"), waste_recovered_percent=D("70"),
+                cutting_waste_item=regrind, routing=sack_route)
+            M("manufacturing.FilmSpecification").objects.create(
+                code="LF-40", film_item=film_40, micron=D("40"), lay_flat_width_cm=D("48"), base_polymer=ldpe)
+
+            # A run of the tape on its specification's recipe, made in two lots, each measured for denier.
+            t1000.refresh_from_db()
+            spec_bom = t1000.bom
+            lock_positions([(tape_1000, plant)] + [(row.item, plant) for row in spec_bom.components.all()])
+            spec_run = start_run(tape_1000, spec_bom, "2000", ext, day(-3), 6)
+            issue_all(spec_run, day(-3))
+            plan = t1000.inspection_plan
+            for code, qty, readings in (("TP-1000-01", "980", ("992", "1004", "1011")),
+                                        ("TP-1000-02", "960", ("1018", "1009", "997"))):
+                lot = M("inventory.Lot").objects.create(item=tape_1000, code=code)
+                M("manufacturing.ProductionEntry").objects.create(
+                    work_order=spec_run, entry_date=day(-2), warehouse=plant, quantity_produced=D(qty),
+                    quantity_scrapped=D("0"), uom=tape_1000.uom, work_centre=ext, lot=lot).post()
+                inspection = M("quality.Inspection").objects.create(lot=lot, plan=plan, inspected_on=day(-2))
+                for line in plan.lines.order_by("line_number"):
+                    for number, value in enumerate(readings[:line.sample_size], start=1):
+                        M("quality.Reading").objects.create(inspection=inspection, plan_line=line, value=D(value),
+                                                            sample_reference=f"S{number}")
+                inspection.post(by=meena.user)
+
+        with step("The floor: rolls weighed, bundles counted and baled, steps and scrap, time booked"):
+            # O605: the floor's screens had nothing on the demo. The 50 cm fabric is woven on LOOM-05 from the
+            # inspected tape and its rolls weighed at the loom exit, one typed while the scale was being calibrated
+            # and one declaring metres its weight does not support. Two are measured for GSM and cut into atta
+            # sacks on STITCH-1: the press counts what it printed, the stitching tables count and weigh bundles and
+            # book their scrap, and two bundles are pressed into a bale. The crews book their hours.
+            from apps.manufacturing.bales import pack
+            from apps.manufacturing.conversion import record_bags
+            from apps.manufacturing.scrap import report as report_step
+            from apps.manufacturing.station import record_roll
+            from apps.manufacturing.station_floor import book_scrap
+
+            Station, Booking, Lot = M("manufacturing.LoomStation"), M("manufacturing.TimeBooking"), M("inventory.Lot")
+            loom_exit, tables = Station.objects.get(code="LOOM-EXIT"), Station.objects.get(code="CONV-1")
+            core = M("manufacturing.CoreType").objects.create(code="PC-3", name="Paper core, 3 inch", tare_kg=D("2.40"))
+            loom, stitcher, printer = machines["LOOM-05"], machines["STITCH-1"], machines["PRN-1"]
+            yesterday = day(-1)
+            f50.refresh_from_db()
+            atta_spec = Bag.objects.get(code="B-ATTA25")
+            held = [(fabric_50, plant), (atta, plant), (regrind, plant)] + [
+                (row.item, plant) for b in (f50.bom, atta_spec.bom) for row in b.components.all()]
+            lock_positions(list(dict.fromkeys(held)))
+
+            def on_its_machine(run, centre, machine):
+                """The run's step on `centre`, put on `machine`: a station finds a run by the machine it is on."""
+                put = run.operations.get(work_centre=centre)
+                put.machine = machine
+                put.save()
+                return put
+
+            def issue_from(run, when, lots):
+                """Everything the run needs; of an item in `lots`, from those batches in turn."""
+                document = Issue.objects.create(work_order=run, issue_date=when, warehouse=plant)
+                n = 0
+                for component in run.components.all():
+                    left = component.quantity_required
+                    for lot, has in lots.get(component.item_id, [(None, left)]):
+                        take = min(left, has)
+                        if take > 0:
+                            n += 1
+                            IssueLine.objects.create(issue=document, item=component.item, quantity=take,
+                                                     uom=component.uom, line_number=n, lot=lot)
+                            left -= take
+                    if left > 0:
+                        raise CommandError(f"{run} needs {left} more {component.item} than its batches hold.")
+                document.post()
+
+            weave = start_run(fabric_50, f50.bom, "600", looms, day(-2), 20)
+            on_its_machine(weave, looms, loom)
+            # O613: the tools a run names wear as it books (ProductionEntry._wear_tools): the loom's reed here, the
+            # atta design's cylinders and the cutting die on the sacks below. And what the tape line ran at.
+            Tool = M("manufacturing.Tool")
+            weave.tools.add(Tool.objects.create(code="REED-50", name="Reed, 50 cm tube", kind="reed", work_centre=looms,
+                                                life_limit=D("150000"), life_uom=kg, acquired_on=on(2026, 4, 20)))
+            M("manufacturing.TapeRunSetting").objects.create(
+                work_order=spec_run, machine=machines["EXT-1"], recorded_at=stamp(day(-3), 7), draw_ratio=D("6.20"),
+                quench_temperature_c=D("32.0"), oven_temperature_c=D("145.0"), note="As the T-1000 trial settled")
+            tape_lot = Lot.objects.get(item=tape_1000, code="TP-1000-01")
+            issue_from(weave, day(-2), {tape_1000.pk: [(tape_lot, tape_lot.on_hand_at(plant))]})
+            rolls = []
+            for hour, gross, metres, typed in ((7, "90.00", "1000", False), (8, "89.10", "995", False),
+                                               (10, "91.30", "1010", False), (11, "88.40", "1060", False),
+                                               (13, "90.50", "1005", True)):
+                rolls.append(record_roll(loom_exit, lakshmi, loom, D(gross), core, D(metres), at=stamp(yesterday, hour),
+                                         **({"source": "manual", "supervisor": suresh, "reason": "calibration"}
+                                            if typed else {})))
+            gsm = f50.inspection_plan
+            for roll, readings in ((rolls[0], ("87.2", "88.1", "87.6")), (rolls[1], ("86.9", "87.8", "88.3"))):
+                inspection = M("quality.Inspection").objects.create(lot=roll.lot, plan=gsm, inspected_on=yesterday)
+                for line in gsm.lines.order_by("line_number"):
+                    for number, value in enumerate(readings[:line.sample_size], start=1):
+                        M("quality.Reading").objects.create(inspection=inspection, plan_line=line, value=D(value),
+                                                            sample_reference=f"S{number}")
+                inspection.post(by=meena.user)
+
+            sacks = start_run(atta, atta_spec.bom, "2000", conv, yesterday, 8)
+            on_its_machine(sacks, conv, stitcher)
+            atta_design = M("manufacturing.PrintDesign").objects.create(
+                code="D-ATTA25", name="Atta 25 kg, wheat sheaf, 2-colour", customer=konkan, colours=2,
+                artwork_reference="KAF/ART/2026-07", approved_on=day(-40), approved_by=suresh.party)
+            sacks.tools.add(*[Tool.objects.create(code=f"CYL-ATTA-{n}", name=f"Atta cylinder, colour {n}",
+                                                  kind="cylinder", design=atta_design, work_centre=press,
+                                                  life_limit=D("3000000"), life_uom=nos, acquired_on=day(-35))
+                              for n in (1, 2)],
+                            Tool.objects.create(code="DIE-5080", name="Cutting die, 50 x 80 cm", kind="die",
+                                                work_centre=conv, life_limit=D("800000"), life_uom=nos,
+                                                acquired_on=on(2026, 5, 2)))
+            issue_from(sacks, yesterday, {fabric_50.pk: [(roll.lot, roll.net_weight_kg) for roll in rolls[:2]]})
+            report_step(sacks.operations.get(work_centre=press), D("1050"), on_date=yesterday, machine=printer,
+                        memo="Counted off the press")
+            weight = atta_spec.inspection_plan.lines.get(characteristic__code="BAGWT")
+            target = (weight.lower_limit + weight.upper_limit) / 2
+            sample = [str((target + D(off)).quantize(D("0.1")))
+                      for off in ("0.4", "-0.3", "0.6", "-0.2", "0.1", "-0.5", "0.3", "0", "-0.1", "0.2")]
+            bundles = [record_bags(tables, ganesh, stitcher, 500, sample, at=stamp(yesterday, hour)).inspection.lot
+                       for hour in (10, 13)]
+            book_scrap(tables, ganesh, stitcher, "STITCH", "18", at=stamp(yesterday, 11))
+            book_scrap(tables, ganesh, stitcher, "EDGE", "12", at=stamp(yesterday, 12))
+            pack(plant, ganesh, [(lot, 500) for lot in bundles], on_date=yesterday,
+                 gross_kg=(target + D("1.20")).quantize(D("0.01")))
+
+            def book(run, centre, machine, crew, when, hour, minutes, made):
+                """Hours on a step: a little over what its work centre's rate says the quantity takes."""
+                operation = run.operations.get(work_centre=centre)
+                booking = Booking.objects.create(work_order=run, operation=operation, booking_date=when,
+                                                 started_at=stamp(when, hour), machine=machine, minutes=D(minutes),
+                                                 quantity_completed=D(made))
+                booking.operators.set(crew)
+                booking.post()
+
+            book(spec_run, ext, machines["EXT-1"], [mahesh], day(-3), 6, "300", "1940")
+            book(weave, looms, loom, [lakshmi], yesterday, 6, "86", sum((roll.net_weight_kg for roll in rolls), D("0")))
+            book(sacks, press, printer, [mahesh], yesterday, 6, "13", "1050")
+            book(sacks, conv, stitcher, [ganesh], yesterday, 6, "14", "1000")
+
+        with step("Costing: this month's rates, an atta sack costed for a quote, next year's standards drafted"):
+            # O613: the rate sheet, cost sheets and standard costs answered nothing on the demo. The sales office's
+            # rates from the first of last month, an atta sack costed for 100,000 the way a quotation is, and next
+            # year's standard costs rolled up for review: drafted, not published, as publishing revalues the shelf.
+            from apps.manufacturing.quoting import cost as cost_a_sack
+
+            since = day(-30)
+            M("manufacturing.QuotePolicy").objects.create(valid_from=since, overhead_percent=D("8"),
+                                                          margin_percent=D("12"), note="As the price committee set")
+            for it, rate in ((virgin, "109"), (regrind, "60"), (filler, "104"), (uv, "305"), (thread, "260"),
+                             (ink, "415"), (ldpe, "118")):
+                M("manufacturing.MaterialRate").objects.create(item=it, rate=D(rate), valid_from=since,
+                                                               note="This month's market")
+            for stage, rate in (("tape", "14"), ("weaving", "11"), ("printing", "6"), ("cutting", "7"),
+                                ("packing", "0.05")):
+                M("manufacturing.StageRate").objects.create(stage=stage, rate=D(rate), valid_from=since)
+            cost_a_sack(atta_spec, D("100000"), on_date=TODAY, by=suresh.user)
+            april = datetime.date(TODAY.year + (1 if TODAY.month >= 4 else 0), 4, 1)  # the next financial year's
+            next_year = M("manufacturing.CostVersion").objects.create(
+                code=f"STD-{april.year}", name=f"Standards for {april.year}-{str(april.year + 1)[2:]}",
+                effective_from=april, notes="Drafted for the price committee; published in March")
+            next_year.roll_up()
+
+        with step("The floor's masters: setup families, changeovers, positions, crews, the tariff, a lane, tags"):
+            # O613: what the schedule, maintenance and energy screens read had nothing on the demo. The press's
+            # families and the minutes between them, the looms' and the extruder's critical positions with their
+            # spares, who works where on the day shift, the power tariff, the lane from the plant to the godown,
+            # the customers the office tags, and where two suppliers are paid.
+            for family_item, family in ((cement, "2C-CEMENT"), (fert, "2C-CEMENT"), (rice, "4C-FOOD"), (atta, "2C-FOOD")):
+                M("manufacturing.SetupFamily").objects.create(item=family_item, work_centre=press, family=family)
+            for start_family, end_family, minutes, purge in (
+                    ("2C-CEMENT", "4C-FOOD", "90", "6"), ("4C-FOOD", "2C-CEMENT", "60", "4"),
+                    ("2C-FOOD", "4C-FOOD", "45", "3"), ("", "", "20", "1")):
+                M("manufacturing.ChangeoverRule").objects.create(work_centre=press, from_family=start_family,
+                                                                 to_family=end_family, minutes=D(minutes),
+                                                                 purge_kg=D(purge))
+            for machine_code, code, name, spare in (("LOOM-05", "BRG-SHUTTLE", "Shuttle wheel bearing", bearing),
+                                                    ("LOOM-03", "BRG-SHUTTLE", "Shuttle wheel bearing", bearing),
+                                                    ("EXT-1", "HEATER-Z3", "Barrel heater, zone 3", heater)):
+                M("manufacturing.MachinePosition").objects.create(machine=machines[machine_code], code=code, name=name,
+                                                                  spare_item=spare, is_critical=True)
+            for employee, centre in ((mahesh, ext), (lakshmi, looms), (ganesh, conv)):
+                M("manufacturing.CrewAssignment").objects.create(employee=employee, work_centre=centre,
+                                                                 shift=shifts[0], valid_from=day(-30))
+            M("manufacturing.EnergyTariff").objects.create(valid_from=on(2026, 4, 1), rate=D("8.6500"),
+                                                           note="HT industrial, with the fixed share")
+            M("planning.TransferRoute").objects.create(from_warehouse=plant, to_warehouse=godown, lead_days=1,
+                                                       notes="Across the yard, the evening forklift run")
+            key_account, exporter = (M("core.PartyTag").objects.create(name=name, description=why) for name, why in (
+                ("Key account", "Over a crore a year; the owner calls them himself"),
+                ("Export", "Ships under the LUT; documents in dollars")))
+            sahyadri.tags.add(key_account)
+            godavari.tags.add(key_account)
+            gulf.tags.add(exporter)
+            for vendor, bank_name, number, ifsc in (
+                    (granule, "ICICI Bank, Vadodara Alkapuri", "000405012345", "ICIC0000004"),
+                    (western, "State Bank of India, Thane West", "38291045672", "SBIN0000575")):
+                M("core.PartyBankAccount").objects.create(party=vendor, account_name=vendor.name, bank_name=bank_name,
+                                                          account_number=number, ifsc=ifsc, currency=inr, is_primary=True)
+
+        with step("Stoppages"):
+            for code, when, reason, minutes, shift, note in (
+                    ("LOOM-03", day(-6), "BRK", 95, 0, "Shuttle wheel bearing seized"),
+                    ("EXT-1", day(-5), "CHG", 60, 1, "Changed to the 900 denier die"),
+                    ("LOOM-05", day(-3), "NOMAT", 40, 2, "Tape bobbins late from extrusion"),
+                    ("PRN-1", day(-2), "CHG", 75, 0, "Cylinder change to the Sahyadri artwork")):
+                machine = machines[code]
+                M("manufacturing.Downtime").objects.create(work_centre=machine.work_centre, machine=machine, shift_date=when,
+                                                           reason=reasons[reason], minutes=minutes, shift=shifts[shift],
+                                                           notes=note)
+
+        with step("Energy: meters on the extruder and the looms, a week of readings"):
+            # O405: what the extruder and the loom shed draw, read at the end of each day. The extruder's meter
+            # reads kWh straight; the loom shed's sits behind current transformers, its dial a twentieth of it.
+            Meter, Reading = M("manufacturing.EnergyMeter"), M("manufacturing.MeterReading")
+            for code, where, multiplier, start, per_day in (
+                    ("EM-EXT1", {"machine": machines["EXT-1"]}, "1", "184220", "2410"),
+                    ("EM-LOOMS", {"work_centre": looms}, "20", "61870", "92.5")):
+                meter = Meter.objects.create(code=code, multiplier=D(multiplier), installed_on=day(-90),
+                                             initial_reading=D(start), **where)
+                for n in range(7):
+                    last = n == 6
+                    Reading.objects.create(meter=meter, shift_date=day(n - 7), read_by=vikas,
+                                           reading=D(start) + D(per_day) * (n + 1),
+                                           max_demand_kva=D("142") if last else None,
+                                           power_factor=D("0.94") if last else None)
+
+        with step("Quality: alerts, a complaint, corrective actions, instruments"):
+            Alert, Action = M("manufacturing.QualityAlert"), M("manufacturing.CorrectiveAction")
+            breaks = Alert.objects.create(raised_on=day(-1), raised_by=meena, title="Tape breaks above norm on LOOM-03",
+                                          description="Weft breaks 14 an hour against a norm of 5; fabric GSM drifting low.",
+                                          severity="high", work_centre=looms, machine=machines["LOOM-03"], item=fabric,
+                                          work_order=weaving, quantity_affected=D("180"), owner=suresh)
+            Action.objects.create(alert=breaks, kind="containment", description="Hold LOOM-03 fabric for a full GSM check",
+                                  owner=meena, due_on=day(1))
+            Action.objects.create(alert=breaks, kind="corrective", description="Replace heald wires and shuttle wheels",
+                                  owner=vikas, due_on=day(3))
+            Alert.objects.create(raised_on=TODAY, raised_by=ganesh, title="Print smudge on cement sacks", severity="medium",
+                                 description="Blue smudging on the back panel after stitching.", work_centre=press,
+                                 machine=machines["PRN-1"], item=cement, owner=meena)
+            Alert.objects.create(raised_on=day(-12), raised_by=meena, title="Bag weight 4 g under on STITCH-2", severity="low",
+                                 work_centre=conv, machine=machines["STITCH-2"], item=cement, owner=suresh).close(
+                "Cutter set 6 mm short after a blade change; re-set and locked.", by=suresh, on_date=day(-10))
+            complaint = M("manufacturing.Complaint").objects.create(
+                customer=sahyadri, received_on=day(-9), category="seam", quantity_affected=D("650"),
+                description="Bags opening at the bottom seam during filling, about 1 in 400.")
+            Action.objects.create(complaint=complaint, kind="corrective", owner=suresh, due_on=day(14),
+                                  description="Move to 1,000 denier thread; the change order is raised")
+            Action.objects.create(complaint=complaint, kind="preventive", owner=meena, due_on=day(5), done_on=day(-2),
+                                  description="Seam pull test every two hours on both lines",
+                                  done_note="Added to the shift checklist")
+            for code, name, interval, last, result in (("SCALE-01", "Platform scale, 300 kg", 180, day(-150), "pass"),
+                                                       ("TENS-01", "Tensile tester, 500 N", 365, day(-30), "adjusted"),
+                                                       ("GSM-01", "GSM cutter and balance", 90, day(-95), "pass")):
+                instrument = M("quality.Instrument").objects.create(code=code, name=name, interval_days=interval,
+                                                                    location="QA lab")
+                calibration = M("quality.Calibration").objects.create(
+                    instrument=instrument, calibrated_on=last, result=result, performed_by="Precision Cal Labs, Pune",
+                    certificate_reference=f"PCL/{last:%y%m}/{code}")
+                calibration.post()
+
+        with step("Polymer that comes with the supplier's certificate"):
+            # L28: a copolymer bought by the lot, each lot with Granule House's certificate of analysis, read against
+            # the plan in force the day it came in. PP-2610-A's is within and it may go; PP-2610-B's melt flow is
+            # 4.1 against 2.8 to 3.6, and it is held until the Quality Manager takes it by concession. The lorry was
+            # weighed in full and out empty (O613, the gate's own clock): 10,070 kg net against the challan's 10,140,
+            # 70 kg short beyond the half per cent allowed, claimed in the next step.
+            g10 = UOM.objects.create(code="g10min", name="Grammes per 10 minutes", category="other")
+            pct = UOM.objects.create(code="pct", name="Per cent", category="other")
+            copo = item("PP-COPO", "PP copolymer granule, for coating", kg, "124", hsn="39023000")
+            copo.tracking = "lot"
+            copo.save()
+            mfi = M("quality.Characteristic").objects.create(code="MFI", name="Melt flow index (230 C, 2.16 kg)",
+                                                            uom=g10)
+            ash = M("quality.Characteristic").objects.create(code="ASH", name="Ash content", uom=pct,
+                                                            decimal_places=3)
+            coa_plan = M("quality.InspectionPlan").objects.create(
+                item=copo, name="Copolymer: supplier's certificate", is_mandatory=False, certificate_required=True)
+            M("quality.PlanLine").objects.create(plan=coa_plan, characteristic=mfi, target=D("3.2"),
+                                                 lower_limit=D("2.8"), upper_limit=D("3.6"), line_number=1)
+            M("quality.PlanLine").objects.create(plan=coa_plan, characteristic=ash, upper_limit=D("0.050"),
+                                                 line_number=2)
+            copo_order = PO.objects.create(vendor=granule, order_date=day(-12), currency=inr)
+            for _ in range(2):
+                POLine.objects.create(order=copo_order, item=copo, uom=kg, quantity=D("5000"), unit_price=D("124"),
+                                      warehouse=plant, expected_date=day(-6)).taxes.set(gst18)
+            copo_order.confirm()
+            lorry = M("inventory.GateVisit").objects.create(
+                vehicle_number="MH12 QT 4471", driver_name="Baban Kale", driver_mobile="98220 11457",
+                transporter_name="Shree Ganesh Roadlines", purpose="inward_order", reference=copo_order.number,
+                carried="PP copolymer granule, bagged")
+            weighing = lorry.start_weighing(scale_code="WB-1")
+            for side, weight in (("gross", "19450.000"), ("tare", "9380.000")):  # not `kg`: the unit is named so
+                weighing.record(side, "typed", weight, reason="calibration", by=sunita.user)
+            lorry.check_out()
+            copo_receipt = copo_order.create_receipt(receipt_date=day(-6), warehouse=plant)
+            copo_receipt.weighing, copo_receipt.documented_weight_kg = weighing, D("10140.000")
+            copo_receipt.save()
+            copo_lots = []
+            for row, code in zip(copo_receipt.lines.order_by("pk"), ("PP-2610-A", "PP-2610-B")):
+                row.lot = M("inventory.Lot").objects.create(item=copo, code=code, supplier_reference=f"GH/{code[-6:]}")
+                row.save()
+                copo_lots.append(row.lot)
+            copo_receipt.post()
+            for lot, number, values in ((copo_lots[0], "GH/QC/26/4471", ("3.2", "0.020")),
+                                        (copo_lots[1], "GH/QC/26/4472", ("4.1", "0.020"))):
+                coa = M("quality.SupplierCertificate").objects.create(
+                    lot=lot, supplier_number=number, issued_on=day(-7), recorded_on=day(-5))
+                for characteristic, value in zip((mfi, ash), values):
+                    M("quality.SupplierCertificateLine").objects.create(certificate=coa, characteristic=characteristic,
+                                                                        value=D(value))
+                coa.post(by=meena.user)
+
+        with step("Copolymer short on the weighbridge, claimed from Granule House"):
+            # O613: weight claims answered nothing. Its own step: a claim holds the order before its receipt. 70 kg at
+            # the receipt's own cost of 124: 8,680.00, open until Granule House bills the lot and the debit note meets it.
+            M("purchasing.WeightClaim").objects.create(
+                receipt=copo_receipt, against="supplier", raised_on=day(-5),
+                note="Challan 10,140 kg, weighbridge 10,070 kg net")
+
+        with step("Maintenance: schedules, planned jobs and breakdowns"):
+            for code, name, minutes, every in (("EXT-1", "Screen changer and die cleaning", 120, 30),
+                                               ("LOOM-01", "Shuttle and cam lubrication", 45, 14),
+                                               ("PRN-1", "Anilox roll cleaning", 60, 7)):
+                M("manufacturing.MaintenanceSchedule").objects.create(
+                    work_centre=machines[code].work_centre, machine=machines[code], name=name, duration_minutes=minutes,
+                    every_days=every, last_done_on=day(3 - every))
+            for code, due, minutes, fault, done in (("EXT-1", day(3), 120, "", None), ("LOOM-01", day(8), 45, "", None),
+                                                    ("PRN-1", day(1), 60, "", None), ("LOOM-04", day(12), 90, "", None),
+                                                    ("LOOM-03", day(-1), 60, "Weft breaks, heald wires worn", None),
+                                                    ("STITCH-2", day(-8), 30, "Needle bar knocking", day(-8))):
+                machine = machines[code]
+                # A breakdown rests on the stoppage it caused.
+                stoppage = M("manufacturing.Downtime").objects.create(
+                    work_centre=machine.work_centre, machine=machine, shift_date=due, reason=reasons["BRK"],
+                    minutes=minutes, shift=shifts[0], notes=fault) if fault else None
+                job = M("manufacturing.MaintenanceJob").objects.create(
+                    work_centre=machine.work_centre, machine=machine, due_on=due, planned_minutes=minutes,
+                    is_breakdown=bool(fault), fault=fault, technician=vikas, downtime=stoppage)
+                if done:
+                    job.complete(on_date=done, cause="Worn needle bar bush", action="Bush replaced")
+
+        with step("Fixed assets in service"):
+            # The books opened at the end of June, the day before the opening bank balance: the
+            # machines bought before it come onto them as opening balances.
+            M("accounting.BooksOpening").objects.create(opened_on=on(2026, 6, 30), opening_account=opening_eq)
+            # Where a sale's gain or loss goes (O405): without it, no asset in the demo could be disposed of.
+            disposals = acc("4930", "Gain or loss on disposal of assets", "income")
+            machinery = M("assets.AssetCategory").objects.create(
+                code="PM", name="Plant and machinery", asset_account=plant_acc, accumulated_account=accumulated,
+                expense_account=depreciation, default_life_months=120, disposal_account=disposals)
+            office = M("assets.AssetCategory").objects.create(
+                code="OE", name="Office equipment", asset_account=office_acc, accumulated_account=accumulated,
+                expense_account=depreciation, default_life_months=60, disposal_account=disposals)
+            for name, category, bought, cost, months in (
+                    ("Tape line, 120 mm (EXT-1)", machinery, on(2026, 4, 10), "9500000", 120),
+                    ("Circular looms, six (LOOM-01 to 06)", machinery, on(2026, 4, 20), "11100000", 120),
+                    ("4-colour flexo press (PRN-1)", machinery, on(2026, 5, 2), "3850000", 120),
+                    ("Laptops for the office, four", office, on(2026, 6, 15), "260000", 36)):
+                asset = M("assets.FixedAsset").objects.create(name=name, category=category, acquisition_date=bought,
+                                                              cost=D(cost), life_months=months)
+                # Typed in, so an opening balance: put into service, it posts its cost against
+                # 3900 on the day the books opened, and the register foots to the ledger (O34).
+                asset.place_in_service(on_date=bought)
+                # Charged to the end of the last month the books step closes, before it closes them:
+                # a month left uncharged under a close holds up every asset's month-end run.
+                asset.depreciate(through=s.month_span(2026, 7, -1)[1])
+
+        with step("Job work on a challan, a contractor's bill with tax deducted under 194C, and a month's GSTR-2B"):
+            # O537: the papers the statutory outputs are made from, each through the application's own path.
+            # A laminator in Pune, a firm (the fourth letter of its PAN), so a contractor other than an individual:
+            # section 194C at the rate statutory/tds_rates.csv carries and the Controller confirmed.
+            contractors = M("accounting.TdsSection").objects.get(code="194C")
+            laminator = party("V-LAM", "Shree Lamination Works", "vendor", "Pune", "411026", "27AAQFS6141H1Z", net30,
+                              ("Prakash", "Shinde", "Proprietor's office"), "accounts@shreelamination.example",
+                              pan="AAQFS6141H", tds_section=contractors)
+            job_charges = acc("5450", "Job work charges", "expense")
+            # Its bill for September's lot: 60,000 and GST. Tax is deducted on the 60,000 as the bill is booked,
+            # and paid over on a challan by the 7th of the month after.
+            Bill, BillLine = M("purchasing.Bill"), M("purchasing.BillLine")
+            work_bill = Bill.objects.create(vendor=laminator, bill_date=on(2026, 9, 18), currency=inr,
+                                            payable_account=ap, reference="SLW/26-27/0412")
+            BillLine.objects.create(bill=work_bill, description="Lamination charges, 6,000 kg of fabric",
+                                    expense_account=job_charges, quantity=D("1"), unit_price=D("60000"),
+                                    cost_centre=centres["CONV"]).taxes.set(gst18)
+            work_bill.post()
+            work_bill.deduct_tds()
+            M("purchasing.TdsChallan").pay(contractors, work_bill.bill_date, max(on(2026, 10, 7), work_bill.bill_date),
+                                           bank, challan_number="00417", bsr_code="0510308")
+            # A run of fabric woven here and laminated outside, released; 600 kg of it has gone out on a challan,
+            # at the fabric's cost of 139 a kg, so ITC-04 has goods at a job worker to list.
+            outside = M("manufacturing.Routing").objects.create(code="R-FAB-LAM", name="Weave, then laminate outside")
+            M("manufacturing.RoutingOperation").objects.create(routing=outside, sequence=10, name="Weave",
+                                                               work_centre=looms, setup_minutes=D("30"))
+            M("manufacturing.RoutingOperation").objects.create(
+                routing=outside, sequence=20, name="Laminate at Shree Lamination", is_outside=True,
+                outside_lead_days=4, outside_cost_per_unit=D("10"), rate_uom=kg)
+            # An alternate way of making the fabric, which a run is put on when the customer asks for it laminated.
+            M("manufacturing.AlternateRouting").objects.create(bom=fabric_bom, routing=outside, priority=1)
+            laminated = WorkOrder.objects.create(
+                item=fabric, bom=fabric_bom, quantity_ordered=D("1000"), uom=kg, warehouse=plant, work_centre=looms,
+                routing=outside, scheduled_start=stamp(day(-3), 6),
+                scheduled_end=stamp(day(-3), 6) + datetime.timedelta(hours=6))
+            laminated.release(on_date=day(-3))
+            challan = M("manufacturing.JobWorkChallan").objects.create(job_worker=laminator, challan_date=day(-2),
+                                                                       vehicle="MH14GT4821")
+            M("manufacturing.JobWorkLine").objects.create(
+                challan=challan, operation=laminated.operations.get(is_outside=True),
+                description="Circular woven fabric, 60 cm, for lamination", hsn_code=fabric.hsn_code,
+                quantity=D("600"), value=D("83400.00"), tax_rate=D("18"))
+            challan.post()
+            # The GSTR-2B of the month the posted pay run is for, as the portal's B2B sheet saved as CSV: two of
+            # that month's three bills are in it (the polymer and the inks), and the liner film's is not, so the
+            # match shows both a bill matched and a bill its supplier has not filed.
+            first, last = s.month_span(2026, 8)
+            month_bills = [b for b in billed if first <= b.bill_date <= last]
+            heading = ("GSTIN of supplier,Trade/Legal name,Invoice number,Invoice Date,Invoice Value,Taxable Value,"
+                       "Integrated Tax,Central Tax,State/UT Tax,Cess")
+            filed = {"V-GRAN": ("2142880.00", "1816000.00", "326880.00", "0.00", "0.00"),
+                     "V-INK": ("99120.00", "84000.00", "0.00", "7560.00", "7560.00")}
+            rows = [",".join((b.vendor.tax_profile.gstin, b.vendor.name, b.reference, f"{b.bill_date:%d-%m-%Y}",
+                              *filed[b.vendor.code], "0.00"))
+                    for b in month_bills if b.vendor.code in filed]
+            from apps.gst import gstr2b
+
+            gstr2b.keep(f"{first:%Y-%m}", "\n".join([heading, *rows]), user=controller)
+
+        # ----------------------------------------------------------- books
+        with step("Journals, cost centres, a budget, the accounting periods and a recurring rent"):
+            Entry, Line = M("accounting.JournalEntry"), M("accounting.JournalLine")
+
+            def journal(when, memo, rows):
+                entry = Entry.objects.create(date=when, memo=memo)
+                for account, debit, credit, centre in rows:
+                    Line.objects.create(entry=entry, account=account, debit=D(debit), credit=D(credit), cost_centre=centre)
+                entry.post()
+                return entry
+
+            go_live = journal(on(2026, 7, 1), "Opening bank balance", [(bank, "4500000", "0", None), (opening_eq, "0", "4500000", None)])
+            for month, units in ((7, ("185400", "124300", "28100", "23800")), (8, ("191200", "128900", "29400", "24600")),
+                                 (9, ("196700", "131500", "30200", "25100"))):
+                total = sum((D(x) for x in units), D("0"))
+                journal(on(2026, month, 5), f"MSEDCL power bill, {s.month_span(2026, month)[0]:%B}",
+                        [(power, units[0], "0", centres["EXT"]), (power, units[1], "0", centres["LOOM"]),
+                         (power, units[2], "0", centres["PRINT"]), (power, units[3], "0", centres["CONV"]),
+                         (bank, "0", str(total), None)])
+                journal(on(2026, month, 7), "Godown rent", [(rent, "85000", "0", centres["OFFICE"]), (bank, "0", "85000", None)])
+                journal(on(2026, month, 28), "Bank charges",
+                        [(bank_charges, "1180", "0", centres["OFFICE"]), (bank, "0", "1180", None)])
+            journal(on(2026, 9, 12), "Agri expo stall and travel",
+                    [(travel, "142000", "0", centres["OFFICE"]), (bank, "0", "142000", None)])
+            year_start = datetime.date(TODAY.year if TODAY.month >= 4 else TODAY.year - 1, 4, 1)
+            budget = M("accounting.Budget").objects.create(code=f"FY{year_start.year % 100 + 1:02d}",
+                                                           name=f"Budget {year_start.year}-{(year_start.year + 1) % 100:02d}",
+                                                           start_date=year_start,
+                                                           end_date=datetime.date(year_start.year + 1, 3, 31))
+            for account, amount, centre in ((power, "8400000", None), (rent, "1020000", centres["OFFICE"]),
+                                            (repairs, "900000", None), (travel, "450000", centres["OFFICE"]),
+                                            (wages, "9600000", None), (freight, "1800000", None)):
+                M("accounting.BudgetLine").objects.create(budget=budget, account=account, amount=D(amount), cost_centre=centre)
+            # Monthly periods from three months before the story's first to three after this one; the
+            # three before it are closed.
+            for offset in range(-3, 7):
+                start, end = s.month_span(2026, 7, offset)
+                M("accounting.AccountingPeriod").objects.create(name=f"{start:%B %Y}", start_date=start, end_date=end,
+                                                                closed=offset < 0)
+            rent_due = M("accounting.RecurringJournal").objects.create(code="RENT-GODOWN", memo="Godown rent, Chakan",
+                                                                       start_date=TODAY, interval="monthly",
+                                                                       next_run_date=TODAY)
+            M("accounting.RecurringJournalLine").objects.create(schedule=rent_due, account=rent, debit=D("85000"),
+                                                                cost_centre=centres["OFFICE"])
+            M("accounting.RecurringJournalLine").objects.create(schedule=rent_due, account=bank, credit=D("85000"))
+
+        with step("Payroll: pay components, salaries, one month posted and one calculated"):
+            Pay, PayRun = M("hr.EmployeeCompensation"), M("hr.PayRun")
+            basic, hra, pf, epf, pt, esi, eesi = (pay_components[code] for code in (
+                "BASIC", "HRA", "PF", "PF-ER", "PT", "ESI", "ESI-ER"))
+            # Every pay input holds its person (hold_the_employee): held here in key order first, as the people
+            # step does, since the insured are given their ESI before the rest their pay.
+            lock_rows(*M("hr.Employee").objects.order_by("pk"), refresh=False)
+            # Everyone works at Chakan; who is a woman decides the exemption.
+            women = {"sunita", "303", "meena", "anita", "priya"}
+            for key, employee in sorted(people.items(), key=lambda pair: pair[1].pk):
+                employee.work_state = "MH"
+                employee.gender = "female" if key in women else "male"
+                employee.save()
+            # Where each person is paid (O405), so the run's salary file has a row for everyone: the plant banks
+            # with HDFC Chakan, and so, in the demo, does everyone it pays.
+            for key, employee in sorted(people.items(), key=lambda pair: pair[1].pk):
+                # Born 25 years before joining, on the 15th (invented): the ECR asks, since the pension share
+                # stops the month after a member turns 58 (O537).
+                M("hr.EmployeePayDetails").objects.create(
+                    employee=employee, account_holder=employee.party.name,
+                    date_of_birth=datetime.date(employee.hire_date.year - 25, employee.hire_date.month, 15),
+                    account_number=f"5010020{int(employee.employee_number):04d}88", ifsc="HDFC0001234")
+            # Under the ceiling, so insured: the security guard, 20,500 a month (16,000 basic and 4,500 HRA).
+            insured = {"raju": "3110045672"}
+            for key, number in insured.items():
+                people[key].esi_number = number
+                people[key].save()
+                for component in (esi, eesi):
+                    Pay.objects.create(employee=people[key], component=component, amount=D("1"),
+                                       effective_from=datetime.date(2026, 4, 1))
+            for key, (basic_pay, rent_allowance) in {
+                    "rohit": ("62000", "18000"), "imran": ("32000", "9000"), "priya": ("34000", "9500"),
+                    "ravi": ("38000", "11000"), "sunita": ("21000", "6000"), "suresh": ("48000", "14000"),
+                    "302": ("18500", "5000"), "303": ("17800", "5000"), "304": ("17200", "5000"),
+                    "meena": ("29000", "8500"), "vikas": ("26000", "7500"), "anita": ("52000", "15000"),
+                    "kiran": ("36000", "10000"), "raju": ("16000", "4500")}.items():
+                for component, amount in ((basic, basic_pay), (hra, rent_allowance), (pf, "12"), (pt, "1"), (epf, "12")):
+                    Pay.objects.create(employee=people[key], component=component, amount=D(amount),
+                                       effective_from=datetime.date(2026, 4, 1))
+            # O560: the gratuity provision, 4.81% of basic and DA into 2470, given as setup_payroll gives it, from the
+            # day the salaries stand. The bonus accrual is not (O550): its ceiling reads Maharashtra's minimum wage,
+            # which the demo does not load, and giving it would refuse every run.
+            from apps.hr.bonus import give_gratuity_provision
+
+            if not give_gratuity_provision(datetime.date(2026, 4, 1)):
+                raise CommandError("The gratuity provision was given to nobody.")
+            for offset, post in ((-2, True), (-1, False)):
+                start, end = s.month_span(2026, 10, offset)  # the story's last month is this one
+                run = PayRun.objects.create(name=f"{start:%B %Y}", period_start=start, period_end=end, pay_date=end)
+                run.calculate()
+                if post:
+                    run.post()
+
+        with step("People: expense claims, appraisals, openings and applicants, leave"):
+            # One transaction for the section (step), where each request in the plant is its own: the
+            # people it changes leave for, held first in key order, as every pay input holds its person
+            # (apps.hr.models.hold_the_employee, O20), so a later request takes a row already held.
+            lock_rows(*M("hr.Employee").objects.order_by("pk"), refresh=False)
+            Claim, ClaimLine = M("hr.ExpenseClaim"), M("hr.ExpenseLine")
+
+            def claim(employee, when, purpose, rows):
+                c = Claim.objects.create(employee=employee, claim_date=when, purpose=purpose)
+                for spent, account, text, amount in rows:
+                    ClaimLine.objects.create(claim=c, spent_on=spent, expense_account=account, description=text,
+                                             amount=D(amount))
+                return c
+
+            paid = claim(imran, day(-20), "Customer visits, Satara and Kolhapur",
+                         [(day(-24), travel, "Fuel, 640 km", "5120"), (day(-23), travel, "Lodging, Kolhapur", "2400")])
+            paid.submit()
+            paid.approve(by=rohit, note="Visits logged in the CRM")
+            paid.pay(bank, on_date=day(-15))
+            approved = claim(priya, day(-6), "Agri expo, Nagpur", [(on(2026, 9, 12), travel, "Train fare", "2860"),
+                                                                    (on(2026, 9, 13), travel, "Hotel, two nights", "6400")])
+            approved.submit()
+            approved.approve(by=rohit)
+            claim(vikas, day(-1), "Emergency spares run to Bhosari",
+                  [(day(-2), repairs, "Heald wires, local purchase", "3450"), (day(-2), travel, "Auto fare", "380")]).submit()
+            claim(imran, TODAY, "Sample delivery, Ratnagiri", [(TODAY, travel, "Courier and fuel", "1850")])
+            for employee, reviewer, rating, strengths, improve, submit in (
+                    (mahesh, suresh, 4, "Keeps the line at 98% uptime; trains new operators.", "Logs changeovers late.", True),
+                    (lakshmi, suresh, 3, "Careful with GSM; low waste.", "Needs to run two looms at once.", True),
+                    (imran, rohit, 4, "Opened Konkan and Malwa; collections on time.", "Pipeline notes are thin.", False)):
+                appraisal = M("hr.Appraisal").objects.create(
+                    employee=employee, reviewer=reviewer, period_start=s.month_span(2026, 4)[0],
+                    period_end=s.month_span(2026, 9)[1], rating=rating, strengths=strengths, improvements=improve,
+                    goals="Hold waste under 2.5% and finish the tape line training.")
+                if submit:
+                    appraisal.submit()
+            opening = M("hr.JobOpening").objects.create(title="Circular loom operator", department=depts["PROD"],
+                                                        openings=2, opened_on=day(-21),
+                                                        description="Two shifts; experience on 6-shuttle looms.")
+            M("hr.JobOpening").objects.create(title="Quality chemist", department=depts["QA"], openings=1,
+                                              opened_on=day(-40)).hold()
+            stages = ["applied", "screening", "interview", "offered"]
+            for name, source, stage, phone in (("Ramesh Gaikwad", "referral", "interview", "98901 22314"),
+                                               ("Pooja Shinde", "walk_in", "screening", "97654 10982"),
+                                               ("Anil Yadav", "portal", "offered", "99220 45671"),
+                                               ("Sachin Lokhande", "agency", "applied", "98812 30457")):
+                applicant = M("hr.Applicant").objects.create(opening=opening, name=name, applied_on=day(-15), source=source,
+                                                             phone=phone)
+                for next_stage in stages[1:stages.index(stage) + 1]:
+                    applicant.advance(next_stage)
+            # The plant's leave rules (O405): earned leave a twelfth a month, up to 30 days carried; sick leave that
+            # may go overdrawn; leave without pay. Lakshmi carried 6 days of last year's earned leave into this one.
+            Policy = M("hr.LeavePolicy")
+            earned = Policy.objects.create(code="EL", name="Earned leave", leave_type="vacation", annual_days=D("18"),
+                                           accrues_monthly=True, carry_over_limit=D("30"))
+            sick = Policy.objects.create(code="SL", name="Sick leave", leave_type="sick", annual_days=D("8"),
+                                         allows_negative=True)
+            Policy.objects.create(code="LWP", name="Leave without pay", leave_type="unpaid", allows_negative=True,
+                                  is_paid=False)
+            M("hr.LeaveEntitlement").objects.create(employee=lakshmi, policy=earned, year=TODAY.year, days=D("18"),
+                                                    carried_over=D("6"), note="Carried from the previous year")
+            M("hr.LeaveRequest").objects.create(employee=lakshmi, policy=earned, leave_type="vacation", start_date=day(5),
+                                                end_date=day(7), reason="Family function, Solapur")
+            M("hr.LeaveRequest").objects.create(employee=ravi, policy=sick, leave_type="sick", start_date=day(-9),
+                                                end_date=day(-8), reason="Fever")
+
+
+        with step("Sales: the dealers' price list, reminders for what is overdue, a monthly charge"):
+            # O613: prices, dunning and recurring invoices answered nothing on the demo. The dealers' list is kept
+            # beside the agreed prices and given to nobody yet, so no order's price changes under it; the reminders
+            # run once as the office would run them for post, so nothing is emailed; the monthly charge for keeping
+            # Sahyadri's printing cylinders starts next month and has issued nothing.
+            from apps.sales.models import run_dunning
+
+            dealers = M("sales.PriceList").objects.create(code="DEALER-26", name="Dealers, 2026-27", currency=inr,
+                                                          valid_from=on(2026, 4, 1))
+            for it, quantity, price in ((cement, "1", "7.95"), (cement, "50000", "7.80"), (fert, "1", "11.40"),
+                                        (rice, "1", "9.10")):
+                M("sales.PriceListItem").objects.create(price_list=dealers, item=it, min_quantity=D(quantity),
+                                                        unit_price=D(price))
+            for name, days in (("A week late", 7), ("A month late", 30), ("Two months late", 60)):
+                M("sales.DunningLevel").objects.create(name=name, days_overdue=days)
+            # One transaction for the section, where the office's run releases each invoice as it goes: the
+            # invoices it may hold, held first in key order (apps.core.lock_order).
+            lock_rows(*M("sales.Invoice").objects.filter(posted=True).order_by("pk"), refresh=False)
+            run_dunning(as_of=TODAY, send=False)
+            cylinders = M("sales.RecurringInvoice").objects.create(
+                code="RI-CYL", customer=sahyadri, receivable_account=ar, currency=inr, payment_terms=net30,
+                interval="month", interval_count=1, start_date=(TODAY.replace(day=1) + datetime.timedelta(days=32)).replace(day=1),
+                auto_post=False)
+            line = M("sales.RecurringInvoiceLine").objects.create(
+                schedule=cylinders, description="Keeping your printing cylinders, a month", quantity=D("1"),
+                unit_price=D("2500"), revenue_account=sales_sacks)
+            line.taxes.set(gst18)
+
+        with step("GST documents: the latest invoice's e-invoice and e-way bill, waiting for the portals"):
+            # O613: e-invoices and e-way bills answered nothing on the demo. The latest invoice in rupees, inside
+            # the thirty days a large company has to register it, has both built and kept for the accountant to
+            # upload: the portals' answers (the IRN, the e-way bill's number) are theirs to give, so nothing is
+            # recorded as registered.
+            from apps.gst import einvoice, ewaybill
+
+            latest = M("sales.Invoice").objects.filter(posted=True, credits__isnull=True,
+                                                       currency=inr).order_by("-invoice_date", "-pk").first()
+            einvoice.prepare(latest)
+            ewaybill.prepare(latest, mode=ewaybill.TransportMode.ROAD, distance_km=480, vehicle_number="MH12 RT 5508")
+
+        with step("Purchasing: a year's granule on a blanket agreement, a reorder rule"):
+            # O613: blanket agreements and reorder rules answered nothing on the demo. The year's raffia granule is
+            # committed to one supplier at a fixed price and the first lorry called off, as a draft for the buyer to
+            # send; the UV masterbatch is kept between 150 and 400 kg.
+            agreement = M("purchasing.BlanketOrder").objects.create(
+                vendor=granule, reference="Annual rate contract 2026-27", start_date=day(-10), end_date=day(355),
+                currency=inr)
+            raffia = M("purchasing.BlanketOrderLine").objects.create(
+                blanket=agreement, item=virgin, uom=virgin.uom, quantity=D("120000"), unit_price=D("109"))
+            raffia.taxes.set(gst18)
+            agreement.confirm()
+            agreement.release({raffia: D("18000")}, order_date=TODAY)
+            M("purchasing.ReorderRule").objects.create(item=uv, warehouse=plant, minimum=D("150"), target=D("400"),
+                                                       multiple_of=D("25"), vendor=western)
+
+        with step("Job work in: a customer's own granule received for its bags, and what was not used sent back"):
+            # O613: material a customer sends to be worked on answered nothing on the demo. Konkan Agro sends two
+            # tonnes of its own granule for its rice bags, into a bay held for it at no value; 150 kg it did not
+            # need goes back on a return that names the receipt, as its own ITC-04 must match.
+            held = Warehouse.objects.create(code="KONK", name="Konkan Agro's material", held_for=konkan)
+            Receipt, Return = M("manufacturing.CustomerMaterialReceipt"), M("manufacturing.CustomerMaterialReturn")
+            theirs = Receipt.objects.create(customer=konkan, warehouse=held, received_on=day(-9),
+                                            their_challan="KAF/JW/0417", their_challan_date=day(-10))
+            granule_in = M("manufacturing.CustomerMaterialReceiptLine").objects.create(
+                receipt=theirs, item=virgin, quantity=D("2000"), declared_value=D("216000"))
+            theirs.post()
+            back = Return.objects.create(customer=konkan, warehouse=held, returned_on=day(-2))
+            M("manufacturing.CustomerMaterialReturnLine").objects.create(material_return=back, item=virgin,
+                                                                        quantity=D("150"), receipt_line=granule_in)
+            back.post()
+
+        with step("Stores: a count, a write-off, a move to the godown, and the gate"):
+            # O613: the stores' own documents had nothing on the demo. The spares cupboard is counted two bearings
+            # short; a hundred and fifty rice sacks spoilt by a roof leak are written off; ten thousand cement
+            # sacks go to the godown's first bay for the week's lorries. Yesterday's two post before today's count:
+            # a section is one transaction, and on the first of a month yesterday's period is the earlier one, which
+            # the lock order takes first.
+            Reason = M("inventory.AdjustmentReason")
+            lock_positions([(bearing, plant), (rice, plant), (cement, plant), (cement, godown)])
+            spoilt = M("inventory.StockAdjustment").objects.create(adjustment_date=day(-1), warehouse=plant,
+                                                                   reason=Reason.objects.get(code="DAMAGE"))
+            M("inventory.StockAdjustmentLine").objects.create(adjustment=spoilt, item=rice, uom=rice.uom,
+                                                              quantity=D("-150"))
+            spoilt.post()
+            move = M("inventory.StockTransfer").objects.create(transfer_date=day(-1), from_warehouse=plant,
+                                                               to_warehouse=godown, reference="For the week's lorries")
+            M("inventory.StockTransferLine").objects.create(transfer=move, item=cement, uom=cement.uom,
+                                                            quantity=D("10000"), to_bin=bins["A-01"])
+            move.post(occurred_at=stamp(day(-1), 11))
+            count = M("inventory.StockCount").objects.create(count_date=TODAY, warehouse=plant,
+                                                             reason=Reason.objects.get(code="SHORT"))
+            count.add(bearing, bearing.on_hand_at(plant) - 2)
+            count.post()
+
+            # The gate, on the gate's own clock: a laptop out for repair on a returnable pass the stores keeper
+            # approved, and a visitor still on site. The lorry that brought the copolymer is in the register as well.
+            Visit, Pass = M("inventory.GateVisit"), M("inventory.GatePass")
+            tempo = Visit.objects.create(vehicle_number="MH14 KD 0932", driver_name="Sanjay Wagh",
+                                         purpose="gate_pass", carried="One laptop")
+            repair = Pass.objects.create(kind="returnable", party_name="Chakan Computer Care",
+                                         purpose="Screen replaced under warranty", expected_return_date=day(7),
+                                         visit=tempo)
+            M("inventory.GatePassLine").objects.create(
+                gate_pass=repair, quantity=D("1"),
+                asset=M("assets.FixedAsset").objects.get(name="Laptops for the office, four"))
+            repair.approve(by=sunita.user)
+            tempo.check_out()
+            Visit.objects.create(vehicle_number="MH14 GH 2210", driver_name="Rajesh Iyer", purpose="visitor",
+                                 carried="Sales call from Kaveri Feeds")
+
+        with step("People: an advance against salary, and the contract labour register"):
+            # O613: advances and the contract labour register answered nothing on the demo. Ganesh is given 12,000
+            # against his salary, paid from the bank and recovered at 3,000 a month from this month's run; the
+            # runs already posted or calculated end before it and read the same. The loading and packing gang
+            # comes from a licensed contractor, and two of its workers are on the register.
+            lock_rows(*M("hr.Employee").objects.order_by("pk"), refresh=False)
+            staff_advances = acc("1290", "Advances to staff", "asset")
+            recovery = M("hr.PayComponent").objects.create(code="ADV", name="Salary advance recovery", kind="deduction",
+                                                           liability_account=staff_advances, sequence=90)
+            given = M("accounting.Payment").objects.create(
+                party=ganesh.party, direction="disbursement", amount=D("12000"), payment_date=day(-6), currency=inr,
+                bank_account=bank, counterpart_account=staff_advances, reference="Advance against salary")
+            given.post()
+            M("hr.SalaryAdvance").objects.create(
+                employee=ganesh, payment=given, component=recovery, amount=D("12000"), instalment=D("3000"),
+                recover_from=TODAY.replace(day=calendar.monthrange(TODAY.year, TODAY.month)[1]),
+                note="Sister's wedding")
+            gang = party("V-SHRM", "Shramik Manpower Services", "vendor", "Pune", "411018", None, net30,
+                         ("Dattatray", "Kamble", "Proprietor"), "office@shramik.example", state=STATES["27"])
+            contractor = M("hr.LabourContractor").objects.create(
+                party=gang, licence_number="CLRA/PUN/2026/1183", licence_valid_to=day(400),
+                work_nature="Loading, unloading and bale packing", max_workers=20)
+            for name, gender, designation, wage, joined in (("Santosh Jadhav", "male", "Loader", "690", day(-80)),
+                                                           ("Rekha Gaikwad", "female", "Bale packer", "690", day(-45))):
+                M("hr.ContractWorker").objects.create(contractor=contractor, name=name, gender=gender,
+                                                      designation=designation, daily_wage=D(wage), joined_on=joined)
+
+        with step("Planning: a year of shipments, a forecast, a build ahead, and the morning's plan"):
+            # O613: planning had nothing on the demo. The old system's cement-sack shipments for the year before
+            # cutover, a forecast for next month from them, the fertiliser sacks built ahead of the kharif season,
+            # and one run of the planner over the plant as the morning would run it.
+            from apps.planning.mrp import plan
+
+            settings = M("planning.PlanningSettings").get()
+            first_of_month = TODAY.replace(day=1)
+            for back in range(12, 0, -1):  # the year before cutover: the system counts its own months after
+                months = opened.year * 12 + opened.month - 1 - back
+                month = datetime.date(months // 12, months % 12 + 1, 1)
+                M("planning.ShipmentHistory").objects.create(
+                    item=cement, warehouse=plant, month=month,
+                    quantity=D(180000 + 15000 * ((back * 7) % 5)), note="From the old system")
+            following_month = (first_of_month + datetime.timedelta(days=32)).replace(day=1)
+            M("planning.Forecast").objects.create(
+                item=cement, warehouse=plant, starts_on=following_month,
+                ends_on=(following_month + datetime.timedelta(days=32)).replace(day=1) - datetime.timedelta(days=1),
+                quantity=D("200000"), notes="Dealers' orders as last year")
+            monday = TODAY + datetime.timedelta(days=7 - TODAY.weekday() + 7)
+            M("planning.MasterScheduleEntry").objects.create(
+                item=fert, warehouse=plant, week_of=monday, quantity=D("30000"),
+                reason="Built ahead of the kharif season")
+            plan(plant, planned_on=TODAY, settings=settings)
+
+        with step("Attendance: the floor's last week"):
+            # O605: the register the floor keeps, the crew on the day shift. Present every working day and once late,
+            # so no day of it is unpaid: the runs already posted or calculated read the same with it as without.
+            lock_rows(*M("hr.Employee").objects.order_by("pk"), refresh=False)
+            from apps.hr.attendance import leave_on
+
+            Day = M("hr.AttendanceDay")
+            for back in range(7, 0, -1):
+                on_date = day(-back)
+                if on_date.weekday() == 6:
+                    continue
+                for employee in (suresh, mahesh, lakshmi, ganesh):
+                    if leave_on(employee, on_date) is not None:
+                        continue
+                    late = employee == ganesh and back == 3
+                    Day.objects.create(employee=employee, on=on_date, status="present", shift="A",
+                                       time_in=datetime.time(6, 25) if late else datetime.time(5, 52),
+                                       time_out=datetime.time(14, 6),
+                                       note="Bus late from Chakan phata" if late else "")
+
+        with step("Payroll paid: the posted run's salary file written, and it and the provident fund paid"):
+            # O613: salary files and remittances answered nothing on the demo. The posted run's bank file is written
+            # and paid from HDFC; the month's provident fund, the people's share and the plant's, goes to the EPFO.
+            # Three steps, as the office does it in three requests: posting a payment holds its period, and marking
+            # the file paid then holds the slips, which the lock order ranks before the period.
+            lock_rows(*M("hr.Employee").objects.order_by("pk"), refresh=False)
+            from apps.hr.bank_file import SalaryTransferFile
+            from apps.hr.payroll import _deducted, _net_pay_account, remitted
+
+            Payment = M("accounting.Payment")
+            posted_run = M("hr.PayRun").objects.get(status="posted")
+            transfers = SalaryTransferFile.prepare(posted_run)
+            hdfc = party("V-HDFC", "HDFC Bank, Chakan branch", "vendor", "Pune", "410501", None, net15,
+                         ("Branch", "Manager", "Salary accounts"), "chakan@hdfcbank.example", state=STATES["27"])
+            salaries_paid = Payment.objects.create(
+                party=hdfc, direction="disbursement", amount=transfers.total, payment_date=posted_run.pay_date,
+                currency=inr, bank_account=bank, counterpart_account=_net_pay_account(),
+                reference=f"Salary file {posted_run.name}")
+            salaries_paid.post()
+            epfo = party("V-EPFO", "Employees' Provident Fund Organisation", "vendor", "Pune", "411001", None, net15,
+                         ("Regional", "Office", "Pune"), "ro.pune@epfindia.example", state=STATES["27"])
+            challans = []
+            # One challan an account: the people's share and the plant's are both owed into PF payable here.
+            for liability in sorted({pay_components[code].liability_account for code in ("PF", "PF-ER")},
+                                    key=lambda account: account.code):
+                owed = _deducted(liability, posted_run.period_start) - remitted(liability, posted_run.period_start)
+                if owed <= 0:
+                    raise CommandError(f"The posted run owes nothing into {liability}.")
+                challan = Payment.objects.create(
+                    party=epfo, direction="disbursement", amount=owed, currency=inr, bank_account=bank,
+                    payment_date=posted_run.pay_date + datetime.timedelta(days=12), counterpart_account=liability,
+                    reference=f"ECR {posted_run.name}, {liability.code}")
+                challan.post()
+                challans.append(challan)
+
+        with step("Payroll paid: the provident fund remitted by its challans"):
+            # Each remittance holds its payment, then its account (locked_before_it): all of them held first, in
+            # the lock order, so the second remittance takes no payment after the first one's account.
+            lock_rows(*challans, *(challan.counterpart_account for challan in challans))
+            for challan in challans:
+                M("hr.StatutoryRemittance").objects.create(payment=challan, liability_account=challan.counterpart_account,
+                                                           period=posted_run.period_start, amount=challan.amount)
+
+        with step("Payroll paid: the salary file marked paid by its payment"):
+            transfers.mark_paid(salaries_paid)
+
+        with step("A tape batch split for two looms, the laminator's trim, a shipment's test certificate"):
+            # O613: rebatches, job-work losses and test certificates answered nothing on the demo. Part of the
+            # second tape batch is split into two for the night shift's looms (the same tape at the same cost, its
+            # inspection carried); the laminator states the edge trim it kept from the fabric on its challan; and
+            # the latest shipment is certified with what was measured on it.
+            from apps.manufacturing.certificates import issue
+            from apps.manufacturing.rebatch import rebatch
+
+            Lot = M("inventory.Lot")
+            second = Lot.objects.get(item=tape_1000, code="TP-1000-02")
+            halves = [Lot.objects.create(item=tape_1000, code=code) for code in ("TP-1000-02A", "TP-1000-02B")]
+            rebatch(tape_1000, plant, [(second, D("400"))], [(halves[0], D("200")), (halves[1], D("200"))],
+                    "Split for the two looms on the night shift", on_date=day(-1))
+            M("manufacturing.JobWorkLoss").objects.create(
+                line=M("manufacturing.JobWorkLine").objects.get(challan__job_worker=laminator), loss_date=day(-1),
+                quantity=D("9.5"),
+                note="Edge trim kept by the laminator, as its delivery note states")
+            shipped = (M("sales.Delivery").objects.filter(posted=True, is_drop_ship=False)
+                       .order_by("-delivery_date", "-pk"))
+            latest = next((delivery for delivery in shipped if not delivery.is_return()), None)
+            if latest is None:
+                raise CommandError("No shipment to certify.")
+            issue(latest, on_date=latest.delivery_date, by=meena.user)
+
+        with step("Call-offs: a customer's schedule against an order not yet shipped"):
+            # O613: call-offs answered nothing. Its own step: a call-off holds its order line, which the lock order
+            # takes before the period the batches above were posted into. Half in a week, half in three.
+            waiting = (M("sales.SalesOrderLine").objects.filter(order__status="confirmed", item__isnull=False,
+                                                                 delivery_lines__isnull=True)
+                       .order_by("-order__order_date", "pk").first())
+            if waiting is None:
+                raise CommandError("No confirmed order line is waiting to ship; nothing to call off.")
+            half = (waiting.quantity / 2).quantize(D("1"))
+            for weeks, quantity, number in ((1, half, "CO-1"), (3, waiting.quantity - half, "CO-2")):
+                M("sales.CallOff").objects.create(line=waiting, due_on=TODAY + datetime.timedelta(weeks=weeks),
+                                                  quantity=quantity, reference=f"{waiting.order.customer.code}/{number}")
+
+        with step("The raffia circular revised back-dated: Granule House's rate difference, a cement order's clause"):
+            # O613: price shipped_since and rate-difference notes answered nothing on the demo. A cement order's price stood
+            # on the raffia circular at 100, with a clause passing a move of more than 2% on at 74 g of polymer a sack.
+            # Reliance then revised the circular to 104 from two days before the order on it. Granule House's note for
+            # what came on that order is drafted as a supplementary bill: 4.00 a kg on 18,000 kg, 72,000.00.
+            # The clause is on Sahyadri's last cement order shipped, 135,000 sacks three days after the story's 28th,
+            # whatever the day. It was on the first sacks shipped since the revision, but the revision is dated from
+            # today and the story's orders by whole months: on the first thirteen days of a month that was another
+            # order (Sahyadri's 150,000 or Narmada's 54,000), and on 31 January and 31 August none had shipped and the
+            # demo stopped (calc_g58/variation_days.py, every day for two years). The revision starts no later than
+            # that shipment (on those two days, a day earlier than the order's), and the bill below ends no earlier.
+            shipped_since = (M("sales.DeliveryLine").objects.filter(
+                delivery__posted=True, delivery__is_drop_ship=False, delivery__sales_order__customer=sahyadri,
+                delivery__sales_order__currency=inr, reverses_line__isnull=True, order_line__item=cement)
+                .select_related("order_line__order", "delivery").order_by("-delivery__delivery_date", "-pk").first())
+            if shipped_since is None:
+                raise CommandError("No cement sacks shipped to Sahyadri to vary.")
+            revised_from = min(on_circular.order_date - datetime.timedelta(days=2), shipped_since.delivery.delivery_date)
+            M("sales.PriceVariationClause").objects.create(
+                order_line=shipped_since.order_line, index=circular, base_value=D("100.0000"), polymer_kg_per_unit=D("0.074"),
+                threshold_percent=D("2"))
+            Value.objects.create(index=circular, valid_from=revised_from, value=D("104.0000"), published_on=day(-12))
+            came = M("purchasing.GoodsReceipt").objects.filter(purchase_order=on_circular, posted=True).order_by(
+                "-receipt_date").first()
+            M("purchasing.RateDifferenceNote").objects.create(
+                contract=M("purchasing.PurchaseRateContract").objects.get(index=circular), start=revised_from,
+                end=came.receipt_date, note_date=came.receipt_date + datetime.timedelta(days=8),
+                supplier_reference="GRAN/RD/26/0412", supplier_note_date=came.receipt_date + datetime.timedelta(days=7),
+                created_by=admin, updated_by=admin)
+
+        with step("The cement order's dispatch since the revision, billed under its clause"):
+            # Its own step: a variation bill holds its order, which the lock order takes before the vendor and the bill
+            # above. 0.296 a sack (4 on the circular, at 74 g) on the sacks shipped since: drafted as a supplementary
+            # invoice for review. Up to yesterday, or to today on a day it shipped today (the 1st of a month after a 30-
+            # day one, and the first three of March): its 28th, three days on, is never after today.
+            from apps.sales.price_variation import bill_variation
+
+            billed_to = max(day(-1), shipped_since.delivery.delivery_date)
+            bill_variation(shipped_since.order_line.order, revised_from, billed_to, ar, invoice_date=billed_to, by=admin)
+
+        with step("The bank's statements from its cut-off to last month, matched to the books"):
+            # O613: bank statements answered nothing on the demo. HDFC is reconciled from the first of the month after
+            # going live (O615): what it moved before then cleared, but for a cheque from the old books the bank paid
+            # in September, listed as outstanding at the cut-off. Each month's statement carries every entry the month
+            # moved through the account; last month's also the bank's charges, not booked yet, left for the
+            # accountant. Matched as the office matches them: the obvious first, then each line to what it is. The
+            # journals typed through the bank (the power bill, the rent) are matched like the rest (O614), so
+            # September closes; October waits on its charges.
+            from django.db.models import Q
+
+            from apps.accounting.models import moved_through
+
+            Payment, Line = M("accounting.Payment"), M("accounting.BankStatementLine")
+            cut_off = (go_live.date.replace(day=1) + datetime.timedelta(days=32)).replace(day=1)
+            bank.reconciled_from = cut_off
+            bank.save()
+            old_cheque = M("accounting.BankCutOffItem").objects.create(
+                bank_account=bank, date=cut_off - datetime.timedelta(days=40), reference="000431",
+                description=f"Cheque to {granule.name}, from the old books", amount=D("-25000.00"))
+            last_start = s.month_span(2026, 10, -1)[0]
+            month_start = cut_off
+            # What the bank held at the cut-off: the books then, and the cheque it had not paid yet.
+            balance = sum((moved_through(entry, bank) for entry in M("accounting.JournalEntry").objects.filter(
+                posted=True, lines__account=bank, date__lt=cut_off).distinct()), D("0")) - old_cheque.amount
+            statements = []
+            while month_start <= last_start:
+                month_end = month_start.replace(day=calendar.monthrange(month_start.year, month_start.month)[1])
+                through = M("accounting.JournalEntry").objects.filter(
+                    posted=True, lines__account=bank, date__range=(month_start, month_end)).distinct().order_by("date", "pk")
+                statement_rows = [(entry.date, (entry.reference or entry.memo)[:255], moved_through(entry, bank), entry)
+                                  for entry in through]
+                statement_rows = [row for row in statement_rows if row[2]]
+                if month_start == cut_off:
+                    statement_rows.insert(0, (month_start + datetime.timedelta(days=3), "Chq 000431 paid", old_cheque.amount,
+                                              old_cheque))
+                if month_start == last_start:
+                    statement_rows.append((month_end, "Charges incl GST: NEFT, statement", D("-590.00"), None))
+                closing = balance + sum((row[2] for row in statement_rows), D("0"))
+                statement = M("accounting.BankStatement").objects.create(
+                    bank_account=bank, reference=f"HDFC {month_start:%b %Y}", start_date=month_start,
+                    end_date=month_end, opening_balance=balance, closing_balance=closing)
+                made = [(Line.objects.create(statement=statement, date=when, description=words, amount=amount), source)
+                        for when, words, amount, source in statement_rows]
+                statement.auto_match()
+
+                def returned_first(row):
+                    # A payment's void before the payment: the bank's return is matched before what it returned.
+                    source = row[1]
+                    entry = source if isinstance(source, M("accounting.JournalEntry")) else None
+                    return not (entry is not None and Payment.objects.filter(voided_entry=entry).exists())
+
+                for line, source in sorted(made, key=returned_first):
+                    line.refresh_from_db()
+                    if line.is_resolved() or source is None:
+                        continue
+                    if source == old_cheque:
+                        line.match_cut_off_item(old_cheque)
+                        continue
+                    payment = Payment.objects.filter(Q(journal_entry=source) | Q(voided_entry=source)).first()
+                    line.match(payment) if payment is not None else line.match_entry(source)
+                statements.append(statement)
+                balance, month_start = closing, month_end + datetime.timedelta(days=1)
+            if len(statements) < 2:
+                raise CommandError(f"HDFC has {len(statements)} statement(s) from {cut_off}; the demo wants a closed one "
+                                   "and an open one.")
+            for statement in statements[:-1]:
+                statement.close()

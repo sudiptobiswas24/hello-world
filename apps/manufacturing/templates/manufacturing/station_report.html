@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>8 AM report · {{ station.code }} · {{ report.shift_date|date:"d M Y" }}</title>
+<style>
+  :root { --paper: #EFECE4; --ink: #16181A; --muted: #4A4F55; --line: #D5D0C4; --soft: #E6E2D8;
+    --ok: #14532D; --warn: #7A4100; --warn-bg: #FDF0D5; --warn-line: #C98A1B; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--paper); color: var(--ink);
+    font-family: "IBM Plex Sans", system-ui, sans-serif; }
+  .page { max-width: 1440px; margin: 0 auto; padding: 40px 32px; display: flex; flex-direction: column; gap: 24px; }
+  .mono { font-family: "IBM Plex Mono", ui-monospace, monospace; }
+  .top { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; flex-wrap: wrap; }
+  .kicker { font-size: 14px; font-weight: 700; letter-spacing: .08em; color: var(--muted); }
+  h1 { margin: 6px 0; font-size: 44px; }
+  .sub { color: var(--muted); font-size: 17px; }
+  .kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
+  .card { background: #fff; border: 1px solid var(--line); border-radius: 16px; padding: 22px 24px;
+    display: flex; flex-direction: column; gap: 8px; }
+  .kpi .label { font-weight: 600; color: var(--muted); }
+  .kpi .big { font-size: 44px; font-weight: 600; line-height: 1; }
+  .tag { align-self: flex-start; padding: 5px 12px; border-radius: 999px; font-size: 14px; font-weight: 600;
+    background: var(--paper); }
+  .tag.warn { background: var(--warn-bg); border: 1px solid var(--warn-line); color: var(--warn); }
+  h2 { margin: 0 0 6px; font-size: 24px; }
+  table { width: 100%; border-collapse: collapse; font-size: 17px; }
+  th { text-align: left; font-size: 13px; letter-spacing: .04em; color: var(--muted); padding: 8px 8px;
+    border-bottom: 1px solid var(--line); }
+  td { padding: 12px 8px; border-bottom: 1px solid var(--soft); vertical-align: top; }
+  td.num, th.num { text-align: right; }
+  tr.over td { background: var(--warn-bg); }
+  .grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
+  .line { display: flex; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid var(--soft); font-size: 17px; }
+  .total { font-weight: 700; border-top: 2px solid var(--ink); }
+  .alert { margin-top: 8px; padding: 12px 14px; border-radius: 12px; background: var(--warn-bg);
+    border: 1px solid var(--warn-line); color: #5C3200; font-weight: 700; display: flex; justify-content: space-between; }
+  .none { color: var(--muted); }
+  footer { color: var(--muted); font-size: 14px; }
+  @media (max-width: 900px) { .kpis, .grid2 { grid-template-columns: 1fr; } }
+  @media print { body { background: #fff; } .page { padding: 0; } }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="top">
+    <div>
+      <div class="kicker">{{ station.name|upper }} · PLANT OPERATIONS</div>
+      <h1>8 AM report</h1>
+      <div class="sub">Shift-day {{ report.shift_date|date:"d M Y" }} · generated {{ generated|date:"d M Y, H:i" }}</div>
+    </div>
+  </div>
+
+  <div class="kpis">
+    <div class="card kpi">
+      <div class="label">Rolls weighed and labelled</div>
+      <div class="big mono">{{ report.rolls }}</div>
+      <div class="sub">{% for code, count in report.by_shift.items %}{{ code }} {{ count }}{% if not forloop.last %} · {% endif %}{% empty %}None{% endfor %}</div>
+      <span class="tag">{{ report.from_scale }} from scale · {{ report.manual }} manual</span>
+    </div>
+    <div class="card kpi">
+      <div class="label">Unaccounted tape</div>
+      {% for balance in report.balances %}
+        {% if balance.missing %}
+          <div class="big mono">—</div>
+          <div class="sub">{{ balance.contractor.name }}: no {{ balance.missing|join:" or " }} count</div>
+          <span class="tag warn">Cannot be balanced</span>
+        {% else %}
+          <div class="big mono">{{ balance.unaccounted|floatformat:1 }} kg</div>
+          <div class="sub">{{ balance.unaccounted_percent }}% of {{ balance.consumed|floatformat:1 }} kg consumed</div>
+          <span class="tag{% if balance.over %} warn{% endif %}">{% if balance.over %}Above{% else %}Within{% endif %} {{ station.unaccounted_threshold_percent }}% threshold</span>
+        {% endif %}
+      {% empty %}<div class="none">No contractor looms.</div>{% endfor %}
+    </div>
+    <div class="card kpi">
+      <div class="label">Declared vs weight-derived metres</div>
+      <div class="big mono">{% if overall_percent is not None %}{% if overall_percent > 0 %}+{% endif %}{{ overall_percent }}%{% else %}—{% endif %}</div>
+      <div class="sub">{{ beyond|floatformat:0 }} m declared beyond what weights support</div>
+      {% if over_looms %}<span class="tag warn">{{ over_looms|join:" and " }} over the limit</span>
+      {% elif report.looms %}<span class="tag">Every loom within its limit</span>{% endif %}
+    </div>
+    <div class="card kpi">
+      <div class="label">Manual weight overrides</div>
+      <div class="big mono">{{ report.manual }}</div>
+      <div class="sub">{% if report.manual_percent is not None %}{{ report.manual_percent }}% of weighings{% else %}No weighings{% endif %}</div>
+    </div>
+  </div>
+
+  <section class="card">
+    <h2>Act on today</h2>
+    {% if report.exceptions %}
+    <table>
+      <thead><tr><th>#</th><th>Exception</th><th>Owner</th><th>Action</th></tr></thead>
+      <tbody>
+      {% for row in report.exceptions %}
+        <tr><td class="mono">{{ forloop.counter }}</td>
+          <td><strong>{{ row.title }}</strong><div class="sub">{{ row.detail }}</div></td>
+          <td>{{ row.owner }}</td><td>{{ row.action }}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}<div class="none">Nothing to act on.</div>{% endif %}
+  </section>
+
+  <div class="grid2">
+    {% for balance in report.balances %}
+    <section class="card">
+      <h2>Tape mass balance</h2>
+      <div class="sub">{{ balance.contractor.name }}</div>
+      <div class="line"><span>Opening tape on looms</span><span class="mono">{% if balance.opening is not None %}{{ balance.opening|floatformat:1 }} kg{% else %}not counted{% endif %}</span></div>
+      <div class="line"><span>Add: tape issued</span><span class="mono">{{ balance.issued|floatformat:1 }} kg</span></div>
+      <div class="line"><span>Less: closing tape on looms</span><span class="mono">{% if balance.closing is not None %}{{ balance.closing|floatformat:1 }} kg{% else %}not counted{% endif %}</span></div>
+      <div class="line total"><span>Tape consumed</span><span class="mono">{% if balance.consumed is not None %}{{ balance.consumed|floatformat:1 }} kg{% else %}—{% endif %}</span></div>
+      <div class="line"><span>Fabric rolls returned</span><span class="mono">{{ balance.rolls_kg|floatformat:1 }} kg</span></div>
+      <div class="line"><span>Recorded waste</span><span class="mono">{{ balance.waste|floatformat:1 }} kg</span></div>
+      {% if balance.unaccounted is not None %}
+      <div class="alert"{% if not balance.over %} style="background:#fff;border-color:var(--line);color:var(--ink)"{% endif %}><span>Unaccounted</span><span class="mono">{{ balance.unaccounted|floatformat:1 }} kg · {{ balance.unaccounted_percent }}%</span></div>
+      {% endif %}
+    </section>
+    {% endfor %}
+
+    <section class="card">
+      <h2>Metres check by loom</h2>
+      <div class="sub">Declared against weight-derived</div>
+      <table>
+        <thead><tr><th>Loom</th><th class="num">Rolls</th><th class="num">From weight</th><th class="num">Declared</th><th class="num">Variance</th></tr></thead>
+        <tbody>
+        {% for row in report.looms %}
+          <tr{% if row.over %} class="over"{% endif %}><td class="mono">{{ row.loom }}</td><td class="num mono">{{ row.rolls }}</td>
+            <td class="num mono">{{ row.from_weight|floatformat:0 }} m</td><td class="num mono">{{ row.declared|floatformat:0 }} m</td>
+            <td class="num mono">{% if row.variance_percent > 0 %}+{% endif %}{{ row.variance_percent }}%</td></tr>
+        {% empty %}<tr><td colspan="5" class="none">No rolls weighed.</td></tr>{% endfor %}
+        </tbody>
+      </table>
+    </section>
+  </div>
+
+  <section class="card">
+    <h2>Manual weight overrides</h2>
+    {% if report.overrides %}
+    <table>
+      <thead><tr><th>Roll and reason</th><th>Time</th><th class="num">Net weight</th><th>Approved by</th></tr></thead>
+      <tbody>
+      {% for row in report.overrides %}
+        <tr><td><span class="mono"><strong>{{ row.roll }}</strong></span><div class="sub">{{ row.reason }}{% if row.note %}: {{ row.note }}{% endif %}</div></td>
+          <td class="mono">{{ row.at }}</td><td class="num mono">{{ row.net_kg|floatformat:1 }} kg</td>
+          <td class="mono">{{ row.approved_by }}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}<div class="none">None.</div>{% endif %}
+  </section>
+
+  <footer>Source: weighings at {{ station.code }}{% if station.scale_code %} (scale {{ station.scale_code }}){% endif %}, the tape issue register and tape counts. Every entry is logged under the individual PIN that made it.</footer>
+</div>
+</body>
+</html>

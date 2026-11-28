@@ -1,0 +1,13 @@
+key,applies_from,name,source
+act,1962-04-01,Income-tax Act 1961,"The Act in force for tax years before 1 April 2026"
+act,2026-04-01,Income-tax Act 2025,"Income-tax Act 2025, in force from 1 April 2026 (s.1(3)); research note docs/handoff/reports/odoo19_gap_analysis.md, 'Income-tax Act 2025 renumbering'"
+tds_return,1962-04-01,Form 26Q,"Rule 31A, Income-tax Rules 1962: quarterly statement of TDS on payments to residents other than salary"
+tds_return,2026-04-01,Form 140,"Rule 219, Income-tax Rules 2026 (replaces 26Q). Income Tax Department video series on the 2026 Rules; Computax Q1 FY 2026-27 guide; TDSMan mapping. Gazette not read"
+tcs_return,1962-04-01,Form 27EQ,"Rule 31AA, Income-tax Rules 1962"
+tcs_return,2026-04-01,Form 143,"Rule 219, Income-tax Rules 2026; the Department's Form 143 page and FAQs (incometaxindia.gov.in/documents/d/guest/fn-143, form-143-faqs), as surfaced by search"
+tcs_declaration,1962-04-01,Form 27C,"Rule 37C, Income-tax Rules 1962 (s.206C(1A))"
+tcs_declaration,2026-04-01,Form 127,"Rule 212, Income-tax Rules 2026 (s.394(2)); the Department's Form 127 FAQs, as surfaced by search"
+tds_challan,1962-04-01,Challan ITNS 281,"The TDS/TCS challan under the 1961 Act"
+tds_challan,2026-04-01,Challan ITNS 281N,"The e-filing portal's FAQ 'Create challan through TAN login' (incometax.gov.in): ITNS 281N for TDS/TCS under the 2025 Act from tax year 2026-27, ITNS 281 for 1961-Act payments. Seen as a search summary only"
+tcs_challan,1962-04-01,Challan ITNS 281,"The TDS/TCS challan under the 1961 Act"
+tcs_challan,2026-04-01,Challan ITNS 281N,"As tds_challan: one challan for TDS and TCS under the 2025 Act"

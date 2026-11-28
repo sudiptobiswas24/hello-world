@@ -1,0 +1,895 @@
+"""The lock-order sentinel (apps/core/lock_order.py): a planted reversal fails, the order passes."""
+
+from django.conf import settings
+from django.db import connection, transaction
+from django.test import TestCase
+
+from .lock_order import LOCK_ORDER, LockedOutsideATransaction, LockOrderViolation, taken
+from .models import DocumentNumbering, Party, lock_rows
+
+
+class TheSentinelHoldsTestsToTheLockOrderTests(TestCase):
+    def setUp(self):
+        self.first, self.second = (Party.objects.create(code=f"P{n}", name=f"P{n}") for n in (1, 2))
+
+    def test_it_is_on_under_tests(self):
+        self.assertTrue(settings.LOCK_ORDER_SENTINEL)
+
+    def test_a_later_rank_then_an_earlier_one_is_refused(self):
+        with self.assertRaisesMessage(LockOrderViolation, "sales.salesorder 7 locked after sales.invoice 3"):
+            with transaction.atomic():
+                taken(connection, "sales.invoice", [3])
+                taken(connection, "sales.salesorder", [7])
+
+    def test_rows_of_one_model_are_taken_in_key_order(self):
+        with self.assertRaisesMessage(LockOrderViolation, f"core.party {self.first.pk} locked after core.party"):
+            with transaction.atomic():
+                lock_rows(self.second)
+                lock_rows(self.first)
+
+    def test_any_select_for_update_counts(self):
+        with self.assertRaises(LockOrderViolation):
+            with transaction.atomic():
+                list(Party.objects.select_for_update().filter(code="P2"))
+                lock_rows(self.first)
+
+    def test_a_lock_outside_any_transaction_the_code_opened_is_refused(self):
+        # On SQLite the lock is ignored and on PostgreSQL it is a 500; a
+        # TestCase's own block is not one the code opened.
+        with self.assertRaisesMessage(LockedOutsideATransaction, "core.party locked outside any transaction"):
+            list(Party.objects.select_for_update().filter(code="P1"))
+
+    def test_the_written_order_and_a_row_already_held_pass(self):
+        with transaction.atomic():
+            DocumentNumbering.hold()  # the first lock of every transaction that locks (O257)
+            taken(connection, "purchasing.purchaseorder", [9])
+            taken(connection, "sales.salesorder", [1])
+            lock_rows(self.first)
+            lock_rows(self.second)
+            lock_rows(self.first)  # held already: taken again, it waits for nothing
+            taken(connection, "sales.salesorder", [1])
+            taken(connection, "sales.delivery", [1])
+            taken(connection, "sales.invoice", [1])
+
+    def test_each_transaction_starts_afresh_and_unranked_models_pass_beside_ranked_ones(self):
+        with transaction.atomic():
+            lock_rows(self.second)
+        with transaction.atomic():
+            DocumentNumbering.hold()  # the first lock of every transaction that locks (O257)
+            taken(connection, "sales.salesorder", [1])
+            taken(connection, "manufacturing.machine", [1])
+            lock_rows(self.first)
+            taken(connection, "manufacturing.machine", [2])
+
+    def test_lock_rows_takes_rows_by_the_lock_orders_rank_not_by_name(self):
+        """
+        "accounting.account" sorts before "core.party" by name and after it by rank: lock_rows sorted by name
+        took the account first and the party after it, against the order it exists to keep.
+        """
+        from apps.accounting.models import Account, AccountType
+
+        account = Account.objects.create(code="1300", name="Employee advances", account_type=AccountType.ASSET)
+        with transaction.atomic():
+            lock_rows(account, self.first)
+
+    def test_lock_rows_takes_a_payment_before_the_account_it_moves_money_through(self):
+        """
+        O371: "accounting.account" sorts before "accounting.payment" by name and after it by rank (O258). Sorted
+        by name, lock_rows(payment, account) took the account first, and every caller handing it both had to
+        split the call, as the statutory remittance did. One call takes the payment first, whichever is named
+        first.
+        """
+        import datetime
+        from decimal import Decimal
+
+        from apps.accounting.models import Account, AccountType, Payment, PaymentDirection
+
+        bank = Account.objects.create(code="1010", name="Bank", account_type=AccountType.ASSET, holds_money=True)
+        payable = Account.objects.create(code="2010", name="Payable", account_type=AccountType.LIABILITY)
+        payment = Payment.objects.create(party=self.first, direction=PaymentDirection.DISBURSEMENT,
+                                         payment_date=datetime.date(2026, 10, 1), amount=Decimal("100.00"),
+                                         bank_account=bank, counterpart_account=payable)
+        with transaction.atomic():
+            lock_rows(payment, payable)
+            taken(connection, "sales.invoice", [1])
+        with transaction.atomic():
+            lock_rows(payable, payment)
+
+    def test_an_account_is_ranked_after_the_payment_and_before_the_invoice(self):
+        """O258: a payment, then the account it moves money through, then a sales invoice; never the account first."""
+        with transaction.atomic():
+            taken(connection, "accounting.payment", [4])
+            taken(connection, "accounting.account", [9], how="for_share")
+            taken(connection, "sales.invoice", [1])
+        with self.assertRaisesMessage(LockOrderViolation, "accounting.payment 4 locked after accounting.account 9"):
+            with transaction.atomic():
+                taken(connection, "accounting.account", [9])
+                taken(connection, "accounting.payment", [4])
+
+    def test_an_unranked_models_own_rows_are_taken_in_key_order(self):
+        # O182: two landed costs onto the same two receipt lines, listed the other way round, took
+        # their stock positions 2 then 1 and 1 then 2, and deadlocked: ranked against nothing, the
+        # model was not held to key order either.
+        with self.assertRaisesMessage(LockOrderViolation, "manufacturing.machine 1 locked after manufacturing.machine 2"):
+            with transaction.atomic():
+                taken(connection, "manufacturing.machine", [2])
+                taken(connection, "manufacturing.machine", [1])
+
+
+class TheSentinelSeesEveryLockAStatementTakesTests(TestCase):
+    """O184: what review_trade3 found it could not see (S3, S4, S5), each planted."""
+
+    def setUp(self):
+        self.first, self.second = (Party.objects.create(code=f"P{n}", name=f"P{n}") for n in (1, 2))
+
+    def test_a_values_list_without_the_pk_still_names_the_rows(self):
+        with self.assertRaisesMessage(LockOrderViolation, f"core.party {self.first.pk} locked after core.party"):
+            with transaction.atomic():
+                list(Party.objects.select_for_update().filter(pk=self.second.pk).values_list("code", flat=True))
+                list(Party.objects.select_for_update().filter(pk=self.first.pk).values_list("code", flat=True))
+
+    def test_a_values_list_lock_is_checked_in_the_order_it_was_taken(self):
+        # Review F8: descending key order read as codes passed, the keys read back sorted.
+        with self.assertRaises(LockOrderViolation):
+            with transaction.atomic():
+                list(Party.objects.select_for_update().order_by("-pk").values_list("code", flat=True))
+
+    def test_an_update_takes_its_rows(self):
+        with self.assertRaisesMessage(LockOrderViolation, "(update)"):
+            with transaction.atomic():
+                lock_rows(self.second)
+                Party.objects.filter(code="P1").update(name="x")
+
+    def test_a_save_of_a_row_that_stood_takes_it(self):
+        with self.assertRaisesMessage(LockOrderViolation, f"core.party {self.first.pk} locked after core.party"):
+            with transaction.atomic():
+                lock_rows(self.second)
+                self.first.name = "y"
+                self.first.save()
+
+    def test_a_delete_takes_its_rows(self):
+        with self.assertRaisesMessage(LockOrderViolation, "(delete)"):
+            with transaction.atomic():
+                lock_rows(self.second)
+                Party.objects.filter(pk=self.first.pk).delete()
+
+    def test_a_migrations_own_models_are_not_held_to_the_order(self):
+        from django.db import connection
+        from django.db.migrations.loader import MigrationLoader
+
+        historical = MigrationLoader(connection).project_state().apps.get_model("core", "Party")
+        with transaction.atomic():
+            lock_rows(self.second)
+            historical.objects.filter(pk=self.first.pk).update(name="in a data migration")
+            list(historical.objects.select_for_update().filter(pk=self.first.pk))
+        with self.assertRaisesMessage(LockOrderViolation, "(update)"):
+            with transaction.atomic():
+                lock_rows(self.second)
+                Party.objects.filter(pk=self.first.pk).update(name="in the application")
+
+    def test_a_joined_table_is_taken_with_the_row(self):
+        from apps.core.models import Address
+
+        address = Address.objects.create(party=self.first, line1="Plot 4", city="Pune")
+        with self.assertRaisesMessage(LockOrderViolation, "(joined)"):
+            with transaction.atomic():
+                lock_rows(self.second)
+                # Filtered through the party, so the join is an inner one: PostgreSQL refuses FOR UPDATE on
+                # the nullable side of the outer join a bare select_related("party") would make.
+                list(Address.objects.select_related("party").select_for_update()
+                     .filter(pk=address.pk, party__code=self.first.code))
+
+    def test_a_row_made_or_held_is_not_taken_again(self):
+        with transaction.atomic():
+            lock_rows(self.second)
+            third = Party.objects.create(code="P3", name="P3")
+            Party.objects.filter(pk=self.second.pk).update(name="again")
+            third.name = "made here"
+            third.save()
+            made = Party.objects.bulk_create([Party(code="P4", name="P4")])
+            Party.objects.filter(pk__in=[row.pk for row in made]).update(name="made in bulk")
+
+    def test_a_statement_outside_any_transaction_holds_nothing_after_it(self):
+        self.first.name = "autocommit"
+        self.first.save()
+        with transaction.atomic():
+            lock_rows(self.second)
+
+    def test_the_order_is_the_written_one(self):
+        self.assertEqual(LOCK_ORDER[:6], ("core.documentnumbering", "purchasing.purchaseorder", "sales.salesorder",
+                                          "purchasing.purchaseorderline", "sales.salesorderline", "core.party"))
+
+
+class TheSentinelForgetsASavepointRolledBackAndSeesForShareTests(TestCase):
+    """O228: rows taken inside a savepoint that rolled back are let go, as the database lets go of them;
+    raw SQL FOR SHARE (hold_money_account) is ranked."""
+
+    def test_a_row_taken_in_a_savepoint_rolled_back_is_not_held_after_it(self):
+        # Before: the invoice stayed held, and the sales order taken next was refused as after it.
+        with transaction.atomic():
+            try:
+                with transaction.atomic():
+                    taken(connection, "sales.invoice", [3])
+                    raise RuntimeError("refused; the savepoint rolls back")
+            except RuntimeError:
+                pass
+            taken(connection, "sales.salesorder", [7])
+
+    def test_a_savepoint_released_keeps_what_it_took(self):
+        with self.assertRaisesMessage(LockOrderViolation, "sales.salesorder 7 locked after sales.invoice 3"):
+            with transaction.atomic():
+                with transaction.atomic():
+                    taken(connection, "sales.invoice", [3])
+                taken(connection, "sales.salesorder", [7])
+
+    def test_a_block_without_a_savepoint_keeps_what_it_took(self):
+        with self.assertRaisesMessage(LockOrderViolation, "sales.salesorder 7 locked after sales.invoice 3"):
+            with transaction.atomic():
+                try:
+                    with transaction.atomic(savepoint=False):
+                        taken(connection, "sales.invoice", [3])
+                        raise RuntimeError("the whole transaction is lost, not a savepoint")
+                except RuntimeError:
+                    pass
+                taken(connection, "sales.salesorder", [7])
+
+    def test_raw_for_share_is_ranked_with_its_keys(self):
+        from .lock_order import raw_shared_lock
+
+        def run(sql, params):
+            return raw_shared_lock(lambda *args: None, sql, params, False, {"connection": connection})
+
+        self.assertIn(raw_shared_lock, connection.execute_wrappers)
+        # Two shares wait for no one: a transfer from bank 5 to bank 3 holds them in its own order.
+        with transaction.atomic():
+            run('SELECT 1 FROM "accounting_account" WHERE id = %s FOR SHARE', [5])
+            run('SELECT 1 FROM "accounting_account" WHERE id = %s FOR SHARE', [3])
+        # A shared row is ranked against the others: an invoice shared, then its order taken, is refused.
+        with self.assertRaisesMessage(LockOrderViolation, "sales.salesorder 7 locked after sales.invoice 3"):
+            with transaction.atomic():
+                run('SELECT 1 FROM "sales_invoice" WHERE "id" IN (%s, %s) FOR KEY SHARE', [3, 2])
+                taken(connection, "sales.salesorder", [7])
+
+
+class TheSentinelSeesAShareUpgradedAndASchemaNamedTableTests(TestCase):
+    """O228 review F5 (a) and (b): a share then an update of one row is an upgrade; "public"."t" is t."""
+
+    @staticmethod
+    def share(sql, params):
+        from .lock_order import raw_shared_lock
+
+        return raw_shared_lock(lambda *args: None, sql, params, False, {"connection": connection})
+
+    def test_a_share_then_an_update_of_the_same_row_is_refused_and_of_another_row_is_not(self):
+        with self.assertRaisesMessage(LockOrderViolation, "accounting.account 5 taken (select_for_update) after "
+                                                          "this transaction shared it"):
+            with transaction.atomic():
+                self.share('SELECT 1 FROM "accounting_account" WHERE id = %s FOR SHARE', [5])
+                taken(connection, "accounting.account", [5])
+        with transaction.atomic():
+            self.share('SELECT 1 FROM "accounting_account" WHERE id = %s FOR SHARE', [5])
+            self.share('SELECT 1 FROM "accounting_account" WHERE id = %s FOR SHARE', [5])
+            taken(connection, "accounting.account", [6])
+
+    def test_a_table_named_with_its_schema_is_ranked(self):
+        with self.assertRaisesMessage(LockOrderViolation, "sales.salesorder 7 locked after sales.invoice 3"):
+            with transaction.atomic():
+                self.share('SELECT 1 FROM "public"."sales_invoice" WHERE id = %s FOR SHARE', [3])
+                taken(connection, "sales.salesorder", [7])
+
+
+class NumberingIsHeldBehindTheCompanysOneRowTests(TestCase):
+    """
+    O257: a document numbering a second type inside its own transaction took that type's row after its own,
+    and two transactions numbering the two types the other way round deadlocked. Every number is taken behind
+    the company's one numbering row now (DocumentSequence.next_value), so the order between types decides
+    nothing; the sentinel holds the shape: sequence rows out of key order without that row, or the row
+    taken after a sequence, are refused.
+    """
+
+    def setUp(self):
+        from .models import DocumentSequence
+
+        self.first = DocumentSequence.objects.create(code="test.first", name="First", prefix="F-")
+        self.second = DocumentSequence.objects.create(code="test.second", name="Second", prefix="S-")
+        self.assertLess(self.first.pk, self.second.pk)
+
+    def test_two_types_numbered_against_key_order_in_one_transaction_pass(self):
+        from .models import DocumentSequence
+
+        with transaction.atomic():
+            later = DocumentSequence.next_for("test.second", "2026-10-01")
+            earlier = DocumentSequence.next_for("test.first", "2026-10-01")
+            made = DocumentSequence.next_for("test.third", "2026-10-01", name="Third", prefix="T-")
+        self.assertEqual((later, earlier, made), ("S-2026-00001", "F-2026-00001", "T-2026-00001"))
+
+    def test_sequences_taken_against_key_order_without_the_numbering_row_are_refused(self):
+        # Put core.documentsequence back on UNSEEN and this passes unseen: the shape O257 deadlocked on.
+        with self.assertRaisesMessage(LockOrderViolation,
+                                      f"core.documentsequence {self.first.pk} locked after core.documentsequence "
+                                      f"{self.second.pk}"):
+            with transaction.atomic():
+                # Taken as a raw lock would: through lock_rows() the numbering row comes first, behind which
+                # the order between sequences decides nothing.
+                taken(connection, "core.documentsequence", [self.second.pk])
+                taken(connection, "core.documentsequence", [self.first.pk])
+
+    def test_the_numbering_row_taken_after_a_sequence_is_refused(self):
+        from .models import DocumentNumbering
+
+        with self.assertRaisesMessage(LockOrderViolation,
+                                      "core.documentnumbering 1 locked after core.documentsequence"):
+            with transaction.atomic():
+                taken(connection, "core.documentsequence", [self.first.pk])
+                DocumentNumbering.hold()
+
+    def test_a_year_counter_is_behind_the_row_too(self):
+        from .models import DocumentSequenceYear
+
+        early = DocumentSequenceYear.objects.create(sequence=self.first, year=2026, next_number=4)
+        late = DocumentSequenceYear.objects.create(sequence=self.second, year=2026, next_number=9)
+        with self.assertRaises(LockOrderViolation):
+            with transaction.atomic():
+                taken(connection, "core.documentsequenceyear", [late.pk])
+                taken(connection, "core.documentsequenceyear", [early.pk])
+        from .models import DocumentSequence
+
+        with transaction.atomic():
+            self.assertEqual(DocumentSequence.next_for("test.second", "2026-10-01"), "S-2026-00009")
+            self.assertEqual(DocumentSequence.next_for("test.first", "2026-10-01"), "F-2026-00004")
+
+    def test_a_number_is_not_taken_outside_a_transaction_the_numbering_opened(self):
+        from .models import DocumentNumbering
+
+        with self.assertRaisesMessage(RuntimeError, "outside a transaction"):
+            DocumentNumbering.hold()
+
+
+class ABulkUpdateComesAfterTheNumberingRowTests(TestCase):
+    """
+    O384: QuerySet.update() locks the rows it matches and sends no signal, so it took no numbering row, and a
+    transaction that updated a party so and then took a number held the party while it waited for the numbering
+    row: the shape O257 deadlocked on. It is held first now (apps.core.apps.numbering_before_an_update). A bulk
+    delete sends pre_delete for each row, which held it already.
+    """
+
+    def setUp(self):
+        self.party = Party.objects.create(code="BULK", name="Before")
+
+    def taken(self):
+        return list(dict.fromkeys((getattr(connection, "_lock_order_state", None) or {}).get("taken", [])))
+
+    def test_it_is_installed_beside_the_edit_log(self):
+        from django.db.models.query import QuerySet
+
+        from .apps import holds_the_numbering_row_first
+
+        self.assertTrue(holds_the_numbering_row_first(QuerySet.update))
+        self.assertTrue(getattr(QuerySet.update, "edit_logged", False))
+
+    def test_a_bulk_update_takes_it_before_its_rows(self):
+        with transaction.atomic():
+            Party.objects.filter(pk=self.party.pk).update(name="After")
+            self.assertEqual(self.taken(), ["core.documentnumbering", "core.party"])
+        self.assertEqual(Party.objects.get(pk=self.party.pk).name, "After")
+
+    def test_so_a_number_taken_after_one_is_in_order(self):
+        # Unwrapped: "core.documentnumbering 1 locked after core.party (select_for_update): the numbering row is
+        # the first lock of a transaction that numbers".
+        from .models import DocumentSequence
+
+        with transaction.atomic():
+            Party.objects.filter(pk=self.party.pk).update(name="After")
+            number = DocumentSequence.next_for("test.bulk", "2026-10-01", name="Bulk", prefix="B-")
+        self.assertEqual(number, "B-2026-00001")
+
+    def test_as_a_bulk_delete_did_already(self):
+        with transaction.atomic():
+            Party.objects.filter(pk=self.party.pk).delete()
+            self.assertEqual(self.taken()[0], "core.documentnumbering")
+
+    def test_not_for_a_row_that_is_no_business_record_nor_outside_a_transaction(self):
+        from django.contrib.sessions.models import Session
+
+        with transaction.atomic():
+            Session.objects.filter(session_key="none").update(session_data="")
+            self.assertNotIn("core.documentnumbering", self.taken())
+        Party.objects.filter(pk=self.party.pk).update(name="Alone")  # a statement of its own holds nothing after it
+        self.assertEqual(Party.objects.get(pk=self.party.pk).name, "Alone")
+
+    def test_a_sign_in_that_updated_a_business_record_in_bulk_is_reported(self):
+        from django.contrib.auth.signals import user_logged_in
+
+        from apps.core.management.commands.audit_invariants import Command
+
+        def planted(sender, user, **kwargs):
+            Party.objects.filter(pk=self.party.pk).update(name="Signed in")
+
+        user_logged_in.connect(planted, weak=False, dispatch_uid="planted-bulk-sign-in")
+        self.addCleanup(user_logged_in.disconnect, dispatch_uid="planted-bulk-sign-in")
+        found = Command().sign_in_writes_unmarked()
+        self.assertEqual([kind for kind, _detail in found], ["sign-in writes a business record"], found)
+        self.assertIn("core.Party is written or locked by a sign-in", found[0][1])
+
+
+class ALockComesAfterTheNumberingRowWhateverAsksForItTests(TestCase):
+    """
+    O382: a select_for_update() took the numbering row only where its own code took it first, by
+    row_lock_query() or a numbering_first() written before it, and one written without it was seen by the
+    sentinel only where a test gave it a row to lock. The compiler takes it before every select_for_update() of
+    a business record now (apps.core.apps.numbering_before_a_lock), whether or not a row matches.
+    """
+
+    def setUp(self):
+        self.party = Party.objects.create(code="LOCK", name="Held")
+
+    def taken(self):
+        return list(dict.fromkeys((getattr(connection, "_lock_order_state", None) or {}).get("taken", [])))
+
+    def test_a_lock_of_its_own_takes_it_before_its_row(self):
+        with transaction.atomic():
+            list(Party.objects.select_for_update(no_key=True).filter(pk=self.party.pk))
+            self.assertEqual(self.taken(), ["core.documentnumbering", "core.party"])
+
+    def test_and_where_no_row_matches_yet(self):
+        # What a test without the row (an open period, stock on the shelf) never showed: the lock the plant takes
+        # once the row stands comes after the numbering row all the same.
+        with transaction.atomic():
+            list(Party.objects.select_for_update(no_key=True).filter(code="NONE"))
+            self.assertEqual(self.taken(), ["core.documentnumbering"])
+
+    def test_so_a_number_taken_after_one_is_in_order(self):
+        # Unwrapped: "core.documentnumbering 1 locked after core.party (select_for_update): the numbering row is
+        # the first lock of a transaction that numbers".
+        from .models import DocumentSequence
+
+        with transaction.atomic():
+            Party.objects.select_for_update(no_key=True).get(pk=self.party.pk)
+            number = DocumentSequence.next_for("test.lock", "2026-10-01", name="Lock", prefix="L-")
+        self.assertEqual(number, "L-2026-00001")
+
+    def test_lock_rows_holds_it_once_not_twice(self):
+        from unittest import mock
+
+        with transaction.atomic(), mock.patch.object(DocumentNumbering, "hold", wraps=DocumentNumbering.hold) as hold:
+            lock_rows(self.party, refresh=False)
+        self.assertEqual(hold.call_count, 1)
+
+    def test_a_sequence_held_for_an_edit_takes_it_too(self):
+        # The API and the admin hold a sequence from read to write (lock_for_change). row_lock_query() took the
+        # numbering row before it until the compiler did; a sequence's save takes none, written behind it.
+        from .models import DocumentSequence, lock_for_change
+
+        sequence = DocumentSequence.objects.create(code="test.edit", name="Edit", prefix="E-")
+        with transaction.atomic():
+            lock_for_change(sequence, {"prefix": "X-"})
+            self.assertEqual(self.taken(), ["core.documentnumbering", "core.documentsequence"])
+
+    def test_not_for_a_row_that_is_no_business_record(self):
+        from django.contrib.sessions.models import Session
+
+        with transaction.atomic():
+            list(Session.objects.select_for_update(no_key=True).filter(session_key="none"))
+            self.assertNotIn("core.documentnumbering", self.taken())
+
+    def test_a_sign_in_that_locked_a_business_record_is_reported(self):
+        from django.contrib.auth.signals import user_logged_in
+
+        from apps.core.management.commands.audit_invariants import Command
+
+        def planted(sender, user, **kwargs):
+            with transaction.atomic():
+                list(Party.objects.select_for_update(no_key=True).filter(pk=self.party.pk))
+
+        user_logged_in.connect(planted, weak=False, dispatch_uid="planted-lock-sign-in")
+        self.addCleanup(user_logged_in.disconnect, dispatch_uid="planted-lock-sign-in")
+        found = Command().sign_in_writes_unmarked()
+        self.assertEqual([kind for kind, _detail in found], ["sign-in writes a business record"], found)
+        self.assertIn("core.Party is written or locked by a sign-in", found[0][1])
+
+    def test_nor_outside_a_transaction_the_code_opened_which_the_sentinel_refuses_as_before(self):
+        with self.assertRaisesMessage(LockedOutsideATransaction, "core.party locked outside any transaction"):
+            list(Party.objects.select_for_update(no_key=True).filter(pk=self.party.pk))
+        self.assertNotIn("core.documentnumbering", self.taken())
+
+
+class ARowMadeWithAUniqueKeyComesAfterTheNumberingRowTests(TestCase):
+    """
+    O378: a row made is held from its insert to commit, and another transaction making the same key waits on it.
+    A transaction that made a row with a unique key and then took the numbering row waited for it holding that key,
+    while a posting that held the numbering row and made the same key waited on the insert: PostgreSQL ends one as a
+    deadlock. Such an insert takes the numbering row first now, saved or in bulk
+    (apps.core.apps.inserted_behind_the_numbering_row); one made around the hooks (saved raw, as a fixture loads)
+    and then followed by the numbering row is refused by the sentinel, as SQLite takes no row lock to show it.
+    """
+
+    def taken(self):
+        return list(dict.fromkeys((getattr(connection, "_lock_order_state", None) or {}).get("taken", [])))
+
+    def test_a_party_made_takes_the_numbering_row_before_its_insert(self):
+        seen = []
+
+        def made(sender, instance, created, **kwargs):
+            if created and sender is Party:
+                seen.append(self.taken())
+
+        from django.db.models.signals import post_save
+
+        post_save.connect(made, weak=False, dispatch_uid="o378-made")
+        self.addCleanup(post_save.disconnect, dispatch_uid="o378-made")
+        with transaction.atomic():
+            Party.objects.create(code="MADE", name="Made")
+            DocumentNumbering.hold()
+        self.assertEqual(seen, [["core.documentnumbering"]])
+
+    def test_and_made_in_bulk(self):
+        from django.db.models.query import QuerySet
+
+        from .apps import holds_the_numbering_row_first
+
+        self.assertTrue(holds_the_numbering_row_first(QuerySet.bulk_create))
+        with transaction.atomic():
+            Party.objects.bulk_create([Party(code="BULK", name="Bulk")])
+            self.assertEqual(self.taken(), ["core.documentnumbering"])
+            DocumentNumbering.hold()
+
+    def test_a_row_with_no_unique_key_that_binds_every_row_takes_none(self):
+        from .apps import unique_keys
+        from .models import Address
+
+        self.assertEqual(unique_keys(Address), [])
+        self.assertEqual(unique_keys(Party), [("code",)])
+        with transaction.atomic():
+            Address.objects.create(line1="1 Mill Road", city="Kolkata")
+            Address.objects.bulk_create([Address(line1="2 Mill Road", city="Kolkata")])
+            self.assertEqual(self.taken(), [])
+            DocumentNumbering.hold()
+
+    def test_nor_a_row_that_is_no_business_record(self):
+        from django.contrib.auth.models import User
+
+        with transaction.atomic():
+            User.objects.create(username="made-first")
+            self.assertEqual(self.taken(), [])
+            DocumentNumbering.hold()
+
+    def test_one_saved_around_the_hooks_and_then_the_numbering_row_is_refused_saying_which_and_why(self):
+        from django.utils.timezone import now
+
+        # Saved raw, as loaddata saves a fixture: the write hook takes nothing for it (numbering_before_a_write).
+        # The site is application code only: a test's frames are never the site, nor the command every test runs
+        # inside (manage.py test, through apps.core.history's execute_as_itself).
+        with self.assertRaises(LockOrderViolation) as refused:
+            with transaction.atomic():
+                Party(code="RAW", name="Raw", created_at=now(), updated_at=now()).save_base(raw=True)
+                DocumentNumbering.hold()
+        self.assertTrue(str(refused.exception).startswith(
+            "core.documentnumbering 1 locked after this transaction made a core.party row, at a test's own code: its "
+            "unique key (code) is held from the insert to commit"), str(refused.exception))
+        self.assertNotIn("execute_as_itself", str(refused.exception))
+
+    def test_nor_one_made_so_in_a_savepoint_rolled_back(self):
+        from django.utils.timezone import now
+
+        with transaction.atomic():
+            try:
+                with transaction.atomic():
+                    Party(code="GONE", name="Gone", created_at=now(), updated_at=now()).save_base(raw=True)
+                    raise RuntimeError("rolled back")
+            except RuntimeError:
+                pass
+            DocumentNumbering.hold()
+        self.assertFalse(Party.objects.filter(code="GONE").exists())
+
+    def test_a_create_over_the_api_takes_the_numbering_row_before_its_row(self):
+        from django.contrib.auth.models import User
+        from django.db.models.signals import post_save
+        from rest_framework.test import APIClient
+
+        seen = []
+
+        def made(sender, instance, created, **kwargs):
+            if created and sender is Party:
+                seen.append(self.taken())
+
+        post_save.connect(made, weak=False, dispatch_uid="o378-made")
+        self.addCleanup(post_save.disconnect, dispatch_uid="o378-made")
+        client = APIClient()
+        client.force_authenticate(User.objects.create_superuser("o378"))
+        response = client.post("/api/core/parties/", {"code": "API", "name": "Over the API"}, format="json")
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertEqual(seen, [["core.documentnumbering"]])
+
+
+class ASaveAsksAfterTheNumberingRowTests(TestCase):
+    """
+    O625: a save()'s own checks of other rows come before its pre_save, where the write hook takes the numbering
+    row, and an insert of a row with no unique key takes none there. Asked before any lock, two made at once could
+    both pass a check that one of them made untrue: twin bills of entry, a second set of settings. A create over
+    the API takes the numbering row before the save now, as an edit's hold of its row does, and the one row of a
+    model that keeps one is made behind it (apps.core.models.the_one).
+    """
+
+    def taken(self):
+        return list(dict.fromkeys((getattr(connection, "_lock_order_state", None) or {}).get("taken", [])))
+
+    def test_a_create_over_the_api_holds_the_numbering_row_before_it_asks_anything(self):
+        # A party's create replaces the mixin's perform_create (make_party), as a viewset may: the hold is the
+        # create's, from before the serializer validates to the save.
+        from unittest import mock
+
+        from django.contrib.auth.models import User
+        from rest_framework.test import APIClient
+
+        from .serializers import PartySerializer
+
+        seen, validating, saving = [], PartySerializer.is_valid, Party.save
+
+        def first_thing_in_validation(serializer, *args, **kwargs):
+            seen.append(("validated", self.taken()))
+            return validating(serializer, *args, **kwargs)
+
+        def first_thing_in_save(party, *args, **kwargs):
+            if party._state.adding:
+                seen.append(("saved", self.taken()))
+            return saving(party, *args, **kwargs)
+
+        client = APIClient()
+        client.force_authenticate(User.objects.create_superuser("o625"))
+        with mock.patch.object(PartySerializer, "is_valid", first_thing_in_validation), \
+                mock.patch.object(Party, "save", first_thing_in_save):
+            response = client.post("/api/core/parties/", {"code": "ASKS", "name": "Asks after"}, format="json")
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertEqual(seen, [("validated", ["core.documentnumbering"]), ("saved", ["core.documentnumbering"])])
+
+    def test_a_login_made_over_the_api_holds_nothing(self):
+        # Not a business record: a login waits for no posting (O378).
+        from unittest import mock
+
+        from django.contrib.auth.models import User
+        from rest_framework.test import APIClient
+
+        seen, saving = [], User.save
+
+        def first_thing_in_save(user, *args, **kwargs):
+            if user._state.adding:
+                seen.append(self.taken())
+            return saving(user, *args, **kwargs)
+
+        client = APIClient()
+        client.force_authenticate(User.objects.create_superuser("o625"))
+        with mock.patch.object(User, "save", first_thing_in_save):
+            response = client.post("/api/core/users/", {"username": "asks-nothing", "password": "Pallets-of-sacks-1987"},
+                                   format="json")
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertEqual(seen, [[]])
+
+    def test_the_one_standing_is_read_holding_nothing(self):
+        from apps.quality.models import QualitySettings
+
+        made = QualitySettings.objects.create()
+        with transaction.atomic():
+            self.assertEqual(QualitySettings.get(), made)
+            self.assertEqual(self.taken(), [])
+
+    def test_none_standing_it_is_made_behind_the_numbering_row_and_once(self):
+        from apps.planning.models import PlanningSettings
+        from apps.quality.models import QualitySettings
+
+        self.assertFalse(QualitySettings.objects.exists())
+        with transaction.atomic():
+            made = QualitySettings.get()
+            self.assertEqual(self.taken(), ["core.documentnumbering"])
+        self.assertEqual(list(QualitySettings.objects.all()), [made])
+        self.assertEqual(QualitySettings.get(), made)
+        self.assertFalse(PlanningSettings.objects.exists())
+        self.assertEqual(PlanningSettings.get(), PlanningSettings.get())
+        self.assertEqual(PlanningSettings.objects.count(), 1)
+
+
+class APlainForUpdateIsReportedTests(TestCase):
+    """
+    O257: a lock that only serialises a decision is FOR NO KEY UPDATE, which a deferred foreign-key check (FOR KEY
+    SHARE at COMMIT) does not wait on; audit_invariants reports a plain FOR UPDATE outside a delete().
+    """
+
+    def found(self, text):
+        from pathlib import Path
+
+        from apps.core.management.commands.audit_invariants import Command
+
+        return [detail for _kind, detail in Command().plain_for_update(["core"], {"core": {Path("apps/core/planted.py"): text}})]
+
+    def test_a_planted_plain_lock_is_reported_and_the_no_key_one_and_a_delete_are_not(self):
+        planted = (
+            "def decide(order):\n"
+            "    Order.objects.select_for_update().get(pk=order.pk)\n"
+            "    Order.objects.select_for_update(no_key=True).get(pk=order.pk)\n"
+            "    lock_rows(order, deleting=True)\n"
+            "def delete(self):\n"
+            "    lock_rows(self, deleting=True)\n"
+            "    Order.objects.select_for_update().get(pk=self.pk)\n"
+        )
+        found = sorted(self.found(planted))
+        self.assertEqual(len(found), 2, found)
+        self.assertIn("planted.py:2 decide() takes select_for_update() without no_key=True", found[0])
+        self.assertIn("planted.py:4 decide() takes lock_rows(..., deleting=True)", found[1])
+
+    def test_a_planted_update_or_create_is_reported_and_the_held_one_is_not(self):
+        # O379: Django's update_or_create() takes select_for_update() inside, which a search for the word missed.
+        planted = (
+            "def record(user):\n"
+            "    Kept.objects.update_or_create(user=user, defaults={'value': 1})\n"
+            "    update_or_create_held(Kept, user=user, defaults={'value': 1})\n"
+        )
+        found = self.found(planted)
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("planted.py:2 record() takes update_or_create(), whose lock is FOR UPDATE", found[0])
+
+    def test_the_held_update_or_create_takes_the_numbering_row_with_no_transaction_open(self):
+        """
+        Called with no block of the code's own open, the numbering row is still held, inside the helper's own
+        block and before the row is looked for. Taken before that block, numbering_first() held nothing here.
+        """
+        from unittest import mock
+
+        from apps.core.models import in_a_transaction_it_opened, update_or_create_held
+        from apps.planning.history import ShipmentHistory
+
+        order = []
+        self.assertFalse(in_a_transaction_it_opened())
+        with mock.patch.object(DocumentNumbering, "hold", side_effect=lambda *a, **k: order.append("numbering")), \
+                mock.patch("django.db.models.query.QuerySet.get_or_create",
+                           side_effect=lambda *a, **k: order.append("row") or (_ for _ in ()).throw(LookupError)):
+            with self.assertRaises(LookupError):
+                update_or_create_held(ShipmentHistory, month="2026-01-01", defaults={})
+        self.assertEqual(order, ["numbering", "row"])
+
+    def test_lock_rows_takes_for_no_key_update_and_for_update_only_to_delete(self):
+        from .models import row_lock_query
+
+        self.assertIn("FOR NO KEY UPDATE", str(row_lock_query(Party, 1).query)
+                      if connection.vendor == "postgresql" else "FOR NO KEY UPDATE")
+        self.assertTrue(row_lock_query(Party, 1).query.select_for_no_key_update)
+        self.assertFalse(row_lock_query(Party, 1, no_key=False).query.select_for_no_key_update)
+
+
+class APersonIsRankedBetweenAPaymentAndItsBankTests(TestCase):
+    """
+    O374: hr.employee was ranked nowhere, so a receipt that shared its bank and then held the person it came
+    from (hold_the_payer) passed unseen beside the demo, which holds its people and then pays a claim through a
+    bank. The person comes after the payment and before the account, and before the slips a pay run holds
+    after its people. A bank shared and then a person, as a receipt took them on PostgreSQL, is refused.
+    """
+
+    def test_a_shared_bank_then_a_person_is_refused(self):
+        with self.assertRaisesMessage(LockOrderViolation, "hr.employee 5 locked after accounting.account 2"):
+            with transaction.atomic():
+                taken(connection, "accounting.payment", [9])
+                taken(connection, "accounting.account", [2], how="for_share")
+                taken(connection, "hr.employee", [5])
+
+    def test_a_payment_the_person_their_shared_bank_then_their_slip_pass(self):
+        with transaction.atomic():
+            taken(connection, "accounting.payment", [9])
+            taken(connection, "hr.employee", [5])
+            taken(connection, "accounting.account", [2], how="for_share")
+            taken(connection, "hr.payslip", [1])
+
+    def test_a_slip_then_its_person_is_refused(self):
+        with self.assertRaisesMessage(LockOrderViolation, "hr.employee 5 locked after hr.payslip 1"):
+            with transaction.atomic():
+                taken(connection, "hr.payslip", [1])
+                taken(connection, "hr.employee", [5])
+
+
+class TheSurveyRecordsEverySiteOfAPairTests(TestCase):
+    """
+    O373: the survey (LOCK_ORDER_SURVEY) kept each pair once per process with the first site to take it, so a
+    second path taking the same two models was never written down. Every site is recorded, each once.
+    """
+
+    def test_two_sites_of_one_pair_are_both_recorded_and_a_site_again_is_not(self):
+        import json
+        import os
+        import tempfile
+        from unittest import mock
+
+        from . import lock_order
+
+        sites = iter(["sales/models.py:10 post", "sales/returns.py:20 credit", "sales/models.py:10 post"])
+        with tempfile.TemporaryDirectory() as folder, mock.patch.object(lock_order, "_SURVEY", folder), \
+                mock.patch.object(lock_order, "_seen", set()), \
+                mock.patch.object(lock_order, "_where", side_effect=lambda: next(sites)):
+            for _ in range(3):
+                lock_order._survey("pair", "sales.invoice", "sales.salesorder")
+            with open(os.path.join(folder, f"{os.getpid()}.jsonl")) as kept:
+                rows = [json.loads(line) for line in kept]
+        self.assertEqual(rows, [["pair", "sales.invoice", "sales.salesorder", "sales/models.py:10 post"],
+                                ["pair", "sales.invoice", "sales.salesorder", "sales/returns.py:20 credit"]])
+
+
+class ANumberKeptPastARollbackIsReportedTests(TestCase):
+    """
+    O380: a number taken onto the object in hand is given back when the step rolls back only through @serialised
+    or @numbered_in_one_transaction; audit_invariants reports a numbering method with neither.
+    """
+
+    def found(self, text):
+        from pathlib import Path
+
+        from apps.core.management.commands.audit_invariants import Command
+
+        return [detail for _kind, detail in Command().numbers_kept_past_a_rollback(
+            ["core"], {"core": {Path("apps/core/planted.py"): text}})]
+
+    def test_a_bare_atomic_save_and_a_helper_called_from_one_are_reported_and_the_rest_are_not(self):
+        planted = (
+            "class Stoppage:\n"
+            "    @transaction.atomic\n"
+            "    def save(self):\n"
+            "        if not self.number:\n"
+            "            self.number = DocumentSequence.next_for('x', day)\n"
+            "    @numbered_in_one_transaction\n"
+            "    def keep(self):\n"
+            "        self.number = DocumentSequence.next_for('x', day)\n"
+            "    @serialised('status')\n"
+            "    def post(self):\n"
+            "        self._assign()\n"
+            "    def _assign(self):\n"
+            "        self.number = DocumentSequence.next_for('x', day)\n"
+            "    def issue(self):\n"
+            "        self._stamp()\n"
+            "    def _stamp(self):\n"
+            "        self.number = DocumentSequence.next_for('x', day)\n"
+            "    def given_back(self):\n"
+            "        with gives_back_its_number(self):\n"
+            "            self.number = DocumentSequence.next_for('x', day)\n"
+            "def make(day):\n"
+            "    return Thing.objects.create(number=DocumentSequence.next_for('x', day))\n"
+        )
+        found = sorted(self.found(planted))
+        self.assertEqual(len(found), 2, found)
+        self.assertIn("planted.py:17 _stamp() numbers the object in hand outside @serialised", found[0])
+        self.assertIn("planted.py:5 save() numbers the object in hand outside @serialised", found[1])
+
+
+class TheNumberingRowIsTheFirstLockTests(TestCase):
+    """O257: the numbering row comes before every row, a model ranked nowhere included."""
+
+    def test_a_row_ranked_nowhere_before_it_is_refused_and_after_it_passes(self):
+        from .models import DocumentNumbering
+
+        with self.assertRaisesMessage(LockOrderViolation, "core.documentnumbering 1 locked after manufacturing.machine"):
+            with transaction.atomic():
+                taken(connection, "manufacturing.machine", [3])
+                DocumentNumbering.hold()
+        with transaction.atomic():
+            DocumentNumbering.hold()
+            taken(connection, "manufacturing.machine", [3])
+            lock_rows(Party.objects.create(code="P9", name="P9"))
+
+
+class ASignInWritesOnlyRowsThatTakeNoNumberingTests(TestCase):
+    """
+    O257, review_lockfirst F1: audit_invariants drives a sign-in, a session refresh, a sign-out and end_sessions,
+    and reports a model they write (a row saved with its key, deleted, linked or updated in bulk) or lock that is not
+    numbering_exempt.
+    """
+
+    def test_a_business_record_written_at_sign_in_is_reported_and_the_marked_ones_are_not(self):
+        from django.contrib.auth.signals import user_logged_in
+
+        from apps.core.management.commands.audit_invariants import Command
+
+        self.assertEqual(Command().sign_in_writes_unmarked(), [])
+        party = Party.objects.create(code="SIGNED", name="Signed in")
+
+        def planted(sender, user, **kwargs):
+            Party.objects.filter(pk=party.pk).first().save()
+
+        user_logged_in.connect(planted, weak=False, dispatch_uid="planted-sign-in-write")
+        self.addCleanup(user_logged_in.disconnect, dispatch_uid="planted-sign-in-write")
+        found = Command().sign_in_writes_unmarked()
+        self.assertEqual([kind for kind, _detail in found], ["sign-in writes a business record"], found)
+        self.assertIn("core.Party is written or locked by a sign-in", found[0][1])

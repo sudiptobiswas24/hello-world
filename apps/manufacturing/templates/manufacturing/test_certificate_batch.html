@@ -1,0 +1,18 @@
+<div><strong class="mono">{{ batch.lot }}</strong> <span class="muted">{{ batch.item_name }}</span>
+  {% if batch.quantity %}· {{ batch.quantity }}{% endif %}
+  · {% if batch.inspection %}inspection <span class="mono">{{ batch.inspection }}</span> of {{ batch.inspected_on }}, {% endif %}
+  <span class="{% if batch.status == 'passed' %}muted{% else %}note{% endif %}">{{ batch.status }}</span></div>
+{% if batch.characteristics %}
+<table>
+  <tr><th>Characteristic</th><th>Limits</th><th>Mean</th><th>Readings</th><th>Result</th></tr>
+  {% for row in batch.characteristics %}
+  <tr>
+    <td>{{ row.name }} <span class="muted">{{ row.unit }}</span></td>
+    <td class="num">{{ row.lower|default:"—" }} – {{ row.upper|default:"—" }}</td>
+    <td class="num">{{ row.mean|default:"—" }}</td>
+    <td class="num">{{ row.readings }}</td>
+    <td class="{% if row.passed is False %}fail{% endif %}">{% if row.passed is True %}Pass{% elif row.passed is False %}Fail{% else %}—{% endif %}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}

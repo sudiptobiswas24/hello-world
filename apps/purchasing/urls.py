@@ -1,0 +1,75 @@
+from rest_framework.routers import DefaultRouter
+
+from .vendors_api import NewVendorViewSet, VendorProfileViewSet
+from .tds_api import TdsChallanViewSet, TdsDeductionViewSet
+
+from .documents_api import (
+    BlanketOrderLineViewSet,
+    BlanketOrderViewSet,
+    PurchaseRequisitionLineViewSet,
+    PurchaseRequisitionViewSet,
+    RequestForQuotationViewSet,
+    RfqInvitationViewSet,
+    RfqLineViewSet,
+)
+from .masters_api import (
+    ApprovalTierViewSet,
+    BudgetViewSet,
+    PurchaseApprovalPolicyViewSet,
+    ReorderRuleViewSet,
+    VendorPriceViewSet,
+)
+from .views import (
+    BillPaymentViewSet,
+    PurchasingReportViewSet,
+    BillLineViewSet,
+    BillViewSet,
+    GoodsReceiptLineViewSet,
+    GoodsReceiptViewSet,
+    PurchaseOrderLineViewSet,
+    PurchaseOrderViewSet,
+    WeightClaimViewSet,
+)
+
+from .imports_api import (
+    BillOfEntryLineViewSet, BillOfEntryViewSet, CustomsValuationDefaultViewSet, PurchaseRateContractViewSet,
+    RateContractLineViewSet, RateDifferenceLineViewSet, RateDifferenceNoteViewSet,
+)
+
+router = DefaultRouter()
+router.register("bills-of-entry", BillOfEntryViewSet)
+router.register("bill-of-entry-lines", BillOfEntryLineViewSet)
+router.register("customs-valuation-defaults", CustomsValuationDefaultViewSet)
+router.register("rate-contracts", PurchaseRateContractViewSet)
+router.register("rate-contract-lines", RateContractLineViewSet)
+router.register("rate-differences", RateDifferenceNoteViewSet)
+router.register("rate-difference-lines", RateDifferenceLineViewSet)
+router.register("purchase-orders", PurchaseOrderViewSet)
+router.register("purchase-order-lines", PurchaseOrderLineViewSet)
+router.register("bills", BillViewSet)
+router.register("tds-deductions", TdsDeductionViewSet)
+router.register("tds-challans", TdsChallanViewSet)
+router.register("bill-payments", BillPaymentViewSet)
+router.register(
+    "purchasing-reports", PurchasingReportViewSet, basename="purchasing-report"
+)
+router.register("bill-lines", BillLineViewSet)
+router.register("goods-receipts", GoodsReceiptViewSet)
+router.register("goods-receipt-lines", GoodsReceiptLineViewSet)
+router.register("weight-claims", WeightClaimViewSet)
+router.register("vendor-prices", VendorPriceViewSet)
+router.register("vendor-profiles", VendorProfileViewSet)
+router.register("vendors", NewVendorViewSet, basename="new-vendor")
+router.register("reorder-rules", ReorderRuleViewSet)
+router.register("budgets", BudgetViewSet)
+router.register("approval-policies", PurchaseApprovalPolicyViewSet)
+router.register("approval-tiers", ApprovalTierViewSet)
+router.register("requisitions", PurchaseRequisitionViewSet)
+router.register("requisition-lines", PurchaseRequisitionLineViewSet)
+router.register("rfqs", RequestForQuotationViewSet)
+router.register("rfq-lines", RfqLineViewSet)
+router.register("rfq-invitations", RfqInvitationViewSet)
+router.register("blanket-orders", BlanketOrderViewSet)
+router.register("blanket-order-lines", BlanketOrderLineViewSet)
+
+urlpatterns = router.urls
