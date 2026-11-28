@@ -449,9 +449,17 @@ def off_rolls(mount):
 @transaction.atomic
 @takes_back
 def void_mount(mount, station, supervisor, operator, reason):
-    """Mounted wrongly: the issue goes back, while nothing was made from it."""
+    """
+    Mounted wrongly: the issue goes back, while nothing was made from it.
+
+    The mount is locked before anything about it is asked (O630), and so behind the company's numbering row
+    (O382), which weigh_roll takes first. Asked before it, a roll weighed off the mount and not yet committed went
+    unseen: the void waited at the numbering row as it went to lock the issue, the roll committed, and the mount's
+    material went back to the store with the roll made from it standing.
+    """
     from .station import check_supervisor
 
+    lock_rows(mount)
     if mount.station_id != station.pk:
         raise ValidationError(f"{mount} was not mounted at {station}.")
     if mount.voided_at is not None:
@@ -481,8 +489,11 @@ def void_mount(mount, station, supervisor, operator, reason):
 @transaction.atomic
 @takes_back
 def void_roll(roll, station, supervisor, operator, reason):
+    # Locked before anything about it is asked, behind the numbering row, which mount_roll takes first (O630):
+    # asked before it, a mount of the roll not yet committed went unseen, and the roll was withdrawn mounted.
     from .station import check_supervisor
 
+    lock_rows(roll)
     if roll.station_id != station.pk:
         raise ValidationError(f"{roll} was not weighed at {station}.")
     if roll.voided_at is not None:
